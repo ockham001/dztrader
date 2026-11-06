@@ -5,9 +5,10 @@
 # 的 commit 上，push 时把别人的票一起发布。本脚本在 push 前做机械检查。
 #
 # 第二个检查：同一分支已有 in-progress CI run 时，只有它**已经覆盖被推 HEAD**才拒绝。
-# `ci.yml` 的 PR run 是 cancel-in-progress（#274）：新 push 会取消旧 run，新 run 覆盖全量
-# 内容——所以 in-progress run 的 headSha 是被推 HEAD 的祖先（旧 run 已被新 commit 取代）
-# 时放行并打 supersede warning；只有 headSha == 被推 HEAD（没有新内容可推）才拦截。
+# `ci.yml` 的 PR run 是 cancel-in-progress（#93 复盘，commit 2073992）：新 push 会取消旧
+# run，新 run 覆盖全量内容——所以 in-progress run 的 headSha 是被推 HEAD 的祖先（旧 run
+# 已被新 commit 取代）时放行并打 supersede warning；headSha == 被推 HEAD（没有新内容可推）
+# 或无法本地解析（无法证明已被取代）时拦截。
 # 把同一次修复拆成多个 commit 反复推仍应避免（每个 commit 都会取消并重起一个
 # ≈35–40 分钟的 run），修复请合并成 1 个 commit 一次推。
 #
@@ -21,7 +22,7 @@
 # 应由 supersede 判定放行）。
 #
 # 退出码: 0=区间为空或全部匹配, 1=发现不属于本票的 commit, 2=参数/引用错误,
-#         3=in-progress CI run 已覆盖被推 HEAD（没有新内容可推）
+#         3=in-progress CI run 覆盖被推 HEAD（无新内容可推），或 run SHA 无法证明已被取代（保守拦截）
 
 set -uo pipefail
 

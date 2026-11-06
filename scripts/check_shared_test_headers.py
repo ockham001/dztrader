@@ -9,8 +9,9 @@
 规则:
   R1 扫描 apps/ + libs/ 下任意 tests/ 目录（含嵌套，如 .../src/db/tests/）中的 *.h
   R2 统计每个头被「测试 .cpp」include 的次数；测试 .cpp = apps/libs 下任意 tests/ 目录
-     中的 *.cpp（含 smoke 等嵌套子目录）。include 按 basename 匹配：
-     #include "x.h"、#include <.../x.h>、相对路径都命中
+     中的 *.cpp（含 smoke 等嵌套子目录）。include 归属先按路径解析——带路径的 include 先
+     相对 .cpp 所在目录、再相对仓库根解析，命中测试头就只归属那一个；解析不到才退回
+     basename 匹配（裸 basename include 在同名头并存时仍有歧义，新增同名头请用带路径 include）
   R3 已登记集合从 §5.4 表格解析：第一列的反引号 token，含 '/' 的按仓库路径；裸文件名
      按同一行前一个完整路径的目录解析（如 `date_range.h` / `date_exhaustive_cases.h`）
   R4 使用者 >=2 且未登记 → 报错（列出头路径、计数、使用者示例），提示二选一：
@@ -91,13 +92,13 @@ class Violation:
             shown += f", ... (+{len(self.users) - 3} more)"
         if self.code == "exempt-without-reason":
             return [
-                f"INVALID shared-test-header exemption: {self.header} "
+                f"error: invalid shared-test-header exemption: {self.header} "
                 f"({len(self.users)} test .cpp users; e.g. {shown})",
                 f"  fix: write '{EXEMPT_MARKER}' with a non-empty reason, "
                 f"or register the header in {DOC_DISPLAY} §5.4",
             ]
         return [
-            f"UNREGISTERED shared test header: {self.header} "
+            f"error: unregistered shared test header: {self.header} "
             f"({len(self.users)} test .cpp users; e.g. {shown})",
             f"  fix: register it in {DOC_DISPLAY} §5.4, or add '{EXEMPT_MARKER}' "
             "to the header if it is intentionally not shared",
@@ -161,10 +162,16 @@ def rel_to_root(path: Path, root: Path) -> str:
 
 
 def include_users(root: Path, headers: list[Path], cpps: list[Path]) -> dict[Path, list[str]]:
-    """每个头 -> 包含它的测试 .cpp 相对路径（去重、排序）；include 按 basename 匹配。"""
+    """每个头 -> 包含它的测试 .cpp 相对路径（去重、排序）。
+
+    归属顺序（#284 审查收敛）：带路径的 include 先相对 .cpp 所在目录、再相对仓库根解析；
+    命中测试头就只归属那一个，避免跨模块同名头互相虚增计数。解析不到（include 目录前缀
+    与仓内相对关系对不上）才退回 basename 匹配。
+    """
     by_basename: dict[str, list[Path]] = {}
     for header in headers:
         by_basename.setdefault(header.name, []).append(header)
+    resolved = {header.resolve(): header for header in headers}
     users: dict[Path, set[str]] = {header: set() for header in headers}
     for cpp in cpps:
         try:
@@ -176,8 +183,21 @@ def include_users(root: Path, headers: list[Path], cpps: list[Path]) -> dict[Pat
             match = INCLUDE_RE.match(line)
             if match is None:
                 continue
-            basename = match.group(1).replace("\\", "/").rsplit("/", 1)[-1]
-            for header in by_basename.get(basename, ()):
+            raw = match.group(1).replace("\\", "/")
+            candidates: list[Path] = []
+            if "/" in raw:
+                for base in (cpp.parent, root):
+                    try:
+                        candidate = (base / raw).resolve()
+                    except (OSError, RuntimeError):
+                        continue
+                    header = resolved.get(candidate)
+                    if header is not None:
+                        candidates = [header]
+                        break
+            if not candidates:
+                candidates = by_basename.get(raw.rsplit("/", 1)[-1], [])
+            for header in candidates:
                 users[header].add(cpp_rel)
     return {header: sorted(user_set) for header, user_set in users.items()}
 
@@ -493,6 +513,23 @@ def run_selftest() -> int:
             ],
         )
 
+        # 跨模块同名头（#284 审查收敛）：带路径的 include 按 .cpp 相对路径归属，不会靠
+        # basename 把两个头各算成 2 个使用者；各 1 个使用者 → 都不是共享头。
+        run_case(
+            "same_basename_path_resolved_green",
+            headers={
+                "libs/alpha/tests/common_fixture.h": _header_body("alpha_common"),
+                "libs/beta/tests/common_fixture.h": _header_body("beta_common"),
+            },
+            cpps={
+                "libs/alpha/tests/a_test.cpp": _cpp('#include "../tests/common_fixture.h"'),
+                "libs/beta/tests/b_test.cpp": _cpp('#include "../tests/common_fixture.h"'),
+            },
+            doc_text=_selftest_doc(["| `libs/alpha/tests/solo.h` | 未使用 |"]),
+            expected_violations=[],
+            expected_shared=[],
+        )
+
         # 文档问题：§5.4 行存在但索引表缺失 / 表存在但没有数据行。
         doc_missing_table = "\n".join([
             "# 单元测试判据（selftest fixture）",
@@ -581,7 +618,7 @@ def main(argv: list[str]) -> int:
 
     if report.doc_errors:
         for message in report.doc_errors:
-            print(message)
+            print(f"error: {message}")
         print(f"\nFAIL: {len(report.doc_errors)} document problem(s) in {doc}",
               file=sys.stderr)
         return 1

@@ -65,7 +65,7 @@
 - **`--test-name` 的 regex 匹配 `<Fixture>.<Case>`（gtest 用例全名），不是源文件名**：`--test-name td_config_test` 匹配不到任何用例，`ctest -R` 零匹配退出码 **8**（`No tests were found!!!`）——那**不是**测试失败，与「用例红了」要分开判断。查用例名用 `./scripts/gate.sh test --list`（直通 `ctest -N`，一行一个用例名，一次调用查全量）。
 - **`--target` 的命名规则 = 模块前缀 + 测试源文件名去 `.cpp`（保留 `_test`）**：`apps/webui/tests/<name>.cpp` → `dzweb_<name>`、`apps/ctp/tests/td_<name>.cpp` → `dztd_ctp_td_<name>`、`apps/master/tests/<name>.cpp` → `dztraderd_<name>`、`libs/<mod>/tests/<name>.cpp` → `dz<mod>_<name>`；冒烟测试是例外 `dz_smoke_test`（#251 曾按源文件名猜 target、连错 3 次：前缀不是 `dztd_` 而是 `dztd_ctp_`）。
 
-`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**共享测试头登记**（#284：`docs/unit-test-standard.md` §5.4 索引的确定性校验，含 `--selftest`）、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、**门禁脚本参数自测**（#281：`build.sh`/`test.sh` 的重复 flag 必须累积，用假 `cmake`/`ctest` 断言真实命令行）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 幂等性（再生成不改文件即通过，与暂存/提交次序无关）。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**共享测试头登记**（#284：`docs/unit-test-standard.md` §5.4 索引的确定性校验，含 `--selftest`）、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、**ci-log 错误模式**（#200）、**gtest 发现超时纪律**（#227）、**commit subject 形态**（#265）、**push-scope 自测**（#265）、**门禁脚本参数自测**（#281：`build.sh`/`test.sh` 的重复 flag 必须累积，用假 `cmake`/`ctest` 断言真实命令行）、**Windows CI 预算分档**（#267）、**孤儿导出**（#274）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 幂等性（再生成不改文件即通过，与暂存/提交次序无关）。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
 
 > **门禁结果可追溯（#190）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入 `.cache/gate/last-status`。`.githooks/pre-push` 会拒绝「当前 HEAD 上最近一次门禁失败」的推送（HEAD 不符/缺失只警告；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 
@@ -83,7 +83,7 @@
 > **push / 建 PR 的硬前置（#284 AC2）**：先确认**最后一轮只读验证已返回且无 BLOCKING**。未返回时先 `wait_agent` 阻塞等待（`subagent` 等 `subagent-settled` 通知），**不得先 push / 建 PR 再验**——#252 因此把一次修复放大成两个串行 CI 周期（≈56min，时间线见 §1 第 11 条）。只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3。
 
 ```bash
-./scripts/check-push-scope.sh <issue>     # @{u}..HEAD 只允许本票 commit；同 SHA 的 in-progress run 才拒绝
+./scripts/check-push-scope.sh <issue>     # @{u}..HEAD 只允许本票 commit；同 SHA / 无法解析 SHA 的 in-progress run 才拒绝
 git push -u origin <branch>               # 按 AGENTS「push 分级授权」：feature 分支免逐次确认
 gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）" --body-file <body 文件>
 ./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（后台作业启动，见下）

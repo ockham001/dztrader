@@ -4,8 +4,10 @@
 # 覆盖：日志格式 / clang-format 21.x / 文档链接（含活跃文档里反引号路径**与代码符号**的
 #       存在性，以及 apps/libs 源码注释里显式契约 §N 引用的目标存在性）/ 测试可移植性+
 #       临时目录隔离 / 共享测试头登记（#284，§5.4 索引的确定性校验）/ MSVC hazard lint /
-#       内置 nlohmann/json 版本一致性 / gtest 发现超时纪律（#227）/ 门禁脚本参数自测
-#       （#281，build.sh/test.sh 重复 flag 必须累积）/ 前端五件套。
+#       内置 nlohmann/json 版本一致性 / ci-log 错误模式（#200）/ gtest 发现超时纪律
+#       （#227）/ commit subject（#265）/ push-scope 自测（#265）/ 门禁脚本参数自测
+#       （#281，build.sh/test.sh 重复 flag 必须累积）/ Windows CI 预算分档（#267）/
+#       孤儿导出（#274）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
