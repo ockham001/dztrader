@@ -467,7 +467,10 @@ function diffConfig(next: SysmonConfigPayload, current: SysmonConfigPayload): Sy
     clock.probe_times = next.clock.probe_times
   }
   // 数字字段集合由 CLOCK_FIELDS 单一维护：逐字段写 if 会变成第二份字段清单，改一处必漏另一处。
-  const clockNumbers: Record<string, number> = clock as Record<string, number>
+  // 用**独立**的数字表收集，最后并入 clock——不能把 `clock` 本身断言成 Record<string, number>：
+  // 那个断言会把 enabled / servers / probe_times 也宣告成 number，将来往本段加非数字字段时
+  // 会被静默当数字下发而不报错。
+  const clockNumbers: Record<string, number> = {}
   for (const spec of CLOCK_FIELDS) {
     const key = spec.key as keyof SysmonClockConfigPayload
     const nextValue = next.clock[key]
@@ -475,7 +478,8 @@ function diffConfig(next: SysmonConfigPayload, current: SysmonConfigPayload): Sy
       clockNumbers[spec.key] = nextValue as number
     }
   }
-  if (Object.keys(clock).length > 0) patch.clock = clock
+  if (Object.keys(clockNumbers).length > 0) patch.clock = { ...clock, ...clockNumbers }
+  else if (Object.keys(clock).length > 0) patch.clock = clock
 
   return patch
 }

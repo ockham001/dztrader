@@ -1,6 +1,6 @@
 /**
  * @file config_e2e_test.cpp
- * @brief #81 端到端：运行期配置的六段全量生效 / 间隔即时重排 / 组关闭 / history 运行期开关。
+ * @brief #81 端到端：运行期配置的七段全量生效 / 间隔即时重排 / 组关闭 / history 运行期开关。
  *
  * 单测已覆盖快照构造（snapshot_builder_test）与配置边界（platform sysmon_test）的纯逻辑；
  * 本文件补的是**进程接线**，这些语义由 `SysmonApp::apply_sysmon_config` 的副作用顺序决定，
@@ -367,6 +367,13 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
         {"history", {{"enabled", false}}},
         {"realtime", {{"push_interval_sec", 2}}},
         {"thresholds", {{"memory_used_pct", 42.0}}},
+        // #296 第七段：一次 patch 真的覆盖全部七段（注释与事实一致，不是惰性文案）。
+        // 探测时刻取非默认值以证明新值进入生效配置；这里不写 `probe_times: []`，因为该用例
+        // 只断言配置回推，探测调度消费者由 #299 接线。
+        {"clock",
+         {{"probe_times", nlohmann::json::array({"06:15", "22:45"})},
+          {"offset_warn_ms", 300},
+          {"offset_error_ms", 1200}}},
     };
     ASSERT_TRUE(send_set_config(patch));
 
@@ -382,11 +389,17 @@ TEST_F(ConfigE2ETest, SetConfigAppliesAllSectionsAndPushesImmediateSnapshot) {
     EXPECT_EQ((*config)["history"]["enabled"], false);
     EXPECT_EQ((*config)["realtime"]["push_interval_sec"], 2);
     EXPECT_DOUBLE_EQ((*config)["thresholds"]["memory_used_pct"].get<double>(), 42.0);
+    EXPECT_EQ((*config)["clock"]["probe_times"], (nlohmann::json::array({"06:15", "22:45"})));
+    EXPECT_EQ((*config)["clock"]["offset_warn_ms"], 300);
+    EXPECT_EQ((*config)["clock"]["offset_error_ms"], 1200);
     // 未提及字段保持默认（patch 是 merge，不是整体替换）。
     EXPECT_EQ((*config)["sampling"]["groups"]["cpu"], true);
     EXPECT_EQ((*config)["thresholds"]["cpu_sustain_samples"], 10);
     EXPECT_EQ((*config)["history"]["raw_retention_hours"], 24);
     EXPECT_EQ((*config)["thresholds"]["log_repeat_sec"], 600);
+    // clock 段未提及的键同样保持默认（不是被整段替换）。
+    EXPECT_EQ((*config)["clock"]["probe_timeout_ms"], 1500);
+    EXPECT_EQ((*config)["clock"]["bound_alarm_ms"], 200);
 
     // SET 成功后立即推送的快照必须已体现新配置。推送间隔为 2s（刚从 300s 重排），
     // 因此 1.5s 内到达的快照只能是 §4 触发 4 的立即推送，不是周期推送。
@@ -833,7 +846,9 @@ TEST_F(ConfigE2ETest, InvalidClockPatchRejectedAndRolledBack) {
             << item.label;
 
         // 回推旧值：夹具写入的 `probe_times: []` 与默认阈值原样保留（不是补丁里的非法值，
-        // 也不是契约默认时刻——夹具刻意留空，避免 #299 接线探测后 e2e 访问真实网络）。
+        // 也不是契约默认时刻）。夹具留空 `probe_times` 只为让定时探测这一侧保持静默——它
+        // 不禁止「启动首次探测」（契约 §3.1 明文），而 `servers` 仍是真实主机名；本用例不
+        // 依赖该点，探测接线后（#299）这台 e2e 需要换成注入替身或不可路由地址。
         const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
         ASSERT_TRUE(config.has_value()) << item.label;
         EXPECT_TRUE((*config)["clock"]["probe_times"].empty()) << item.label;

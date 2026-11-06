@@ -1598,8 +1598,12 @@ TEST(SnapshotBuilderTest, ClockDisabledKeepsEveryOtherAvailabilityKey) {
             metric == platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE) {
             continue;
         }
+        // 同时比 reason：只比 available 的话，关闭态把别的键误写成 disabled_by_config 不会被发现。
         EXPECT_EQ(disabled.availability.metrics.at(key).available,
                   enabled.availability.metrics.at(key).available)
+            << key;
+        EXPECT_EQ(disabled.availability.metrics.at(key).reason,
+                  enabled.availability.metrics.at(key).reason)
             << key;
     }
 }

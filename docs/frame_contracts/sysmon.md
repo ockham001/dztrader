@@ -182,7 +182,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `no_sensor` —— 传感器不存在（如温度）
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
 - `no_reference` —— 无可用参考源（时钟偏差探测本轮全部失败，或首轮探测尚未完成）
-- `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
+- `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false；`clock` 域另有第二层入口 `clock.enabled=false`，两者关闭取或，§3.1）
 
 > 当前版本（#77）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`、`network`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。
 >
