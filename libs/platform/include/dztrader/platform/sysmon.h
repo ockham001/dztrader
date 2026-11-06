@@ -78,8 +78,8 @@ inline constexpr std::array<const char*, 15> SYSMON_METRIC_KEYS = {
 };
 
 /// 配置 payload / 配置文件的业务段全集（契约 sysmon §3.1；顺序固定）。
-inline constexpr std::array<const char*, 6> SYSMON_CONFIG_SECTIONS = {
-    "sampling", "disk", "network", "history", "realtime", "thresholds"};
+inline constexpr std::array<const char*, 7> SYSMON_CONFIG_SECTIONS = {
+    "sampling", "disk", "network", "history", "realtime", "thresholds", "clock"};
 
 /// 阈值越限配置段名（契约 sysmon §3.1；本段原名 `alerts`，#123 随 ADR 0034 改名）。
 inline constexpr const char* SYSMON_THRESHOLDS_SECTION = "thresholds";
@@ -97,6 +97,13 @@ inline constexpr const char* SYSMON_GROUP_MEMORY = "memory";
 inline constexpr const char* SYSMON_GROUP_SWAP = "swap";
 inline constexpr const char* SYSMON_GROUP_TEMPERATURE = "temperature";
 inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
+
+/// 时钟偏差域在 `sampling.groups` 里的开关（契约 sysmon §3.1.1；#296）。
+///
+/// 与 `clock.enabled` 是**同一意图的两层入口**：两者同时为 true 才启用（关闭取或）。
+/// 单独放常量是因为构造层（快照 `clock` 域是否输出 `null`）与时长/阈值判定都要读它，
+/// 而字面量散落会在两处各写一套后漂移。
+inline constexpr const char* SYSMON_GROUP_CLOCK = "clock";
 
 // ===== 阈值越限判定对象 kind（契约 sysmon §2.8；#123）=====
 // 日志记录里的稳定取值，**不进快照、不构成协议语义**（ADR 0034）。`cpu_saturated` 只出现
@@ -603,6 +610,39 @@ struct SysmonThresholdsConfig {
                                                 log_repeat_sec)
 };
 
+/// 时钟偏差监控域的配置（契约 sysmon §3.1 `clock` 段；#296）。
+///
+/// **域开关 = `enabled` 与 `sampling.groups.clock` 同时为 true**（关闭取或）：两层入口
+/// 各在自己的段里如实回推持久化值，不做镜像同步。关闭时停止定时探测、跳过同步服务检测、
+/// 快照 `clock` 域为 `null`、两键 `disabled_by_config`（§3.1.1）。
+///
+/// 三个时间阈值住本段而不是 `thresholds` 段（§3.1）：它们与探测参数同属一个功能单元，
+/// 且其中 error 档会弹窗，与资源类「都不打扰」的性质不同（ADR 0047）。
+struct SysmonClockConfig {
+    bool enabled = true;  ///< 时钟监控域总开关（与 sampling.groups.clock 关闭取或）
+    /// 探测服务器列表（NTPv4 客户端模式，UDP/123）；元素为非空字符串，**数组不得为空**
+    /// （关闭监控用 enabled=false，清空服务器是校验失败——否则「尚未探测」与「无服务器
+    /// 可探」在快照里不可区分）。
+    std::vector<std::string> servers{"ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"};
+    /// 每天定时探测的时刻（进程本地时区，`HH:MM` 两位小时+两位分钟，`00:00`–`23:59`）；
+    /// 空数组 = 关闭定时探测（启动后的首次探测与手动查询仍执行）。
+    std::vector<std::string> probe_times{"08:30", "12:30", "15:30", "18:00", "20:30"};
+    int32_t probe_timeout_ms = 1500;       ///< 单台服务器的探测超时，[100, 10000]
+    int32_t manual_min_interval_sec = 10;  ///< 手动查询最小间隔，[0, 3600]；0 = 不限流
+    int32_t offset_warn_ms = 100;          ///< 偏差 warning 档阈值，[1, 60000] 且 < error
+    int32_t offset_error_ms = 1000;        ///< 偏差 error 档阈值，(warn, 600000]
+    int32_t bound_alarm_ms = 200;          ///< 误差界质量判据，[1, 60000]；独立于偏差判定
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonClockConfig,
+                                                enabled,
+                                                servers,
+                                                probe_times,
+                                                probe_timeout_ms,
+                                                manual_min_interval_sec,
+                                                offset_warn_ms,
+                                                offset_error_ms,
+                                                bound_alarm_ms)
+};
+
 /// RTN_SYSMON_CONFIG payload / SET_SYSMON_CONFIG 合并后的完整配置（契约 sysmon §配置）。
 struct SysmonConfig {
     SysmonSamplingConfig sampling;
@@ -611,8 +651,9 @@ struct SysmonConfig {
     SysmonHistoryConfig history;
     SysmonRealtimeConfig realtime;
     SysmonThresholdsConfig thresholds;
+    SysmonClockConfig clock;
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        SysmonConfig, sampling, disk, network, history, realtime, thresholds)
+        SysmonConfig, sampling, disk, network, history, realtime, thresholds, clock)
 
     /// 默认配置（缺配置/损坏时自愈用；仓库不提交模板文件）。
     [[nodiscard]] static SysmonConfig default_config();

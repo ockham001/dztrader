@@ -477,6 +477,26 @@ export interface SysmonThresholdsConfigPayload {
     log_repeat_sec: number
 }
 
+// 时钟偏差监控域配置（契约 sysmon §3.1 `clock` 段；#296）。域开关 = enabled 与 sampling.groups.clock 同时为 true（关闭取或）；三个时间阈值住本段，不在 thresholds 段。
+export interface SysmonClockConfigPayload {
+    /** 时钟监控域总开关（与 sampling.groups.clock 关闭取或） */
+    enabled: boolean
+    /** 探测服务器列表（非空数组，元素非空） */
+    servers: string[]
+    /** 每天定时探测时刻 HH:MM（空数组 = 关闭定时探测） */
+    probe_times: string[]
+    /** 单台服务器探测超时 [100,10000] */
+    probe_timeout_ms: number
+    /** 手动查询最小间隔 [0,3600]；0=不限流 */
+    manual_min_interval_sec: number
+    /** 偏差 warning 档阈值 [1,60000]，且 < offset_error_ms */
+    offset_warn_ms: number
+    /** 偏差 error 档阈值 (>offset_warn_ms, 600000] */
+    offset_error_ms: number
+    /** 误差界质量判据 [1,60000]；独立于偏差判定 */
+    bound_alarm_ms: number
+}
+
 export interface SysmonConfigPayload {
     sampling: SysmonSamplingConfigPayload
     disk: SysmonDiskConfigPayload
@@ -484,6 +504,7 @@ export interface SysmonConfigPayload {
     history: SysmonHistoryConfigPayload
     realtime: SysmonRealtimeConfigPayload
     thresholds: SysmonThresholdsConfigPayload
+    clock: SysmonClockConfigPayload
 }
 
 // 交易方向（契约 rest §2.9.3，值 = 帧枚举的 PascalCase 名）

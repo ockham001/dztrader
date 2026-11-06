@@ -1,5 +1,6 @@
 import { api } from './client'
 import type {
+  SysmonClockConfigPayload,
   SysmonConfigPayload,
   SysmonDiskConfigPayload,
   SysmonHistoryConfigPayload,
@@ -26,6 +27,7 @@ export interface SysmonConfigPatch {
   history?: Partial<SysmonHistoryConfigPayload>
   realtime?: Partial<SysmonRealtimeConfigPayload>
   thresholds?: Partial<SysmonThresholdsConfigPayload>
+  clock?: Partial<SysmonClockConfigPayload>
 }
 
 /** 把历史查询参数拼成 query string（省略 undefined/空串，后端按「未给」处理）。 */

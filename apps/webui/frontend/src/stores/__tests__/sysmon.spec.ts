@@ -1127,11 +1127,20 @@ describe('useSysmonStore sysmon_config 镜像与「显示全部网卡」pending�
       { ...makeSysmonConfig(), history: undefined },
       { ...makeSysmonConfig(), realtime: undefined },
       { ...makeSysmonConfig(), thresholds: undefined },
+      // clock 段（#296）：整段缺失 / enabled 非布尔 / 两个数组字段不是数组
+      { ...makeSysmonConfig(), clock: undefined },
+      { ...makeSysmonConfig(), clock: { ...makeSysmonConfig().clock, enabled: 'yes' } },
+      { ...makeSysmonConfig(), clock: { ...makeSysmonConfig().clock, servers: 'ntp.aliyun.com' } },
+      { ...makeSysmonConfig(), clock: { ...makeSysmonConfig().clock, probe_times: '08:30' } },
     ]
     for (const payload of invalid) store.applyConfig(payload)
 
     expect(store.config?.network.hide_virtual).toBe(false)
     expect(sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY]).toBe(true)
+    // 镜像未被整体替换：非法 payload 若在「已校验通过」的 marker 上留下痕迹就会在这里暴露
+    // （只断言 network.hide_virtual 的话，clock 段缺失那一类 payload 会漏检）。
+    expect(store.config?.clock.enabled).toBe(true)
+    expect(store.config?.clock.probe_timeout_ms).toBe(1500)
   })
 
   it('setHideVirtual 下发 merge patch，成功保持 pending 直到 WS sysmon_config 到达', async () => {

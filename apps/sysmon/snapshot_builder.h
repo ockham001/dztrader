@@ -129,12 +129,16 @@ struct NetworkMetrics {
 };
 
 /**
- * 时钟偏差域的探测结果（契约 sysmon §2.9；#295 引入接缝，真实探测由 #297/#299 接线）。
+ * 时钟偏差域的探测结果（契约 sysmon §2.9；#295 引入接缝，#296 追加开关，#297/#299 接线探测）。
  *
- * 本票只落地类型与空态：没有任何探测结果时 `info == std::nullopt`，快照输出「尚未探测」
- * 的**域内空态**（不是 `null`——`null` 只表示该域被配置关闭）。
+ * 没有任何探测结果时 `info == std::nullopt`，快照输出「尚未探测」的**域内空态**
+ * （不是 `null`——`null` 只表示该域被配置关闭）。
  */
 struct ClockMetrics {
+    /// 配置关闭该域（`clock.enabled=false` 或 `sampling.groups.clock=false`，关闭取或；
+    /// 契约 sysmon §3.1/§3.1.1）。优先级最高：`clock` 域为 `null`、两键 `disabled_by_config`，
+    /// 「尚未探测」空态与任何陈旧探测结果都不输出（关闭期不得展示旧值）。
+    bool disabled = false;
     /// 最近一轮探测结果；`nullopt` = 尚未探测（`last_probe_unix_ms = 0`）。
     std::optional<platform::SysmonClockInfo> info;
 };

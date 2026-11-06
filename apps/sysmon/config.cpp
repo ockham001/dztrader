@@ -16,7 +16,7 @@ namespace {
 
 using nlohmann::json;
 
-/// 只保留六个业务配置段，剔除 log 与其它未知 section。
+/// 只保留七个业务配置段，剔除 log 与其它未知 section。
 json extract_sections(const json& full) {
     json cfg = json::object();
     for (const char* section : platform::SYSMON_CONFIG_SECTIONS) {
@@ -228,7 +228,7 @@ void SysmonConfigStore::set_patch(const json& patch) {
 }
 
 void SysmonConfigStore::save(const json& cfg) const {
-    // load-modify-save：读现有整文件，只替换六个业务配置段，log 与未知 section 原样保留。
+    // load-modify-save：读现有整文件，只替换七个业务配置段，log 与未知 section 原样保留。
     json full = std::filesystem::exists(path_) ? read_json_object(path_) : default_config_json();
     for (const char* section : platform::SYSMON_CONFIG_SECTIONS) {
         if (cfg.contains(section)) {

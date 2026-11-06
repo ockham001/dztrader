@@ -844,9 +844,10 @@ TEST(SysmonConfigTest, DefaultConfigValid) {
     ASSERT_EQ(SysmonConfig::validate(j), std::nullopt);
     EXPECT_EQ(j["sampling"]["measure_interval_ms"], 1000);
     EXPECT_EQ(j["realtime"]["push_interval_sec"], 5);
-    // 契约 sysmon §3.1：A 组六项 + B 组（温度 / 每核频率）共 8 项，全部必须出现在默认值里。
-    EXPECT_EQ(j["sampling"]["groups"].size(), 8u);
-    for (const char* group : {"cpu", "memory", "swap", "volumes", "disk_io", "network"}) {
+    // 契约 sysmon §3.1：A 组六项 + B 组（温度 / 每核频率）+ clock 共 9 项，全部必须出现在
+    // 默认值里（clock 键 #296 新增，与 clock 段的 enabled 构成两层入口，关闭取或）。
+    EXPECT_EQ(j["sampling"]["groups"].size(), 9u);
+    for (const char* group : {"cpu", "memory", "swap", "volumes", "disk_io", "network", "clock"}) {
         EXPECT_TRUE(j["sampling"]["groups"][group].get<bool>()) << group;
     }
     // 契约 sysmon §3.1 / #124：`disk` 段只剩 `devices`，没有已删除的 `watch_paths`。
@@ -1061,6 +1062,191 @@ TEST(SysmonConfigTest, ThresholdsSectionRequiresNewKeysAndIgnoresRemovedOnes) {
     const SysmonConfig typed = merged.get<SysmonConfig>();
     EXPECT_EQ(typed.thresholds.log_repeat_sec, 600);
     EXPECT_FALSE(nlohmann::json(typed)["thresholds"].contains("volume_free_bytes"));
+}
+
+// ===== #296：clock 配置段（契约 sysmon §3.1 `clock`）=====
+
+// 契约 sysmon §3.1：`clock` 段是第七个业务段，默认值即零配置可用；
+// 三个时间阈值住本段（与探测参数同属一个功能单元，ADR 0047），而资源类阈值在 `thresholds`。
+TEST(SysmonConfigTest, ClockSectionDefaultsAreContractValues) {
+    const auto cfg = SysmonConfig::default_config();
+    const auto j = nlohmann::json(cfg);
+    ASSERT_EQ(SysmonConfig::validate(j), std::nullopt);
+
+    ASSERT_TRUE(j.contains("clock"));
+    const auto& clock = j["clock"];
+    EXPECT_TRUE(clock["enabled"].get<bool>());
+    // 默认 3 台国内可达服务器（顺序即探测顺序）
+    EXPECT_EQ(clock["servers"],
+              nlohmann::json::array({"ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"}));
+    // 默认 5 个在岗时刻（盘前/盘中/盘后）
+    EXPECT_EQ(clock["probe_times"],
+              nlohmann::json::array({"08:30", "12:30", "15:30", "18:00", "20:30"}));
+    EXPECT_EQ(clock["probe_timeout_ms"], 1500);
+    EXPECT_EQ(clock["manual_min_interval_sec"], 10);
+    EXPECT_EQ(clock["offset_warn_ms"], 100);
+    EXPECT_EQ(clock["offset_error_ms"], 1000);
+    EXPECT_EQ(clock["bound_alarm_ms"], 200);
+    // 三个时间阈值**不在** thresholds 段（契约 §3.1 明文分工）。
+    for (const char* key : {"offset_warn_ms", "offset_error_ms", "bound_alarm_ms"}) {
+        EXPECT_FALSE(j["thresholds"].contains(key)) << key;
+    }
+    // `sampling.groups` 新增 `clock` 键，默认开（两层入口之一，§3.1.1）。
+    EXPECT_EQ(j["sampling"]["groups"].size(), 9u);
+    EXPECT_TRUE(j["sampling"]["groups"]["clock"].get<bool>());
+}
+
+// 契约 sysmon §3.1：`probe_times` 元素必须是合法 HH:MM（两位小时 + 两位分钟，00:00–23:59）。
+// AC 明确反例：`25:00` / `8:3` / 空串，全部必须 SET 失败（校验错误消息含字段路径）。
+TEST(SysmonConfigTest, RejectsMalformedProbeTimes) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    for (const char* bad :
+         {"25:00", "8:3", "", "24:00", "23:60", "8:30", "08:3", "0830", "aa:bb"}) {
+        const auto patch = nlohmann::json{{"clock", {{"probe_times", {bad}}}}};
+        try {
+            (void)SysmonConfig::apply_patch(current, patch);
+            FAIL() << "expected rejection for probe_times element: " << bad;
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find("clock.probe_times"), std::string::npos)
+                << "element=" << bad << " message=" << e.what();
+        }
+    }
+}
+
+// 契约 sysmon §3.1：`probe_times` 空数组是**合法**配置（= 关闭定时探测，启动首次探测与
+// 手动查询仍执行）。与 `servers` 空数组相反——后者非法（「无服务器可探」与「尚未探测」
+// 在快照里不可区分，§3.1 明文）。
+TEST(SysmonConfigTest, AcceptsEmptyProbeTimesButRejectsEmptyServers) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+
+    const auto merged =
+        SysmonConfig::apply_patch(current, {{"clock", {{"probe_times", nlohmann::json::array()}}}});
+    EXPECT_TRUE(merged["clock"]["probe_times"].empty());
+
+    EXPECT_THROW((void)SysmonConfig::apply_patch(
+                     current, {{"clock", {{"servers", nlohmann::json::array()}}}}),
+                 std::runtime_error);
+    EXPECT_THROW((void)SysmonConfig::apply_patch(
+                     current, {{"clock", {{"servers", nlohmann::json::array({""})}}}}),
+                 std::runtime_error);
+}
+
+// 契约 sysmon §3.1：`offset_error_ms` 必须**严格大于** `offset_warn_ms`——
+// 反了会让 warning 档永不出现（或 error 先命中），两个档位互斥却同时存在，是静默的语义崩塌。
+// AC 明确要求：`offset_error_ms <= offset_warn_ms` 时 SET 失败。
+TEST(SysmonConfigTest, RejectsOffsetErrorNotGreaterThanWarn) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    const struct {
+        const char* label;
+        nlohmann::json patch;
+    } rejected[] = {
+        {"equal", nlohmann::json{{"clock", {{"offset_warn_ms", 500}, {"offset_error_ms", 500}}}}},
+        {"error below warn",
+         nlohmann::json{{"clock", {{"offset_warn_ms", 500}, {"offset_error_ms", 400}}}}},
+        // 只改一个也要按**合并后**的配置判：warn 抬到超过默认 error（1000）即非法。
+        {"warn above default error", nlohmann::json{{"clock", {{"offset_warn_ms", 1500}}}}},
+        {"error below default warn", nlohmann::json{{"clock", {{"offset_error_ms", 50}}}}},
+    };
+    for (const auto& item : rejected) {
+        try {
+            (void)SysmonConfig::apply_patch(current, item.patch);
+            FAIL() << "expected rejection: " << item.label;
+        } catch (const std::runtime_error& e) {
+            EXPECT_NE(std::string(e.what()).find("offset_error_ms"), std::string::npos)
+                << "label=" << item.label << " message=" << e.what();
+        }
+    }
+}
+
+// 契约 sysmon §3.1 `clock` 段：每个字段的取值范围两端的**拒绝表**。
+TEST(SysmonConfigTest, RejectsEveryOutOfRangeClockField) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    const struct {
+        const char* label;
+        nlohmann::json patch;
+    } rejected[] = {
+        {"probe_timeout_ms below", nlohmann::json{{"clock", {{"probe_timeout_ms", 99}}}}},
+        {"probe_timeout_ms above", nlohmann::json{{"clock", {{"probe_timeout_ms", 10001}}}}},
+        {"manual_min_interval_sec below",
+         nlohmann::json{{"clock", {{"manual_min_interval_sec", -1}}}}},
+        {"manual_min_interval_sec above",
+         nlohmann::json{{"clock", {{"manual_min_interval_sec", 3601}}}}},
+        {"offset_warn_ms below", nlohmann::json{{"clock", {{"offset_warn_ms", 0}}}}},
+        {"offset_warn_ms above", nlohmann::json{{"clock", {{"offset_warn_ms", 60001}}}}},
+        {"offset_error_ms above", nlohmann::json{{"clock", {{"offset_error_ms", 600001}}}}},
+        {"bound_alarm_ms below", nlohmann::json{{"clock", {{"bound_alarm_ms", 0}}}}},
+        {"bound_alarm_ms above", nlohmann::json{{"clock", {{"bound_alarm_ms", 60001}}}}},
+        {"enabled not bool", nlohmann::json{{"clock", {{"enabled", 1}}}}},
+        {"servers not array", nlohmann::json{{"clock", {{"servers", "ntp.aliyun.com"}}}}},
+        {"servers element not string", nlohmann::json{{"clock", {{"servers", {1}}}}}},
+        {"probe_times not array", nlohmann::json{{"clock", {{"probe_times", "08:30"}}}}},
+        {"probe_times element not string", nlohmann::json{{"clock", {{"probe_times", {830}}}}}},
+        {"probe_timeout_ms not integer", nlohmann::json{{"clock", {{"probe_timeout_ms", 1500.5}}}}},
+    };
+    for (const auto& item : rejected) {
+        EXPECT_THROW((void)SysmonConfig::apply_patch(current, item.patch), std::runtime_error)
+            << item.label;
+    }
+}
+
+// 契约 sysmon §3.1：闭区间端点必须**接受**（只拒绝越界值，不得把合法边界当非法）。
+TEST(SysmonConfigTest, AcceptsClockBoundaryValues) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    const struct {
+        const char* label;
+        nlohmann::json patch;
+    } accepted[] = {
+        {"probe_timeout_ms lower", nlohmann::json{{"clock", {{"probe_timeout_ms", 100}}}}},
+        {"probe_timeout_ms upper", nlohmann::json{{"clock", {{"probe_timeout_ms", 10000}}}}},
+        {"manual_min_interval_sec lower (0 = unlimited)",
+         nlohmann::json{{"clock", {{"manual_min_interval_sec", 0}}}}},
+        {"manual_min_interval_sec upper",
+         nlohmann::json{{"clock", {{"manual_min_interval_sec", 3600}}}}},
+        {"offset_warn_ms lower", nlohmann::json{{"clock", {{"offset_warn_ms", 1}}}}},
+        {"offset_warn_ms upper (with raised error)",
+         nlohmann::json{{"clock", {{"offset_warn_ms", 60000}, {"offset_error_ms", 600000}}}}},
+        {"offset_error_ms upper",
+         nlohmann::json{{"clock", {{"offset_warn_ms", 100}, {"offset_error_ms", 600000}}}}},
+        {"bound_alarm_ms lower", nlohmann::json{{"clock", {{"bound_alarm_ms", 1}}}}},
+        {"bound_alarm_ms upper", nlohmann::json{{"clock", {{"bound_alarm_ms", 60000}}}}},
+        {"probe_times boundaries",
+         nlohmann::json{{"clock", {{"probe_times", {"00:00", "23:59"}}}}}},
+        {"probe_times empty (disables scheduling)",
+         nlohmann::json{{"clock", {{"probe_times", nlohmann::json::array()}}}}},
+        {"enabled false", nlohmann::json{{"clock", {{"enabled", false}}}}},
+    };
+    for (const auto& item : accepted) {
+        EXPECT_NO_THROW((void)SysmonConfig::apply_patch(current, item.patch)) << item.label;
+    }
+}
+
+// #296 配置边界：clock 段端点值必须**按原值**进入生效配置（只放行但钳制/丢弃也算失败）。
+TEST(SysmonConfigTest, ClockBoundaryValuesRoundTripThroughTypedConfig) {
+    const auto current = nlohmann::json(SysmonConfig::default_config());
+    const auto patch = nlohmann::json{
+        {"clock",
+         {{"enabled", false},
+          {"servers", nlohmann::json::array({"10.0.0.1", "ntp.example.com"})},
+          {"probe_times", nlohmann::json::array({"00:00", "23:59"})},
+          {"probe_timeout_ms", 10000},
+          {"manual_min_interval_sec", 0},
+          {"offset_warn_ms", 60000},
+          {"offset_error_ms", 600000},
+          {"bound_alarm_ms", 1}}},
+    };
+    const SysmonConfig typed = SysmonConfig::apply_patch(current, patch).get<SysmonConfig>();
+
+    EXPECT_FALSE(typed.clock.enabled);
+    ASSERT_EQ(typed.clock.servers.size(), 2U);
+    EXPECT_EQ(typed.clock.servers[0], "10.0.0.1");
+    ASSERT_EQ(typed.clock.probe_times.size(), 2U);
+    EXPECT_EQ(typed.clock.probe_times[0], "00:00");
+    EXPECT_EQ(typed.clock.probe_times[1], "23:59");
+    EXPECT_EQ(typed.clock.probe_timeout_ms, 10000);
+    EXPECT_EQ(typed.clock.manual_min_interval_sec, 0);
+    EXPECT_EQ(typed.clock.offset_warn_ms, 60000);
+    EXPECT_EQ(typed.clock.offset_error_ms, 600000);
+    EXPECT_EQ(typed.clock.bound_alarm_ms, 1);
 }
 
 // 契约 sysmon §2.5：Windows 平台描述必须含 build 号（区分 Win10/Win11）。

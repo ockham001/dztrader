@@ -282,10 +282,13 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
         }
     }
 
-    // 时钟偏差域（#295）：本票只落地空态——没有任何探测结果时输出「尚未探测」的域内空态
-    // （测量字段全 null、`last_probe_unix_ms = 0`、明细为空）；`null` 只用于「该域被配置
-    // 关闭」，由配置开关（#296）负责，快照构造本身不产生 null（契约 sysmon §2.9）。
-    snapshot.clock = clock_metrics.info.value_or(platform::SysmonClockInfo{});
+    // 时钟偏差域（#295/#296）：配置关闭优先（域为 null + 两键 disabled_by_config，
+    // 契约 sysmon §3.1.1）；未关闭时没有任何探测结果就输出「尚未探测」的域内空态
+    // （测量字段全 null、`last_probe_unix_ms = 0`、明细为空）。`null` 只表示配置关闭。
+    snapshot.clock = clock_metrics.disabled
+                         ? std::nullopt
+                         : std::optional<platform::SysmonClockInfo>(
+                               clock_metrics.info.value_or(platform::SysmonClockInfo{}));
 
     // availability：每帧必须覆盖全部 15 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
@@ -347,18 +350,26 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                 mark_unavailable(snapshot.availability, key, kReasonNoSensor);
             }
         } else if (metric == platform::SYSMON_METRIC_CLOCK_OFFSET) {
-            // 契约 sysmon §2.5：本键表达「最近一轮探测是否成功」，**不是能力粘性**——
-            // 空态（尚未探测）与本轮全部失败同为 no_reference；误差界过大只影响质量
-            // 判定（§2.8），不改写本键可用性。
-            if (clock_metrics.info.has_value() && clock_metrics.info->offset_ms.has_value()) {
+            // 契约 sysmon §2.5：配置关闭时两键均为 disabled_by_config（优先于 no_reference）；
+            // 未关闭时本键表达「最近一轮探测是否成功」，**不是能力粘性**——空态（尚未探测）
+            // 与本轮全部失败同为 no_reference；误差界过大只影响质量判定（§2.8），不改写本键。
+            if (clock_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else if (clock_metrics.info.has_value() &&
+                       clock_metrics.info->offset_ms.has_value()) {
                 mark_available(snapshot.availability, key);
             } else {
                 mark_unavailable(snapshot.availability, key, kReasonNoReference);
             }
         } else if (metric == platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE) {
-            // 同步服务枚举能力由 #298 交付；本票如实标 not_implemented，不虚报
+            // 配置关闭时同样为 disabled_by_config（契约 §3.1.1 两键同口径）。
+            // 未关闭时同步服务枚举能力由 #298 交付；本票如实标 not_implemented，不虚报
             // available=true（契约 §2.5 的「基线内恒为 available=true」描述能力落地后的稳态）。
-            mark_not_implemented(snapshot.availability, key);
+            if (clock_metrics.disabled) {
+                mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
+            } else {
+                mark_not_implemented(snapshot.availability, key);
+            }
         } else if (metric == platform::SYSMON_METRIC_MEMORY) {
             // 配置关闭优先；能力可用但本帧未读到数值时仍为 available（数值为 null）。
             if (memory_metrics.disabled) {

@@ -957,12 +957,26 @@ private:
     /// §2.7/§3.1）：
     /// - `network.hide_virtual`：虚拟网卡过滤
     /// - `disk.devices`：磁盘 I/O 设备范围过滤
+    /// - `clock` 域开关：`clock.enabled` 与 `sampling.groups.clock` 关闭取或（#296）
     ///
     /// 两处快照构造（`push_snapshot` / `record_history_tick`）都从这里取配置：历史维度数据与
     /// 实时快照对"输出哪些条目"的口径必须一致，避免改一处漏一处（Shotgun Surgery）。
     void apply_snapshot_output_config() {
         network_metrics_.hide_virtual = config_.network.hide_virtual;
         disk_metrics_.devices = config_.disk.devices;
+        clock_metrics_.disabled = !clock_domain_enabled();
+        if (clock_metrics_.disabled) {
+            // 关闭取或命中：连同最近一轮结果一起清掉（契约 sysmon §3.1「enabled true→false
+            // 时清空 clock 域」）。只置 disabled 不清结果的话，重新开启后到首次探测完成之前
+            // 会把**关闭前**的旧值连同旧 `last_probe_unix_ms` 当作当前事实展示。
+            clock_metrics_.info = std::nullopt;
+        }
+    }
+
+    /// 时钟监控域是否启用（契约 sysmon §3.1）：`clock.enabled` 与 `sampling.groups.clock`
+    /// **同时为 true** 才启用（关闭取或）。两层入口各在自己的段里，不做镜像同步。
+    bool clock_domain_enabled() const {
+        return config_.clock.enabled && group_enabled(platform::SYSMON_GROUP_CLOCK);
     }
 
     /// 推送实时快照（RTN_SYSMON_SNAPSHOT，无 instance_id，含系统信息/CPU/温度/内存/磁盘/网络）。

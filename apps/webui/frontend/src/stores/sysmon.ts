@@ -57,10 +57,13 @@ function hasReadableCapacity(volume: SysmonVolumeInfo): boolean {
 }
 
 /**
- * 全量配置载荷形状校验（契约 sysmon §3.1）：六个段必须齐全且为对象，`network.hide_virtual`
- * 必须是布尔。dzweb 已按 `SysmonConfig::validate` 校验后才会写镜像/广播，前端仍做浅层防御——
- * 半截/畸形配置不得写进镜像，否则配置 tab 会把不存在或残缺的「生效值」展示给用户，
- * 编辑表单也会拿假值做差异比较。
+ * 全量配置载荷形状校验（契约 sysmon §3.1）：七个段必须齐全且为对象，`network.hide_virtual`
+ * 必须是布尔，`clock` 段的两个数组字段必须是数组。dzweb 已按 `SysmonConfig::validate`
+ * 校验后才会写镜像/广播，前端仍做浅层防御——半截/畸形配置不得写进镜像，否则配置 tab
+ * 会把不存在或残缺的「生效值」展示给用户，编辑表单也会拿假值做差异比较。
+ *
+ * `clock` 段只校验**本前端会读的形状**（两个数组 + 布尔开关）：数值字段由表单按数字解析，
+ * 畸形数值那一路已有 `parseNumberInput` 兜底，重复校验只会让两处判据漂移。
  */
 function isFullConfigPayload(payload: Partial<SysmonConfigPayload> | null | undefined): boolean {
   if (!payload || typeof payload !== 'object') return false
@@ -71,6 +74,9 @@ function isFullConfigPayload(payload: Partial<SysmonConfigPayload> | null | unde
   if (!payload.history || typeof payload.history !== 'object') return false
   if (!payload.realtime || typeof payload.realtime !== 'object') return false
   if (!payload.thresholds || typeof payload.thresholds !== 'object') return false
+  if (!payload.clock || typeof payload.clock !== 'object') return false
+  if (typeof payload.clock.enabled !== 'boolean') return false
+  if (!Array.isArray(payload.clock.servers) || !Array.isArray(payload.clock.probe_times)) return false
   return true
 }
 
