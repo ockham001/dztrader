@@ -396,9 +396,8 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 - 阈值取当前生效配置 `clock` 段（§3.1），默认值即零配置工作；三个阈值**不在** `thresholds` 段（它们与探测参数同属一个功能单元，§3.1）。
 - **相等按表处理**：偏差恰好等于阈值算越限（`≥`）；误差界恰好等于阈值不算越限（`>`），且满足恢复（`≤`）。
-- `clock_offset` 是**一个判定对象、两个级别**：活动期从「进入 warning 或 error 档」开始、回到 `< offset_warn_ms` 结束。进入按当前档记一条（warning 档记 `warning`；error 档记 `error` 并发出 `NOTIFY_UI` 弹窗，`popup=true`）；warning→error 升级记一条 `error` 并产生 `NOTIFY_UI`；error→warning 降级记一条 `info`（活动期不结束）；持续期按 `thresholds.log_repeat_sec` 重记一条 `info`（含活动期已持续秒数，单调时钟计时）；恢复记一条 `info`；卡片按当前档着色（warning 黄 / error 红）。
-- 级别与内容义务同资源类日志表；`clock_offset` 的「阈值」含 `offset_warn_ms` 与 `offset_error_ms` 两档。
-- `clock_bound` 只写 `warning` 日志 + 卡片内「测量质量」提示，**不产生 `NOTIFY_UI`**，也**不改变** `clock_offset` 的判定结果（「测不准」与「真的偏」是两件事：误差界大说明网络测不到，偏差数字仍按自身阈值判定）。
+- `clock_offset` 是**一个判定对象、两个级别**：活动期从「进入 warning 或 error 档」开始、回到 `< offset_warn_ms` 结束。进入按当前档记一条（warning 档记 `warning`；error 档记 `error` 并发出 `NOTIFY_UI` 弹窗，`popup=true`）；warning→error 升级记一条 `error` 并产生 `NOTIFY_UI`；error→warning 降级记一条 `info`（活动期不结束）；持续期按 `thresholds.log_repeat_sec` 重记一条 `info`（含活动期已持续秒数，单调时钟计时）；恢复记一条 `info`；卡片按当前档着色（warning 黄 / error 红）。日志级别与内容义务同资源类日志表（判定对象、当前值、阈值、活动期持续秒数）；`clock_offset` 的「阈值」含 `offset_warn_ms` 与 `offset_error_ms` 两档。
+- `clock_bound`：活动期从 `bound_ms > bound_alarm_ms` 开始、回到 `≤` 结束；进入记 `warning`、恢复记 `info`、持续期同样按 `thresholds.log_repeat_sec` 重记 `info`（内容义务同上）。它只写日志 + 卡片内「测量质量」提示，**不产生 `NOTIFY_UI`**，也**不改变** `clock_offset` 的判定结果（「测不准」与「真的偏」是两件事：误差界大说明网络测不到，偏差数字仍按自身阈值判定）。
 - **读不到不伪造恢复**：探测失败（`clock.offset_ms` / `clock.bound_ms` 为 `null`，§2.9）时**保留**活动状态、不写恢复日志——「测不到」不是「已恢复」。
 - **配置关闭静默清除**：`clock` 域被关闭（§3.1.1）时移除两个判定对象的活动状态，**不写恢复日志**。
 - **部分修订 ADR 0034 的边界**：资源类判定仍只写日志与 UI 色标；时钟偏差的 **error 档**是唯一新增的弹窗来源（偏差 ≥ 1 秒会让策略里所有壁钟判断系统性偏移，属需人立刻决策的故障）；**warn 档与同步服务检测仍不弹窗**。完整理由见 ADR 0047。
@@ -408,7 +407,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **资源类判定**不产生 `DZ_FRAME_NOTIFY_UI`，不弹窗、不发 toast（ADR 0034 否决了 toast：它仍是主动推送，盯盘时同样干扰专注）；时钟偏差的 error 档是唯一例外（见上「时间判定对象」）。
 - 不进快照：没有 `alerts[]` 之类的活动集合字段（§2.4），活动状态不跨帧可见，只有日志与 UI 色标。
 - 不写历史库：历史只记录指标事实，越限可由历史事实重新推导；`thresholds` 也不进 `availability.metrics` 键集合（它不是指标能力）。
-- 没有冷却与恢复限流：不再有通知可限流，防刷屏由「只在进入/恢复各一条 + 按间隔重记」保证。
+- **资源类判定**没有冷却与恢复限流：它们不产生通知，防刷屏由「只在进入/恢复各一条 + 按间隔重记」保证；时钟偏差的 error 档同样只在**进入 / 升级**时弹窗，同一活动期内不重复弹窗，因此也不需要冷却。
 
 **`dzsysmon` 的 `NOTIFY_UI` 保留范围**：只有**真故障**——历史库不可用（§3.1 `history` 段降级语义）、配置下发失败（§3.3 四件套）与时钟偏差的 error 档（见上「时间判定对象」）。三者都是需人处理的故障，级别与弹窗语义按契约 notify-ui。
 
@@ -439,7 +438,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `ok=false`：`error` 非空，取 `timeout`（超时未响应）/ `kod_rate`（KoD RATE，已退避）/ `kod_deny`（KoD DENY/RSTR，已拉黑）/ `bad_echo`（origin 回显不匹配或畸形包）/ `unreachable`（解析/连接失败）；四个测量字段为 `null`（失败样本不产出任何测量值）。
 - 只保留最近一轮；**不进任何历史**。
 
-`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。
+`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。检测到 ≥2 种不同服务同时运行时置 `daemon_conflict=true`，只写一条日志 + 卡片提示，**不弹窗、不判故障**。
 
 **不可用语义（关键）**：
 
@@ -448,6 +447,8 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **全部失败**：`last_probe_unix_ms > 0`、`offset_ms` / `bound_ms` / `source_stratum` 为 `null`、`source` 为空串、`servers` 全部 `ok=false`（带各自 `error`）；`clock.offset` 为 `available=false` + `no_reference`。**不得用 0 或上一轮结果冒充**。
 - **部分失败**：聚合值来自本轮成功台中的最小 RTT 那台（§2.7），`servers` 保留全部明细（含失败原因）——「两台服务器互相矛盾」这类网络问题因此可诊断。
 - **0 只在真实测到 0 偏差时出现**；不可用一律 `null`。
+
+> 注（对 #293 表述的细化）：#293 写「`clock` 为 `null` = 该域被配置关闭或从未采集」；本契约把「从未采集」表达为**域内空态**（`last_probe_unix_ms = 0` + 测量字段 `null`），`clock = null` 只保留「配置关闭」一种含义——前端需要区分「尚未探测」与「不可用」，两种含义共用一个 `null` 无法区分。
 
 **探测日志**：每次探测轮次完成写**一条** `info` 日志（全部失败时升级为 `warning`），内容义务：`offset_ms`、`bound_ms`、`source`、成功台数（`servers_ok=<成功数>/<总数>`）；这是事后回答「昨晚某时刻准不准」的唯一记录（不写历史库）。级别与格式按契约 log；越限 / 恢复日志见 §2.8。
 
@@ -522,7 +523,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `measure_interval_ms` | int | 1000 | `[100, 60000]` | 计量间隔；速率型指标的采样窗口 |
 | `record_interval_sec` | int | 60 | `[1, 86400]` | 记录间隔（历史写入窗口宽度，由 #78 消费；记录窗口同时受 `phase_offset_sec` 影响，见 §3.1.1 第 3 步） |
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务（#78 消费；桶计算时按 `phase_offset_sec % record_interval_sec` 取模对齐——**存储、RTN 与 UI 保留配置原值，不在配置层钳制**；默认配置下窗口起点为每分钟第 3 秒，**不落在整数分钟边界**） |
-| `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`/`clock`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。`clock` 键是「指标大类」区的开关，与 `clock` 段的 `enabled` **同时为 true** 才启用该域（关闭取或，见下 `clock` 段）。缺少的键按 true 处理。各键语义见 §3.1.1 |
+| `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`/`clock`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。`clock` 键是「指标大类」区的开关（与 `clock` 段 `enabled` 共同决定该域开关，定义见下 `clock` 段）。缺少的键按 true 处理。各键语义见 §3.1.1 |
 
 `disk`：`{devices:string[]}`（元素非空）。
 
@@ -552,13 +553,13 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **没有 `cooldown_sec`**：不再有通知可限流，防刷屏由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证（§2.8）。
 - **旧配置迁移**：读到旧 `alerts` 段时把可映射的键值搬到 `thresholds`、丢弃不可映射的 `volume_free_bytes`、写回配置文件、记一条日志，**不报错、不阻塞启动**。默认配置生成器直接产出 `thresholds` 形状（仓库不提交模板）。
 
-`clock`（时钟偏差监控域，§2.9；`enabled` 是域总开关，与 `sampling.groups.clock` **同时为 true** 才启用——两者是同一意图的两层开关，分别位于 `clock` 段与「指标大类」区，关闭取或；RTN 各自如实回推持久化值）：
+`clock`（时钟偏差监控域，§2.9；**域开关 = `enabled` 与 `sampling.groups.clock` 同时为 true**（关闭取或）——两层入口分别位于 `clock` 段与「指标大类」区，RTN 各自如实回推持久化值）：
 
 | 字段 | 类型 | 默认 | 约束 | 说明 |
 |------|------|------|------|------|
-| `enabled` | bool | true | 值必须 bool | 时钟监控域总开关（与 `sampling.groups.clock` 关闭取或，见上）。false 时停止定时探测、跳过同步服务检测、`clock` 域为 `null`、两键 `disabled_by_config`、两个时间判定对象静默清除（§2.8）；运行期即时生效 |
-| `servers` | string[] | `["ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"]` | 元素为非空字符串（主机名或 IP） | 探测服务器列表（NTPv4 客户端模式，UDP/123）。空数组 = 没有参考源：探测轮次必然全部失败，`clock.offset` 为 `no_reference` |
-| `probe_times` | string[] | `["08:30", "12:30", "15:30", "18:00", "20:30"]` | 元素必须是 `HH:MM`（两位小时 + 两位分钟，`00:00`–`23:59`） | 每天定时探测的时刻（**进程本地时区**）；**空数组 = 关闭定时探测、只保留手动查询**；不区分周末与节假日；错过跳过、不补采；进程启动后立即探测一次 |
+| `enabled` | bool | true | 值必须 bool | 时钟监控域总开关（与 `sampling.groups.clock` 关闭取或，定义见上）。false 时停止定时探测、跳过同步服务检测、`clock` 域为 `null`、两键 `disabled_by_config`、两个时间判定对象静默清除（§2.8）；运行期即时生效 |
+| `servers` | string[] | `["ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"]` | 元素为非空字符串（主机名或 IP）；**数组不得为空** | 探测服务器列表（NTPv4 客户端模式，UDP/123）。关闭时钟监控用 `enabled=false`，不是清空服务器——空数组是校验失败（否则「尚未探测」与「无服务器可探」在快照里不可区分） |
+| `probe_times` | string[] | `["08:30", "12:30", "15:30", "18:00", "20:30"]` | 元素必须是 `HH:MM`（两位小时 + 两位分钟，`00:00`–`23:59`） | 每天定时探测的时刻（**进程本地时区**）；**空数组 = 关闭定时探测（进程启动后的首次探测与手动查询仍执行）**；不区分周末与节假日；错过跳过、不补采；进程启动后立即探测一次 |
 | `probe_timeout_ms` | int | 1500 | `[100, 10000]` | 单台服务器的探测超时 |
 | `manual_min_interval_sec` | int | 10 | `[0, 3600]` | 手动查询的最小间隔；0 = 不限流。dzsysmon 侧权威拒绝（§1.1），前端按钮置灰取同一值 |
 | `offset_warn_ms` | int | 100 | `[1, 60000]`，且 `< offset_error_ms` | 偏差 warning 档阈值（§2.8） |
@@ -592,7 +593,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `network` | `network` | 跳过采集；可用性 `disabled_by_config`、`network` 为 `null`（`hide_virtual` 只影响输出条目，见 §2.5） |
 | `temperature` | `temperature` | 跳过采集；可用性 `disabled_by_config`、数值 `null`（前端整块不渲染） |
 | `cpu_frequency` | `cpu.core_frequencies` / `cpu.frequency` | 跳过采集；可用性 `disabled_by_config`、数值 `null` |
-| `clock` | `clock` 域（§2.9）与两个时间判定对象（§2.8） | 停止定时探测、跳过同步服务检测；`clock` 为 `null`；`clock.offset` / `clock.sync_service` 为 `disabled_by_config`；两个时间判定对象静默清除（§2.8）。与 `clock.enabled=false` 同样效果（关闭取或，见 §3.1） |
+| `clock` | `clock` 域（§2.9）与两个时间判定对象（§2.8） | 停止定时探测、跳过同步服务检测；`clock` 为 `null`；`clock.offset` / `clock.sync_service` 为 `disabled_by_config`；两个时间判定对象静默清除（§2.8）。与 `clock.enabled=false` 同样效果（定义见 §3.1） |
 
 配置关闭某大类时**实时数据其余部分照常**：快照继续按周期推送、历史继续记录（该域落 NULL，读取方显示"不可用"而不是 0）、其它指标不受影响。
 
