@@ -9,8 +9,10 @@
 // network 选项可显式给网卡数组（含虚拟网卡 / 空数组 = 全部被 hide_virtual 滤掉 / null = 本帧未采集）；
 // virtualNetwork=true 是 3 块虚拟网卡 + eth0 的混合集合（验证前端不自行过滤、只做展示）。
 // semantic_hints 默认携带 #76 后端在 disk_io 能力可用时发送的口径提示；用例可按需覆盖。
+// clock 域默认是契约 §2.9 的「尚未探测」空态（#295 只落地类型与空态，实时偏差由 #299 接线）。
 import type {
   SysmonAvailabilityEntry,
+  SysmonClockInfo,
   SysmonConfigPayload,
   SysmonCoreFrequency,
   SysmonCpuCore,
@@ -39,7 +41,23 @@ export const SYSMON_METRIC_KEYS = [
   'network',
   'shm_dir',
   'temperature',
+  'clock.offset',
+  'clock.sync_service',
 ] as const
+
+/// 契约 sysmon §2.9 的「尚未探测」域内空态（#295）：域对象存在、测量字段全 null、
+/// `last_probe_unix_ms = 0`。`clock` 为 null 只表示该域被配置关闭，不是「没测过」。
+export const SYSMON_CLOCK_UNPROBED: SysmonClockInfo = {
+  offset_ms: null,
+  bound_ms: null,
+  source: '',
+  source_stratum: null,
+  last_probe_unix_ms: 0,
+  servers: [],
+  daemons: [],
+  daemon_conflict: false,
+  kernel_synced: null,
+}
 
 export interface SysmonSnapshotOptions {
   /** 指标可用性覆盖（合并到默认映射；默认 system / cpu.* / memory / swap 可用） */
@@ -340,9 +358,13 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
     // network 已由 #77 实现：默认不可用的现实原因是配置组关闭（disabled_by_config），
     // 不再是 not_implemented；温度/频率按各自的 B 组语义给 reason。
+    // 两个 clock 键按契约 §2.5 的空态语义给 reason：偏差「测不到」是 no_reference
+    // （本键非能力粘性）；服务检测能力由 #298 交付，空态如实给 not_implemented。
     const reason = key === 'temperature'
       ? 'no_sensor'
-      : (key === 'cpu.frequency' ? 'unsupported' : (key === 'network' ? 'disabled_by_config' : 'not_implemented'))
+      : (key === 'cpu.frequency'
+          ? 'unsupported'
+          : (key === 'network' ? 'disabled_by_config' : (key === 'clock.offset' ? 'no_reference' : 'not_implemented')))
     metrics[key] = available
       ? { available: true }
       : { available: false, reason }
@@ -419,6 +441,7 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
           ? [...VIRTUAL_NETWORK, ...DEFAULT_NETWORK].map(entry => ({ ...entry }))
           : (resourceAvailable ? DEFAULT_NETWORK.map(entry => ({ ...entry })) : null)),
     shm_dir: options.shmDir !== undefined ? options.shmDir : { ...DEFAULT_SHM_DIR },
+    clock: SYSMON_CLOCK_UNPROBED,
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,

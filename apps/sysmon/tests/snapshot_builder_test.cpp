@@ -74,8 +74,9 @@ platform::SysmonSnapshot build_with(const platform::RawSystemInfo& info,
                                     const TemperatureMetrics& temperature = {},
                                     const MemorySwapMetrics& memory = {},
                                     const DiskMetrics& disk = {},
-                                    const NetworkMetrics& network = {}) {
-    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, network,
+                                    const NetworkMetrics& network = {},
+                                    const ClockMetrics& clock = {}) {
+    return build_snapshot(kSourceName, info, metrics, temperature, memory, disk, network, clock,
                           kMeasureIntervalMs, kLastSampleMs, kMissedTicks, kNowMs);
 }
 
@@ -379,7 +380,7 @@ TEST(SnapshotBuilderTest, UncollectedDomainsAreNull) {
     EXPECT_EQ(snapshot.cpu.core_frequencies, std::nullopt);
 }
 
-TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
+TEST(SnapshotBuilderTest, AvailabilityCoversAllFifteenKeys) {
     const auto snapshot = build_with(make_linux_info(), make_metrics_with_frequencies(),
                                      make_temperature_metrics(), make_memory_metrics());
     const std::vector<std::string> expected = {
@@ -396,6 +397,8 @@ TEST(SnapshotBuilderTest, AvailabilityCoversAllThirteenKeys) {
         platform::SYSMON_METRIC_NETWORK,
         platform::SYSMON_METRIC_SHM_DIR,
         platform::SYSMON_METRIC_TEMPERATURE,
+        platform::SYSMON_METRIC_CLOCK_OFFSET,
+        platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE,
     };
     EXPECT_EQ(snapshot.availability.metrics.size(), expected.size());
     EXPECT_EQ(expected.size(), platform::SYSMON_METRIC_KEYS.size());
@@ -1390,7 +1393,7 @@ TEST(SnapshotBuilderTest, NetworkDisabledByConfigWinsOverCollected) {
 }
 
 TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
-    // 可网络接入不改变 availability 的键集合（仍是 13 个固定键，契约 sysmon §2.5）。
+    // 可网络接入不改变 availability 的键集合（仍是 15 个固定键，契约 sysmon §2.5）。
     const auto snapshot =
         build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, make_network_metrics());
     EXPECT_EQ(snapshot.availability.metrics.size(), platform::SYSMON_METRIC_KEYS.size());
@@ -1399,6 +1402,104 @@ TEST(SnapshotBuilderTest, NetworkDoesNotAddAvailabilityKeys) {
 
 // 契约 sysmon §7：发送方**不得**输出 `alerts` / `watch_paths` 字段（#125 / #124 删除）；
 // `volumes[]` 的 `watched` 同属 #124 删除面。快照序列化与校验随之收敛。
+// 契约 sysmon §2.9（#295）：本票只登记类型与空态，真实探测由 #297/#299 接线，因此
+// 快照里的 `clock` 恒为「尚未探测」域内空态——不是 null（null 只表示配置关闭），
+// 测量字段全 null、`last_probe_unix_ms = 0`、明细数组为空、`kernel_synced` 为 null。
+TEST(SnapshotBuilderTest, ClockDomainIsUnprobedEmptyState) {
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    ASSERT_TRUE(snapshot.clock.has_value()) << "clock domain must be present, not null";
+    const auto& clock = *snapshot.clock;
+    EXPECT_EQ(clock.offset_ms, std::nullopt);
+    EXPECT_EQ(clock.bound_ms, std::nullopt);
+    EXPECT_EQ(clock.source, "");
+    EXPECT_EQ(clock.source_stratum, std::nullopt);
+    EXPECT_EQ(clock.last_probe_unix_ms, 0);
+    EXPECT_TRUE(clock.servers.empty());
+    EXPECT_TRUE(clock.daemons.empty());
+    EXPECT_FALSE(clock.daemon_conflict);
+    EXPECT_EQ(clock.kernel_synced, std::nullopt);
+
+    // 序列化形状与契约 §2.9 的空态示例逐键一致（不是省略字段）。
+    const nlohmann::json payload = snapshot;
+    ASSERT_TRUE(payload["clock"].is_object());
+    EXPECT_TRUE(payload["clock"]["offset_ms"].is_null());
+    EXPECT_TRUE(payload["clock"]["bound_ms"].is_null());
+    EXPECT_EQ(payload["clock"]["source"].get<std::string>(), "");
+    EXPECT_TRUE(payload["clock"]["source_stratum"].is_null());
+    EXPECT_EQ(payload["clock"]["last_probe_unix_ms"].get<int64_t>(), 0);
+    EXPECT_TRUE(payload["clock"]["servers"].is_array());
+    EXPECT_TRUE(payload["clock"]["servers"].empty());
+    EXPECT_TRUE(payload["clock"]["daemons"].is_array());
+    EXPECT_TRUE(payload["clock"]["daemons"].empty());
+    EXPECT_FALSE(payload["clock"]["daemon_conflict"].get<bool>());
+    EXPECT_TRUE(payload["clock"]["kernel_synced"].is_null());
+    EXPECT_EQ(platform::SysmonSnapshot::validate(payload), std::nullopt);
+}
+
+// 契约 sysmon §2.5（#295）：两个新键必须每帧登记且**独立**。空态下偏差「测不到」是
+// `no_reference`（非能力粘性）；服务检测能力尚未交付（#298）如实标 `not_implemented`，
+// 不虚报 `available=true`。
+// S3 接缝（#295）：`ClockMetrics` 入参是本域唯一的事实来源——传入探测结果后快照原样透出，
+// 偏差有值即 `clock.offset` 可用（本键非能力粘性，表达「最近一轮是否测到」）。
+TEST(SnapshotBuilderTest, ClockDomainFilledFromProbeResult) {
+    ClockMetrics clock_metrics;
+    clock_metrics.info = platform::SysmonClockInfo{
+        .offset_ms = 12.4,
+        .bound_ms = 48.7,
+        .source = "ntp.aliyun.com",
+        .source_stratum = 2,
+        .last_probe_unix_ms = 1'790'000'004'000,
+        .servers = std::vector<platform::SysmonClockServerInfo>{platform::SysmonClockServerInfo{
+            .host = "ntp.aliyun.com",
+            .ok = true,
+            .offset_ms = 12.4,
+            .bound_ms = 48.7,
+            .rtt_ms = 60.0,
+            .stratum = 2,
+            .error = std::nullopt}},
+        .daemons = std::vector<platform::SysmonClockDaemonInfo>{platform::SysmonClockDaemonInfo{
+            .name = "chronyd", .running = true}},
+        .daemon_conflict = false,
+        .kernel_synced = true,
+    };
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, clock_metrics);
+    ASSERT_TRUE(snapshot.clock.has_value());
+    EXPECT_DOUBLE_EQ(*snapshot.clock->offset_ms, 12.4);
+    EXPECT_DOUBLE_EQ(*snapshot.clock->bound_ms, 48.7);
+    EXPECT_EQ(snapshot.clock->source, "ntp.aliyun.com");
+    ASSERT_TRUE(snapshot.clock->source_stratum.has_value());
+    EXPECT_EQ(*snapshot.clock->source_stratum, 2U);
+    EXPECT_EQ(snapshot.clock->last_probe_unix_ms, 1'790'000'004'000);
+    ASSERT_EQ(snapshot.clock->servers.size(), 1U);
+    EXPECT_EQ(snapshot.clock->servers[0].host, "ntp.aliyun.com");
+    EXPECT_EQ(snapshot.clock->kernel_synced, std::optional<bool>(true));
+
+    const auto& offset_entry =
+        snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_OFFSET);
+    EXPECT_TRUE(offset_entry.available);
+    EXPECT_EQ(offset_entry.reason, std::nullopt);
+    // 两键独立：偏差测到了不代表服务检测能力已交付（#298）。
+    EXPECT_FALSE(
+        snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE).available);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+TEST(SnapshotBuilderTest, ClockAvailabilityKeysReportUnprobedState) {
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    const auto& offset_entry =
+        snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_OFFSET);
+    EXPECT_FALSE(offset_entry.available);
+    ASSERT_TRUE(offset_entry.reason.has_value());
+    EXPECT_EQ(offset_entry.reason.value(), "no_reference");
+
+    const auto& service_entry =
+        snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE);
+    EXPECT_FALSE(service_entry.available);
+    ASSERT_TRUE(service_entry.reason.has_value());
+    EXPECT_EQ(service_entry.reason.value(), "not_implemented");
+}
+
 TEST(SnapshotBuilderTest, SnapshotOmitsRemovedAlertAndWatchPathFields) {
     const auto snapshot =
         build_with(make_linux_info(), make_full_metrics(), {}, {}, make_disk_metrics());

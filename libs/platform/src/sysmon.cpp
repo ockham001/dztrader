@@ -524,6 +524,165 @@ std::optional<std::string> validate_snapshot_network(const json& network) {
     return std::nullopt;
 }
 
+/// `servers[].error` 的合法取值（契约 sysmon §2.9「失败原因」）。
+const std::set<std::string>& clock_server_error_codes() {
+    static const std::set<std::string> codes = {"timeout", "kod_rate", "kod_deny", "bad_echo",
+                                                "unreachable"};
+    return codes;
+}
+
+/// 校验 `clock` 域（契约 sysmon §2.9、§7）。
+///
+/// 空态（尚未探测）与失败态都是合法形状；三条硬约束：
+/// 1. `offset_ms` / `bound_ms` / `source_stratum` 同生共死，且 `source` 为空串当且仅当三者全 null；
+/// 2. `servers[]` 的 `ok` 二态决定其余字段可空性（成功样本必有四项测量、失败样本必无）；
+/// 3. `daemon_conflict` 必须等于「running=true 的不同服务数 >= 2」。
+///
+/// `clock = null` 只表示该域被配置关闭（§2.9）——校验层看不到配置，因此接受 null；
+/// 形状规则的其余部分与非 null 时一致。
+std::optional<std::string> validate_snapshot_clock(const json& clock) {
+    if (clock.is_null()) {
+        return std::nullopt;
+    }
+    if (!clock.is_object()) {
+        return err("clock", "must be an object or null");
+    }
+    // 四个测量/辅助字段允许 null（不可用语义见 §2.9），其余字段不可 null 且必须存在。
+    for (const char* key : {"offset_ms", "bound_ms", "source_stratum", "kernel_synced"}) {
+        if (!clock.contains(key)) {
+            return err(std::string("clock.") + key, "is required (null when unavailable)");
+        }
+    }
+    for (const char* key :
+         {"source", "last_probe_unix_ms", "servers", "daemons", "daemon_conflict"}) {
+        if (!clock.contains(key)) {
+            return err(std::string("clock.") + key, "is required");
+        }
+    }
+    const bool has_offset = !clock["offset_ms"].is_null();
+    const bool has_bound = !clock["bound_ms"].is_null();
+    const bool has_stratum = !clock["source_stratum"].is_null();
+    if (has_offset != has_bound || has_offset != has_stratum) {
+        return err("clock",
+                   "offset_ms, bound_ms and source_stratum must be null or non-null together");
+    }
+    if (!clock["source"].is_string()) {
+        return err("clock.source", "must be a string");
+    }
+    const bool source_empty = clock["source"].get<std::string>().empty();
+    if (source_empty == has_offset) {
+        return err("clock.source",
+                   "must be an empty string if and only if offset_ms/bound_ms/source_stratum "
+                   "are null");
+    }
+    if (has_offset) {
+        if (!is_number(clock["offset_ms"])) {
+            return err("clock.offset_ms", "must be a number or null");
+        }
+        if (!is_number(clock["bound_ms"])) {
+            return err("clock.bound_ms", "must be a number or null");
+        }
+        if (clock["bound_ms"].get<double>() < 0.0) {
+            return err("clock.bound_ms", "must be >= 0");
+        }
+        if (!int_in_range(clock["source_stratum"], 1, 15)) {
+            return err("clock.source_stratum", "must be an integer within [1, 15] or null");
+        }
+    }
+    if (!is_non_negative_integer(clock["last_probe_unix_ms"])) {
+        return err("clock.last_probe_unix_ms", "must be a non-negative integer");
+    }
+    if (!clock["kernel_synced"].is_null() && !clock["kernel_synced"].is_boolean()) {
+        return err("clock.kernel_synced", "must be a boolean or null");
+    }
+    if (!clock["servers"].is_array()) {
+        return err("clock.servers", "must be an array");
+    }
+    std::set<std::string> hosts;
+    for (std::size_t i = 0; i < clock["servers"].size(); ++i) {
+        const auto& server = clock["servers"][i];
+        const std::string path = "clock.servers[" + std::to_string(i) + "]";
+        if (!server.is_object()) {
+            return err(path, "must be an object");
+        }
+        if (auto e = require_non_empty_string(server, path, "host")) {
+            return e;
+        }
+        if (!hosts.insert(server["host"].get<std::string>()).second) {
+            return err(path + ".host", "must be unique within the frame");
+        }
+        if (!server.contains("ok") || !server["ok"].is_boolean()) {
+            return err(path + ".ok", "must be a boolean");
+        }
+        for (const char* key : {"offset_ms", "bound_ms", "rtt_ms", "stratum", "error"}) {
+            if (!server.contains(key)) {
+                return err(path + "." + key, "is required (null when unavailable)");
+            }
+        }
+        if (server["ok"].get<bool>()) {
+            if (!server["error"].is_null()) {
+                return err(path + ".error", "must be null when ok=true");
+            }
+            for (const char* key : {"offset_ms", "bound_ms", "rtt_ms"}) {
+                if (!is_number(server[key])) {
+                    return err(path + "." + key, "must be a number when ok=true");
+                }
+            }
+            if (server["rtt_ms"].get<double>() < 0.0) {
+                return err(path + ".rtt_ms", "must be >= 0");
+            }
+            if (!int_in_range(server["stratum"], 1, 15)) {
+                return err(path + ".stratum", "must be an integer within [1, 15] when ok=true");
+            }
+        } else {
+            // 失败样本不产出任何测量值（契约 sysmon §2.9/§7）。
+            if (!server["error"].is_string() ||
+                !clock_server_error_codes().contains(server["error"].get<std::string>())) {
+                return err(path + ".error",
+                           "must be one of timeout, kod_rate, kod_deny, bad_echo, unreachable "
+                           "when ok=false");
+            }
+            for (const char* key : {"offset_ms", "bound_ms", "rtt_ms", "stratum"}) {
+                if (!server[key].is_null()) {
+                    return err(path + "." + key, "must be null when ok=false");
+                }
+            }
+        }
+    }
+    if (!clock["daemons"].is_array()) {
+        return err("clock.daemons", "must be an array");
+    }
+    std::set<std::string> daemon_names;
+    std::size_t running_count = 0;
+    for (std::size_t i = 0; i < clock["daemons"].size(); ++i) {
+        const auto& daemon = clock["daemons"][i];
+        const std::string path = "clock.daemons[" + std::to_string(i) + "]";
+        if (!daemon.is_object()) {
+            return err(path, "must be an object");
+        }
+        if (auto e = require_non_empty_string(daemon, path, "name")) {
+            return e;
+        }
+        if (!daemon_names.insert(daemon["name"].get<std::string>()).second) {
+            return err(path + ".name", "must be unique within the frame");
+        }
+        if (!daemon.contains("running") || !daemon["running"].is_boolean()) {
+            return err(path + ".running", "must be a boolean");
+        }
+        if (daemon["running"].get<bool>()) {
+            ++running_count;
+        }
+    }
+    if (!clock["daemon_conflict"].is_boolean()) {
+        return err("clock.daemon_conflict", "must be a boolean");
+    }
+    if (clock["daemon_conflict"].get<bool>() != (running_count >= 2)) {
+        return err("clock.daemon_conflict",
+                   "must equal whether at least two different services are running");
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> validate_snapshot_shm_dir(const json& shm_dir) {
     if (shm_dir.is_null()) {
         return std::nullopt;
@@ -733,7 +892,7 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         return err(std::string("snapshot.") + key, "is required (null when unavailable)");
     };
     for (const char* key :
-         {"temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir"}) {
+         {"temperature", "memory", "swap", "volumes", "disk_io", "network", "shm_dir", "clock"}) {
         if (auto e = check_optional(key)) {
             return e;
         }
@@ -757,6 +916,9 @@ std::optional<std::string> SysmonSnapshot::validate(const nlohmann::json& payloa
         return e;
     }
     if (auto e = validate_snapshot_shm_dir(payload["shm_dir"])) {
+        return e;
+    }
+    if (auto e = validate_snapshot_clock(payload["clock"])) {
         return e;
     }
     if (!payload.contains("availability")) {

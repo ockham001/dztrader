@@ -349,6 +349,54 @@ export interface SysmonTemperatureInfo {
     celsius: number
 }
 
+// 单台 NTP 服务器的探测明细（契约 sysmon §2.9 servers[]）。ok=true 时四项测量非 null 且 error=null；ok=false 时四项测量必须为 null、error 取 timeout / kod_rate / kod_deny / bad_echo / unreachable（失败样本不产出任何测量值）。
+export interface SysmonClockServerInfo {
+    /** 服务器标识（配置 clock.servers 中的一项；帧内唯一） */
+    host: string
+    /** 该台是否返回可用样本 */
+    ok: boolean
+    /** 该台有符号偏差（毫秒，正=本地快）；ok=false 时为 null */
+    offset_ms: number | null
+    /** 该台误差上界（毫秒）；ok=false 时为 null */
+    bound_ms: number | null
+    /** 该台往返时延（毫秒，>= 0）；ok=false 时为 null */
+    rtt_ms: number | null
+    /** 参考源 stratum（[1,15]）；ok=false 时为 null */
+    stratum: number | null
+    /** ok=false 时的失败原因；ok=true 时为 null */
+    error: string | null
+}
+
+// 检测到的时间同步服务（契约 sysmon §2.9 daemons[]）：名称 + 是否运行。空数组=未检测到运行中的服务，不是能力不可用。
+export interface SysmonClockDaemonInfo {
+    /** 服务名（帧内唯一） */
+    name: string
+    /** 是否正在运行 */
+    running: boolean
+}
+
+// 时钟偏差域（契约 sysmon §2.9）：只保留最近一轮探测的聚合值 + 每台明细 + 同步服务检测。offset_ms/bound_ms/source_stratum 同生共死（有偏差就必有界）；source 为空串当且仅当三者全 null。null 整个域仅表示该域被配置关闭。
+export interface SysmonClockInfo {
+    /** 聚合有符号偏差（毫秒，正=本地快）；null=尚未探测或本轮无可用参考源（不得用 0 冒充） */
+    offset_ms: number | null
+    /** 聚合误差上界（毫秒）= ½·RTT + 服务端离散度（root dispersion）；与 offset_ms 同生共死 */
+    bound_ms: number | null
+    /** 聚合值采用的服务器标识（与 servers[].host 同值）；未探测成功时为空串 */
+    source: string
+    /** 参考源 stratum（[1,15]）；未探测成功时为 null */
+    source_stratum: number | null
+    /** 最近一轮探测的完成时刻（Unix 毫秒）；0=尚未探测（前端据此显示「尚未探测」而不是「不可用」） */
+    last_probe_unix_ms: number
+    /** 最近一轮每台服务器明细（空数组=尚未探测） */
+    servers: SysmonClockServerInfo[]
+    /** 检测到的同步服务（空数组=未检测到运行中的服务，不是能力不可用） */
+    daemons: SysmonClockDaemonInfo[]
+    /** 检测到 >=2 种不同同步服务同时运行 */
+    daemon_conflict: boolean
+    /** 内核/服务层「是否已同步」的辅助判据；null=读不到（不猜成 false） */
+    kernel_synced: boolean | null
+}
+
 export interface SysmonAvailabilityEntry {
     available: boolean
     /** 不可用原因；available=true 时省略 */
@@ -381,6 +429,8 @@ export interface SysmonSnapshotPayload {
     disk_io: SysmonDiskIoInfo[] | null
     network: SysmonNetworkInfo[] | null
     shm_dir: SysmonShmDirInfo | null
+    /** 时钟偏差与同步服务检测（契约 sysmon §2.9）；null=该域被配置关闭（尚未探测是域内空态，不是 null） */
+    clock: SysmonClockInfo | null
     availability: SysmonAvailability
 }
 

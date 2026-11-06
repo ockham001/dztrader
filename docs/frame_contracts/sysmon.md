@@ -481,18 +481,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 **手动查询**：`DZ_FRAME_QUERY_SYSMON_CLOCK`（§1.1）触发一轮探测；限流在 dzsysmon 侧权威判定，拒绝只记日志、无错误通道。
 
 <!-- 计划符号（general §11.4）：契约先行定义的名字，实现落地后删除对应标记。 -->
-<!-- pending-symbol: offset_ms (#295) -->
-<!-- pending-symbol: bound_ms (#295) -->
-<!-- pending-symbol: source_stratum (#295) -->
-<!-- pending-symbol: last_probe_unix_ms (#295) -->
-<!-- pending-symbol: rtt_ms (#295) -->
-<!-- pending-symbol: daemon_conflict (#295) -->
-<!-- pending-symbol: kernel_synced (#295) -->
-<!-- pending-symbol: no_reference (#295) -->
 <!-- pending-symbol: root_dispersion (#297) -->
-<!-- pending-symbol: kod_rate (#297) -->
-<!-- pending-symbol: kod_deny (#297) -->
-<!-- pending-symbol: bad_echo (#297) -->
 <!-- pending-symbol: probe_times (#296) -->
 <!-- pending-symbol: probe_timeout_ms (#296) -->
 <!-- pending-symbol: manual_min_interval_sec (#296) -->

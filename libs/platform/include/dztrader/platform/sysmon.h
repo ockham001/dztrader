@@ -51,9 +51,15 @@ inline constexpr const char* SYSMON_METRIC_DISK_IO = "disk_io";
 inline constexpr const char* SYSMON_METRIC_NETWORK = "network";
 inline constexpr const char* SYSMON_METRIC_SHM_DIR = "shm_dir";
 inline constexpr const char* SYSMON_METRIC_TEMPERATURE = "temperature";
+inline constexpr const char* SYSMON_METRIC_CLOCK_OFFSET = "clock.offset";
+inline constexpr const char* SYSMON_METRIC_CLOCK_SYNC_SERVICE = "clock.sync_service";
 
 /// 可用性映射的固定键集合全集（契约 sysmon §2.5；每帧快照必须全覆盖）。
-inline constexpr std::array<const char*, 13> SYSMON_METRIC_KEYS = {
+///
+/// `clock.offset` / `clock.sync_service`（#295 登记，契约 sysmon §2.9）是**两个独立键**：
+/// 前者表达「最近一轮探测是否测到」（**非**能力粘性，测不到就回到不可用），后者表达
+/// 「同步服务枚举能力」；两键互不影响。
+inline constexpr std::array<const char*, 15> SYSMON_METRIC_KEYS = {
     SYSMON_METRIC_SYSTEM,
     SYSMON_METRIC_CPU_TOTAL,
     SYSMON_METRIC_CPU_CORES,
@@ -67,6 +73,8 @@ inline constexpr std::array<const char*, 13> SYSMON_METRIC_KEYS = {
     SYSMON_METRIC_NETWORK,
     SYSMON_METRIC_SHM_DIR,
     SYSMON_METRIC_TEMPERATURE,
+    SYSMON_METRIC_CLOCK_OFFSET,
+    SYSMON_METRIC_CLOCK_SYNC_SERVICE,
 };
 
 /// 配置 payload / 配置文件的业务段全集（契约 sysmon §3.1；顺序固定）。
@@ -389,6 +397,64 @@ struct SysmonTemperatureInfo {
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonTemperatureInfo, sensor, chip, label, celsius)
 };
 
+/// 单台 NTP 服务器的探测明细（契约 sysmon §2.9 `servers[]`）。
+///
+/// `ok=true` 时四项测量非 `null` 且 `error = null`；`ok=false` 时四项测量必须为 `null`、
+/// `error` 取 `timeout` / `kod_rate` / `kod_deny` / `bad_echo` / `unreachable`
+/// ——「失败样本不产出任何测量值」（§7）。
+struct SysmonClockServerInfo {
+    std::string host;                  ///< 配置 `clock.servers` 中的一项（帧内唯一）
+    bool ok = false;                   ///< 该台是否返回可用样本
+    std::optional<double> offset_ms;   ///< 该台的有符号偏差（毫秒，正 = 本地快）
+    std::optional<double> bound_ms;    ///< 该台的误差上界（毫秒）
+    std::optional<double> rtt_ms;      ///< 该台的往返时延（毫秒，>= 0）
+    std::optional<uint32_t> stratum;   ///< 该台参考源 stratum（[1,15]）
+    std::optional<std::string> error;  ///< ok=false 时的失败原因；ok=true 时为 null
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+        SysmonClockServerInfo, host, ok, offset_ms, bound_ms, rtt_ms, stratum, error)
+};
+
+/// 检测到的时间同步服务（契约 sysmon §2.9 `daemons[]`）：名称 + 是否运行。
+struct SysmonClockDaemonInfo {
+    std::string name;      ///< 服务名（chronyd / ntpd / systemd-timesyncd / W32Time）
+    bool running = false;  ///< 是否正在运行（Linux 只列出运行中的；Windows 可为 false）
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonClockDaemonInfo, name, running)
+};
+
+/// 时钟偏差域（契约 sysmon §2.9）：最近一轮探测的聚合值 + 每台明细 + 同步服务检测。
+///
+/// **只保留最近一轮**，不进任何历史（ADR 0047 决策 4）。整个域为 `null` **仅**表示该域
+/// 被配置关闭（§2.9）；「尚未探测」是**域内空态**：`last_probe_unix_ms = 0`、
+/// `offset_ms`/`bound_ms`/`source_stratum` 为 `null`、`source` 空串、`servers` 空数组。
+/// 「全部失败」时 `last_probe_unix_ms > 0` 而三个测量字段仍为 `null`（不得用 0 或上一轮
+/// 结果冒充）。
+///
+/// `offset_ms` / `bound_ms` / `source_stratum` **同生共死**——有偏差就必有界，「无界偏差」
+/// 在交易场景里是误导；`source` 为空串当且仅当三者全为 `null`（§7）。
+struct SysmonClockInfo {
+    std::optional<double> offset_ms;             ///< 聚合有符号偏差（毫秒，正 = 本地快）
+    std::optional<double> bound_ms;              ///< 聚合误差上界（毫秒）；与 offset_ms 同生共死
+    std::string source;                          ///< 聚合值采用的服务器标识；未成功时为空串
+    std::optional<uint32_t> source_stratum;      ///< 参考源 stratum（[1,15]）；未成功时 null
+    int64_t last_probe_unix_ms = 0;              ///< 最近一轮探测完成时刻；0 = 尚未探测
+    std::vector<SysmonClockServerInfo> servers;  ///< 最近一轮每台明细（空 = 尚未探测）
+    /// 检测到的同步服务；空数组 = 未检测到运行中的服务（或检测失败），不是能力不可用。
+    std::vector<SysmonClockDaemonInfo> daemons;
+    bool daemon_conflict = false;  ///< 检测到 >= 2 种不同同步服务同时运行
+    /// 内核/服务层「是否已同步」的辅助判据；`null` = 读不到（不猜成 false）。
+    std::optional<bool> kernel_synced;
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonClockInfo,
+                                                offset_ms,
+                                                bound_ms,
+                                                source,
+                                                source_stratum,
+                                                last_probe_unix_ms,
+                                                servers,
+                                                daemons,
+                                                daemon_conflict,
+                                                kernel_synced)
+};
+
 /// 单个指标的可用性。
 struct SysmonAvailabilityEntry {
     bool available = false;
@@ -445,6 +511,8 @@ struct SysmonSnapshot {
     std::optional<std::vector<SysmonDiskIoInfo>> disk_io;
     std::optional<std::vector<SysmonNetworkInfo>> network;
     std::optional<SysmonShmDirInfo> shm_dir;
+    /// 时钟偏差域（契约 sysmon §2.9）；`null` = 该域被配置关闭。
+    std::optional<SysmonClockInfo> clock;
     SysmonAvailability availability;
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(SysmonSnapshot,
                                                 source,
@@ -460,6 +528,7 @@ struct SysmonSnapshot {
                                                 disk_io,
                                                 network,
                                                 shm_dir,
+                                                clock,
                                                 availability)
 
     /// 校验快照 payload（契约 sysmon §校验；general §8）。

@@ -176,7 +176,7 @@ TEST(SystemCollectorOracleTest, SensorAvailabilityReflectsRealHostAndValidates) 
 
     const auto snapshot =
         build_snapshot("dzsysmon", info, cpu_metrics, temperature_metrics, {}, DiskMetrics{},
-                       NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+                       NetworkMetrics{}, ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     // 可用性（能力标记）必须与采集层事实一致；无设备不是失败，只是不可用。
     EXPECT_EQ(snapshot.availability.metrics.at(platform::SYSMON_METRIC_TEMPERATURE).available,
               temperature_metrics.collected);
@@ -258,9 +258,10 @@ TEST(SystemCollectorOracleTest, MemoryAndSwapInvariantsHoldOnRealMachine) {
     memory_metrics.swap_collected = true;
     memory_metrics.swap_supported = swap->total_bytes > 0;
     memory_metrics.swap = swap;
-    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                                         TemperatureMetrics{}, memory_metrics, DiskMetrics{},
-                                         NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot =
+        build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                       TemperatureMetrics{}, memory_metrics, DiskMetrics{}, NetworkMetrics{},
+                       ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_MEMORY).available);
     ASSERT_TRUE(snapshot.memory.has_value());
     // 唯一口径：已用 = 总量 − 可用，且各分量非负、可用 ≤ 总量。
@@ -301,9 +302,9 @@ TEST(SystemCollectorOracleTest, DiskDomainsHoldOnRealMachine) {
     disk.shm_dir = collector->collect_shm_dir(shm_dir_path.string());
     disk.shm_dir_collected = disk.shm_dir.has_value();
 
-    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                                         TemperatureMetrics{}, MemorySwapMetrics{}, disk,
-                                         NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot = build_snapshot(
+        "dzsysmon", collector->collect_system_info(), CpuMetrics{}, TemperatureMetrics{},
+        MemorySwapMetrics{}, disk, NetworkMetrics{}, ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
 
     // 卷：可读卷的使用率必须与字节一致（自洽 oracle）；不可读卷不得有容量数值。
     ASSERT_TRUE(snapshot.volumes.has_value());
@@ -385,7 +386,7 @@ TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
         disk_metrics.disk_io_unavailable_reason = first.unavailable_reason;
         const auto snapshot = build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
                                              MemorySwapMetrics{}, disk_metrics, NetworkMetrics{},
-                                             1000, 0, 0, 1'800'000'000'000);
+                                             ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
         EXPECT_EQ(snapshot.disk_io, std::nullopt);
         const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO);
         EXPECT_FALSE(entry.available);
@@ -413,9 +414,9 @@ TEST(SystemCollectorOracleTest, DiskIoFirstSampleIsUnavailableNotZero) {
     DiskMetrics disk_metrics;
     disk_metrics.disk_io_collected = true;
     disk_metrics.disk_io = derived;
-    const auto snapshot =
-        build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{}, MemorySwapMetrics{},
-                       disk_metrics, NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot = build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
+                                         MemorySwapMetrics{}, disk_metrics, NetworkMetrics{},
+                                         ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.disk_io.has_value());
     EXPECT_EQ(snapshot.disk_io->size(), first.disks.size());
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_DISK_IO).available);
@@ -488,9 +489,10 @@ TEST(SystemCollectorOracleTest, DiskIoDerivedValuesHoldOnRealMachine) {
     DiskMetrics disk_metrics;
     disk_metrics.disk_io_collected = true;
     disk_metrics.disk_io = derived;
-    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                                         TemperatureMetrics{}, MemorySwapMetrics{}, disk_metrics,
-                                         NetworkMetrics{}, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot =
+        build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                       TemperatureMetrics{}, MemorySwapMetrics{}, disk_metrics, NetworkMetrics{},
+                       ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.disk_io.has_value());
     EXPECT_EQ(snapshot.disk_io->size(), second.disks.size());
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
@@ -510,7 +512,7 @@ TEST(SystemCollectorOracleTest, NetworkFirstSampleIsUnavailableNotZero) {
         network_metrics.network_unavailable_reason = first.unavailable_reason;
         const auto snapshot = build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
                                              MemorySwapMetrics{}, DiskMetrics{}, network_metrics,
-                                             1000, 0, 0, 1'800'000'000'000);
+                                             ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
         EXPECT_EQ(snapshot.network, std::nullopt);
         const auto& entry = snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK);
         EXPECT_FALSE(entry.available);
@@ -539,9 +541,9 @@ TEST(SystemCollectorOracleTest, NetworkFirstSampleIsUnavailableNotZero) {
     network_metrics.network_collected = true;
     network_metrics.network = derived;
     network_metrics.hide_virtual = true;
-    const auto snapshot =
-        build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{}, MemorySwapMetrics{},
-                       DiskMetrics{}, network_metrics, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot = build_snapshot("dzsysmon", info, CpuMetrics{}, TemperatureMetrics{},
+                                         MemorySwapMetrics{}, DiskMetrics{}, network_metrics,
+                                         ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.network.has_value());
     EXPECT_TRUE(snapshot.availability.metrics.at(platform::SYSMON_METRIC_NETWORK).available);
     for (const auto& interface : *snapshot.network) {
@@ -615,9 +617,10 @@ TEST(SystemCollectorOracleTest, NetworkRatesHoldOnRealMachine) {
     network_metrics.network_collected = true;
     network_metrics.network = derived;
     network_metrics.hide_virtual = false;
-    const auto snapshot = build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
-                                         TemperatureMetrics{}, MemorySwapMetrics{}, DiskMetrics{},
-                                         network_metrics, 1000, 0, 0, 1'800'000'000'000);
+    const auto snapshot =
+        build_snapshot("dzsysmon", collector->collect_system_info(), CpuMetrics{},
+                       TemperatureMetrics{}, MemorySwapMetrics{}, DiskMetrics{}, network_metrics,
+                       ClockMetrics{}, 1000, 0, 0, 1'800'000'000'000);
     ASSERT_TRUE(snapshot.network.has_value());
     EXPECT_EQ(snapshot.network->size(), derived.size());
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);

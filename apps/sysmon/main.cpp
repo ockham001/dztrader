@@ -778,8 +778,8 @@ private:
             apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
-                missed_ticks_, wall_ms);
+                network_metrics_, clock_metrics_, config_.sampling.measure_interval_ms,
+                last_sample_unix_ms_, missed_ticks_, wall_ms);
             auto batch = history_recorder_.observe(snapshot, wall_ms / 1000);
             if (!batch.empty()) {
                 enqueue_history(std::move(batch));
@@ -973,8 +973,8 @@ private:
             apply_snapshot_output_config();
             const auto snapshot = build_snapshot(
                 name_, system_info_, metrics_, temperature_metrics_, memory_metrics_, disk_metrics_,
-                network_metrics_, config_.sampling.measure_interval_ms, last_sample_unix_ms_,
-                missed_ticks_, wall_clock_unix_ms());
+                network_metrics_, clock_metrics_, config_.sampling.measure_interval_ms,
+                last_sample_unix_ms_, missed_ticks_, wall_clock_unix_ms());
             (void)platform::write_ext_json(*event_writer_, DZ_FRAME_RTN_SYSMON_SNAPSHOT, snapshot);
         } catch (const std::exception& e) {
             SPDLOG_ERROR("push snapshot failed | error=\"{}\"", e.what());
@@ -1177,6 +1177,8 @@ private:
     /// 每物理盘 I/O 的采样基线（上一次成功采样与其单调时钟时刻）。
     RateBaseline<platform::RawDiskIoInfo> disk_io_baseline_;
     NetworkMetrics network_metrics_;
+    /// 时钟偏差域最近一轮探测结果（#295 接缝；真实探测由 #297/#299 接线，本票恒为空态）。
+    ClockMetrics clock_metrics_;
     /// 每网卡的采样基线（上一次成功采样与其单调时钟时刻）。
     RateBaseline<platform::RawNetworkInfo> network_baseline_;
     /// 阈值越限状态机（#123）：进入/周期重记/恢复状态，只在 io_context 线程访问。
