@@ -441,7 +441,8 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
           ? [...VIRTUAL_NETWORK, ...DEFAULT_NETWORK].map(entry => ({ ...entry }))
           : (resourceAvailable ? DEFAULT_NETWORK.map(entry => ({ ...entry })) : null)),
     shm_dir: options.shmDir !== undefined ? options.shmDir : { ...DEFAULT_SHM_DIR },
-    clock: SYSMON_CLOCK_UNPROBED,
+    // 展开复制（含新数组）：避免用例改 snap.clock 时污染模块级常量与后续用例。
+    clock: { ...SYSMON_CLOCK_UNPROBED, servers: [], daemons: [] },
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,

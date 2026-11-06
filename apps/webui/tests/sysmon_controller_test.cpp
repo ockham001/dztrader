@@ -104,6 +104,8 @@ nlohmann::json minimal_snapshot() {
             {"cpu.cores", {{"available", false}, {"reason", "not_implemented"}}},
             {"cpu.load_average", {{"available", false}, {"reason", "not_implemented"}}},
             {"cpu.context_switches", {{"available", false}, {"reason", "not_implemented"}}},
+            {"cpu.frequency", {{"available", false}, {"reason", "not_implemented"}}},
+            {"temperature", {{"available", false}, {"reason", "not_implemented"}}},
             {"memory", {{"available", false}, {"reason", "not_implemented"}}},
             {"swap", {{"available", false}, {"reason", "not_implemented"}}},
             {"volumes", {{"available", false}, {"reason", "not_implemented"}}},

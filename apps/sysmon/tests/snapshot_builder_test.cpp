@@ -1485,6 +1485,42 @@ TEST(SnapshotBuilderTest, ClockDomainFilledFromProbeResult) {
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
+// 契约 sysmon §2.9「全部失败」：探测已发生（`last_probe_unix_ms > 0`）但本轮无可用参考源
+// ——聚合值仍为 null、`source` 空串、每台明细带失败原因；`clock.offset` 回到 no_reference
+// （「测不到」必须显示为不可用，不得用 0 或上一轮结果冒充）。
+TEST(SnapshotBuilderTest, ClockDomainAllServersFailedStaysNoReference) {
+    platform::SysmonClockServerInfo timeout_server;
+    timeout_server.host = "ntp.aliyun.com";
+    timeout_server.error = "timeout";
+    platform::SysmonClockServerInfo unreachable_server;
+    unreachable_server.host = "cn.pool.ntp.org";
+    unreachable_server.error = "unreachable";
+    ClockMetrics clock_metrics;
+    clock_metrics.info = platform::SysmonClockInfo{};
+    clock_metrics.info->last_probe_unix_ms = 1'790'000'004'000;
+    clock_metrics.info->servers = {timeout_server, unreachable_server};
+    const auto snapshot =
+        build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, clock_metrics);
+    ASSERT_TRUE(snapshot.clock.has_value());
+    EXPECT_EQ(snapshot.clock->offset_ms, std::nullopt);
+    EXPECT_EQ(snapshot.clock->bound_ms, std::nullopt);
+    EXPECT_EQ(snapshot.clock->source, "");
+    EXPECT_EQ(snapshot.clock->source_stratum, std::nullopt);
+    EXPECT_EQ(snapshot.clock->last_probe_unix_ms, 1'790'000'004'000);
+    ASSERT_EQ(snapshot.clock->servers.size(), 2U);
+    EXPECT_FALSE(snapshot.clock->servers[0].ok);
+    ASSERT_TRUE(snapshot.clock->servers[0].error.has_value());
+    EXPECT_EQ(snapshot.clock->servers[0].error.value(), "timeout");
+    EXPECT_EQ(snapshot.clock->servers[0].offset_ms, std::nullopt);
+
+    const auto& offset_entry =
+        snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_OFFSET);
+    EXPECT_FALSE(offset_entry.available);
+    ASSERT_TRUE(offset_entry.reason.has_value());
+    EXPECT_EQ(offset_entry.reason.value(), "no_reference");
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
 TEST(SnapshotBuilderTest, ClockAvailabilityKeysReportUnprobedState) {
     const auto snapshot = build_with(make_linux_info(), make_full_metrics());
     const auto& offset_entry =

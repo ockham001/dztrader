@@ -339,12 +339,25 @@ nlohmann::json clock_probed_state() {
 }
 
 /// 默认快照 + 指定 clock 域；两个新可用性键同时补齐（键集合属 §2.5，与域形状独立）。
+///
+/// `clock = null` 表示「该域被配置关闭」，按 §3.1.1 两键应为 `disabled_by_config`；
+/// 非 null 且带聚合偏差时偏差键可用，否则沿用骨架期空态的 `no_reference`。
+/// 服务检测能力由 #298 交付，非关闭态下如实为 `not_implemented`。
+/// 校验层**刻意不校验**可用性键与域之间的对应关系（校验器看不到配置，那是发送方义务）。
 nlohmann::json make_snapshot_with_clock(nlohmann::json clock) {
     auto j = nlohmann::json(make_snapshot());
+    const bool disabled = clock.is_null();
+    // 非法形状（非对象）也要能走到校验器：只在对象上取字段，避免 operator[] 抛异常。
+    const bool has_offset = !disabled && clock.is_object() && clock.contains("offset_ms") &&
+                            !clock["offset_ms"].is_null();
     j["clock"] = std::move(clock);
-    j["availability"]["metrics"]["clock.offset"] = {{"available", false},
-                                                    {"reason", "no_reference"}};
-    j["availability"]["metrics"]["clock.sync_service"] = {{"available", true}};
+    j["availability"]["metrics"]["clock.offset"] =
+        disabled ? nlohmann::json{{"available", false}, {"reason", "disabled_by_config"}}
+                 : (has_offset ? nlohmann::json{{"available", true}}
+                               : nlohmann::json{{"available", false}, {"reason", "no_reference"}});
+    j["availability"]["metrics"]["clock.sync_service"] =
+        disabled ? nlohmann::json{{"available", false}, {"reason", "disabled_by_config"}}
+                 : nlohmann::json{{"available", false}, {"reason", "not_implemented"}};
     return j;
 }
 
@@ -477,6 +490,28 @@ TEST(SysmonSnapshotValidateTest, RejectsClockAggregateViolations) {
         null_daemons["daemons"] = nullptr;
         expect_clock_rejected(null_daemons, "daemons must be an array (null not allowed)");
     }
+}
+
+// 契约 §7 的合法边界（闭区间端点与 0）：0 偏差 / 0 误差界 / 0 时延、stratum 1 与 15、
+// 负偏差（本地慢）都必须被接受——否则把 `>= 0` 收紧成 `> 0`、`[1,15]` 收紧成 `[2,14]`
+// 也测不出来（反例已由 RejectsClock* 覆盖）。
+TEST(SysmonSnapshotValidateTest, AcceptsClockBoundaryValues) {
+    auto zero = clock_probed_state();
+    zero["offset_ms"] = 0.0;
+    zero["bound_ms"] = 0.0;
+    zero["source_stratum"] = 1;
+    zero["servers"][0]["offset_ms"] = 0.0;
+    zero["servers"][0]["bound_ms"] = 0.0;
+    zero["servers"][0]["rtt_ms"] = 0.0;
+    zero["servers"][0]["stratum"] = 1;
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(zero)), std::nullopt);
+
+    auto negative_offset = clock_probed_state();
+    negative_offset["offset_ms"] = -12.4;  // 正 = 本地快；负值（本地慢）同样合法
+    negative_offset["source_stratum"] = 15;
+    negative_offset["servers"][0]["offset_ms"] = -12.4;
+    negative_offset["servers"][0]["stratum"] = 15;
+    EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(negative_offset)), std::nullopt);
 }
 
 // 契约 §7：`servers[]` 的 `ok` 二态决定其余字段可空性——`ok=true` 必须四项测量齐全且

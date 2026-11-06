@@ -102,6 +102,12 @@ nlohmann::json make_config() { return platform::SysmonConfig::default_config(); 
 
 }  // namespace
 
+// 夹具与契约同步：快照夹具必须通过类型层校验——否则 domain service 会静默丢弃广播，
+// 相关用例只看得到「无广播」，看不出夹具已漂移（固定 15 个可用性键 + clock 域）。
+TEST(SysmonDomainServiceTest, SnapshotFixturePassesContractValidation) {
+    EXPECT_EQ(platform::SysmonSnapshot::validate(make_snapshot()), std::nullopt);
+}
+
 TEST(SysmonDomainServiceTest, SnapshotUpdatesMirrorAndBroadcasts) {
     MirrorStore mirror;
     FakeBroadcaster ws;
