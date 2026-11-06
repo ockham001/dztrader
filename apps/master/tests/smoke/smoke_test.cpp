@@ -28,21 +28,31 @@
 #include <dztrader/shm/frame_view.h>
 #include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
+#include <dztrader/tdstore/schema_catalog.h>
 
 #include <gtest/gtest.h>
+#include <SQLiteCpp/Database.h>
+#include <SQLiteCpp/Statement.h>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/read_until.hpp>
 #include <boost/asio/write.hpp>
+#include <boost/beast/core/buffers_to_string.hpp>
+#include <boost/beast/core/flat_buffer.hpp>
+#include <boost/beast/core/tcp_stream.hpp>
+#include <boost/beast/websocket.hpp>
 #include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -62,6 +72,22 @@ using master::Category;
 using master::ChildProcess;
 using master::ChildState;
 using master::ProcessEntry;
+
+/// Boost.Beast 的命名空间在 boost:: 下; 冒烟测试里只用两三个类型, 用别名缩短书写。
+namespace beast = boost::beast;
+
+/// smoke 夹具专用 admin 口令（**不得改回默认口令**，见 SetUp 内注释）。
+///
+/// 为什么不能用默认的 `88888888`：dzweb 启动时若检出 admin 仍在用系统默认口令
+/// （`WebuiConfig::admin_password_is_default`），会经 `force_password_change_if_default()`
+/// 置 `users.must_change_password=1`；此后 JWT advice 除白名单路径外对**所有** `/api/*`
+/// 回 403 `{"code":"password_change_required"}`，WS 也由 `ws_auth` + `session_guard` 拒连。
+/// 登录本身仍回 200（这是 `/health` 与本测试历史断言一直没暴露该问题的原因）。
+/// 配置**非默认**口令 = 生产部署的实际形态，强制改密门禁不介入。
+///
+/// 长度必须 ≥ `webui::kMinPasswordLength`(12)，否则自助改密路径会回 400；本夹具不触发
+/// 改密，但仍沿用同一口径避免将来加"改密"用例时踩坑。
+constexpr const char* kSmokeAdminPassword = "smoke_test_admin_pw_253";
 
 /// 事件通道/行情进程信号量是否已被占用 (机器全局命名空间)。
 /// 存在 = dev 栈、其他测试实例或上次运行遗留的孤儿进程, 冒烟测试会与之互扰。
@@ -229,6 +255,252 @@ void dump_log_tail(const std::filesystem::path& dir, const std::string& prefix, 
     }
 }
 
+/// 一套最小 HTTP 响应 (裸 TCP 客户端用): 状态码 + JSON body。
+///
+/// 为什么不引入 drogon HTTP client: dzweb 的 REST 只用到 GET/POST + Bearer header +
+/// JSON body, 加起来不到 100 行; 拉入 drogon 客户端会把一个测试目标绑到框架的
+/// 连接池/定时器语义上, 反而更难断言"原始 HTTP 状态行"。drogon 侧行为由 webui 的
+/// 单测覆盖, 这里只要端到端"真的能通"。
+struct HttpResponse {
+    int status = 0;       ///< 0 = 连接/发送/解析失败 (不是 HTTP 状态)
+    std::string body;     ///< 原始 body (Content-Length 截取)
+    nlohmann::json json;  ///< body 解析结果; 解析失败 = null
+    bool json_ok = false;
+    std::string error;  ///< status == 0 时的失败原因 (诊断用)
+
+    bool ok(int want = 200) const { return status == want; }
+};
+
+/// 极简 HTTP/1.1 客户端 (GET/POST + 自定义 header + JSON body)。
+///
+/// 连接语义: 每次调用独立建连、`Connection: close`、读到 EOF —— 与 `http_get_health`
+/// 的单次探测同型, 不维护连接池 (REST 断言之间没有性能要求)。
+class HttpClient {
+public:
+    HttpClient(boost::asio::io_context& ioc, int port)
+        : ioc_(ioc),
+          port_(port) {}
+
+    /// GET; @param bearer 非空则带 `Authorization: Bearer <token>`
+    HttpResponse get(const std::string& path, const std::string& bearer = {}) {
+        return request("GET", path, {}, bearer);
+    }
+
+    /// POST JSON; @param body 已序列化的 JSON 文本
+    HttpResponse post(const std::string& path,
+                      const std::string& body,
+                      const std::string& bearer = {}) {
+        return request("POST", path, body, bearer);
+    }
+
+private:
+    HttpResponse request(const std::string& method,
+                         const std::string& path,
+                         const std::string& body,
+                         const std::string& bearer) {
+        HttpResponse resp;
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::resolver resolver(ioc_);
+        const auto results = resolver.resolve("127.0.0.1", std::to_string(port_), ec);
+        if (ec || results.empty()) {
+            resp.error = "resolve failed: " + ec.message();
+            return resp;
+        }
+        boost::asio::ip::tcp::socket sock(ioc_);
+        sock.connect(*results.begin(), ec);
+        if (ec) {
+            resp.error = "connect failed: " + ec.message();
+            return resp;
+        }
+        std::string req = method + " " + path + " HTTP/1.1\r\n";
+        req += "Host: 127.0.0.1\r\n";
+        req += "Connection: close\r\n";
+        if (!bearer.empty()) {
+            req += "Authorization: Bearer " + bearer + "\r\n";
+        }
+        if (method == "POST") {
+            req += "Content-Type: application/json\r\n";
+            req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+        }
+        req += "\r\n";
+        req += body;
+        boost::asio::write(sock, boost::asio::buffer(req), ec);
+        if (ec) {
+            resp.error = "write failed: " + ec.message();
+            return resp;
+        }
+        // 读到 EOF (Connection: close) —— 服务端正常关闭时 read 以 EOF 收尾
+        std::string raw;
+        boost::system::error_code read_ec;
+        char chunk[4096];
+        while (true) {
+            const std::size_t n = sock.read_some(boost::asio::buffer(chunk), read_ec);
+            raw.append(chunk, n);
+            if (read_ec) {
+                break;  // eof / 连接关闭: body 已读全
+            }
+        }
+        if (raw.empty()) {
+            resp.error = "empty response";
+            return resp;
+        }
+        // 状态行: "HTTP/1.1 200 OK"
+        const std::size_t line_end = raw.find("\r\n");
+        const std::string status_line = raw.substr(0, line_end);
+        const std::size_t sp = status_line.find(' ');
+        if (sp == std::string::npos) {
+            resp.error = "malformed status line: " + status_line;
+            return resp;
+        }
+        resp.status = std::atoi(status_line.c_str() + sp + 1);
+        // body = headers 之后; 有 Content-Length 时按它截断 (头部大小写不敏感)
+        const std::size_t hdr_end = raw.find("\r\n\r\n");
+        if (hdr_end == std::string::npos) {
+            resp.error = "no header terminator";
+            resp.status = 0;
+            return resp;
+        }
+        resp.body = raw.substr(hdr_end + 4);
+        const std::size_t cl_pos = find_header(raw, "content-length");
+        if (cl_pos != std::string::npos) {
+            const std::size_t value_begin = raw.find(':', cl_pos);
+            const std::string_view value(raw.data() + value_begin + 1,
+                                         raw.find("\r\n", value_begin) - (value_begin + 1));
+            const auto length = static_cast<std::size_t>(std::atoll(std::string(value).c_str()));
+            if (length < resp.body.size()) {
+                resp.body.resize(length);
+            }
+        }
+        try {
+            resp.json = nlohmann::json::parse(resp.body);
+            resp.json_ok = true;
+        } catch (const std::exception&) {
+            // 非 JSON body (例如 /health 的 "ok") 不算错误: 调用方按需检查
+        }
+        return resp;
+    }
+
+    /// 在原始响应里查 header (大小写不敏感), 返回 header 名起始位置; 未找到 = npos。
+    static std::size_t find_header(const std::string& raw, std::string_view name) {
+        std::size_t pos = 0;
+        while ((pos = raw.find("\r\n", pos)) != std::string::npos) {
+            pos += 2;
+            if (raw.size() - pos < name.size()) {
+                return std::string::npos;
+            }
+            bool match = true;
+            for (std::size_t i = 0; i < name.size(); ++i) {
+                if (std::tolower(static_cast<unsigned char>(raw[pos + i])) !=
+                    std::tolower(static_cast<unsigned char>(name[i]))) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return pos;
+            }
+        }
+        return std::string::npos;
+    }
+
+    boost::asio::io_context& ioc_;
+    int port_ = 0;
+};
+
+/// 最小 WebSocket 客户端 (Boost.Beast, header-only; 已实测与本 target 的
+/// `Boost::boost` 传递依赖一起编译+链接通过)。
+///
+/// 用**同步** API: 冒烟测试的断言节奏是"发一个请求 → 轮询等一条消息", 同步 read 配上
+/// `wait_until` 的轮询谓词已经够用, 且不引入 Beast 的异步完成令牌与 io_context 生命
+/// 周期的耦合。读一帧只解析 envelope 的 `type` (契约 webui-ws §1/§2), payload 交给
+/// 调用方按需取。
+class WsClient {
+public:
+    WsClient(boost::asio::io_context& ioc, int port)
+        : ioc_(ioc),
+          port_(port) {}
+
+    ~WsClient() { close(); }
+
+    WsClient(const WsClient&) = delete;
+    WsClient& operator=(const WsClient&) = delete;
+
+    /// 建连 + 握手。`/ws?token=<jwt>` (契约 webui-ws §1)。
+    bool connect(const std::string& token) {
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::resolver resolver(ioc_);
+        const auto results = resolver.resolve("127.0.0.1", std::to_string(port_), ec);
+        if (ec || results.empty()) {
+            error_ = "resolve failed: " + ec.message();
+            return false;
+        }
+        stream_ = std::make_unique<beast::websocket::stream<beast::tcp_stream>>(ioc_);
+        stream_->next_layer().expires_after(10s);
+        stream_->next_layer().connect(*results.begin(), ec);
+        if (ec) {
+            error_ = "connect failed: " + ec.message();
+            return false;
+        }
+        // Host 头必须带端口: drogon 的 WS 路由按 path+query 匹配, 但握手校验 Host
+        const std::string host = "127.0.0.1:" + std::to_string(port_);
+        const std::string target = "/ws?token=" + token;
+        stream_->handshake(host, target, ec);
+        if (ec) {
+            error_ = "handshake failed: " + ec.message();
+            return false;
+        }
+        connected_ = true;
+        return true;
+    }
+
+    /// 读一条完整消息 (阻塞, 最长 timeout_ms)。超时/关闭 = nullopt。
+    std::optional<nlohmann::json> read_message(int timeout_ms) {
+        if (!connected_) {
+            return std::nullopt;
+        }
+        beast::flat_buffer buffer;
+        stream_->next_layer().expires_after(std::chrono::milliseconds(timeout_ms));
+        boost::system::error_code ec;
+        stream_->read(buffer, ec);
+        if (ec) {
+            error_ = "read failed: " + ec.message();
+            return std::nullopt;
+        }
+        const std::string text = beast::buffers_to_string(buffer.data());
+        try {
+            return nlohmann::json::parse(text);
+        } catch (const std::exception& e) {
+            error_ =
+                std::string("non-json ws message: ") + e.what() + " | text=" + text.substr(0, 200);
+            return nlohmann::json{{"type", "__unparsable__"}, {"raw", text.substr(0, 200)}};
+        }
+    }
+
+    void close() {
+        if (!stream_) {
+            return;
+        }
+        if (connected_) {
+            boost::system::error_code ignored;
+            stream_->close(beast::websocket::close_reason(beast::websocket::close_code::normal),
+                           ignored);
+            connected_ = false;
+        }
+        boost::system::error_code ignored;
+        stream_->next_layer().socket().close(ignored);
+        stream_.reset();
+    }
+
+    const std::string& error() const { return error_; }
+
+private:
+    boost::asio::io_context& ioc_;
+    int port_ = 0;
+    std::unique_ptr<beast::websocket::stream<beast::tcp_stream>> stream_;
+    bool connected_ = false;
+    std::string error_;
+};
+
 class SmokeTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -305,12 +577,16 @@ protected:
 
         // dzweb 配置: 随机高位端口 (避免与 dev 栈/其他实例冲突; 机器全局端口空间)
         webui_port_ = 20000 + (this_process::pid() % 30000);
+        // admin 口令**必须是 kSmokeAdminPassword（非系统默认口令）**，理由见该常量注释：
+        // 用默认的 88888888 会让 dzweb 启动即置 must_change_password=1，之后所有 /api/*
+        // 与 WS 都被 403 password_change_required 拦住（#253 实测）。别改回默认值。
         {
             std::ofstream ofs(home_ / "configs" / "webui.json");
             ofs << "{\"server\":{\"listen\":\"0.0.0.0\",\"port\":" << webui_port_ << "},"
                 << "\"log\":{\"level\":\"info\",\"flush_on\":\"info\"},"
                 << "\"auth\":{\"jwt_secret\":\"smoke_test_secret\",\"token_ttl_sec\":3600},"
-                << "\"admin\":{\"username\":\"admin\",\"password\":\"88888888\"},"
+                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
+                << "\"},"
                 << "\"notify\":{\"cache_size\":100}}";
             ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
         }
@@ -631,6 +907,120 @@ protected:
         return resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200");
     }
 
+    // ── REST / WS / 交易库 断言辅助 (AC1) ─────────────────────────────────
+
+    /// REST 登录并缓存 token (`POST /api/login`)。成功返回 true 且设置 auth_token_。
+    /// 断言口径 (AC1-2): 200 且响应含非空 `token`。
+    bool login() {
+        HttpClient http(ioc_, webui_port_);
+        const nlohmann::json body = {{"username", "admin"}, {"password", kSmokeAdminPassword}};
+        const HttpResponse resp = http.post("/api/login", body.dump());
+        if (!resp.ok()) {
+            fprintf(stderr, "--- smoke: login failed | status=%d error=\"%s\" body=%s ---\n",
+                    resp.status, resp.error.c_str(), resp.body.c_str());
+            return false;
+        }
+        if (!resp.json_ok || !resp.json.contains("token") || !resp.json["token"].is_string() ||
+            resp.json["token"].get<std::string>().empty()) {
+            fprintf(stderr, "--- smoke: login response without token | body=%s ---\n",
+                    resp.body.c_str());
+            return false;
+        }
+        auth_token_ = resp.json["token"].get<std::string>();
+        return true;
+    }
+
+    /// 带 Bearer token 的 GET, 断言 200 且 body 是 JSON (失败信息带 path/status/body)。
+    std::optional<nlohmann::json> api_get_json(const std::string& path) {
+        HttpClient http(ioc_, webui_port_);
+        const HttpResponse resp = http.get(path, auth_token_);
+        if (!resp.ok()) {
+            fprintf(stderr, "--- smoke: GET %s failed | status=%d error=\"%s\" body=%s ---\n",
+                    path.c_str(), resp.status, resp.error.c_str(), resp.body.c_str());
+            return std::nullopt;
+        }
+        if (!resp.json_ok) {
+            fprintf(stderr, "--- smoke: GET %s non-json body=%s ---\n", path.c_str(),
+                    resp.body.c_str());
+            return std::nullopt;
+        }
+        return resp.json;
+    }
+
+    /// AC1-1 建库断言: 库文件存在、`PRAGMA user_version == kTdSchemaVersion`、
+    /// 五张表齐全, 且库路径与 `paths::trade_db()` 单一真相源一致。
+    /// 返回空串 = 通过, 否则为失败描述 (便于 ASSERT_TRUE 输出)。
+    std::string check_trade_db() {
+        // 单一真相源: 断言用的路径就取自 products 的生产函数, 不手拼 db/trade.db
+        const std::filesystem::path db_path = paths::trade_db();
+        const std::filesystem::path expected = home_ / "db" / "trade.db";
+        if (db_path != expected) {
+            return "paths::trade_db() = " + db_path.string() + " != " + expected.string();
+        }
+        std::error_code ec;
+        if (!std::filesystem::exists(db_path, ec) || ec) {
+            return "trade db missing: " + db_path.string();
+        }
+        try {
+            SQLite::Database db(db_path.string(), SQLite::OPEN_READONLY);
+            const int version = db.execAndGet("PRAGMA user_version").getInt();
+            if (version != tdstore::kTdSchemaVersion) {
+                return "schema version " + std::to_string(version) +
+                       " != " + std::to_string(tdstore::kTdSchemaVersion);
+            }
+            const std::set<std::string> required = {"orders", "trades", "positions",
+                                                    "trading_accounts", "instruments"};
+            std::set<std::string> present;
+            SQLite::Statement stmt(
+                db, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+            while (stmt.executeStep()) {
+                present.insert(stmt.getColumn(0).getString());
+            }
+            for (const auto& table : required) {
+                if (!present.contains(table)) {
+                    return "missing table: " + table;
+                }
+            }
+        } catch (const std::exception& e) {
+            return std::string("trade db read failed: ") + e.what();
+        }
+        return {};
+    }
+
+    /// AC1-3 列表信封断言: `available:true` + 五键齐全 + (可选) items 为空数组。
+    /// @param expect_empty_items 无在线账户时 orders/trades/positions 的 items 必须为 []；
+    ///        trading_accounts 会返回注册表占位行, 传 false 跳过该断言。
+    std::string check_list_envelope(const std::string& path, bool expect_empty_items) {
+        const auto body = api_get_json(path);
+        if (!body.has_value()) {
+            return path + ": request failed";
+        }
+        if (!body->is_object()) {
+            return path + ": body is not an object";
+        }
+        if (body->value("available", false) != true) {
+            return path + ": available != true | body=" + body->dump();
+        }
+        for (const char* key : {"trading_day", "online_accounts", "items", "next_cursor"}) {
+            if (!body->contains(key)) {
+                return path + ": missing envelope key " + key + " | body=" + body->dump();
+            }
+        }
+        if (!(*body)["items"].is_array()) {
+            return path + ": items is not an array";
+        }
+        if (expect_empty_items && !(*body)["items"].empty()) {
+            return path + ": items not empty with no online account | body=" + body->dump();
+        }
+        // 无在线账户 -> 无当前交易日 (null 而不是错误)
+        if (expect_empty_items && !(*body)["trading_day"].is_null()) {
+            return path + ": trading_day not null with no online account | body=" + body->dump();
+        }
+        return {};
+    }
+
+    // ── 成员 ────────────────────────────────────────────────────────────
+
     std::filesystem::path home_;
     std::filesystem::path out_dir_;
     std::filesystem::path master_exe_;
@@ -649,6 +1039,8 @@ protected:
     /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效,
     /// 拷出)
     std::vector<DzAccountStatus> account_status_frames_;
+    /// REST 登录后的 JWT (login() 填充; REST 读端点与 WS 建连共用)
+    std::string auth_token_;
 };
 
 /// 核心冒烟路径: 组合验证 4 条断言 (见设计 §3)
@@ -911,6 +1303,127 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     const bool healthy = wait_until([&] { return http_get_health(); }, 30000, [] {});
     ASSERT_TRUE(healthy) << "dzweb /health not 200 within 30s (port=" << webui_port_ << ")";
 
+    // ── 3c. AC1-1 建库与文件路径 (master 启动期地基, ADR 0041) ──────────────
+    // master 在任何子进程之前建库/播种 order_id (main.cpp §6.5), 因此走到这里库必然已在;
+    // 但仍用 wait_until 轮询: TearDown 之外没有别的时序保证, 保持"所有等待都走同一原语"。
+    ASSERT_TRUE(wait_until([&] { return check_trade_db().empty(); }, 10000, [] {}))
+        << "trade db assertion failed: " << check_trade_db();
+
+    // ── 3d. AC1-2 REST 登录 ─────────────────────────────────────────────
+    ASSERT_TRUE(wait_until([&] { return login(); }, 10000, [] {}))
+        << "POST /api/login did not return 200 with token within 10s";
+    ASSERT_FALSE(auth_token_.empty());
+
+    // ── 3e. AC1-3 REST 交易数据 (Bearer token) ───────────────────────────
+    // 契约 rest §2.9.2 信封: available/trading_day/online_accounts/items/next_cursor。
+    // 无在线账户 = 空列表语义 (不是错误): trading_day 为 null、orders/trades/positions
+    // 的 items 为空数组。
+    // trading_accounts **不套用 items 空断言**: 契约 rest §2.9.4 规定无记录账户仍返回
+    // 占位行 (has_data:false), 而注册表里的 CTP001 会给出一行 —— 断言 items 空会恒假。
+    for (const char* path : {"/api/td/orders", "/api/td/trades", "/api/td/positions"}) {
+        ASSERT_TRUE(check_list_envelope(path, /*expect_empty_items=*/true).empty())
+            << path << ": " << check_list_envelope(path, true);
+    }
+    ASSERT_TRUE(
+        check_list_envelope("/api/td/trading_accounts", /*expect_empty_items=*/false).empty())
+        << "/api/td/trading_accounts: " << check_list_envelope("/api/td/trading_accounts", false);
+
+    // stats: 计数器口径 (无在线账户 -> 全 0 但仍 ready, 不是 not_ready)
+    {
+        const auto stats = api_get_json("/api/td/stats");
+        ASSERT_TRUE(stats.has_value()) << "GET /api/td/stats failed";
+        ASSERT_TRUE(stats->value("available", false))
+            << "stats unavailable | body=" << stats->dump();
+        ASSERT_TRUE(stats->contains("stats")) << "stats body missing counters: " << stats->dump();
+    }
+
+    // ── 3f. AC1-4 WS 建连: snapshot -> td_recent -> data_changed{td} ─────
+    // 全链路证据 (REST -> SHM 帧 -> td -> RTN_TD_CONFIG -> dzweb -> WS 广播):
+    // 先连 WS, 再经 REST 新增账户, 断言收到 data_changed{scope:"td"}。
+    // 这条是唯一的跨进程全链路验证, 不依赖真实 CTP 柜台 (账户配置存在即可, 不需登录柜台)。
+    {
+        WsClient ws(ioc_, webui_port_);
+        ASSERT_TRUE(ws.connect(auth_token_)) << "ws connect failed: " << ws.error();
+        std::vector<nlohmann::json> ws_messages;
+        // 从 WS 读一条 (短超时); 超时 = 暂无新消息, 返回 false 交给 wait_until 继续轮询。
+        const auto pump_ws = [&]() {
+            const auto msg = ws.read_message(500);
+            if (!msg.has_value()) {
+                return false;
+            }
+            ws_messages.push_back(*msg);
+            return true;
+        };
+        const auto has_type = [&](std::string_view type) {
+            for (const auto& m : ws_messages) {
+                if (m.value("type", "") == type) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        // 建连后定向发送的两条 (契约 webui-ws §1/§2.5): 先 snapshot, 再 td_recent。
+        ASSERT_TRUE(wait_until([&] { return pump_ws() && has_type("snapshot"); }, 15000, [] {}))
+            << "WS did not deliver snapshot within 15s | ws=" << ws.error();
+        ASSERT_TRUE(wait_until([&] { return pump_ws() && has_type("td_recent"); }, 15000, [] {}))
+            << "WS did not deliver td_recent within 15s | ws=" << ws.error();
+        // td_recent 形状: {"type":"td_recent","payload":{"events":[...]}}, 无事件时为空数组
+        for (const auto& m : ws_messages) {
+            if (m.value("type", "") == "td_recent") {
+                ASSERT_TRUE(m.contains("payload") && m["payload"].contains("events"))
+                    << "td_recent missing payload.events | msg=" << m.dump();
+                ASSERT_TRUE(m["payload"]["events"].is_array())
+                    << "td_recent.payload.events not array | msg=" << m.dump();
+                break;
+            }
+        }
+
+        // REST 新增一个账户 -> td 回 RTN_TD_CONFIG -> dzweb reconcile -> 广播 data_changed{td}
+        {
+            HttpClient http(ioc_, webui_port_);
+            const nlohmann::json body = {{"gateway", "dztd_ctp"},
+                                         {"account",
+                                          {{"account_id", "SMOKE002"},
+                                           {"enabled", true},
+                                           {"risk_control_enabled", false},
+                                           {"currency_id", "CNY"},
+                                           {"ext",
+                                            {{"broker_id", "9999"},
+                                             {"user_id", "SMOKE002"},
+                                             {"password", ""},
+                                             {"product_info", ""},
+                                             {"frontends", nlohmann::json::array()},
+                                             {"auth_code", ""},
+                                             {"app_id", ""},
+                                             {"flow_dir", ""}}}}}};
+            const HttpResponse resp = http.post("/api/td/accounts", body.dump(), auth_token_);
+            ASSERT_TRUE(resp.ok()) << "POST /api/td/accounts failed | status=" << resp.status
+                                   << " body=" << resp.body << " error=" << resp.error;
+        }
+        const auto saw_td_scope = [&] {
+            for (const auto& m : ws_messages) {
+                if (m.value("type", "") == "data_changed" && m.contains("payload") &&
+                    m["payload"].value("scope", "") == "td") {
+                    return true;
+                }
+            }
+            return false;
+        };
+        ASSERT_TRUE(wait_until(
+            [&] {
+                while (pump_ws()) {
+                    if (saw_td_scope()) {
+                        return true;
+                    }
+                }
+                return saw_td_scope();
+            },
+            20000, [] {}))
+            << "WS did not broadcast data_changed{scope:\"td\"} within 20s after account add | ws="
+            << ws.error();
+        ws.close();
+    }
+
     // 4. 定向 SHUTDOWN -> 全部子进程退出, master 推 Stopped (优雅退出路径)
     //    与 master 整体关闭同原语 (逆序逐批定向发送, 广播全员关闭帧不采用):
     //    触发帧 = 定向 SHUTDOWN (dzmd_ctp/dztd_ctp/dzweb) + QUERY_FULL_SNAPSHOT:
@@ -962,6 +1475,142 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
         }
     }
     EXPECT_TRUE(master_dead) << "master did not exit within 5s after terminate";
+}
+
+/// 降级路径 E2E（AC1-5，契约 rest §2.9.8）：交易库不存在时读端点必须回
+/// `200 {"available":false,"reason":"not_found"}`，**不是** 5xx、不是空 items。
+///
+/// 为什么单起一个 fixture：本用例需要一个**没有 `db/trade.db`** 的 home，而主 fixture 的
+/// master 启动期必然建库（ADR 0041），两者的前提互斥。这里只起 dzweb（不起 master）——
+/// dzweb 找不到事件通道时进 api-only 模式（`main.cpp` 的 shm init failed 分支），REST 照常
+/// 服务，正是"库缺失但服务在跑"的最小复现。
+///
+/// 注意：不经过 master 也就没有 NamedSemaphore 争用，本用例不参与 `DZ_SMOKE_STRICT`
+/// 的信号量冲突判定（它本来就不会与其他栈互扰），但仍然 RUN_SERIAL（同为进程级测试）。
+class SmokeDegradedTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        home_ = std::filesystem::temp_directory_path() /
+                ("dz_smoke_degraded_" + std::to_string(this_process::pid()));
+        std::error_code ec;
+        std::filesystem::remove_all(home_, ec);
+        std::filesystem::create_directories(home_ / "configs", ec);
+        ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
+        orig_home_ = env::get("DZTRADER_HOME");
+        env::set("DZTRADER_HOME", home_.string());
+
+        out_dir_ = this_process::exe_dir().parent_path();
+        port_ = 20000 + ((this_process::pid() + 7) % 30000);
+
+        // 刻意**不建 db/ 目录**：读端点必须走 not_found 降级。
+        // admin 口令同样必须非默认（否则 403 password_change_required 挡住 REST），
+        // 理由见 SmokeTest 的 kSmokeAdminPassword 注释。
+        {
+            std::ofstream ofs(home_ / "configs" / "webui.json");
+            ofs << "{\"server\":{\"listen\":\"127.0.0.1\",\"port\":" << port_ << "},"
+                << "\"log\":{\"level\":\"warn\",\"flush_on\":\"warn\"},"
+                << "\"auth\":{\"jwt_secret\":\"smoke_degraded_secret\",\"token_ttl_sec\":3600},"
+                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
+                << "\"},"
+                << "\"notify\":{\"cache_size\":10}}";
+            ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
+        }
+
+        const auto webui_exe = out_dir_ /
+                               "dzweb"
+#ifdef _WIN32
+                               ".exe"
+#endif
+            ;
+        ProcessEntry entry;
+        entry.name = "dzweb";
+        entry.category = Category::WebUI;  // 类别不影响 ChildProcess 行为 (仅日志/命名)
+        entry.exe = webui_exe;
+        webui_ = ChildProcess::create(ioc_, std::move(entry));
+        boost::system::error_code spawn_ec;
+        ASSERT_TRUE(webui_->start(spawn_ec)) << "dzweb spawn failed | exe=" << webui_exe.string()
+                                             << " error=\"" << spawn_ec.message() << "\"";
+    }
+
+    void TearDown() override {
+        if (webui_ && webui_->pid() != 0 && process_alive(static_cast<uint32_t>(webui_->pid()))) {
+            force_kill_pid(static_cast<uint32_t>(webui_->pid()));
+            ioc_.run_for(1s);
+        }
+        webui_.reset();
+        if (::testing::Test::HasFailure()) {
+            dump_log_tail(home_ / "logs", "dzweb_", 40);
+        }
+        if (orig_home_) {
+            env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            env::unset("DZTRADER_HOME");
+        }
+        std::error_code ec;
+        if (env::get("DZ_SMOKE_KEEP_HOME") != "1") {
+            std::filesystem::remove_all(home_, ec);
+        }
+    }
+
+    /// 轮询 /health 直到 dzweb 起来 (drogon 真实对外可用)
+    bool wait_health(int timeout_ms) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            HttpClient http(ioc_, port_);
+            if (http.get("/health").ok()) {
+                return true;
+            }
+            ioc_.run_for(100ms);
+        }
+        return false;
+    }
+
+    std::filesystem::path home_;
+    std::filesystem::path out_dir_;
+    std::optional<std::string> orig_home_;
+    int port_ = 0;
+    boost::asio::io_context ioc_;
+    std::shared_ptr<ChildProcess> webui_;
+};
+
+TEST_F(SmokeDegradedTest, TradeReadEndpointsDegradeToAvailableFalse) {
+    ASSERT_TRUE(wait_health(30000)) << "dzweb /health not 200 within 30s (port=" << port_ << ")";
+    // 库不存在的前置条件必须成立, 否则本用例测的就不是降级路径
+    std::error_code ec;
+    ASSERT_FALSE(std::filesystem::exists(home_ / "db" / "trade.db", ec))
+        << "precondition violated: trade.db unexpectedly present";
+
+    HttpClient http(ioc_, port_);
+    const nlohmann::json login_body = {{"username", "admin"}, {"password", kSmokeAdminPassword}};
+    HttpResponse login = http.post("/api/login", login_body.dump());
+    ASSERT_TRUE(login.ok()) << "login failed | status=" << login.status << " body=" << login.body;
+    ASSERT_TRUE(login.json_ok && login.json.contains("token"));
+    const std::string token = login.json["token"].get<std::string>();
+
+    // 契约 rest §2.9.8: 五个读端点统一降级体, 只有 available + reason 两键。
+    // stats 例外（§2.9.5: 计数器未就绪 = not_ready），因此不在此列表。
+    for (const char* path :
+         {"/api/td/orders", "/api/td/trades", "/api/td/positions", "/api/td/trading_accounts"}) {
+        const HttpResponse resp = http.get(path, token);
+        ASSERT_TRUE(resp.ok()) << path
+                               << ": expected HTTP 200 degraded body, got status=" << resp.status
+                               << " body=" << resp.body << " error=" << resp.error;
+        ASSERT_TRUE(resp.json_ok) << path << ": non-json body=" << resp.body;
+        const auto& body = resp.json;
+        // 只有 available 与 reason 两个键 (契约 §2.9.8: 不含 items/trading_day/...)
+        ASSERT_EQ(body.size(), 2U)
+            << path << ": degraded body must have exactly 2 keys | body=" << body.dump();
+        ASSERT_FALSE(body.value("available", true))
+            << path << ": available should be false | body=" << body.dump();
+        ASSERT_TRUE(body.contains("reason")) << path << ": missing reason | body=" << body.dump();
+        // 库文件不存在 -> not_found (不是 schema_mismatch/open_failed)
+        ASSERT_EQ(body["reason"].get<std::string>(), "not_found")
+            << path << ": unexpected reason | body=" << body.dump();
+        ASSERT_FALSE(body.contains("items")) << path << ": degraded body must not carry items";
+        ASSERT_FALSE(body.contains("next_cursor"))
+            << path << ": degraded body must not carry next_cursor";
+    }
 }
 
 }  // namespace

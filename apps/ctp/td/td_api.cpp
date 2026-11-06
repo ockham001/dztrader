@@ -867,16 +867,19 @@ void TdApi::write_account_status(const std::string& account_id,
                                  DzAccountState state,
                                  const std::string& date,
                                  bool force) {
+    // 帧内交易日在此归一 (非 Ready 恒 0), 判重与写帧共用同一值
+    const int32_t next_date = account_status_date(state, date);
     auto& last = account_last_state_[account_id];
-    if (!should_push_account_status(last, state, force)) {
-        return;  // 三态未翻转, 不重复推 (Offline 恒推, 供删账户/崩溃兜底语义)
+    if (!should_push_account_status(last.state, last.date, state, next_date, force)) {
+        return;  // 三态未翻转且交易日未变, 不重复推 (Offline 恒推, 供删账户/崩溃兜底语义)
     }
-    last = state;
+    last.state = state;
+    last.date = next_date;
     DzAccountStatus status{};
     dztrader::copy_string(status.account_id, account_id.c_str(), true);
     dztrader::copy_string(status.gateway_name, name_.c_str(), true);
     status.state = state;
-    status.date = account_status_date(state, date);
+    status.date = next_date;
     platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
 }
 

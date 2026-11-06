@@ -131,6 +131,38 @@ foreach(testfile ${WEBUI_TESTS})
 endforeach()
 
 # ============================================================
+# bench_td_read_path: 交易库读路径 report-only 基准（#253 AC4）
+#
+# 只报告数值、不做阈值断言：perf 标签、RUN_SERIAL、不进默认 fast 门禁
+# （先例 libs/shm/tests/perf_bench.cpp、libs/strategy_api/tests/bench_*.cpp）。
+# 被测代码是**生产实现**：TdOrdersQuery（dzweb_obj 内的 td_orders_query.cpp）+
+# tdstore 建库门面/MAX(order_id)。建库走 dztdstore（schema 单一真相源），
+# 插入/查询走 SQLiteCpp（dztdstore 已 PUBLIC 链接它）。
+# 报告设施复用 libs/strategy_api/tests/bench_support.h（cpu/编译器/构建类型标识、
+# 分布统计、--quick 解析）；本基准量的是毫秒级 SQL，计时用 steady_clock，不用那里的 RDTSC。
+# 不链 GTest（基准不是单测）。
+# ============================================================
+add_executable(bench_td_read_path bench_td_read_path.cpp)
+target_link_libraries(bench_td_read_path PRIVATE
+    dzweb_obj
+    dztdstore
+    strategy_api_headers
+    SQLiteCpp
+)
+target_include_directories(bench_td_read_path PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/libs/strategy_api/tests
+    ${SQLITE3_INCLUDE_DIR}
+)
+set_target_properties(bench_td_read_path PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
+)
+add_test(NAME bench_td_read_path COMMAND bench_td_read_path)
+# RUN_SERIAL: 基准量的是毫秒级 SQL 耗时，并行跑会被同机其它测试的 CPU/IO 竞争污染
+# （test.sh 默认 CTEST_PARALLEL_LEVEL=4）。
+set_tests_properties(bench_td_read_path PROPERTIES LABELS perf RUN_SERIAL TRUE TIMEOUT 600)
+
+# ============================================================
 # 前端构建集成：npm + Vite -> frontend/dist/
 # dzweb 可执行文件依赖前端构建产物
 # ============================================================

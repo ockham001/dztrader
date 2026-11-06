@@ -55,9 +55,12 @@ const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& acc
 /// 2115 查询路由: queried 为空串 = 查全部 (true); 否则命中配置才应答 (不在配置不回, master 兜底)
 bool account_query_matches(const std::vector<std::string>& configured, const std::string& queried);
 
-/// 2018 三态去重判定 (契约 account-status): 非强制时, 同态且非 Offline 不推;
-/// Offline 恒推 (删账户/崩溃兜底语义)。force (快照/查询应答) 绕过去重。
-bool should_push_account_status(DzAccountState last, DzAccountState next, bool force);
+/// 2018 三态去重判定 (契约 account-status 场景 2/3): 非强制时, 同态同交易日且非 Offline 不推;
+/// 同态但 `date` 变化 (日切) 必推; Offline 恒推 (删账户/崩溃兜底语义)。
+/// `last_date`/`next_date` 是帧内交易日 (已由 account_status_date 归一化: 非 Ready 恒 0)。
+/// force (快照/查询应答) 绕过去重。
+bool should_push_account_status(
+    DzAccountState last, int32_t last_date, DzAccountState next, int32_t next_date, bool force);
 
 /// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
 /// Date::from_string 抛异常在此消化。
@@ -66,6 +69,13 @@ int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
 /// 契约 account-status: 帧内 `date` 仅 Ready 时为登录返回交易日, 其余状态恒 0。
 /// 非法/缺失交易日回落 0。
 int32_t account_status_date(DzAccountState state, const std::string& date);
+
+/// 账户上次推送的状态缓存 (三态去重口径: 状态 + 帧内交易日)。
+/// 同态但交易日变化 (日切) 必须重推 (契约场景 3), 故缓存不能只存状态。
+struct AccountStatusCache {
+    DzAccountState state = DZ_ACCOUNT_OFFLINE;  ///< 上次推送的三态
+    int32_t date = 0;                           ///< 上次推送的帧内交易日 (account_status_date)
+};
 
 /// TdApi: CTP 交易网关进程级编排器 (设计 §1.1 多账户路由, §6.3 主循环)。
 ///
@@ -190,7 +200,8 @@ private:
     /// 推送指定账户的当前状态到 SHM (DZ_FRAME_RTN_TD_STATUS, payload 为 TdStatusRecord)
     void update_status(const std::string& account_id);
     /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
-    /// state 与该账户上次推送相同则跳过; date 为空串或 state!=READY 时帧内 date=0。
+    /// 状态与该账户上次推送相同、且帧内交易日也相同时跳过; 同态但日切 (date 变化) 重推
+    /// (契约场景 3)。date 为空串或 state!=READY 时帧内 date=0。
     /// force=true = 权威全量重推, 绕过去重 — snapshot/query 应答路径用 (spec §3.1 重启快照自愈)。
     void write_account_status(const std::string& account_id,
                               DzAccountState state,
@@ -283,8 +294,9 @@ private:
     std::unordered_map<std::string, std::unique_ptr<AccountSession>>
         sessions_;                                              ///< account_id -> 会话
     std::unordered_map<std::string, TdHealth> account_health_;  ///< account_id -> 上次广播健康度
-    /// 账户上次推送的三态 (去重缓存; 键=account_id)
-    std::unordered_map<std::string, DzAccountState> account_last_state_;
+    /// 账户上次推送的三态 + 交易日 (去重缓存; 键=account_id)。
+    /// 同态 READY 但交易日变化 (日切) 需重推, 故缓存含 date (契约 account-status 场景 3)。
+    std::unordered_map<std::string, AccountStatusCache> account_last_state_;
     /// 独立只读连接 (同一 db 文件, 不占 PersistWriter 的 db_): 登录日装载 + 无会话拒单播种.
     /// 首次需要时打开; 打开失败 (db 尚不存在) 时置空, 运行期按需重开.
     std::unique_ptr<SQLite::Database> read_db_;
