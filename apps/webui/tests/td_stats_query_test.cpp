@@ -15,6 +15,7 @@
 #include "td_stats_query.h"
 #include "td_order_row_writer.h"
 #include "td_position_row_writer.h"
+#include "td_trade_row_writer.h"
 #include "test_temp_dir.h"
 
 #include <dztrader/data_type.h>
@@ -88,21 +89,16 @@ protected:
     }
 
     void insert_trade(const SeqRow& row, const std::string& trade_id) {
-        sqlite3* db = open();
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql =
-            "INSERT INTO trades (account_id, date, trade_id, order_id, strategy_id,"
-            " instrument_id, exchange_id, direction, position_effect, price, volume, time,"
-            " seq, gateway, ext)"
-            " VALUES (?,?,?,1,'stg1','rb2601','SHFE',1,1,3500.0,1,32400,?,'dztd_ctp','{}')";
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
-        sqlite3_bind_text(stmt, 1, row.account_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, row.date.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 3, trade_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(row.seq));
-        EXPECT_EQ(SQLITE_DONE, sqlite3_step(stmt));
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        // 列清单走共享夹具（`td_trade_row_writer.h`）：手抄 15 列会让 schema 加列时只让
+        // 抄得最晚的那份失败（unit-test-standard §5.4）。
+        dztrader::test::TdTradeRowSeed seed;
+        seed.account_id = row.account_id;
+        seed.date = row.date;
+        seed.trade_id = trade_id;
+        seed.order_id = 1;
+        seed.seq = row.seq;
+        const std::string error = dztrader::test::insert_td_trade_row(db_path_, seed);
+        ASSERT_TRUE(error.empty()) << error;
     }
 
     void insert_position(const SeqRow& row) {
@@ -119,19 +115,16 @@ protected:
     }
 
     void insert_trading_account(const SeqRow& row) {
-        sqlite3* db = open();
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql =
-            "INSERT INTO trading_accounts (account_id, date, balance, available, frozen,"
-            " commission, margin, withdraw_quota, deposit, withdraw, seq, gateway, ext)"
-            " VALUES (?,?,0,0,0,0,0,0,0,0,?,'dztd_ctp','{}')";
-        ASSERT_EQ(SQLITE_OK, sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr));
-        sqlite3_bind_text(stmt, 1, row.account_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, row.date.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(row.seq));
-        EXPECT_EQ(SQLITE_DONE, sqlite3_step(stmt));
-        sqlite3_finalize(stmt);
-        sqlite3_close(db);
+        // 列清单走共享夹具（`td_position_row_writer.h` 同时提供资金行写入）：手抄 13 列会让
+        // schema 加列时只让抄得最晚的那份失败（unit-test-standard §5.4）。
+        // 夹具的资金列默认值（余额/可用/保证金等）非零，与原先这里字面量的 0 不同；本文件
+        // 只消费 account_id / date / seq（水位与排序），断言不涉及资金列，故语义等价。
+        dztrader::test::TdTradingAccountRowSeed seed;
+        seed.account_id = row.account_id;
+        seed.date = row.date;
+        seed.seq = row.seq;
+        const std::string error = dztrader::test::insert_td_trading_account_row(db_path_, seed);
+        ASSERT_TRUE(error.empty()) << error;
     }
 
     TdStatsQuery query() {

@@ -61,6 +61,17 @@
 - 搜法：`message` 字段只写**纯 prose**；`| k=v` 只由日志站点拼接，引号值内不得再嵌 `| k=v`（否则会被包成 `error="… | k=v"`）。
 - 本波实例：#161 审查发现依赖缝的 `message` 内嵌 `| k=v`，又被日志站点包成 `error="…"`；改为纯 prose、字段由站点统一拼。
 
+### 2.7 自搜项（#284 首轮 2 条 BLOCKING 全是这两条）
+
+与上面 6 类 finding 并列，这两条是每次 review 的固定自搜动作（不等它出现，而是主动核）。它们只靠人工读出来——没有任何机械检查覆盖。
+
+- 自搜项 A —— 注释/文档里引用的历史票号或 commit 必须能核实（#284 首轮 Standards 第 1 条 BLOCKING）。
+  - 搜法：新增或改动的每处历史归因（`（#N）` / `见 commit abc1234` / `<SHA> 引入`），用 `git log -S'<被归因的字符串>'` / `git log --all --grep='#N'` 核实；**核实不到就直接写完整 SHA**（先用 `git log --all --oneline -S'<keyword>'` 找到引入提交，再把 7+ 位 SHA 写进注释/文档），不要凭记忆编票号。
+  - 本波实例：`check-push-scope.sh` 把 `cancel-in-progress` 的归因写成「（#274）」，而 #274 实际是孤儿导出 lint、并发取消来自 commit `2073992`（#93 复盘）——一个错的票号让追溯链断在开头；`git log --all --grep='#274'` 与 `git log --all -S'cancel-in-progress'` 三条命令即可证伪。
+- 自搜项 B —— 改 exit code / 错误文案后，全仓 `git grep` 同口径关键词（#284 首轮 Standards 第 2 条 BLOCKING）。
+  - 搜法：改退出码 / 错误串 / 报错关键词后，用 `git grep -n` 扫全仓（只扫版本控制内文件，天然跳过 `build/`、`install/`、`.cache/`）：错误串关键词、退出码数字、文档里的旧措辞各 grep 一遍（错误串与文档措辞可能不同词），逐处确认是新口径或有理由保留。
+  - 本波实例：`check-push-scope` 新增「不可解析 SHA 也拦」后，退出码契约文档只写「同 SHA 才拦」，导致 `.githooks/pre-push`、`docs/development-checklist.md`、`docs/agents/ticket-closeout.md` 一并漂移，靠人工审查才发现。
+
 ## 3. 报告格式
 
 报告固定写"AC 对照"与"finding 处置"两段：

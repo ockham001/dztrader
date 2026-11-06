@@ -36,8 +36,8 @@
 7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。**分工表（成员 / 写作用域 / 依赖 / 验收映射）必须先在 issue 评论落盘再 spawn 成员**——`.cache/handoff/` 可随时删除，不作为唯一载体；本仓以 issue 为唯一记忆。分工表与 `team_task_create` 的 `write_scopes` 登记同步维护，别只留在会话或 handoff 文档里。
 
 8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
-9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。
-10. **verifier `failed` 恢复协议**（`failed` = 子代理异常退出、无报告）：① 原 prompt 重跑一次；② 仍 `failed` → 用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；③ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。
+9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。**Lead 侧动作点（#289 AC5）**：等待超预算（超过 [verifier-prompt.md](verifier-prompt.md) 的档位时限）就主动 `send_message` 一条 nudge「**先发结论**（哪怕只发已完成部分）」，不要让审查无上限拖住关键路径——#253 两轴跑了 38.7min / 45.3min，T+26 / T+44min 一催，**1.5min 内即交付**，说明超支多半是缺一个交付信号而不是缺时间。
+10. **verifier / 实现 teammate `failed` ≠ 无产出**（#289 AC8）：`failed` 只表示该 turn 异常退出、没有报告，**不代表它没写文件**。恢复顺序：① 先查产出——`git status --porcelain`（它可能已落盘部分改动）、`team_task_list`（共享任务状态与 `write_scopes`）、其 session 日志（`~/.dsh/sessions/`，见 [retro-evidence.md](retro-evidence.md)）；② 成员仍可寻址（`list_agents` 里 `inactive` 而非名额释放）时用 `send_message` **续跑**，prompt 里写「上一步无产出/部分产出 + 先落最小骨架」——不要重派新成员（名额是稀缺资源，见第 6 条）；③ 原 prompt 重跑一次；④ 仍失败 → 改用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；⑤ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。**实现类成员的 prompt 必须带「T+15min 先落最小骨架」**（#253 recon 37–39min 才写第一行，模板见 [verifier-prompt.md](verifier-prompt.md) §4）。
 11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让验证轮 findings 又产生新 commit，上一轮 CI 作废重跑（旧守卫下第二次 push 还会被「CI 在跑」拒绝、白等一轮；#248 实测 986s；新口径见 §4）。**#252 实测（规则存在 ≠ 动作点看得见）**：23:15 建 PR 起 CI → 23:23:08 修复 commit → 23:23:30 push 被旧 run 拒绝 → 等旧 CI 1431s（到 23:47:57）→ 23:48:07 才推上去 → 新 run 31m42s → 00:20:44 才等到结果，**一次修复被放大成两个串行 CI 周期（≈56min）**，并在 00:20:28 触发用户 abort turn。因此 §4 把「最后一轮只读验证已返回且无 BLOCKING」写成 push / 建 PR 的**动作点前置条件**；只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3（模板返回后才允许进入 §4）。
 12. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
 
@@ -65,7 +65,7 @@
 - **`--test-name` 的 regex 匹配 `<Fixture>.<Case>`（gtest 用例全名），不是源文件名**：`--test-name td_config_test` 匹配不到任何用例，`ctest -R` 零匹配退出码 **8**（`No tests were found!!!`）——那**不是**测试失败，与「用例红了」要分开判断。查用例名用 `./scripts/gate.sh test --list`（直通 `ctest -N`，一行一个用例名，一次调用查全量）。
 - **`--target` 的命名规则 = 模块前缀 + 测试源文件名去 `.cpp`（保留 `_test`）**：`apps/webui/tests/<name>.cpp` → `dzweb_<name>`、`apps/ctp/tests/td_<name>.cpp` → `dztd_ctp_td_<name>`、`apps/master/tests/<name>.cpp` → `dztraderd_<name>`、`libs/<mod>/tests/<name>.cpp` → `dz<mod>_<name>`；冒烟测试是例外 `dz_smoke_test`（#251 曾按源文件名猜 target、连错 3 次：前缀不是 `dztd_` 而是 `dztd_ctp_`）。
 
-`./scripts/preflight.sh` 覆盖：日志格式、clang-format 21.x、文档链接（含契约 §N 引用：活跃文档 + apps/libs 源码注释）、测试可移植性、**共享测试头登记**（#284：`docs/unit-test-standard.md` §5.4 索引的确定性校验，含 `--selftest`）、**MSVC hazard lint**（Windows 头顺序 / C4101 等 Linux 编译器拦不到的失败）、**内置 JSON 版本一致性**（conanfile / 单头 / `VENDORED.md` 三方，含自测）、**ci-log 错误模式**（#200）、**gtest 发现超时纪律**（#227）、**commit subject 形态**（#265）、**push-scope 自测**（#265）、**门禁脚本参数自测**（#281：`build.sh`/`test.sh` 的重复 flag 必须累积，用假 `cmake`/`ctest` 断言真实命令行）、**Windows CI 预算分档**（#267）、**孤儿导出**（#274）、前端 `type-check` / `lint` / `lint:css` / `vitest` / `gen:types` 幂等性（再生成不改文件即通过，与暂存/提交次序无关）。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本（`--c-only`）。
+`./scripts/preflight.sh` 的**检查清单只有一个真相源：脚本自身的 `run_step` 行**（`./scripts/preflight.sh --help` 直接打印全部步骤名与数量；#289 AC7——此前 AGENTS / 本文 / development-checklist 三处手抄，`AGENTS.md` 漏了「gtest 发现超时」让 #284 终轮验证判 FAIL，白跑 229s + 作废 150s 机时）。每项检查的细节（为什么需要 / 规则 / `--selftest`）写在各检查脚本的文件头。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本的 C 段（`--c-only`）。
 
 > **门禁结果可追溯（#190）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入 `.cache/gate/last-status`。`.githooks/pre-push` 会拒绝「当前 HEAD 上最近一次门禁失败」的推送（HEAD 不符/缺失只警告；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
 
@@ -114,7 +114,7 @@ git merge-base --is-ancestor <merge-commit> main && echo merged
 ```
 
 - **PR 未 MERGED 前不得关闭 issue**。CI 绿 ≠ 已落地（本波 #91 关单 40 分钟后才合、#92 关单 5 小时后才合，期间 #93 合入造成冲突，收尾多解一次冲突 + 多跑两轮 CI）。
-- **合并授权在开工时或 PR 创建时一次性提出（#284 AC3）**：条件式——「CI 绿 + 双轴审查通过即合并关单」，或使用本仓已有的「按票/按波一次授权」；**禁止把该问题留到 CI 绿之后才问**——#281 因此在 CI 全绿后才问，用户 6177s 后答复，等待占会话 49.6%（#252 同一问题在用户在场时 23s 内答复）。提问必须保留「**先不合并，我要自己看 PR**」选项；用户选此项时 issue 保持 open、不阻塞其它票（其它票照常开工）。
+- **合并授权默认在「PR 创建后立即问」，而不是开工时（#289 AC2，修订 #284 AC3）**：条件式——「CI 绿 + 双轴审查通过即合并关单」，或使用本仓已有的「按票/按波一次授权」。开工时提问是**唯一没有并行工作可垫**的时点，`ask_user_question` 会阻塞整个回合：#284 实测提问 07:40:54 → 答复 08:04:32 = **1418s（26.5% 墙钟）**，其中 933s 纯 idle——队友 07:48:59 就交付了，Lead 只是被提问卡住。PR 创建后提问，答复窗口与 `wait-ci` 重叠（CI 本来就要跑 15–40min），答案到达时无需额外等待。**「开工时问」仅限「预计本票无 CI / 无并行工作可垫」**（例如纯文档票且下游已全部就绪）。**更优形态是开票/批准时预授权**：用户正在场，秒级答复；把条件式授权写进 issue 的「拍板记录」，实现会话零提问（#289 即此形态，用户「按照你的建议」）。**禁止把该问题留到 CI 绿之后才问**——#281 因此在 CI 全绿后才问，用户 6177s 后答复，等待占会话 49.6%（#252 同一问题在用户在场时 23s 内答复）。提问必须保留「**先不合并，我要自己看 PR**」选项；用户选此项时 issue 保持 open、不阻塞其它票（其它票照常开工）。
 - `--delete-branch` 在 worktree 里会跳过本地删除（分支被 checkout）：先 `git worktree remove`，再 `git branch -d`；远端分支用 `git ls-remote --heads origin <branch>` 确认为空。
 - 合并会触发 main 的 CI（merge commit 跑 Linux，约 15 分钟；Windows job 只在 PR 跑）；共享工作区切回 main 后不要停在旧 feature 分支。
 - **默认不等 main CI**：squash 合并后 main 上的 tree 与 PR head tree **完全相同**，main run 重测的是同一份内容，等它拿不到任何新信息。落地确认用秒级命令：`git merge-base --is-ancestor <merge-commit> main`；想直接验 tree 相同用 `git diff --quiet <pr-head-commit> <merge-commit>`（静默即相同）。实测代价：五票里四票选择等，合计约 113 分钟（#246 4286s / #260 1633s / #248 620s / #258 251s）。
@@ -150,13 +150,21 @@ GitHub 的 closing keyword 要求关键字后紧跟空白/冒号再接 `#N`，�
 CI：<run link> Windows + Linux 绿
 PR：#<n>（merged <merge-commit>）
 验证：ctest <x>/<y>、preflight 全绿、<E2E/真机验证（如适用）>
-审查：<n> 轮双轴收敛 / 剩余 <m> 条 non-blocking（列票）
+审查：<n> 轮双轴收敛 / 剩余 <m> 条 non-blocking（列票）/ 验证标记 <issue>-standards@<sha7>、<issue>-spec@<sha7>
 Refs: <contract/component/docs 路径>
 ```
+
+> **「验证标记」必填（#289 AC6）**：只读验证轮交付时由 verifier 执行
+> `python3 scripts/review_marker.py write <issue> <axis>`，标记文件 `.cache/review/<issue>-<axis>.done`
+> 记录被验证的 sha。关单报告必须列出这两条标记及其 sha——它是「这次合并前真的跑过验证」的
+> 唯一物证（#253 的验证轮被宿主 turn 中止，合并时该轮从未发生，报告里却看不出来）。
+> 取法：`cat .cache/review/<issue>-*.done`；轴没跑就别编（写「未跑 + 理由」，不要留空）。
 
 关闭后检查下游依赖是否解除：`gh issue view <child> --json blockedBy`（返回 `{nodes:[],totalCount}`，用 `.blockedBy.nodes[]`；或 `gh api repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by` 拿数组），或在票的报告里写清"#X 的 blocked_by 从 N → 0"。
 
 **关完这张票再跑一次** `./scripts/gate.sh ledger`：若它以「spec 母票可收口」点名某张 `[spec]`，说明刚关的这张就是最后一张子票 → 立刻按 §6「spec 母票收口」处置母票，**不要留到下一波**（#41、#153 都是这样空挂的）。
+
+> **口径澄清（#289 AC8）**：子票正文里常见的「本票不关闭母票 / 母票另行收口」**只约束子票自己的动作**，不改变上面这条流水线——刚关的子票如果就是最后一张，母票仍要按台账指引处理。反过来也别把它读成「母票不能由本会话关」：#253 为这句读了 8 段正文、花 4–5min 推理还提了一次人工问题，最终结论就是本条。**判断依据只有台账点名**，不看子票正文怎么写。
 
 ### spec 母票收口（子票全部关闭后）
 
@@ -184,6 +192,8 @@ Refs: <contract/component/docs 路径>
 AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，避免常驻上下文重复）：
 
 - **等待与门禁**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等（AGENTS §五「等待一律后台作业」）。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight|ledger`（短输出用 `--tail N`；管道规则见 §2）。
+- **`job_output(wait=true)` 最长只等 600s（#289 AC8）**：传更大的 `timeout_ms` 会被宿主静默截断，返回 `[status: running]`——不是作业出错，也不是结束。#253 因此丢了 600s 并错过只读验证轮的入口。**等超过 10 分钟的作业要分段**：每次 `running` 返回后做一件只读工作（读 diff / 拟关闭评论 / 查 `wait-ci.sh --status`）再等下一段；**不要**用一次超长 wait 假装能阻塞到底。
+- **仓内搜索用 `git grep`（#289 AC8）**：它只扫版本控制内文件，天然跳过 `build/`、`install/`、`.cache/`。`grep -rn --include=*` 全仓跑会把编译产物与缓存一起扫（#253 实测单次 131.8s，`find .cache` 另花 94.2s）；要搜运行产物就显式给 `.cache/` 路径。
 - **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限，不要反复重试。
 - **权限与交接**：会话从 `read-only` 转执行（写文件 / commit / push）前请用户切回一次 `workspace-write`，不要逐操作申请 escalation；`handoff` 文档写 `.cache/handoff/`（`/tmp` 不可跨会话）。
 - **不要自建后台进程**：DSH 在工具调用结束时回收直接 fork 的孙进程（实测 `setsid` 子进程也活不过调用边界），后台等待一律用 `run_in_background`。

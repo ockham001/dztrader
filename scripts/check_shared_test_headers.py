@@ -18,6 +18,23 @@
      登记到 §5.4，或在头文件里写显式豁免标记 + 理由；使用者 <2 → 忽略（单一用途头
      无需登记）
   R5 表格缺失 / 解析为空 → 报错（含文档路径与原因）
+  R6 全列清单字面量（#247 人工发现 / #272 修复类缺陷）：共享行写入夹具存在的原因是
+      「列清单唯一实现」（§5.4 的 `td_order_row_writer.h` / `td_trade_row_writer.h` /
+      `td_position_row_writer.h` 覆盖 orders/trades/positions/trading_accounts 四表）。但
+      测试 .cpp 里仍可以手抄一份**全列** INSERT 而不被任何检查发现。R6 把列清单真相源
+      （`libs/tdstore/src/schema_catalog.cpp` 的 `kOrdersColumns[]` / `kTradesColumns[]` /
+      `kPositionsColumns[]` / `kTradingAccountsColumns[]`）解析出来，扫描 §5.4 已登记的
+      `*_row_writer.h` **所在目录**下的 `*.cpp`：INSERT 的列集合（忽略顺序）若等于该表
+      全列集合 → 报错。范围只到登记头所在目录（夹具头自己写明「唯一实现范围是本目录」），
+      不扫跨模块目录。**列子集**的 INSERT 不报（#253 的既有形态依赖它）；登记的夹具头
+      自身、或文件里有显式豁免标记时不报。表清单解析失败报 `error: cannot parse ...`，
+      不静默跳过。
+
+R6 豁免标记：手抄全列是**有意**的（例如用例要逐列验证列序）时，在文件里写一行：
+
+    // row-writer-exempt: reason=<为什么必须手抄全列>
+
+标记只认行注释的该形态，`reason=` 不得为空（缺理由报错）。
 
 单一用途头豁免：使用者 <2 的头自动忽略。若一个头故意不共享、却被 >=2 个测试 .cpp
 包含，必须在头文件里写一行显式豁免标记并给出理由：
@@ -62,6 +79,17 @@ DOC_REL = Path("docs") / "unit-test-standard.md"
 DOC_DISPLAY = "docs/unit-test-standard.md"
 SHARED_THRESHOLD = 2
 EXEMPT_MARKER = "// shared-test-header: exempt | reason=<why>"
+# R6 全列清单字面量：列清单真相源 = schema_catalog.cpp 的 ColumnSchema 数组。
+SCHEMA_CATALOG_REL = Path("libs") / "tdstore" / "src" / "schema_catalog.cpp"
+SCHEMA_CATALOG_DISPLAY = "libs/tdstore/src/schema_catalog.cpp"
+ROW_WRITER_SUFFIX = "_row_writer.h"
+ROW_WRITER_EXEMPT_EXAMPLE = "// row-writer-exempt: reason=<why>"
+COLUMN_ARRAY_TO_TABLE = {
+    "kOrdersColumns": "orders",
+    "kTradesColumns": "trades",
+    "kPositionsColumns": "positions",
+    "kTradingAccountsColumns": "trading_accounts",
+}
 
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
 SECTION_54_ROW_RE = re.compile(r"^\|\s*5\.4\s*\|")
@@ -72,6 +100,16 @@ EXEMPT_MARKER_RE = re.compile(
     r"^\s*//\s*shared-test-header:\s*exempt(?:\s*\|\s*reason=(?P<reason>.+?))?\s*$",
     re.MULTILINE,
 )
+# R6：列清单字面量识别。字符串字面量先按「相邻字面量拼接」合并成逻辑串（SQL 常见
+# 跨行 `"a, b,"\n "c)"` 形态），再从中抓 INSERT INTO <table> ( col, col, ... )。
+STRING_LITERAL_RUN_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"(?:\s+"(?:[^"\\\n]|\\.)*")*')
+STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+INSERT_COLUMNS_RE = re.compile(
+    r"INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)", re.IGNORECASE)
+INSERT_COLUMN_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ROW_WRITER_EXEMPT_RE = re.compile(
+    r"^\s*//\s*row-writer-exempt:\s*reason=(?P<reason>.+?)\s*$", re.MULTILINE)
+ROW_WRITER_EXEMPT_PREFIX_RE = re.compile(r"^\s*//\s*row-writer-exempt", re.MULTILINE)
 
 
 class ScanError(Exception):
@@ -111,6 +149,8 @@ class Report:
     shared: list[str] = field(default_factory=list)
     doc_errors: list[str] = field(default_factory=list)
     violations: list[Violation] = field(default_factory=list)
+    table_errors: list[str] = field(default_factory=list)
+    literal_errors: list[str] = field(default_factory=list)
 
 
 def repo_root() -> Path:
@@ -276,8 +316,133 @@ def read_text(path: Path, what: str, root: Path) -> str:
         raise ScanError(f"cannot read {what} {label}: {exc}") from exc
 
 
+def parse_table_columns(schema_text: str, label: str) -> tuple[dict[str, tuple[str, ...]], list[str]]:
+    """从 schema_catalog.cpp 解析四张表的全列清单；解析失败返回 errors（不静默跳过）。
+
+    真相源是 ``ColumnSchema kXxxColumns[] = { {"<列名>", ...}, ... };``——按数组块归属表名
+    （``kOrdersColumns`` → orders 等）。只认块内形如 ``{"<列名>",`` 的行；块结束（下一个
+    ``};``）即停。缺数组、块内取不到列、或列名重复都算解析失败。
+    """
+    lines = schema_text.splitlines()
+    tables: dict[str, tuple[str, ...]] = {}
+    errors: list[str] = []
+    for array_name, table in COLUMN_ARRAY_TO_TABLE.items():
+        head_re = re.compile(
+            r"^\s*(?:constexpr\s+)?ColumnSchema\s+" + re.escape(array_name) + r"\s*\[\s*\]")
+        start = next((i for i, line in enumerate(lines) if head_re.match(line)), None)
+        if start is None:
+            errors.append(f"cannot parse {label}: missing ColumnSchema array {array_name}")
+            continue
+        columns: list[str] = []
+        closed = False
+        for line in lines[start + 1:]:
+            stripped = line.strip()
+            if stripped.startswith("};"):
+                closed = True
+                break
+            match = re.match(r'^\{"([A-Za-z_][A-Za-z0-9_]*)",', stripped)
+            if match is not None:
+                columns.append(match.group(1))
+        if not closed:
+            errors.append(f"cannot parse {label}: column array {array_name} is not terminated")
+            continue
+        if not columns:
+            errors.append(f"cannot parse {label}: column array {array_name} yields no columns")
+            continue
+        duplicates = sorted({name for name in columns if columns.count(name) > 1})
+        if duplicates:
+            errors.append(f"cannot parse {label}: column array {array_name} repeats "
+                          f"{', '.join(duplicates)}")
+            continue
+        tables[table] = tuple(columns)
+    return tables, errors
+
+
+def row_writer_dirs(registered: set[str]) -> list[str]:
+    """§5.4 里登记的 ``*_row_writer.h`` 所在目录集合（R6 扫描范围，排序）。"""
+    dirs = {
+        os.path.dirname(os.path.normpath(rel).replace(os.sep, "/"))
+        for rel in registered
+        if os.path.basename(rel.replace("\\", "/")).endswith(ROW_WRITER_SUFFIX)
+    }
+    return sorted(d for d in dirs if d)
+
+
+def _sql_insert_columns(text: str) -> list[tuple[str, tuple[str, ...]]]:
+    """从 C++ 文本里抓 (表名, 列元组)：先把相邻字符串字面量拼成逻辑串再匹配 INSERT。
+
+    跨行 ``"INSERT INTO t (a, b,"`` + ``" c) VALUES ..."`` 是本题最常见的形态，因此按
+    「一条字符串字面量 run」合并后再匹配，列清单内的空白/换行自然被吃掉。
+    """
+    found: list[tuple[str, tuple[str, ...]]] = []
+    for run in STRING_LITERAL_RUN_RE.finditer(text):
+        joined = " ".join(STRING_LITERAL_RE.findall(run.group(0)))
+        for match in INSERT_COLUMNS_RE.finditer(joined):
+            table = match.group(1).lower()
+            raw_columns = [part.strip() for part in match.group(2).split(",")]
+            if not raw_columns or not all(raw_columns):
+                continue
+            if not all(INSERT_COLUMN_IDENT_RE.match(name) for name in raw_columns):
+                continue  # 不是纯标识符列清单（如 VALUES 里的表达式），不参与判定
+            found.append((table, tuple(raw_columns)))
+    return found
+
+
+def check_full_column_literals(
+    root: Path, registered: set[str]
+) -> tuple[list[str], list[str]]:
+    """R6：登记夹具头所在目录下的 *.cpp 手抄全列 INSERT → 报红；返回 (错误, 表错误)。
+
+    列子集不报（#253 的既有形态依赖列子集 INSERT）；登记的夹具头自身不扫；文件里写
+    ``// row-writer-exempt: reason=<why>`` 可豁免（缺 reason 仍报）。没有登记任何
+    row-writer 头 → 不做本规则（没有「唯一实现」可对照的表清单来源）。
+    """
+    directories = row_writer_dirs(registered)
+    if not directories:
+        return [], []
+    tables, table_errors = parse_table_columns(
+        read_text(root / SCHEMA_CATALOG_REL, "schema catalog", root), SCHEMA_CATALOG_DISPLAY)
+    if table_errors:
+        return [], table_errors
+
+    errors: list[str] = []
+    for directory in directories:
+        base = root / directory
+        if not base.is_dir():
+            errors.append(f"cannot scan registered row-writer directory: {directory}")
+            continue
+        for path in sorted(base.rglob("*" + TEST_CPP_SUFFIX)):
+            if not path.is_file():
+                continue
+            rel = rel_to_root(path, root)
+            # 只扫 *.cpp：登记的夹具是**头文件**（`.h`，见 §5.4 表），它自己写全列清单正是
+            # 「唯一实现」本体，不能报。早期版本这里还有一条「登记项自身跳过」的分支，
+            # 但登记集合里不可能出现 .cpp，那个分支是死代码（#289 审查 conformance 6），已删。
+            text = read_text(path, "test source", root)
+            literals = _sql_insert_columns(text)
+            if not literals:
+                continue
+            exempt = ROW_WRITER_EXEMPT_RE.search(text)
+            if exempt is not None and (exempt.group("reason") or "").strip():
+                continue
+            if exempt is None and ROW_WRITER_EXEMPT_PREFIX_RE.search(text):
+                errors.append(
+                    f"{rel}: invalid row-writer exemption: missing or empty reason "
+                    f"(expected '{ROW_WRITER_EXEMPT_EXAMPLE}')")
+                continue
+            for table, columns in literals:
+                full = tables.get(table)
+                if full is None or set(columns) != set(full):
+                    continue
+                errors.append(
+                    f"{rel}: full column list for '{table}' written by hand "
+                    f"({len(columns)} columns); use the shared row-writer fixture in "
+                    f"{directory} instead, or add '{ROW_WRITER_EXEMPT_EXAMPLE}'")
+    return errors, []
+
+
 def check(root: Path, doc: Path) -> Report:
-    """扫描 root，返回文档错误 / 未登记头 / 统计信息。"""
+    """扫描 root，返回文档错误 / 未登记头 / 全列清单字面量 / 统计信息。"""
     if not any((root / base).is_dir() for base in SCAN_ROOTS):
         raise ScanError(f"no {'/ or '.join(SCAN_ROOTS)} directory under root: {root}")
 
@@ -313,7 +478,9 @@ def check(root: Path, doc: Path) -> Report:
             violations.append(Violation("unregistered", header_rel, tuple(user_list)))
 
     violations.sort(key=lambda violation: violation.header)
-    return Report(headers=header_rels, shared=shared, violations=violations)
+    literal_errors, table_errors = check_full_column_literals(root, registered)
+    return Report(headers=header_rels, shared=shared, violations=violations,
+                  table_errors=table_errors, literal_errors=literal_errors)
 
 
 # ---- 自测 ----------------------------------------------------------------
@@ -361,15 +528,57 @@ def _build_case(
     headers: dict[str, str],
     cpps: dict[str, str],
     doc_text: str,
+    schema_text: str | None = None,
 ) -> tuple[Path, Path]:
     root = case_dir / "repo"
     for rel, content in headers.items():
         _write(root / rel, content)
     for rel, content in cpps.items():
         _write(root / rel, content)
+    if schema_text is not None:
+        _write(root / SCHEMA_CATALOG_REL, schema_text)
     doc = case_dir / "docs" / "unit-test-standard.md"
     _write(doc, doc_text)
     return root, doc
+
+
+# R6 自测用的最小列清单：与真实 schema_catalog.cpp 的形态一致（{"<列名>", ...} 行），
+# 四张表各取少而可分辨的列，够验证「全列 vs 子集」判定而不复制真实清单。
+_SELFTEST_COLUMNS = {
+    "orders": ("account_id", "date", "order_id", "seq"),
+    "trades": ("account_id", "date", "trade_id", "order_id", "seq"),
+    "positions": ("account_id", "date", "instrument_id", "seq"),
+    "trading_accounts": ("account_id", "date", "seq"),
+}
+
+
+def _selftest_schema(omit: str | None = None) -> str:
+    """最小 schema_catalog.cpp 夹具；omit 指定一张表不写（模拟解析失败）。"""
+    lines = ["// selftest fixture: minimal schema catalog", ""]
+    for array_name, table in COLUMN_ARRAY_TO_TABLE.items():
+        if table == omit:
+            continue
+        lines.append(f"constexpr ColumnSchema {array_name}[] = {{")
+        for column in _SELFTEST_COLUMNS[table]:
+            lines.append(f'    {{"{column}", ColumnType::Text, true, false, ""}},')
+        lines.append("};")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _insert_cpp(*literals: str, comment: str | None = None) -> str:
+    """构造一段带 INSERT 字面量的测试 .cpp（literals 为相邻字符串，模拟跨行拼接）。"""
+    body = ['#include "td_trade_row_writer.h"', "", "namespace {", "void seed() {"]
+    body.append("    constexpr const char* kSql =")
+    for literal in literals:
+        body.append(f'        "{literal}"')
+    body.append("        ;")
+    body.append("    (void)kSql;")
+    body.append("}")
+    body.append("}  // namespace")
+    if comment is not None:
+        body.insert(4, comment)
+    return "\n".join(body) + "\n"
 
 
 def run_selftest() -> int:
@@ -402,6 +611,10 @@ def run_selftest() -> int:
             problems.append(f"shared {report.shared} != {expected_shared}")
         if report.doc_errors:
             problems.append(f"unexpected document error(s): {report.doc_errors}")
+        if report.literal_errors:
+            problems.append(f"unexpected full-column literal error(s): {report.literal_errors}")
+        if report.table_errors:
+            problems.append(f"unexpected schema table error(s): {report.table_errors}")
         if problems:
             print(f"selftest FAIL {name}: " + "; ".join(problems), file=sys.stderr)
             failures += 1
@@ -577,6 +790,132 @@ def run_selftest() -> int:
         else:
             print("selftest ok empty_table")
 
+        # R6 全列清单字面量（#247 / #272）：登记夹具头所在目录下 *.cpp 手抄**全列** INSERT
+        # → 报红；列子集绿；登记的夹具头自身不扫；带 reason 的豁免绿、缺 reason 红；
+        # 表清单解析失败红（不静默跳过）。
+        row_writer = "apps/webui/tests/td_trade_row_writer.h"
+        row_writer_dir = "apps/webui/tests"
+        row_writer_doc = _selftest_doc([f"| `{row_writer}` | 交易行夹具 |"])
+
+        def run_literal_case(
+            name: str,
+            cpps: dict[str, str],
+            headers: dict[str, str],
+            schema_text: str | None,
+            expected_literal_substrings: list[str],
+            expected_table_substring: str | None,
+        ) -> None:
+            nonlocal failures, cases
+            cases += 1
+            root, doc = _build_case(
+                base / name,
+                {row_writer: _header_body("td_trade_row_writer"), **headers},
+                cpps,
+                row_writer_doc,
+                schema_text=schema_text if schema_text is not None else _selftest_schema(),
+            )
+            report = check(root, doc)
+            problems: list[str] = []
+            if report.doc_errors or report.violations:
+                problems.append(f"unexpected doc/header error: "
+                                f"{report.doc_errors}{[v.header for v in report.violations]}")
+            got_literal = " ".join(report.literal_errors)
+            for needle in expected_literal_substrings:
+                if needle not in got_literal:
+                    problems.append(f"literal errors {report.literal_errors} lack '{needle}'")
+            if expected_table_substring is None:
+                if report.table_errors:
+                    problems.append(f"unexpected table errors: {report.table_errors}")
+            else:
+                if not any(expected_table_substring in message
+                           for message in report.table_errors):
+                    problems.append(f"table errors {report.table_errors} lack "
+                                    f"'{expected_table_substring}'")
+            if problems:
+                print(f"selftest FAIL {name}: " + "; ".join(problems), file=sys.stderr)
+                failures += 1
+            else:
+                print(f"selftest ok {name}")
+
+        run_literal_case(
+            "r6_full_column_red",
+            cpps={
+                f"{row_writer_dir}/handwritten_test.cpp": _insert_cpp(
+                    "INSERT INTO trades (account_id, date, trade_id, order_id,",
+                    " seq) VALUES (?,?,?,?,?)"),
+            },
+            headers={},
+            schema_text=None,
+            expected_literal_substrings=["handwritten_test.cpp", "full column list", "trades"],
+            expected_table_substring=None,
+        )
+
+        run_literal_case(
+            "r6_column_subset_green",
+            cpps={
+                f"{row_writer_dir}/subset_test.cpp": _insert_cpp(
+                    "INSERT INTO trades (account_id, date, trade_id) VALUES (?,?,?)"),
+            },
+            headers={},
+            schema_text=None,
+            expected_literal_substrings=[],
+            expected_table_substring=None,
+        )
+
+        # 嵌套子目录也要扫（rglob）：夹具目录下再分 `queries/`、`controllers/` 之类子目录
+        # 时，手抄全列仍然要报。原先这里放的是「夹具头自身绿」用例——把 INSERT 放在 .h 里
+        # 而扫描只认 .cpp，该用例恒真（#289 审查 conformance 6），换成真正能红的折叠用例。
+        run_literal_case(
+            "r6_nested_subdir_red",
+            cpps={
+                f"{row_writer_dir}/queries/nested_handwritten_test.cpp": _insert_cpp(
+                    "INSERT INTO trades (account_id, date, trade_id, order_id,",
+                    " seq) VALUES (?,?,?,?,?)"),
+            },
+            headers={},
+            schema_text=None,
+            expected_literal_substrings=["nested_handwritten_test.cpp", "full column list"],
+            expected_table_substring=None,
+        )
+
+        run_literal_case(
+            "r6_exempt_with_reason_green",
+            cpps={
+                f"{row_writer_dir}/exempt_test.cpp": _insert_cpp(
+                    "INSERT INTO trades (account_id, date, trade_id, order_id,",
+                    " seq) VALUES (?,?,?,?,?)",
+                    comment="// row-writer-exempt: reason=this case asserts the exact column "
+                            "order, so the literal must stay"),
+            },
+            headers={},
+            schema_text=None,
+            expected_literal_substrings=[],
+            expected_table_substring=None,
+        )
+
+        run_literal_case(
+            "r6_exempt_without_reason_red",
+            cpps={
+                f"{row_writer_dir}/no_reason_test.cpp": _insert_cpp(
+                    "INSERT INTO trades (account_id, date, trade_id, order_id,",
+                    " seq) VALUES (?,?,?,?,?)",
+                    comment="// row-writer-exempt:"),
+            },
+            headers={},
+            schema_text=None,
+            expected_literal_substrings=["no_reason_test.cpp", "missing or empty reason"],
+            expected_table_substring=None,
+        )
+
+        run_literal_case(
+            "r6_table_parse_failure_red",
+            cpps={},
+            headers={},
+            schema_text=_selftest_schema(omit="trades"),
+            expected_literal_substrings=[],
+            expected_table_substring="cannot parse",
+        )
+
     if failures:
         print(f"selftest FAILED: {failures} case(s)", file=sys.stderr)
         return 1
@@ -622,16 +961,26 @@ def main(argv: list[str]) -> int:
         print(f"\nFAIL: {len(report.doc_errors)} document problem(s) in {doc}",
               file=sys.stderr)
         return 1
-    if report.violations:
+    if report.table_errors:
+        for message in report.table_errors:
+            print(f"error: {message}")
+        print(f"\nFAIL: {len(report.table_errors)} schema table parse problem(s)",
+              file=sys.stderr)
+        return 1
+    if report.violations or report.literal_errors:
         for violation in report.violations:
             for line in violation.render():
                 print(line)
-        print(f"\nFAIL: {len(report.violations)} shared test header issue(s)",
-              file=sys.stderr)
+        for message in report.literal_errors:
+            print(f"error: {message}")
+        failed = len(report.violations) + len(report.literal_errors)
+        print(f"\nFAIL: {failed} shared test header issue(s)", file=sys.stderr)
         return 1
 
     print(f"OK: {len(report.headers)} test header(s) checked, {len(report.shared)} shared "
-          f"(>= {SHARED_THRESHOLD} users), all registered or exempt", file=sys.stderr)
+          f"(>= {SHARED_THRESHOLD} users), all registered or exempt; "
+          f"no hand-written full column list under registered row-writer directories",
+          file=sys.stderr)
     return 0
 
 

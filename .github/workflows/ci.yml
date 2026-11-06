@@ -46,6 +46,23 @@ on:
   # 曾考虑但**否决**的改进：把 PR 侧 `SCCACHE_GHA_RW_MODE` 从 READ_ONLY 改成 READ_WRITE。
   # 不会改善后续 PR 命中率——GitHub Actions 缓存按 ref 作用域，PR 写在 `refs/pull/N/merge`
   # 下，其它 PR restore 不到（这正是 warm job 必须放在 main 上的原因）。
+  #
+  # 快路径（#289 AC3）：PR 的改动面由 `scripts/ci_scope.py` 分类为 fast / full，`scope` job
+  # （仅 pull_request）输出 `mode`。fast 时**跳过验证面**：Windows job 整体不跑、Linux 的
+  # Build / C++ Tests / 四个前端步骤不跑；**保留 preflight**（它才是 scripts、docs 改动的
+  # 验证面）。fast 仍会跑 Setup（conan install + cmake configure）与缓存恢复等廉价准备步骤
+  # ——它们不是验证、也不在 `if` 条件里，代价约一分钟，换来「full 回退无需重跑配置」的简单
+  # 语义（#289 审查：注释曾写「只保留 preflight」，与实现不符，这里按实际写）。
+  # **denylist 只在 `scripts/ci_scope.py` 定义一处**，本文件不重复列举——两处定义必然漂移，
+  # 改规则请改脚本并跑 `--selftest`。
+  #   - 逃生口：PR 带 `ci-full` 标签强制全量（标签判断独立于 mode，fast 也覆盖）。
+  #     **注意触发时机**：`pull_request` 默认 activity types 是 opened/synchronize/reopened，
+  #     不含 `labeled`——所以「先让 fast 跑完、再补标签」不会重跑旧 run（re-run 复用同一份
+  #     event payload，也读不到新标签）。正确用法：**推送前就把标签加上**；事后补救 =
+  #     保留标签 + close/reopen PR（`reopened` 会创建新 run）。不加 `labeled` 到 types 是有意
+  #     的：那会让任意标签（如 needs-triage）都触发一次全量 CI。
+  #   - main push 永远全量：`scope` job 不跑，`needs.scope.outputs.mode` 为空，各步条件里的
+  #     `github.event_name != 'pull_request'` 分支保证照常执行。
   schedule:
     - cron: "17 16 * * *"  # UTC 16:17 = Asia/Shanghai 00:17
   # 手动触发：
@@ -68,12 +85,56 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # PR 改动面分类（#289 AC3）：廉价 job，只跑确定性分类器，输出 mode=fast|full。
+  # 用三点 diff（base...head = merge-base 到 head）：两点 diff 会把 main 前进后落在
+  # base 与 merge-base 之间的无关提交算进来，分类必然虚高。
+  # 只在 pull_request 上跑；push/schedule/dispatch 下本 job 被 skip（未产出 outputs），
+  # 下游 windows/linux 的条件里用 `github.event_name != 'pull_request'` 显式覆盖该情形。
+  scope:
+    name: PR scope (fast/full)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.scope.outputs.mode }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 分类要用 merge-base（base...head），浅克隆取不到共同祖先。
+          fetch-depth: 0
+
+      # 分类器自身失败（退出码 2）时回退 full：full 就是今天的行为，安全方向；
+      # 反之「失败即 fast」会静默跳过验证面。不把 step 弄红，避免 needs 失败导致
+      # windows/linux 整个被 skip —— 那等于连 preflight 都不跑。
+      - name: Classify changed files
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if out="$(python3 scripts/ci_scope.py --range "${BASE_SHA}...${HEAD_SHA}")"; then
+            echo "ci-scope: ${out}"
+            echo "${out}" >> "$GITHUB_OUTPUT"
+          else
+            rc=$?
+            echo "::warning::scripts/ci_scope.py failed (rc=${rc}); falling back to mode=full"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
     name: Windows (MSVC Release)
     # Windows 只在 PR 上跑：PR 校验的是 merge-ref，已覆盖合并结果；main push 只跑 Linux，
     # 省下每票 11–41 分钟的重复 Windows 验证（实测区间见文件头的分档表；本波 11 票
     # Windows 全绿，MSVC 问题在 PR 也可见）。
-    if: github.event_name == 'pull_request'
+    # 快路径（#289 AC3）：PR 上还要 scope 判定为 full，或 PR 带 `ci-full` 标签（独立于
+    # mode 的逃生口 —— 「fast + 标签」因此会强制全量）。标签判断写在 needs 之外，正是
+    # 为了不被 skip 时的空 outputs 影响：非 PR 事件本 job 本就不跑。
+    needs: scope
+    if: >-
+      github.event_name == 'pull_request' &&
+      (needs.scope.outputs.mode == 'full' ||
+       contains(github.event.pull_request.labels.*.name, 'ci-full'))
     runs-on: windows-latest
     timeout-minutes: 90
     env:
@@ -220,9 +281,16 @@ jobs:
     # schedule / dispatch 只为预热 Windows 缓存（见 windows-cache-warm）；Linux 已由每次
     # main push 与每个 PR 覆盖，不在这两种触发下重复跑。例外：手动触发并勾选 run_perf=true
     # 时跑一次 perf 档性能基准（#164，report-only）。
+    #
+    # `needs: scope` + `!cancelled()`（#289 AC3）：scope job 只在 pull_request 上跑，
+    # push / dispatch 下它被 skip；GitHub 会把 needs 的 skip 传播到本 job，除非 if 里含
+    # 状态检查函数。`!cancelled()` 即该用途（比 always() 更精确：工作流被取消时不硬跑）。
+    # 这保证 main push 与 run_perf dispatch 的现有语义完全不变。
+    needs: scope
     if: >-
-      github.event_name == 'push' || github.event_name == 'pull_request' ||
-      (github.event_name == 'workflow_dispatch' && inputs.run_perf)
+      !cancelled() &&
+      (github.event_name == 'push' || github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_perf))
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -276,7 +344,9 @@ jobs:
           sudo apt-get install -y clang-format-21
           clang-format-21 --version
 
-      - name: Repo preflight (log format / C++ format / docs links / test portability / MSVC hazards / JSON vendor version / gtest discovery timeout)
+      - name: Repo preflight (C 段，清单见脚本头)
+        # 前后端两类快路径下都**保留**：它是 scripts / docs 改动的唯一验证面
+        # （ci_scope / unittest / 文档链接 / 格式检查都在这里跑，#289 AC3）。
         run: ./scripts/preflight.sh --c-only
 
       - name: Commit Message Check (prefix)
@@ -314,17 +384,48 @@ jobs:
       - name: Setup (conan install + cmake configure)
         run: ./scripts/setup.sh release
 
+      # 快路径（#289 AC3）：fast 模式下跳过构建与测试，但**只有 PR 才可能 fast**。
+      # `needs.scope.outputs.mode != 'fast'` 在非 PR 事件下取值是空串（scope job 未跑），
+      # 此时 `github.event_name != 'pull_request'` 分支为真 → 照常执行（main push 全量）。
+      # `ci-full` 标签是独立逃生口：fast + 标签也强制跑。
       - name: Build (C++ + frontend dist)
+        if: needs.scope.outputs.mode != 'fast' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-full')
         run: ./scripts/build.sh --config release
 
-      # 命中率证据（#133）：ubuntu-24.04 的 ccache 4.9 不支持 action 的 JSON job summary，
-      # 这里显式打印统计；失败不阻断构建。
+      # 命中率证据（#289 AC4）：ubuntu-24.04 的 ccache 4.9 不支持 action 的 JSON job
+      # summary；原先只 `ccache --show-stats` 打日志，混在 job 日志里无法跨 run 归因
+      # （#272 一个测试 cpp 跑 11m55s、#284 零 C++ 跑 14m51s 都是这样发现的）。
+      # 这里落一份与 Windows `windows-sccache-stats` 对称的 artifact：统计 + 本次改动
+      # 规模再加上 commit，供 `scripts/ci_budget.py --stats-file` 归因。
+      # **只取证，不设墙钟预算门禁**：先拿数据再决定改不改缓存（#260 误判的教训）。
       - name: ccache stats
         if: always()
         continue-on-error: true
-        run: ccache --show-stats
+        run: |
+          # 统计失败（ccache action 挂了 / 没装）不能让 job 红，也不能吞掉后面的规模行。
+          ccache --show-stats 2>&1 | tee /tmp/ccache-stats.txt || true
+          mkdir -p .cache/ci-stats
+          cp /tmp/ccache-stats.txt .cache/ci-stats/ccache-stats.txt
+          # 改动规模：**复用 scripts/ci_budget.py**（单一来源）——它按 `git diff --name-only`
+          # 数 cpp/header 并按档位打印，`--actual` 缺省时只报告不判定，正好当取证行用。
+          # 自己在这里再 grep 一遍扩展名等于把「哪些后缀算 C++」定义第三份，必然漂移。
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then base="origin/main"; fi
+          python3 scripts/ci_budget.py --from-git "${base}...HEAD" 2>/dev/null \
+            >> .cache/ci-stats/ccache-stats.txt || true
+          echo "commit=${GITHUB_SHA}" >> .cache/ci-stats/ccache-stats.txt
+
+      - name: Upload ccache stats + change scale (#289 AC4)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-ccache-stats
+          path: .cache/ci-stats/
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: C++ Tests (incl. integration smoke)
+        if: needs.scope.outputs.mode != 'fast' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-full')
         run: ./scripts/test.sh --config release
 
       # 性能基准（#164）：report-only，默认门禁不跑。手动 workflow_dispatch 勾选
@@ -336,21 +437,29 @@ jobs:
           ./scripts/test.sh --config release --label perf
           ctest --preset linux-release-perf -V --no-tests=error
 
+      # 快路径（#289 AC3）：四个前端步骤与 Build/C++ Tests 同条件。理由：前端目录
+      # `apps/webui/frontend/**` 在 `scripts/ci_scope.py` 的 denylist 内，任何前端改动
+      # 都必然把 mode 判成 full —— 也就是说 **fast 模式下不可能存在前端失败面**，
+      # 这些步骤只会空转（每步 npm 冷启动 + type-check 约十几秒到一分钟）。
       - name: Frontend Type Check
+        if: needs.scope.outputs.mode != 'fast' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-full')
         working-directory: apps/webui/frontend
         run: npm run type-check
 
       - name: Frontend Lint
+        if: needs.scope.outputs.mode != 'fast' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-full')
         working-directory: apps/webui/frontend
         run: npm run lint && npm run lint:css
 
       - name: Frontend Contract Types Freshness
+        if: needs.scope.outputs.mode != 'fast' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-full')
         working-directory: apps/webui/frontend
         run: |
           npm run gen:types
           git diff --exit-code src/types/generated.ts
 
       - name: Frontend Tests
+        if: needs.scope.outputs.mode != 'fast' || github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci-full')
         working-directory: apps/webui/frontend
         run: npm test
 

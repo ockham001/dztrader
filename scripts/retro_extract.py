@@ -7,6 +7,15 @@ DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.
 产出 `.cache/retro/<session-id>-digest.md`，含：轮次墙钟、人工消息、审批、工具失败、
 >=60s 长作业、子代理调用、工具计数、LLM 重试——按复盘候选归类前的原始证据。
 
+工具失败有两类来源（#284 复盘 AC8）：
+  failures        `message.isError == true` 的工具结果（原有口径）。
+  masked failures `isError == false`，但**输出文本**里已经有失败证据——典型是
+                  `cmd; echo rc=$?` 把非零退出码吞掉，宿主看不到 isError。按行匹配
+                  `rc=[1-9]` / `FAILED` / `FAIL:` / 行首 `error:`，同一 tool call 只记
+                  第一条命中（附命中行前 160 字），最多 40 条，避免 digest 爆掉。
+                  该小节与 `## failures` 分开，不改变原有小节与格式；`isError == true`
+                  的结果不进本小节（已在 failures 里，避免同一事件记两次）。
+
 用法:
   python3 scripts/retro_extract.py --latest                # 本 cwd 最新主会话
   python3 scripts/retro_extract.py --session <path.zstd>   # 指定会话文件
@@ -31,6 +40,20 @@ from pathlib import Path
 LONG_JOB_SEC = 60
 SUBAGENT_TOOLS = ("subagent", "subagent_fork", "spawn_teammate", "workflow")
 _SAFE_CHAR_RE = re.compile(r"^[A-Za-z0-9._-]$")
+# 自掩码实红（#284 AC8）：isError=false 但工具输出文本里已有失败证据。模式保持有限，
+# 只认退出码与非零标记，不做自然语言判定；同一 tool call 只记第一条命中。
+# **只对命令类工具生效**：`read` / `grep` / `diff` 的输出里出现 `FAILED`、`error:` 是
+# 被查看的内容（日志、测试源码、CI 日志），不是本次调用的失败，否则 digest 全是误报
+# （#289 审查 conformance 8）。
+MASKED_FAILURE_LIMIT = 40
+MASKED_FAILURE_TOOL_NAMES = frozenset({"bash", "shell", "job_output", "wait-ci"})
+MASKED_FAILURE_RES = (
+    # cmd; echo rc=$? 把非零退出码吞掉的形态
+    ("rc!=0", re.compile(r"\brc=([1-9][0-9]*)\b")),
+    ("FAILED", re.compile(r"\bFAILED\b")),
+    ("FAIL:", re.compile(r"\bFAIL:")),
+    ("error:", re.compile(r"^\s*error:")),  # 工具自己打印的 error 行（宿主未标 isError）
+)
 
 
 def die(msg: str) -> None:
@@ -126,12 +149,31 @@ def content_text(content: list | None) -> str:
     )
 
 
+def masked_failure_line(text: str) -> tuple[str, str] | None:
+    """在工具输出文本里找第一条失败证据，返回 (命中模式, 命中行) 或 None。
+
+    只按行匹配有限模式（rc!=0 / FAILED / FAIL: / 行首 error:），不做语义判断：
+    命令把非零退出码吞掉后 isError 仍为 false，这里补捞实红（#284 AC8）。
+    调用方必须先用 `MASKED_FAILURE_TOOL_NAMES` 过滤工具类型——被 read/grep 出来的
+    `FAILED` 文本是内容，不是本次调用的失败。
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for label, pattern in MASKED_FAILURE_RES:
+            if pattern.search(line):
+                return label, stripped[:160].replace("\n", " ")
+    return None
+
+
 def extract(path: Path) -> str:
     events = load_events(path)
     tools: collections.Counter[str] = collections.Counter()
     calls: dict[str, tuple[str, str, int]] = {}
     human: list[tuple[int, str]] = []
     failures: list[tuple[int, str, str, str]] = []
+    masked_failures: list[tuple[int, str, str, str, str]] = []
     long_jobs: list[tuple[int, str]] = []
     approvals: list[tuple[int, str, str]] = []
     subagents: list[tuple[int, str, str]] = []
@@ -168,17 +210,32 @@ def extract(path: Path) -> str:
                     patterns[key] += 1
         elif kind == "tool/result":
             message = data.get("message") or {}
+            call_id = message.get("toolCallId", "")
+            output = content_text(message.get("content"))
             if message.get("isError"):
-                call_id = message.get("toolCallId", "")
                 name, command, cts = calls.get(call_id, ("?", "", ts))
                 failures.append(
                     (
                         cts,
                         name,
                         command[:220].replace("\n", " "),
-                        content_text(message.get("content"))[:160].replace("\n", " "),
+                        output[:160].replace("\n", " "),
                     )
                 )
+            elif len(masked_failures) < MASKED_FAILURE_LIMIT:
+                # isError 为 false 但输出里有失败证据（自掩码实红）；isError 的结果
+                # 已进 failures，不重复记。只对命令类工具生效（见 MASKED_FAILURE_* 注释）。
+                name, command, cts = calls.get(call_id, ("?", "", ts))
+                hit = (
+                    masked_failure_line(output)
+                    if name in MASKED_FAILURE_TOOL_NAMES
+                    else None
+                )
+                if hit is not None:
+                    pattern, line = hit
+                    masked_failures.append(
+                        (cts, name, command[:160].replace("\n", " "), pattern, line)
+                    )
         elif kind == "user/message":
             if (data.get("source") or {}).get("kind") == "user":
                 human.append((ts, content_text(data.get("content"))[:300].replace("\n", " ")))
@@ -225,6 +282,12 @@ def extract(path: Path) -> str:
     for ts, name, command, error in failures:
         out.append(f"- {ts} [{name}] cmd={command}")
         out.append(f"  err={error}")
+    out.append("")
+    out.append("## masked failures (rc!=0 / FAIL in tool output)")
+    out.append("")
+    for ts, name, command, pattern, line in masked_failures:
+        out.append(f"- {ts} [{name}] cmd={command} (match={pattern})")
+        out.append(f"  hit={line}")
     out.append("")
     out.append("## long jobs (>=60s)")
     out.append("")
