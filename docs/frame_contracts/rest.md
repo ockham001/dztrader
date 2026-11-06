@@ -116,6 +116,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | GET `/api/sysmon/snapshot` | 当前系统监控快照（任意已认证用户）；镜像尚未就绪（dzsysmon 未上报）时回 `503 {"error":"sysmon snapshot not available"}` | 读取镜像 `sysmon_snapshot` 域（固定实例 `dzsysmon`，契约 sysmon §5）；由 `RTN_SYSMON_SNAPSHOT` 更新 |
 | GET `/api/sysmon/config` | 当前生效的系统监控配置（任意已认证用户）；镜像尚未就绪时回 `503 {"error":"sysmon config not available"}`。只读镜像，不产生帧往返 | 读取镜像 `sysmon_config` 域（固定实例 `dzsysmon`，契约 sysmon §5）；由 `RTN_SYSMON_CONFIG` 更新 |
 | PUT `/api/sysmon/config` | 运行期修改系统监控配置（admin）：body 为 RFC 7386 merge patch（任意位置 `null` 由 dzsysmon 判为非法）。响应仅表示"已写事件通道"（`{"ok":true,"message":"dispatched"}`）；`shm` 未就绪时 `503 {"error":"shm not available"}` | → `SET_SYSMON_CONFIG`（`instance_id=dzsysmon`，契约 sysmon §3）；生效信号：WS `sysmon_config`（`RTN_SYSMON_CONFIG` 全量回推，含失败时回推旧值）。监控页「配置」区下发差异 patch，pending 以 WS 回推清除 |
+| POST `/api/sysmon/clock/probe` | 手动触发一次时钟探测（admin）：响应仅表示"已写事件通道"（`{"ok":true,"message":"dispatched"}`）；`shm` 未就绪时 `503 {"error":"shm not available"}`；非 admin `403 {"error":"admin required"}`。限流窗口内或探测在飞时 dzsysmon 直接忽略（只记日志，无错误响应） | → `DZ_FRAME_QUERY_SYSMON_CLOCK`（`instance_id=dzsysmon`，契约 sysmon §1.1，形态 3 无 RTN）；生效信号：WS `sysmon_snapshot`（`RTN_SYSMON_SNAPSHOT` 的 `clock` 域更新；无独立 RTN 帧、镜像域或 WS 消息名） |
 | GET `/api/sysmon/history` | 历史曲线查询（任意已认证用户）：按指标、时间范围与粒度返回 min / max / avg / last 包络及历史标记。历史库缺失、schema 版本不符或文件损坏时回 `200` + `{"available":false,"reason":...}`（**不**返回伪造或半截数据，也**不**当作 5xx）；参数非法回 `400 {"error":"bad request"}` | 只读打开历史库 `$DZTRADER_HOME/db/sysmon.db`（《帧契约：系统监控》§6.1）；**不走帧、不读镜像** |
 
 ### 2.9 交易数据

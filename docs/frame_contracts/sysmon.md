@@ -1,8 +1,8 @@
 # 帧契约：系统监控
 
-本文件覆盖 `DZ_FRAME_RTN_SYSMON_SNAPSHOT`、`DZ_FRAME_SET_SYSMON_CONFIG`、`DZ_FRAME_RTN_SYSMON_CONFIG` 三个帧。总则见《帧契约：通用规则》。
+本文件覆盖 `DZ_FRAME_RTN_SYSMON_SNAPSHOT`、`DZ_FRAME_SET_SYSMON_CONFIG`、`DZ_FRAME_RTN_SYSMON_CONFIG`、`DZ_FRAME_QUERY_SYSMON_CLOCK` 四个帧。总则见《帧契约：通用规则》。
 
-发送方固定为内部进程 `dzsysmon`（进程名即 `instance_id`，见总则 §5）。**资源越限（内存使用率 / 交换使用率 / 卷剩余空间 / CPU 饱和）只写日志与 UI 色标，不产生 UI 通知**（§2.8）；`dzsysmon` 的 `NOTIFY_UI` 只保留真故障（历史库不可用、配置下发失败），不新增通知帧。历史查询**不走帧**（dzweb 以只读方式直接打开历史库，schema 由历史模块承载）。
+发送方固定为内部进程 `dzsysmon`（进程名即 `instance_id`，见总则 §5）。**资源越限（内存使用率 / 交换使用率 / 卷剩余空间 / CPU 饱和）只写日志与 UI 色标，不产生 UI 通知**（§2.8）；`dzsysmon` 的 `NOTIFY_UI` 只保留真故障（历史库不可用、配置下发失败）与时钟偏差的 error 档（§2.8，ADR 0047），不新增通知帧。时钟偏差自测与同步服务检测（快照 `clock` 域，§2.9）是**只读监控**：不写系统时钟、不读守护进程状态、不写历史库。历史查询**不走帧**（dzweb 以只读方式直接打开历史库，schema 由历史模块承载）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/sysmon.h`（`SysmonSnapshot`/`SysmonConfig` 及校验）；采集侧 `SystemCollector` 接缝见 `libs/platform/include/dztrader/platform/system_collector.h`。
 
@@ -17,8 +17,19 @@
 | `DZ_FRAME_RTN_SYSMON_SNAPSHOT` | 形态 4 纯上行推送 | 无 `instance_id`；发送方固定 `dzsysmon` | 快照（本文件 §2） |
 | `DZ_FRAME_SET_SYSMON_CONFIG` | 形态 1 请求 | `instance_id = dzsysmon` | 配置 merge patch（本文件 §3） |
 | `DZ_FRAME_RTN_SYSMON_CONFIG` | 形态 1 响应 / 形态 4 自发 | `instance_id = dzsysmon` | 全量生效配置（本文件 §3） |
+| `DZ_FRAME_QUERY_SYSMON_CLOCK` | 形态 3 单向下行动作帧 | `instance_id = dzsysmon` | 无（空 payload，无 RTN，见 §1.1） |
 
-三帧 payload 均为 JSON。帧头使用 `DzExtFrameHeader`（快照）或 `DzExtInstFrameHeader`（SET/RTN 配置），布局见总则 §2。
+快照与配置帧 payload 均为 JSON；`DZ_FRAME_QUERY_SYSMON_CLOCK` 无 payload。帧头使用 `DzExtFrameHeader`（快照）或 `DzExtInstFrameHeader`（SET/RTN 配置与查询帧），布局见总则 §2。
+
+### 1.1 手动时钟查询（DZ_FRAME_QUERY_SYSMON_CLOCK）
+
+**语义**：触发目标实例立即发起一轮时钟探测（`clock` 域，§2.9）。形态 3 单向下行动作帧，定向 `instance_id = dzsysmon`，空 payload，**无 RTN**——语义与 `DZ_FRAME_FLUSH_LOG`（契约 log）同类。
+
+**结果复用既有快照广播**：探测完成后经既有 `RTN_SYSMON_SNAPSHOT` 推送路径（§4 触发 5）更新 `clock` 域并广播到全部在线客户端。**不新增 RTN 帧、不新增镜像域、不新增 WS 消息名**（同一个量只允许一种表示）。
+
+**前端入口**：`POST /api/sysmon/clock/probe`（admin；端点细节见契约 rest §2.8）。响应仅表示「已写事件通道」，生效信号是随后的 WS `sysmon_snapshot`。
+
+**限流**：`dzsysmon` 侧为权威——探测在飞或距上次触发不足 `manual_min_interval_sec` 时**直接忽略并记一条日志**，不排队、不叠加；该拒绝**没有错误通道**（与 `FLUSH_LOG` 同类：非 SET 请求无反馈）。`clock` 域被配置关闭时同样忽略并记日志。前端按钮置灰为体验层，协议不承诺。
 
 ---
 
@@ -47,6 +58,7 @@
 | `disk_io` | array \| null | 每物理盘 I/O |
 | `network` | array \| null | 每网卡收发 |
 | `shm_dir` | object \| null | 共享内存目录占用（见 §2.4） |
+| `clock` | object \| null | 时钟偏差与同步服务检测（见 §2.9）；`null` = 该域被配置关闭 |
 | `availability` | object | 可用性描述（见下），**每个快照必须携带** |
 
 ### 2.1 sampling
@@ -161,7 +173,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `metrics` 键集合（固定，发送方每帧必须覆盖全部键）：
 
-`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`cpu.frequency`、`memory`、`swap`、`volumes`、`disk_io`、`network`、`shm_dir`、`temperature`。
+`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`cpu.frequency`、`memory`、`swap`、`volumes`、`disk_io`、`network`、`shm_dir`、`temperature`、`clock.offset`、`clock.sync_service`。
 
 `reason` 为自由文案（英文、小写开头、无句号），建议取值：
 - `not_implemented` —— 本版本尚未采集该指标
@@ -169,6 +181,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `no_permission` —— 计数器需特权/未开启
 - `no_sensor` —— 传感器不存在（如温度）
 - `collect_failed` —— 本次采集失败（能力存在但读不到；下一次采样可能恢复）
+- `no_reference` —— 无可用参考源（时钟偏差探测本轮全部失败，或首轮探测尚未完成）
 - `disabled_by_config` —— 该指标类别已被配置关闭（`sampling.groups` 中对应开关为 false）
 
 > 当前版本（#77）实现 `system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`、`network`；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon）——无 cpufreq 时 `cpu.frequency` 为 `unsupported`，无 hwmon 传感器时为 `temperature` = `no_sensor`；Windows 上两者不提供（默认配置关闭对应 B 组开关，故为 `disabled_by_config`；用户显式开启后采集器恒报 `unsupported`），也不提供整体频率。无交换分区/无页面文件的机器上 `swap` 为 `unsupported`。
@@ -184,8 +197,10 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 > `volumes` / `shm_dir` 的可用性同为**能力粘性**：一次成功枚举到卷 / 读到目录后可用性保持 `true`，此后单帧失败只把对应域置 `null`，不改写可用性。配置关闭 `sampling.groups.volumes` 时优先 `available=false` + `reason="disabled_by_config"`、`volumes` 为 `null`。`shm_dir` 没有独立配置组（页清理有效性是基础可观测项），始终采集。**单个卷不可读**不改写 `volumes` 的整体可用性——该卷以 `available=false` 进数组（§2.4），整体仍为 `available=true`；只有当一次卷都枚举不到时才整体标记 `collect_failed`。
 >
 > `cpu.frequency` / `temperature` 的可用性同为**能力粘性**：一次成功读到后可用性保持 `true`，此后单帧读取失败只把数值置 `null`（温度允许空数组/`null`、频率允许 `null`），消费方据此保留区块并显示「暂无数据」而不是「不可用」。配置关闭对应组时优先输出 `available=false` + `reason="disabled_by_config"`，数值为 `null`。温度/频率不可用时前端**整块不渲染**（不是显示 0，也不是显示「不可用」占位）。
+>
+> `clock.offset` / `clock.sync_service`（§2.9）是**两个独立键**：`clock.offset` 表示**偏差测量能力**——最近一轮探测存在可用聚合值时 `available=true`，本轮无可用参考源时为 `available=false` + `reason="no_reference"`（「尚未探测」由 `clock.last_probe_unix_ms = 0` 区分，前端显示「尚未探测」而不是「不可用」）。与其它指标键不同，`clock.offset` **不是能力粘性**——它表达「最近一轮探测是否成功」，上一轮成功后下一轮全部失败时回到 `available=false`（「测不到」必须显示为不可用而不是陈旧值）；误差界过大只影响质量判定（§2.8），**不改写本键可用性**（「测不准」与「测不到」是不同事实）。`clock.sync_service` 表示**同步服务枚举能力**——两平台基线内恒为 `available=true`，`daemons` 为空数组或全部 `running=false` 是「未检测到在运行的同步服务」这一**事实**（卡片内标黄、不弹窗），不改写可用性。**两键独立**：同步服务未运行不影响偏差测量，偏差测不到也不影响服务枚举。配置关闭 `clock` 域时两键均为 `available=false` + `reason="disabled_by_config"`（`clock` 为 `null`，§3.1.1）。
 
-### 2.6 快照示例（当前版本节选）
+### 2.6 快照示例（节选）
 
 ```json
 {
@@ -250,6 +265,23 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
      "rx_drops_per_sec": 0.0, "tx_drops_per_sec": 0.0, "is_virtual": false}
   ],
   "shm_dir": {"path": "/srv/dztrader/shm", "total_bytes": 754974720, "page_files": 12, "oldest_file_age_sec": 480},
+  "clock": {
+    "offset_ms": 12.4,
+    "bound_ms": 48.7,
+    "source": "ntp.aliyun.com",
+    "source_stratum": 2,
+    "last_probe_unix_ms": 1790000004000,
+    "servers": [
+      {"host": "ntp.aliyun.com", "ok": true, "offset_ms": 12.4, "bound_ms": 48.7, "rtt_ms": 60.0, "stratum": 2, "error": null},
+      {"host": "ntp.tencent.com", "ok": true, "offset_ms": 9.1, "bound_ms": 55.3, "rtt_ms": 74.0, "stratum": 2, "error": null},
+      {"host": "cn.pool.ntp.org", "ok": false, "offset_ms": null, "bound_ms": null, "rtt_ms": null, "stratum": null, "error": "timeout"}
+    ],
+    "daemons": [
+      {"name": "chronyd", "running": true}
+    ],
+    "daemon_conflict": false,
+    "kernel_synced": true
+  },
   "availability": {
     "platform_description": "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)",
     "metrics": {
@@ -265,7 +297,9 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
       "disk_io": {"available": true},
       "network": {"available": true},
       "shm_dir": {"available": true},
-      "temperature": {"available": true}
+      "temperature": {"available": true},
+      "clock.offset": {"available": true},
+      "clock.sync_service": {"available": true}
     },
     "semantic_hints": {
       "disk_io": "latency is the average time per completed request, queue wait included; queue depth is the instantaneous in-flight request count at the measurement tick, not an interval average"
@@ -301,10 +335,21 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
   - 计数器回绕按**原生位宽跨度**处理（数据驱动）：Linux `/proc/net/dev` 的计数为 64 位（跨度 0 = 不回绕，下降即重置）；Windows `MIB_IF_ROW2` 的计数为 64 位 `ULONG64`（跨度 0）。仅当上次与本次值均落在跨度内且本次更小时按跨度回绕；其余下降视为计数器重置，本帧该字段 `null` 并在下一采样周期重建基线。
   - **采样窗口**：分母是两次**成功采样**之间实际经过的时间；采集失败期间基线不推进，恢复后的首帧速率是跨越该缺口的窗口平均（口径明确，非伪造瞬时值）。网络采集失败只把该域置 `null`，**不累加** `sampling.missed_ticks`。
   - `hide_virtual` 在**快照构造**阶段按 `is_virtual` 过滤（不重新采集）：改动即时体现在下一帧快照（`SET_SYSMON_CONFIG` 后立即推送一次）。
+- **时钟偏差的计算语义**（契约 §2.9 `clock` 域；ADR 0047）：
+  - 协议为 NTPv4 **客户端模式**（RFC 5905 的简化子集，mode 3 请求 / mode 4 响应），48 字节报文，UDP/123；不实现服务端与对称模式。报文格式与 SNTP 一致，因此代码与文档统一按「NTPv4 客户端模式」表述。
+  - 时间戳采集：`t1`（发送前）与 `t4`（接收后）取 `system_clock` 墙钟；RTT 用 `steady_clock`（单调时钟）测量——用墙钟测 RTT 时，NTP 正在调钟会让 RTT 为负。
+  - 派生公式（RFC 5905 的偏差/延迟公式）：`θ = ½[(T2−T1) + (T3−T4)]`（即 `offset_ms`，正 = 本地快）；`δ = (T4−T1) − (T3−T2)`（即 RTT）；误差上界 `bound_ms = ½·δ + root_dispersion`（`root_dispersion` 取自服务端报文）。偏差与误差界**同时产出**，不存在只有偏差没有界的样本。
+  - 报文校验：服务端回显的 origin timestamp 必须等于我方 `t1`，不等则丢弃该包（防伪造与迟到包）；`stratum = 0` 是 KoD，时间戳无定义、**绝不用于计算**；`stratum ≥ 16` 表示参考源自身未同步，同样不采用。KoD 处理：`RATE` 对该服务器退避，`DENY`/`RSTR` 拉黑该服务器，其余 KoD 忽略；退避与拉黑状态跨轮保持。
+  - 时间戳换算按 NTP era 处理：64 位时间戳 = 32 位秒 + 32 位分数，纪元 1900-01-01；差值按 era 展开处理 2036-02-07 回绕；分数部分用整数运算换算到纳秒，不用浮点（保亚微秒精度）。
+  - 多服务器：每轮对配置的每台服务器各发一次；聚合值取**最小 RTT** 的那台（同 RTT 时取 `bound_ms` 更小者），同时保留本轮全部明细（含失败原因，§2.9）。单台超时/失败不影响其它台；**全部失败时聚合值为不可用（`null`），不得用 0 或上一轮结果冒充**。
+  - `last_probe_unix_ms` 为最近一轮探测的**完成**时刻（Unix 毫秒）；0 = 尚未探测。同步服务检测在每轮探测开始时执行，结果随本轮结果进快照（§2.9）。
+  - 定时探测按 `probe_times` 的墙钟时刻排程（进程本地时区；用单调时钟定时器排到下一个墙钟时刻、每次重算）；**错过跳过、不补采**；进程启动后立即探测一次；不区分周末与节假日。手动查询帧（§1.1）触发一轮同样的探测。
 
 ### 2.8 阈值越限与日志
 
 **语义**：资源读数与生效配置的阈值比较，得出一个**持续的越限状态**；该状态只通过**日志**与**UI 色标**表达，**不产生 `DZ_FRAME_NOTIFY_UI`**。理由（ADR 0034）：资源占用高在本机不专属本项目时是常态而非故障（swap 长期高位、其他服务占 CPU 均在预期内），而弹窗通道要留给需要立刻决策的故障——资源占用混入后使用者会对弹窗脱敏。
+
+本节其余部分先定义**资源类**判定；时钟偏差的两个判定对象见本节末尾「时间判定对象」，它们是对 ADR 0034 静默原则的**部分修订**（ADR 0047）。
 
 **判定对象与阈值**（阈值取当前生效配置 `thresholds` 段，§3.1；默认值即可零配置工作）：
 
@@ -342,14 +387,120 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **本帧读不到不伪造恢复**：能力仍在但本帧数值不可用（`memory`/`swap`/`volumes` 为 `null`，或 `used_ratio = null`）时**保留**活动状态、不写恢复日志——"读不到"不是"已恢复"；恢复只在真正读到低于阈值时发生。恢复日志的持续秒数按活动期起点计算，因此跨越采集缺口的恢复记录仍如实反映总持续时长。
 - **`cpu_saturated` 不得按「`saturated_cores` 为空」判恢复**：§2.7 规定每核序列整体未采到时 `saturated` 全部 `false`，若直接按「空即恢复」处理，CPU 采集失败会被误记成恢复。判据必须是**本帧每核使用率确实可读**（至少一个核 `usage_ratio != null`）：读不到时保留活动状态，`saturated_cores` 为空只作为"本帧无信息"而非"已恢复"。`sampling.groups.cpu=false` 仍按静默清除处理（配置关闭不是恢复）。
 
+**时间判定对象（`clock_offset` / `clock_bound`，ADR 0047）**：时钟偏差的判定**发生在每次探测完成时**，不是计量 tick——探测是低频事件而非周期采样，没有「持续采样」的概念。两个判定对象**相互独立**：
+
+| 判定对象 | 指标来源 | 进入越限 | 恢复 |
+|---------|----------|---------|------|
+| `clock_offset` | 快照 `clock.offset_ms` 的绝对值 | 绝对值 ≥ `offset_warn_ms` 为 warning 档；≥ `offset_error_ms` 为 error 档 | 绝对值 < `offset_warn_ms` |
+| `clock_bound` | 快照 `clock.bound_ms` | `bound_ms > bound_alarm_ms` | `bound_ms ≤ bound_alarm_ms` |
+
+- 阈值取当前生效配置 `clock` 段（§3.1），默认值即零配置工作；三个阈值**不在** `thresholds` 段（它们与探测参数同属一个功能单元，§3.1）。
+- **相等按表处理**：偏差恰好等于阈值算越限（`≥`）；误差界恰好等于阈值不算越限（`>`），且满足恢复（`≤`）。
+- `clock_offset` 是**一个判定对象、两个级别**：活动期从「进入 warning 或 error 档」开始、回到 `< offset_warn_ms` 结束。进入按当前档记一条（warning 档记 `warning`；error 档记 `error` 并发出 `NOTIFY_UI` 弹窗，`popup=true`）；warning→error 升级记一条 `error` 并产生 `NOTIFY_UI`；error→warning 降级记一条 `info`（活动期不结束）；持续期按 `thresholds.log_repeat_sec` 重记一条 `info`（含活动期已持续秒数，单调时钟计时）；恢复记一条 `info`；卡片按当前档着色（warning 黄 / error 红）。日志级别与内容义务同资源类日志表（判定对象、当前值、阈值、活动期持续秒数）；`clock_offset` 的「阈值」含 `offset_warn_ms` 与 `offset_error_ms` 两档。
+- `clock_bound`：活动期从 `bound_ms > bound_alarm_ms` 开始、回到 `≤` 结束；进入记 `warning`、恢复记 `info`、持续期同样按 `thresholds.log_repeat_sec` 重记 `info`（内容义务同上）。它只写日志 + 卡片内「测量质量」提示，**不产生 `NOTIFY_UI`**，也**不改变** `clock_offset` 的判定结果（「测不准」与「真的偏」是两件事：误差界大说明网络测不到，偏差数字仍按自身阈值判定）。
+- **读不到不伪造恢复**：探测失败（`clock.offset_ms` / `clock.bound_ms` 为 `null`，§2.9）时**保留**活动状态、不写恢复日志——「测不到」不是「已恢复」。
+- **配置关闭静默清除**：`clock` 域被关闭（§3.1.1）时移除两个判定对象的活动状态，**不写恢复日志**。
+- **部分修订 ADR 0034 的边界**：资源类判定仍只写日志与 UI 色标；时钟偏差的 **error 档**是唯一新增的弹窗来源（偏差 ≥ 1 秒会让策略里所有壁钟判断系统性偏移，属需人立刻决策的故障）；**warn 档与同步服务检测仍不弹窗**。完整理由见 ADR 0047。
+
 **没有的东西（明确不做）**：
 
-- 不产生 `DZ_FRAME_NOTIFY_UI`，不弹窗、不发 toast（ADR 0034 否决了 toast：它仍是主动推送，盯盘时同样干扰专注）。
+- **资源类判定**不产生 `DZ_FRAME_NOTIFY_UI`，不弹窗、不发 toast（ADR 0034 否决了 toast：它仍是主动推送，盯盘时同样干扰专注）；时钟偏差的 error 档是唯一例外（见上「时间判定对象」）。
 - 不进快照：没有 `alerts[]` 之类的活动集合字段（§2.4），活动状态不跨帧可见，只有日志与 UI 色标。
 - 不写历史库：历史只记录指标事实，越限可由历史事实重新推导；`thresholds` 也不进 `availability.metrics` 键集合（它不是指标能力）。
-- 没有冷却与恢复限流：不再有通知可限流，防刷屏由「只在进入/恢复各一条 + 按间隔重记」保证。
+- **资源类判定**没有冷却与恢复限流：它们不产生通知，防刷屏由「只在进入/恢复各一条 + 按间隔重记」保证；时钟偏差的 error 档同样只在**进入 / 升级**时弹窗，同一活动期内不重复弹窗，因此也不需要冷却。
 
-**`dzsysmon` 的 `NOTIFY_UI` 保留范围**：只有**真故障**——历史库不可用（§3.1 `history` 段降级语义）与配置下发失败（§3.3 四件套）。两者都是一次性、需人处理的故障，级别与弹窗语义按契约 notify-ui。
+**`dzsysmon` 的 `NOTIFY_UI` 保留范围**：只有**真故障**——历史库不可用（§3.1 `history` 段降级语义）、配置下发失败（§3.3 四件套）与时钟偏差的 error 档（见上「时间判定对象」）。三者都是需人处理的故障，级别与弹窗语义按契约 notify-ui。
+
+### 2.9 时钟偏差域（clock）
+
+**语义**：`dzsysmon` 自己按 NTPv4 客户端模式向配置的服务器探测，给出**本地墙钟相对参考源的有符号偏差**与**误差上界**，并辅助检测本机有哪些时间同步服务在运行。**只读监控**：不写系统时钟、不读守护进程内部状态、不写历史库（ADR 0047）。只保留**最近一轮**探测结果与服务检测结果；字段全部 additive，已列出的域后续只填值、不改形状。
+
+**数据来源**：自测探测（计算语义见 §2.7）+ 平台采集接缝的服务检测。服务检测**不 exec 任何外部命令**：Linux 扫描 `/proc/<pid>/comm` 精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，另读 `adjtimex`（只读模式，普通用户可读）取内核「未同步」标志；Windows 经服务控制管理器 API 查询 `W32Time` 服务状态（不解析 `w32tm` 的本地化文本）。检测在**每轮探测开始时**执行，结果随本轮结果进快照；两次探测之间不刷新。
+
+**Payload（clock）**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `offset_ms` | number \| null | 有符号偏差（毫秒，正 = 本地快）；**与 `bound_ms` 同生共死** |
+| `bound_ms` | number \| null | 误差上界（毫秒）= ½·RTT + 服务端 `root_dispersion`；有偏差就必有界，无界偏差在交易场景里是误导 |
+| `source` | string | 实际采用的服务器标识（与 `servers[].host` 同值）；未探测成功时为空串 |
+| `source_stratum` | int \| null | 参考源 stratum（`[1,15]`）；`null` = 未探测成功 |
+| `last_probe_unix_ms` | int | 最近一轮探测的**完成**时刻（Unix 毫秒）；`0` = 尚未探测 |
+| `servers` | array | 最近一轮每台服务器明细（空数组 = 尚未探测）；字段见下 |
+| `daemons` | array | 检测到的常见时间同步服务：`{name:string, running:bool}`；空数组 = 未检测到在运行的服务（不是能力不可用，见下） |
+| `daemon_conflict` | bool | 检测到 ≥2 种不同同步服务同时运行 |
+| `kernel_synced` | bool \| null | 内核/服务层「时钟是否已同步」的**辅助**判据：Linux 取 `adjtimex` 的 `STA_UNSYNC` 取反；Windows 以 `W32Time` 服务在运行作为代理量；`null` = 读不到 |
+
+`servers[]`：`{host:string, ok:bool, offset_ms:number|null, bound_ms:number|null, rtt_ms:number|null, stratum:int|null, error:string|null}`。
+
+- `host` 为本轮探测的服务器标识（配置 `clock.servers` 中的一项），帧内唯一。
+- `ok=true`：该台成功返回可用样本，`error=null`，四个测量字段非 `null`。
+- `ok=false`：`error` 非空，取 `timeout`（超时未响应）/ `kod_rate`（KoD RATE，已退避）/ `kod_deny`（KoD DENY/RSTR，已拉黑）/ `bad_echo`（origin 回显不匹配或畸形包）/ `unreachable`（解析/连接失败）；四个测量字段为 `null`（失败样本不产出任何测量值）。
+- 只保留最近一轮；**不进任何历史**。
+
+`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。检测到 ≥2 种不同服务同时运行时置 `daemon_conflict=true`，只写一条日志 + 卡片提示，**不弹窗、不判故障**。
+
+**不可用语义（关键）**：
+
+- `clock = null` **仅**表示该域被配置关闭（`clock.enabled=false` / `sampling.groups.clock=false`，§3.1.1）；此时两键为 `disabled_by_config`。
+- **尚未探测**：`last_probe_unix_ms = 0`，`offset_ms` / `bound_ms` / `source_stratum` 为 `null`、`source` 为空串、`servers` 为空数组；`clock.offset` 为 `available=false` + `no_reference`（§2.5），前端按 `last_probe_unix_ms = 0` 显示「尚未探测」。
+- **全部失败**：`last_probe_unix_ms > 0`、`offset_ms` / `bound_ms` / `source_stratum` 为 `null`、`source` 为空串、`servers` 全部 `ok=false`（带各自 `error`）；`clock.offset` 为 `available=false` + `no_reference`。**不得用 0 或上一轮结果冒充**。
+- **部分失败**：聚合值来自本轮成功台中的最小 RTT 那台（§2.7），`servers` 保留全部明细（含失败原因）——「两台服务器互相矛盾」这类网络问题因此可诊断。
+- **0 只在真实测到 0 偏差时出现**；不可用一律 `null`。
+
+> 注（对 #293 表述的细化）：#293 写「`clock` 为 `null` = 该域被配置关闭或从未采集」；本契约把「从未采集」表达为**域内空态**（`last_probe_unix_ms = 0` + 测量字段 `null`），`clock = null` 只保留「配置关闭」一种含义——前端需要区分「尚未探测」与「不可用」，两种含义共用一个 `null` 无法区分。
+
+**探测日志**：每次探测轮次完成写**一条** `info` 日志（全部失败时升级为 `warning`），内容义务：`offset_ms`、`bound_ms`、`source`、成功台数（`servers_ok=<成功数>/<总数>`）；这是事后回答「昨晚某时刻准不准」的唯一记录（不写历史库）。级别与格式按契约 log；越限 / 恢复日志见 §2.8。
+
+**示例**：正常态见 §2.6 快照示例；「尚未探测」与「全部失败」两个空态如下：
+
+```json
+{
+  "clock": {
+    "offset_ms": null, "bound_ms": null, "source": "", "source_stratum": null,
+    "last_probe_unix_ms": 0,
+    "servers": [], "daemons": [], "daemon_conflict": false, "kernel_synced": null
+  }
+}
+```
+
+```json
+{
+  "clock": {
+    "offset_ms": null, "bound_ms": null, "source": "", "source_stratum": null,
+    "last_probe_unix_ms": 1790000300123,
+    "servers": [
+      {"host": "ntp.aliyun.com", "ok": false, "offset_ms": null, "bound_ms": null, "rtt_ms": null, "stratum": null, "error": "timeout"},
+      {"host": "ntp.tencent.com", "ok": false, "offset_ms": null, "bound_ms": null, "rtt_ms": null, "stratum": null, "error": "unreachable"}
+    ],
+    "daemons": [], "daemon_conflict": false, "kernel_synced": null
+  }
+}
+```
+
+**手动查询**：`DZ_FRAME_QUERY_SYSMON_CLOCK`（§1.1）触发一轮探测；限流在 dzsysmon 侧权威判定，拒绝只记日志、无错误通道。
+
+<!-- 计划符号（general §11.4）：契约先行定义的名字，实现落地后删除对应标记。 -->
+<!-- pending-symbol: offset_ms (#295) -->
+<!-- pending-symbol: bound_ms (#295) -->
+<!-- pending-symbol: source_stratum (#295) -->
+<!-- pending-symbol: last_probe_unix_ms (#295) -->
+<!-- pending-symbol: rtt_ms (#295) -->
+<!-- pending-symbol: daemon_conflict (#295) -->
+<!-- pending-symbol: kernel_synced (#295) -->
+<!-- pending-symbol: no_reference (#295) -->
+<!-- pending-symbol: root_dispersion (#297) -->
+<!-- pending-symbol: kod_rate (#297) -->
+<!-- pending-symbol: kod_deny (#297) -->
+<!-- pending-symbol: bad_echo (#297) -->
+<!-- pending-symbol: probe_times (#296) -->
+<!-- pending-symbol: probe_timeout_ms (#296) -->
+<!-- pending-symbol: manual_min_interval_sec (#296) -->
+<!-- pending-symbol: offset_warn_ms (#296) -->
+<!-- pending-symbol: offset_error_ms (#296) -->
+<!-- pending-symbol: bound_alarm_ms (#296) -->
+<!-- pending-symbol: clock_offset (#301) -->
+<!-- pending-symbol: clock_bound (#301) -->
 
 ---
 
@@ -372,7 +523,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `measure_interval_ms` | int | 1000 | `[100, 60000]` | 计量间隔；速率型指标的采样窗口 |
 | `record_interval_sec` | int | 60 | `[1, 86400]` | 记录间隔（历史写入窗口宽度，由 #78 消费；记录窗口同时受 `phase_offset_sec` 影响，见 §3.1.1 第 3 步） |
 | `phase_offset_sec` | int | 3 | `[0, 86400]` | 记录 tick 相位偏移，避开整点附近其它任务（#78 消费；桶计算时按 `phase_offset_sec % record_interval_sec` 取模对齐——**存储、RTN 与 UI 保留配置原值，不在配置层钳制**；默认配置下窗口起点为每分钟第 3 秒，**不落在整数分钟边界**） |
-| `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。缺少的键按 true 处理。各键语义见 §3.1.1 |
+| `groups` | object\<string,bool\> | Linux：全部 true；Windows：`temperature`/`cpu_frequency` 为 false | 值必须 bool | 启用的指标大类：`cpu`/`memory`/`swap`/`volumes`/`disk_io`/`network`/`temperature`/`cpu_frequency`/`clock`。`temperature` 与 `cpu_frequency` 属 B 组：Linux 默认开（有 hwmon / cpufreq 时）；Windows 默认关（平台上不可靠或不存在，需显式开启；本版本 Windows 采集器仍报告 `unsupported`）。`clock` 键是「指标大类」区的开关（与 `clock` 段 `enabled` 共同决定该域开关，定义见下 `clock` 段）。缺少的键按 true 处理。各键语义见 §3.1.1 |
 
 `disk`：`{devices:string[]}`（元素非空）。
 
@@ -385,7 +536,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 `realtime`：`{push_interval_sec:int}`，默认 `5`，`[1, 3600]`；与计量频率解耦（事件通道每次写入会唤醒全部注册进程）。
 
-`thresholds`（**越限判定阈值，只产生日志与 UI 色标，不产生 UI 通知**，§2.8；本段原名 `alerts`，旧配置文件自动迁移见下）：
+`thresholds`（**资源类越限判定阈值，只产生日志与 UI 色标，不产生 UI 通知**，§2.8；本段原名 `alerts`，旧配置文件自动迁移见下）：
 
 | 字段 | 类型 | 默认 | 约束 | 说明 |
 |------|------|------|------|------|
@@ -396,22 +547,39 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `volume_free_pct` | number | 10 | `[0,100]` | 卷**空闲**百分比阈值；低于该值即越限 |
 | `log_repeat_sec` | int | 600 | `[0,86400]` | 持续越限期的日志重记间隔；0 = 不重记 |
 
-- 全部阈值键都住在**同一段**，使用者一次就能看全所有阈值，不必分辨"哪些会打扰我"（§2.8：它们都不打扰）。
+- 全部**资源类**阈值键都住在**同一段**，使用者一次就能看全所有资源类阈值，不必分辨"哪些会打扰我"（§2.8：它们都不打扰）。时间偏差的三个阈值在 `clock` 段（见下）：它们与探测参数同属一个功能单元，且其中 error 档会弹窗（§2.8、ADR 0047），与资源类"都不打扰"的性质不同。
 - `cpu_sustain_used_pct` / `cpu_sustain_samples` 用于饱和核判定（§2.7）；其余键用于越限判定与日志节奏（§2.8）。所有键**运行期修改即时生效**（`SET_SYSMON_CONFIG`，§3.1.1），默认值即零配置可用。
 - **没有 `volume_free_bytes`**：绝对容量阈值已删除（ADR 0034）。主流实现均以百分比为主判据，绝对容量只作抑制项；`OR` 语义下的 1 GiB 阈值会让总容量小于 1 GiB 的卷（ESP、`/boot`）在空闲时也永久越限。
 - **没有 `cooldown_sec`**：不再有通知可限流，防刷屏由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证（§2.8）。
 - **旧配置迁移**：读到旧 `alerts` 段时把可映射的键值搬到 `thresholds`、丢弃不可映射的 `volume_free_bytes`、写回配置文件、记一条日志，**不报错、不阻塞启动**。默认配置生成器直接产出 `thresholds` 形状（仓库不提交模板）。
+
+`clock`（时钟偏差监控域，§2.9；**域开关 = `enabled` 与 `sampling.groups.clock` 同时为 true**（关闭取或）——两层入口分别位于 `clock` 段与「指标大类」区，RTN 各自如实回推持久化值）：
+
+| 字段 | 类型 | 默认 | 约束 | 说明 |
+|------|------|------|------|------|
+| `enabled` | bool | true | 值必须 bool | 时钟监控域总开关（与 `sampling.groups.clock` 关闭取或，定义见上）。false 时停止定时探测、跳过同步服务检测、`clock` 域为 `null`、两键 `disabled_by_config`、两个时间判定对象静默清除（§2.8）；运行期即时生效 |
+| `servers` | string[] | `["ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"]` | 元素为非空字符串（主机名或 IP）；**数组不得为空** | 探测服务器列表（NTPv4 客户端模式，UDP/123）。关闭时钟监控用 `enabled=false`，不是清空服务器——空数组是校验失败（否则「尚未探测」与「无服务器可探」在快照里不可区分） |
+| `probe_times` | string[] | `["08:30", "12:30", "15:30", "18:00", "20:30"]` | 元素必须是 `HH:MM`（两位小时 + 两位分钟，`00:00`–`23:59`） | 每天定时探测的时刻（**进程本地时区**）；**空数组 = 关闭定时探测（进程启动后的首次探测与手动查询仍执行）**；不区分周末与节假日；错过跳过、不补采；进程启动后立即探测一次 |
+| `probe_timeout_ms` | int | 1500 | `[100, 10000]` | 单台服务器的探测超时 |
+| `manual_min_interval_sec` | int | 10 | `[0, 3600]` | 手动查询的最小间隔；0 = 不限流。dzsysmon 侧权威拒绝（§1.1），前端按钮置灰取同一值 |
+| `offset_warn_ms` | int | 100 | `[1, 60000]`，且 `< offset_error_ms` | 偏差 warning 档阈值（§2.8） |
+| `offset_error_ms` | int | 1000 | `(offset_warn_ms, 600000]` | 偏差 error 档阈值（§2.8）；该档越限产生 `NOTIFY_UI` |
+| `bound_alarm_ms` | int | 200 | `[1, 60000]` | 误差界质量判据（§2.8），独立于偏差判定 |
+
+- 服务器列表、探测时刻、超时、限流与三个阈值**运行期修改即时生效**（下一次探测 / 下一次判定即用新值，§3.1.1）。
+- `enabled` false→true 时立即发起一轮探测（与进程启动同款），避免开关打开后空等下一个 `probe_times` 时刻；true→false 时停止定时器并清空 `clock` 域。
+- 旧配置文件缺 `clock` 段时按默认值补齐（与其它段一致；仓库不提交模板）。
 
 ### 3.1.1 运行期生效语义
 
 配置经 §3.3 校验与原子持久化成功后，接收方按**固定顺序**应用副作用（顺序是语义的一部分）：
 
 1. **内存镜像整体替换**为新配置（失败路径不发生这一步，见 §3.3）。
-2. **定时器即时重排**：取消当前 pending 的计量与推送等待，从**当前时刻**按新间隔重新排定，不等待当前周期结束。`measure_interval_ms` 与 `push_interval_sec` 因此立即生效；下一个 tick 的时刻由重排时刻决定（不是"旧 deadline + 新间隔"）。
+2. **定时器即时重排**：取消当前 pending 的计量、推送与探测等待（探测仅在 `clock` 域启用时存在），从**当前时刻**按新间隔/新时刻重新排定，不等待当前周期结束。`measure_interval_ms`、`push_interval_sec` 与 `clock.probe_times` 因此立即生效；下一个 tick 的时刻由重排时刻决定（不是"旧 deadline + 新间隔"）。
 3. **记录窗口重配**：`record_interval_sec` / `phase_offset_sec` 从**下一窗口**起生效；进行中的窗口按它开始时的宽度落库（不切碎历史，避免同一桶宽度在同一窗口内变化）。
 4. **保留策略参数发布**：`history` 的保留/上限参数交给落盘线程，下一维护周期生效。
 5. **`history.enabled` 切换**：true→false 先 flush 当前窗口再关库/停线程，并重置时钟跳变检测基线（重开后的首个 tick 不得把关闭时长误报成 `clock_jump`）；false→true 建库并起线程（不回写 `restart` 标记）。切换失败不阻止其它副作用，按本节 `history` 段的降级语义处理；**开启失败后配置保持 `true`，后续任意 SET 会重试建库**（无需先关再开或重启进程）。
-6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.devices`）无需等到下一个推送周期。`thresholds` 的改动在下一次计量 tick 起作用（越限判定与历史记录同频），最多一个计量间隔后可见新的日志行为。
+6. 回推全量 `RTN_SYSMON_CONFIG`（成功与失败都回推，见 §3.2/§3.3），成功时再按 §4 触发 4 立即推送一帧快照——因此**只影响快照构造**的配置（`network.hide_virtual`、`disk.devices`）无需等到下一个推送周期。`thresholds` 的改动在下一次计量 tick 起作用（越限判定与历史记录同频），最多一个计量间隔后可见新的日志行为；`clock` 段的改动重排探测定时器与手动限流窗口，下一次探测 / 下一次手动触发即用新值（`enabled` 切换同时清空或恢复 `clock` 域并立即反映在两键可用性上）。
 
 **`sampling.groups` 各键语义**（关闭后重新开启一律从**新基线**开始，不得跨关闭期计算使用率/速率；关闭期间**不累加** `sampling.missed_ticks`——配置关闭不是采集缺口）：
 
@@ -425,6 +593,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 | `network` | `network` | 跳过采集；可用性 `disabled_by_config`、`network` 为 `null`（`hide_virtual` 只影响输出条目，见 §2.5） |
 | `temperature` | `temperature` | 跳过采集；可用性 `disabled_by_config`、数值 `null`（前端整块不渲染） |
 | `cpu_frequency` | `cpu.core_frequencies` / `cpu.frequency` | 跳过采集；可用性 `disabled_by_config`、数值 `null` |
+| `clock` | `clock` 域（§2.9）与两个时间判定对象（§2.8） | 停止定时探测、跳过同步服务检测；`clock` 为 `null`；`clock.offset` / `clock.sync_service` 为 `disabled_by_config`；两个时间判定对象静默清除（§2.8）。与 `clock.enabled=false` 同样效果（定义见 §3.1） |
 
 配置关闭某大类时**实时数据其余部分照常**：快照继续按周期推送、历史继续记录（该域落 NULL，读取方显示"不可用"而不是 0）、其它指标不受影响。
 
@@ -446,6 +615,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 2. **周期推送**：间隔 = `realtime.push_interval_sec`（默认 5 秒）；与计量频率解耦，计量时刻不推送
 3. **`QUERY_FULL_SNAPSHOT` 响应**：收到总则 §7 的广播查询帧后立即推送一次（该帧无 `instance_id`）
 4. **`SET_SYSMON_CONFIG` 成功后立即推送一次**（失败不推）：只影响快照构造的配置（如 `network.hide_virtual`）必须在下一次周期推送之前生效，否则一次开关操作最长要等一个推送周期（默认 5 秒）才可见。定时器重排只影响计量与推送节奏，不代表快照内容已刷新。
+5. **时钟探测完成**：每次探测轮次完成后立即推送一次（`clock` 域更新）——包括进程启动后的首次探测、`probe_times` 定时探测与手动查询帧（§1.1）触发的探测。探测失败（无可用参考源）**也推送**——「测不到」本身是要展示的事实。手动查询无 RTN，结果只经本条体现。
 
 推送失败（事件通道写满等）只记日志，不重试；下一刻度继续推送。
 
@@ -460,6 +630,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 - 两个 domain 均进**快照域**：新建 WS 连接立即拿到当前值（顶栏需要全局可用）。
 - dzweb 读取时必须校验快照（`SysmonSnapshot::validate`）与配置（`SysmonConfig::validate`）；非法 payload 记日志并忽略（不更新镜像、不广播）。
+- `clock` 域随 `sysmon_snapshot` 一起进镜像与 WS 广播，**没有独立的镜像 domain 与 WS 消息名**；手动查询同样复用这条链路（§1.1）。
 
 > 总则 §9 的"无 `instance_id` 帧挂固定 `dztraderd`"适用于 master 广播帧；快照帧按本契约固定挂 `dzsysmon`（发送方唯一且固定）。
 
@@ -474,6 +645,8 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 `PUT /api/sysmon/config`：运行期配置 merge patch（admin）。请求 body 原样透传为 `SET_SYSMON_CONFIG` 的 payload，响应 `200 {"ok":true,"message":"dispatched"}` 只表示"已写事件通道"——校验结果与生效值以 WS `sysmon_config`（`RTN_SYSMON_CONFIG` 全量回推，失败回推旧值）为准。`shm` 未就绪 → `503 {"error":"shm not available"}`；body 非 object/非法 JSON → `400 {"error":"bad request"}`；非 admin → `403 {"error":"admin required"}`。
 
 前端消费方式：监控页「配置」区以 WS `sysmon_config` 镜像为唯一生效信号，首次进入时用 `GET /api/sysmon/config` 补拉镜像；表单提交只发差异 patch，提交后保持 pending 直到收到 WS `sysmon_config`（REST 200 ≠ 已生效）。
+
+`POST /api/sysmon/clock/probe`：手动触发一次时钟探测（admin）。响应 `200 {"ok":true,"message":"dispatched"}` 只表示"已写事件通道"——生效信号是随后的 WS `sysmon_snapshot`（`clock` 域更新，§1.1）；限流窗口内或探测在飞时 dzsysmon 直接忽略（只记日志，**无错误响应**）。`shm` 未就绪 → `503 {"error":"shm not available"}`；非 admin → `403 {"error":"admin required"}`。
 
 端点细节见契约 rest。
 
@@ -580,6 +753,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `disk_io[]`：`device` 非空且帧内唯一；除 `device` 外的七个字段为 `null` 或数字——吞吐/IOPS/延迟/队列深度为 `>= 0`，`utilization` 为 `[0,1]` 内的比率或 `null`（首帧全 null 的条目合法）。
 - `network[]`：`interface` 非空且帧内唯一；八个 `*_total` 必须为非负整数且**必须存在**（累计计数器没有"不可用"语义）；六个 `*_per_sec` 为 `null` 或 `>= 0` 的数字；`is_virtual` 必须为 bool。`hide_virtual = true` 时若出现 `is_virtual = true` 的条目为校验失败（发送方义务：过滤在发送端完成）；`hide_virtual` 的值不在快照内，故该条校验由发送方自查、消费方只做形状校验。
 - `temperature[]`：`sensor` 非空且帧内唯一、`celsius` 为数字；`chip` 与 `label` 是 **additive 可选字段**（#126）——存在时 `chip` 必须为**非空**字符串、`label` 必须为字符串（允许空串，表示该通道没有标签），缺失合法（旧版本发送方）。`sensor` 的值不因新增两者而改变（历史库维度键）。
+- `clock`：`null` **仅允许**在该域被配置关闭时出现（§3.1.1）；非 `null` 时必须为对象，且：
+  - `offset_ms` / `bound_ms` / `source_stratum` **同生共死**：三者同为 `null` 或同为非 `null`；`source` 为空串当且仅当三者全为 `null`（「未探测成功」）。`bound_ms >= 0`；`source_stratum` 为 `[1,15]` 的整数。
+  - `last_probe_unix_ms` 为非负整数（0 = 尚未探测）；`daemon_conflict` 为 bool；`kernel_synced` 为 bool 或 `null`。
+  - `servers[]`：`host` 非空且帧内唯一；`ok=true` 时 `error` 必须为 `null` 且 `offset_ms`/`bound_ms`/`rtt_ms`/`stratum` 必须非 `null`（`rtt_ms >= 0`、`stratum` 为 `[1,15]` 的整数）；`ok=false` 时 `error` 必须非空且取自 `timeout` / `kod_rate` / `kod_deny` / `bad_echo` / `unreachable`，四个测量字段必须为 `null`（失败样本不产出任何测量值）。
+  - `daemons[]`：`name` 非空且帧内唯一、`running` 为 bool；`daemon_conflict` 必须等于「`running=true` 的不同服务数 ≥ 2」。
 - 比率为 `[0,1]`；字节/计数为非负整数；`boot_time_unix_sec`/`uptime_sec` 非负。
 - `availability.metrics` 中 `available=false` 时 `reason` 必须存在且非空；`available=true` 时不得出现 `reason`。
 - 未知字段忽略（前向兼容）。
@@ -591,10 +769,11 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - **不支持容器内采集**：容器内 `/proc` 报宿主容量，会给出错误的容量基线；部署文档写明（`docs/components/dzsysmon.md`），不做 cgroup v1/v2 感知。
 - **Windows 不提供温度与每核频率**（也不提供整体频率）：Windows 上温度需 WMI/厂商驱动、每核频率无可靠 API，两者恒为不可用；本版本不实现「整体频率 + 口径标注」形态。
 - **磁盘 I/O 为整盘粒度**：不提供分区级 I/O。本版本的 `device` 只有物理盘标识（Windows `PhysicalDrive<N>`）；**不做卷/盘符 ↔ 物理盘映射**（ADR 0035：无消费方，且两平台身份解析成本高；卷容量与磁盘 I/O 分别展示、不做关联，#103 关闭为 not planned）。Windows 依赖性能计数器（diskperf）与访问权限，读不到时按 §2.4 报告不可用，不做提权或反复重试。
-- **磁盘 I/O 无阈值越限消费**：本契约只定义实时快照域；历史写入（#78）与阈值越限（§2.8，只覆盖内存/交换/全部卷剩余空间/CPU 饱和）不消费磁盘 I/O。磁盘 I/O 的维度指标（每盘吞吐/IOPS/延迟等）**可经 §6.1 历史查询**（`metric=disk_io.<metric>`），但阈值越限不在本版本。
+- **磁盘 I/O 无阈值越限消费**：本契约只定义实时快照域；历史写入（#78）与资源类阈值越限（§2.8，只覆盖内存/交换/全部卷剩余空间/CPU 饱和）不消费磁盘 I/O。磁盘 I/O 的维度指标（每盘吞吐/IOPS/延迟等）**可经 §6.1 历史查询**（`metric=disk_io.<metric>`），但阈值越限不在本版本。
 - **网络为整网卡粒度**：不提供每进程/每连接/每协议流量；不做虚拟网卡的自动隐藏策略推断（`is_virtual` 只用结构性依据，不看名字前缀），也不提供 Linux 网卡流量分类（`tc` 队列）与 Windows 适配器绑定细节。
 - **网络无阈值越限消费**：本契约只定义实时快照域。`hide_virtual` 与完整配置编辑入口见 §3（REST `PUT /api/sysmon/config` → `SET_SYSMON_CONFIG`；监控页「配置」区下发差异 patch）。网络的维度指标可经 §6.1 历史查询（`metric=network.<metric>`）。
-- **阈值越限范围**：只判定内存使用率、交换使用率、全部卷剩余空间以及 CPU 饱和四类（§2.8），且**只写日志 + UI 色标**，不产生 `NOTIFY_UI`、不进快照、不写历史库；**不做**越限历史/越限管理界面、确认与静默、外部通道（邮件/webhook）、进程级指标越限，也不为磁盘 I/O 与网络出越限。历史库只记录指标事实。
+- **时钟偏差监控的范围**：只读监控——**不写系统时钟**（不调用任何校时接口、不做提权助手）；**不读取时间守护进程的内部状态**（不解析 chronyc / timedatectl / ntpq / w32tm 输出，不接 chrony 命令 socket）；**不写历史库**、不做趋势图（探测是事件而非周期采样，事后分析靠每次探测一条日志）；不做 PTP / 硬件时间戳 / `SO_TIMESTAMPING`（那是交易所对时量级，与本契约的几十毫秒目标不是同一件事）；不检测非主流同步服务；不做交易日历（`probe_times` 不区分周末与节假日）；不做时区 / DST 正确性校验（只测 UTC 偏差）；容器内看不到宿主同步服务是**已知限制**（`daemons` 为空数组，以自测结果为准）。服务器返回 KoD 时退避 / 拉黑，不持续重试。
+- **资源类阈值越限范围**：只判定内存使用率、交换使用率、全部卷剩余空间以及 CPU 饱和四类（§2.8），且**只写日志 + UI 色标**，不产生 `NOTIFY_UI`、不进快照、不写历史库；**不做**越限历史/越限管理界面、确认与静默、外部通道（邮件/webhook）、进程级指标越限，也不为磁盘 I/O 与网络出越限。历史库只记录指标事实。时钟偏差的两个判定对象见 §2.8（error 档是唯一新增的弹窗来源，ADR 0047）。
 - 历史查询不走帧（dzweb 只读历史库，§6.1）；进程级指标、GPU、SMART、风扇、电池、登录用户列表不在本契约范围。
 - **历史查询不做跨桶重采样**：服务端只按真实桶返回，点数超限时前移窗口（§6.1.2），不在服务端合并桶或插值。历史视图的时间范围/粒度选择、包络与标记渲染在前端，视觉细节不在本契约。
 - **历史视图为独立视图**：监控页在「实时」与「历史」之间切换，切换只影响 REST 查询与渲染，**不影响 WS 连接与实时快照镜像**（实时 store 继续接收 `sysmon_snapshot`）——历史视图不订阅任何新 WS 消息。

@@ -19,7 +19,7 @@
 | 进程 | 进程控制/状态/配置 + 优雅退出请求 |
 | 自动登录/登出排程 | SET/RTN_AUTO_LOGIN |
 | 进度推送 | RTN_PROGRESS |
-| 系统监控 | 实时快照 RTN_SYSMON_SNAPSHOT + 运行期配置 SET/RTN_SYSMON_CONFIG |
+| 系统监控 | 实时快照 RTN_SYSMON_SNAPSHOT + 运行期配置 SET/RTN_SYSMON_CONFIG + 手动时钟查询 QUERY_SYSMON_CLOCK |
 | 行情连接与订阅 | 连接请求、订阅/退订、订阅查询、行情生命周期通知 |
 | 行情网关配置 | SET/RTN_MD_CONFIG |
 | 行情网关状态 | RTN_MD_STATUS |
