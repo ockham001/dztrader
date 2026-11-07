@@ -348,7 +348,8 @@ public:
     /// **不 exec 任何外部命令**（ADR 0047）：Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配
     /// `chronyd` / `ntpd` / `systemd-timesyncd`，另读 `adjtimex`（只读模式，普通用户可读）
     /// 取 `STA_UNSYNC` 取反作为 `kernel_synced`；Windows 经服务控制管理器 API
-    /// （`OpenSCManager` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。
+    /// （`OpenSCManagerW` + `OpenServiceW` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm`
+    /// 的本地化输出。
     ///
     /// 检测失败（进程表不可读、服务管理器查询失败）返回空列表 + `kernel_synced = null`，
     /// 不抛异常、不崩溃；「读不到」不得写成 `false`。

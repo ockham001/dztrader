@@ -15,12 +15,15 @@
 #include "system_collector_linux_internal.h"  // 内部解析接缝（MemAvailable 异常防御）
 
 #include <sys/stat.h>
+#include <sys/timex.h>  // adjtimex：真机 oracle 的独立对照（不是实现重算）
 #include <unistd.h>
 #endif
 
 #include <cstring>
 
 #include <gtest/gtest.h>
+
+#include "test_temp_dir.h"  // 共享临时资源唯一化（单元测试判据 §3.5）
 
 #include <algorithm>
 #include <chrono>
@@ -1471,6 +1474,14 @@ TEST(SystemCollectorTest, TimeSyncServiceDetectionFollowsContract) {
     // 检测失败不抛异常：即使容器/受限环境也只降级为空列表 + null（契约 §2.9）。
     // 真机不变量：名字非空、帧内唯一（契约 §7 的 `daemons[].name` 唯一性）。
     const auto status = collector->collect_time_sync_services();
+    // 无条件断言（不依赖本机是否跑着同步服务）：Linux 的服务清单只有 3 条、Windows 只有 1 条，
+    // 因此检测结果的条数有硬上界——这条在「`daemons` 是任何机器都会返回的空数组」时也能失败，
+    // 避免本用例在无守护进程的机器上退化成空循环（单元测试判据 §1.1「断言能失败」）。
+#if defined(_WIN32)
+    EXPECT_LE(status.daemons.size(), 1U);
+#elif defined(__linux__)
+    EXPECT_LE(status.daemons.size(), 3U);
+#endif
     std::set<std::string> names;
     for (const auto& daemon : status.daemons) {
         EXPECT_FALSE(daemon.name.empty()) << "daemon name must be non-empty";
@@ -1513,13 +1524,13 @@ using dztrader::platform::system_collector_linux_internal::scan_process_names;
 /// 真机是否恰好跑着同步服务（AGENTS 硬门禁 2 自管临时目录的豁免情形）。
 ///
 /// 目录名可以是任意可解析为 PID 的数字串；非数字目录与无 `comm` 的进程按不可读处理。
+/// 目录名走共享的 `unique_temp_dir()`（进程唯一，pid + 随机；单元测试判据 §3.5），
+/// 不在这里再手写一份唯一化——同文件另有三份历史手写版本，本票不顺手改它们。
 class FakeProcRootTest : public ::testing::Test {
 protected:
     void SetUp() override {
         std::error_code ec;
-        base_ = std::filesystem::temp_directory_path(ec) /
-                ("dzsysmon_proc_" + std::to_string(current_process_id()) + "_" +
-                 std::to_string(counter_++));
+        base_ = dztrader::test::unique_temp_dir("dzsysmon_proc");
         std::filesystem::remove_all(base_, ec);
         ASSERT_TRUE(std::filesystem::create_directories(base_, ec)) << ec.message();
     }
@@ -1547,10 +1558,7 @@ protected:
     }
 
     std::filesystem::path base_;
-    static int counter_;
 };
-
-int FakeProcRootTest::counter_ = 0;
 
 TEST_F(FakeProcRootTest, ListsEveryRunningServiceNameExactlyOnce) {
     add_process("100", "chronyd");
@@ -1691,17 +1699,26 @@ TEST(LinuxKernelSyncedTest, MapsUnsyncFlagInverse) {
 }
 
 // adjtimex 只读探测：真机可读时给出确定布尔值；读不到必须是 `null` 而不是 `false`
-// （「读不到」≠「没同步」，契约 §2.9）。测试环境里 adjtimex 通常可读，因此两种结果都
-// 接受，但断言**不会**出现「异常/崩溃」这一第三态。
+// （「读不到」≠「没同步」，契约 §2.9）。
+//
+// oracle 用**测试内独立的一次 `adjtimex` 调用**（不是重算实现）：直接读同一内核状态、
+// 自己判 `STA_UNSYNC`，再与接缝返回值比对。这样断言的是「接缝确实反映了内核状态」，
+// 而不是「两次调用返回同一个值」这种只证明不崩的弱断言。
 TEST(LinuxKernelSyncedTest, ReadsAdjtimexAsDefiniteStateOrNull) {
     using dztrader::platform::system_collector_linux_internal::read_kernel_synced;
-    const auto first = read_kernel_synced();
-    // 同一内核状态连续两次读取必须一致（映射是纯函数，不引入随机性）。
-    const auto second = read_kernel_synced();
-    EXPECT_EQ(first, second);
-    if (!first.has_value()) {
-        GTEST_SKIP() << "adjtimex unreadable in this environment (reported as null, not false)";
+    const auto actual = read_kernel_synced();
+
+    struct timex independent{};
+    independent.modes = 0;  // 与实现同一只读口径
+    if (::adjtimex(&independent) < 0) {
+        // 本环境读不到：接缝必须报 null，不能报 false（「读不到」≠「没同步」）。
+        EXPECT_EQ(actual, std::nullopt) << "unreadable adjtimex must report null, not false";
+        GTEST_SKIP() << "adjtimex unreadable in this environment";
     }
+    ASSERT_TRUE(actual.has_value()) << "readable adjtimex must yield a definite state";
+    // 独立 oracle：内核标志位直接判（STA_UNSYNC 来自 <sys/timex.h>，不是实现里的常量）。
+    const bool expected = (independent.status & STA_UNSYNC) == 0;
+    EXPECT_EQ(*actual, expected) << "kernel_synced must mirror the STA_UNSYNC flag";
 }
 
 }  // namespace timesync_scan_test

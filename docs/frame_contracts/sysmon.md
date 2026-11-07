@@ -441,7 +441,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `ok=false`：`error` 非空，取 `timeout`（超时未响应）/ `kod_rate`（KoD RATE，已退避）/ `kod_deny`（KoD DENY/RSTR，已拉黑）/ `bad_echo`（origin 回显不匹配或畸形包）/ `unreachable`（解析/连接失败）；四个测量字段为 `null`（失败样本不产出任何测量值）。
 - 只保留最近一轮；**不进任何历史**。
 
-`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true；`/proc/<pid>/comm` 被内核截断为 15 字节，因此 `systemd-timesyncd` 的**可观察值是 `systemd-timesyn`**——检测按这个事实匹配，不把未截断名当作唯一写法）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。检测到 ≥2 种不同服务同时运行时置 `daemon_conflict=true`，只写一条日志 + 卡片提示，**不弹窗、不判故障**。
+`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true；`/proc/<pid>/comm` 被内核截断为 15 字节，因此 `systemd-timesyncd` 的**可观察值是 `systemd-timesyn`**——检测按这个事实匹配，不把未截断名当作唯一写法）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。检测到 ≥2 种不同服务同时运行时置 `daemon_conflict=true`，只写一条日志 + 卡片提示，**不弹窗、不判故障**（该日志义务随检测接线由 #299 落地；#298 只交付检测接缝与派生标记）。
 
 **不可用语义（关键）**：
 

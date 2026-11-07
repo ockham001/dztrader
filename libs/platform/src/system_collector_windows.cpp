@@ -990,6 +990,13 @@ RawNetworkSnapshot query_network() {
     return snapshot;
 }
 
+/// Windows 时间同步服务的名字（契约 sysmon §2.9 平台口径的单一真相源）。
+///
+/// 服务名与帧内 `daemons[].name` 是同一个字符串：宽字符用于 SCM 查询，窄字符用于 payload。
+/// 两处各写一遍会在改名时漂移（契约 §2.9 只认 `W32Time` 这一种写法）。
+constexpr const wchar_t* kWindowsTimeServiceNameW = L"W32Time";
+constexpr const char* kWindowsTimeServiceName = "W32Time";
+
 /// 查询 `W32Time` 服务状态（契约 sysmon §2.9）：走服务控制管理器 API
 /// （`OpenSCManagerW` + `OpenServiceW` + `QueryServiceStatusEx`），
 /// **不 exec `w32tm`**——其输出受显示语言与 OEM 代码页影响，解析不可靠（ADR 0047）。
@@ -1004,7 +1011,7 @@ RawTimeSyncStatus query_time_sync_services() {
         // 拿不到服务管理器（权限/服务不可用）：如实降级，不猜服务状态。
         return status;
     }
-    SC_HANDLE service = OpenServiceW(manager, L"W32Time", SERVICE_QUERY_STATUS);
+    SC_HANDLE service = OpenServiceW(manager, kWindowsTimeServiceNameW, SERVICE_QUERY_STATUS);
     if (service == nullptr) {
         // 服务不存在（被移除/未安装）与「查询失败」在此无法区分：两者都报空列表 + null，
         // 不虚构一条 running=false 的条目（契约 §2.9：空数组也表达「检测失败」）。
@@ -1026,7 +1033,7 @@ RawTimeSyncStatus query_time_sync_services() {
     // 查询成功即以此为 `kernel_synced`，查询失败时保持 null。
     const bool running = service_status.dwCurrentState == SERVICE_RUNNING;
     RawTimeSyncService daemon;
-    daemon.name = "W32Time";
+    daemon.name = kWindowsTimeServiceName;
     daemon.running = running;
     status.daemons.push_back(std::move(daemon));
     status.kernel_synced = running;
