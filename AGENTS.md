@@ -201,13 +201,13 @@
 - **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = pre-push hook + GitHub main ruleset + `.opencode` 权限）：
   - **免逐次确认**：把本票 commit push 到符合命名约定的 feature 分支、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
   - **仍需确认**：合并 PR 到 main（最后一道）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。
-  - **合并授权前置（#284 / #289）**：合并 PR 的授权必须**一次性、条件式**提出——「CI 绿 + 双轴审查通过即合并关单」，或按票/按波一次授权；**默认时机是「PR 创建后立即问」**（提问窗口与 wait-ci 重叠，答案到达时 CI 还在跑，零关键路径代价）。「开工时问」只适用于**预计本票无 CI / 无并行工作可垫**的情形（#284 实测开工时提问阻塞 1418s = 26.5% 墙钟，其中 933s 纯 idle，队友早已交付）。**更优形态是开票/批准时预授权**：用户在场秒级答复，把条件式授权写进 issue 的拍板记录，implement 会话零提问（#289 即此形态）。**禁止留到 CI 绿之后才问**（#281 因此等 6177s，占会话 49.6%）；提问保留「**先不合并，我要自己看 PR**」选项，用户选定后 issue 保持 open、不阻塞其它票。细则与取证见 [ticket-closeout](docs/agents/ticket-closeout.md) §5。
+  - **合并授权前置（#284 / #289 / #309）**：合并 PR 的授权必须**一次性、条件式**提出——「CI 绿 + 双轴审查通过即合并关单」，或按票/按波一次授权。**唯一默认形态是「开票/批准时预授权」**：用户在场时秒级答复，把条件式授权写进 issue 的「拍板记录」，implement 会话零提问（#289 即此形态）。**「PR 创建后提问」是兜底，仅用于开票时用户不在场**（提问窗口与 wait-ci 重叠，答案到达时 CI 还在跑，零关键路径代价）；「开工时问」只适用于**预计本票无 CI / 无并行工作可垫**的情形（#284 实测开工时提问阻塞 1418s = 26.5% 墙钟，其中 933s 纯 idle，队友早已交付）。**禁止留到 CI 绿之后才问**（#281 因此等 6177s，占会话 49.6%）；提问保留「**先不合并，我要自己看 PR**」选项，用户选定后 issue 保持 open、不阻塞其它票。**缺「拍板记录」由机器报出**：`scripts/check_ledger.py` 规则 R4 对 open 且带 `ready-for-agent` 的票报警（`--strict` 升 error），不再靠文档约束（#294–#298 五票全部无该段、退回「PR 后提问」，整波阻塞 403 min = 43% 墙钟）。细则与取证见 [ticket-closeout](docs/agents/ticket-closeout.md) §5。
   - **禁止**：直推 main（pre-push + ruleset 双重拦截）、force push（pre-push 非快进拦截 + `.opencode` deny；ruleset 拒非快进）。应急逃生口 `DZ_ALLOW_MAIN_PUSH=1` / `DZ_ALLOW_FORCE_PUSH=1` / `DZ_SKIP_HOOKS=1` 只在真故障时用，用完在报告里写明；其中直推 main 的逃生口还需临时禁用 ruleset（`bypass_actors=[]`，admins 也无绕过）。
 
 ### 本机沙箱（DSH）
 
 - **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；**不要 `sleep` 轮询、不要前台空等**。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价：不看这条的票在 `sleep` 上花掉 10%–28% 墙钟（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。
-- **`job_output(wait=true)` 的 `timeout_ms` 会被宿主静默截到 600s**（#289 AC8，证据见 #253：传更大值仍返回 `[status: running]`，一次丢了 600s 且错过验证轮入口）。所以「等一个可能超过 10 分钟的作业」不能只调一次 wait：**按 600s 预算分段循环**（每次返回 `running` 就做一件只读工作再等），或先 `wait-ci.sh --status` 判断是否还值得等。
+- **`job_output(wait=true)` 有宿主侧等待上限**（**上限值随宿主配置**，以 `job_output` 实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
 - **仓内搜索用 `git grep`**（只扫版本控制内的文件，天然跳过 `build/`、`install/`、`.cache/`）：`grep -rn --include=*` 全仓跑会扫到编译产物与缓存（#253 实测单次 131.8s、`find .cache` 94.2s）。要搜运行产物再显式指定 `.cache/` 路径。
 - **门禁判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，判绿看 `gate: OK` 行或 `.cache/gate/last-status`，不要只看 shell 退出码；`wait-ci.sh` 例外（退出码即 CI 结论，不接管道）。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
@@ -217,6 +217,8 @@
 ## 六、CodeGraph
 
 仓库根存在 `.codegraph/` 才可用（没有索引就跳过；触达方式见本文开头）。**是否建索引由我决定，不要自行 `codegraph init`**
+
+**按节取帧契约用 `python3 scripts/contract_slice.py <stem> §N [--children]`**（`--list` 列出全部契约的编号标题；#309 AC4）。不要用 `sed -n` 按行号分页——行号在改契约后即失效，契约已 105 KB 级。
 
 ---
 

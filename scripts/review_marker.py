@@ -21,21 +21,30 @@
 - 内容：一行 commit sha，默认取 `git rev-parse HEAD`；显式传入时以参数为准
 - `check <issue>`：读该票全部 `<issue>-*.done` 标记，逐轴比较 HEAD 与标记 sha；不一致
   即 warning，**标记目录里没有该票的任何标记也 warning**（从未跑过验证轮）
+- `check <issue> --strict`：同样的判定，但有问题时退出码 3（供 `scripts/push-ticket.sh`
+  在 push 前**默认拒绝**，见 #309 AC6）。默认 `check` 的退出码与 warning 文案**一个字都
+  不变**——`.githooks/pre-push` 依赖「只提示、不拦截」
+- `--expect-axis <axis>`（可重复）：逐轴点名要求标记存在且停在 HEAD；缺标记的轴单独
+  warning。不改变 sha 比较口径（前缀比较仍走 `same_commit`）
 - sha 按前缀比较（显式传 `git rev-parse --short HEAD` 的结果同样合法）
-- 退出码恒 0：只提示，不改变 pre-push 的拦截结论
+- 退出码恒 0（默认 `check`）：只提示，不改变 pre-push 的拦截结论
 
 用法
 ----
   python3 scripts/review_marker.py write 289 standards          # 标记 HEAD 已验证
   python3 scripts/review_marker.py write 289 standards <sha>    # 标记指定 commit
   python3 scripts/review_marker.py check 289                    # pre-push 调用：只 warning
+  python3 scripts/review_marker.py check 289 --strict \\
+      --expect-axis standards --expect-axis spec                # push-ticket 调用：有问题退出 3
   python3 scripts/review_marker.py --selftest                   # 临时 git 仓库自测，工作区只读
 
 退出码
 ------
-0=成功（`check` 恒为 0，无论有没有 warning）
+0=成功（默认 `check` 恒为 0，无论有没有 warning）
 1=selftest 失败
 2=用法或环境错误（缺参数 / 非数字票号 / 非法 axis / 不在 git 仓库 / 标记不可写）
+3=`check --strict` 且有问题（缺标记 / 标记为空 / 标记 sha 与 HEAD 不一致）
+   （`--strict` 下 git 环境不可用也报 2；默认 `check` 遇到同样情况仍返回 0，只打 skip 提示）
 """
 
 from __future__ import annotations
@@ -154,17 +163,40 @@ def same_commit(head: str, marker_sha: str) -> bool:
     return head == marker_sha or head.startswith(marker_sha)
 
 
-def check_markers(root: Path, issue: str, head: str) -> list[str]:
+def check_markers(root: Path, issue: str, head: str,
+                  expected_axes: tuple[str, ...] = ()) -> list[str]:
     """返回该票的 warning 列表（纯文本；由调用方决定前缀与输出流）。
 
     没有任何标记也算 warning：从未跑过验证轮的票不该因为「没留下状态」而静默通过
     —— #253 的失败形态正是「验证轮被中止后没人知道它没跑」。
+
+    `expected_axes` 非空时（#309 AC6：`--expect-axis`）改为**逐轴点名**：每个被点名的轴
+    单独判定「标记缺失 / 为空 / sha 与 HEAD 不一致」，不再输出泛化的「没有任何标记」行
+    ——push-ticket 要能把两个轴各自的缺失状态贴进报告。
     """
     markers = read_markers(root, issue)
+    if expected_axes:
+        by_axis = {marker.axis: marker for marker in markers}
+        warnings: list[str] = []
+        for axis in expected_axes:
+            marker = by_axis.get(axis)
+            if marker is None:
+                warnings.append(
+                    f"no review marker for #{issue} ({axis}); "
+                    "the read-only verification round for that axis may not have run")
+            elif not marker.valid:
+                warnings.append(
+                    f"review marker for #{issue} ({axis}) is empty or invalid; "
+                    "the read-only verification round may not have run")
+            elif not same_commit(head, marker.sha):
+                warnings.append(
+                    f"review marker for #{issue} ({axis}) is at {short_sha(marker.sha)}, "
+                    f"HEAD is {short_sha(head)}; the read-only verification round may not have run")
+        return warnings
     if not markers:
         return [f"no review marker for #{issue}; "
                 "the read-only verification round may not have run"]
-    warnings: list[str] = []
+    warnings = []
     for marker in markers:
         if not marker.valid:
             warnings.append(
@@ -217,8 +249,15 @@ def build_parser() -> argparse.ArgumentParser:
     write_parser.add_argument("sha", nargs="?", default=None, type=sha_arg)
 
     check_parser = sub.add_parser(
-        "check", help="warn when HEAD differs from the marker (always exits 0)")
+        "check", help="warn when HEAD differs from the marker (default exits 0; --strict exits 3)")
     check_parser.add_argument("issue", type=issue_arg)
+    check_parser.add_argument(
+        "--strict", action="store_true",
+        help="exit 3 when any marker is missing, empty or not at HEAD "
+             "(for scripts/push-ticket.sh; the default check stays warning-only)")
+    check_parser.add_argument(
+        "--expect-axis", action="append", default=[], metavar="AXIS", type=axis_arg,
+        help="require a marker for this axis (repeatable); reports each axis separately")
     return parser
 
 
@@ -393,11 +432,98 @@ def _case_explicit_sha(tmp: Path) -> Case:
     return case
 
 
+def _case_strict_mode(tmp: Path) -> Case:
+    case = Case("--strict -> rc=3 on problems, default check stays rc=0", [])
+    repo = _selftest_repo(tmp / "strict")
+    # 默认 check 的保真度：无标记时仍然 rc=0（pre-push 依赖这一点）。
+    rc, _out, err = _run_cli(repo, ["check", "289"])
+    case.check(rc == 0, f"default check must stay rc=0, got rc={rc}")
+    case.check(len(_warning_lines(err)) == 1, f"expected the old warning, got: {err!r}")
+    # --strict：同一状态 -> 3，warning 文本与默认模式逐字相同。
+    rc, _out, err_strict = _run_cli(repo, ["check", "289", "--strict"])
+    case.check(rc == 3, f"strict check without marker must exit 3, got rc={rc}")
+    case.check(_warning_lines(err) and _warning_lines(err) == _warning_lines(err_strict),
+               "strict mode must reuse the default warning text verbatim")
+    # 标记停在 HEAD 时 strict 也放行。
+    head = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    for axis in ("standards", "spec"):
+        _run_cli(repo, ["write", "289", axis])
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict"])
+    case.check(rc == 0, f"strict check at HEAD sha must exit 0, got rc={rc} ({err!r})")
+    # 旧 sha 的标记 -> 3（push-ticket 的核心拒绝条件）。
+    _selftest_commit(repo, "two")
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict"])
+    case.check(rc == 3, f"strict check with stale marker must exit 3, got rc={rc}")
+    case.check(any(head[:SHORT_SHA_LEN] in line for line in _warning_lines(err)),
+               f"stale warning must show the marker sha, got: {_warning_lines(err)}")
+    # 空标记文件（0 字节）-> 3。
+    marker = repo / ".cache" / "review" / "289-spec.done"
+    marker.write_text("\n", encoding="utf-8")
+    head2 = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    _run_cli(repo, ["write", "289", "standards", head2])
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict"])
+    case.check(rc == 3, f"strict check with an empty marker must exit 3, got rc={rc}")
+    case.check(any("(spec) is empty or invalid" in line for line in _warning_lines(err)),
+               f"empty-marker warning must name the axis, got: {_warning_lines(err)}")
+    return case
+
+
+def _case_expect_axis(tmp: Path) -> Case:
+    case = Case("--expect-axis -> per-axis missing/empty/stale lines", [])
+    repo = _selftest_repo(tmp / "expect_axis")
+    head = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    axes = ["standards", "spec"]
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict",
+                                    *[arg for axis in axes for arg in ("--expect-axis", axis)]])
+    warnings = _warning_lines(err)
+    case.check(rc == 3, f"strict+expect-axis without markers must exit 3, got rc={rc}")
+    case.check(len(warnings) == 2, f"one line per expected axis, got: {warnings}")
+    case.check(any("(standards)" in line for line in warnings), f"standards axis missing: {warnings}")
+    case.check(any("(spec)" in line for line in warnings), f"spec axis missing: {warnings}")
+    # 只有 standards 有标记：spec 那一行仍然报缺失（不因「已有别的标记」而整体豁免）。
+    _run_cli(repo, ["write", "289", "standards"])
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict",
+                                   "--expect-axis", "standards", "--expect-axis", "spec"])
+    warnings = _warning_lines(err)
+    case.check(rc == 3, f"partial axis coverage must exit 3, got rc={rc}")
+    case.check(len(warnings) == 1 and "(spec)" in warnings[0],
+               f"only the missing axis may warn, got: {warnings}")
+    _run_cli(repo, ["write", "289", "spec"])
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict",
+                                   "--expect-axis", "standards", "--expect-axis", "spec"])
+    case.check(rc == 0, f"both axes at HEAD must exit 0, got rc={rc} ({err!r})")
+    case.check(not _warning_lines(err), f"no warning expected, got: {err!r}")
+    # 短 sha 前缀比较口径必须复用同一套（不把 standards 标记换成 12 位短 sha 就失配）。
+    _selftest_commit(repo, "two")
+    head2 = _selftest_git(repo, "rev-parse", "HEAD").lower()
+    _run_cli(repo, ["write", "289", "standards", head2[:SHORT_SHA_LEN]])
+    _run_cli(repo, ["write", "289", "spec", head2[:SHORT_SHA_LEN]])
+    rc, _out, err = _run_cli(repo, ["check", "289", "--strict",
+                                   "--expect-axis", "standards", "--expect-axis", "spec"])
+    case.check(rc == 0, f"short sha prefixes must match HEAD, got rc={rc} ({err!r})")
+    return case
+
+
+def _case_not_git_repo(tmp: Path) -> Case:
+    case = Case("outside a git repo: default check rc=0, strict rc=2", [])
+    plain = tmp / "plain"
+    plain.mkdir()
+    rc, _out, err = _run_cli(plain, ["check", "289"])
+    case.check(rc == 0, f"default check outside a repo must stay rc=0, got rc={rc}")
+    case.check("skipped" in err, f"default check must say it skipped, got: {err!r}")
+    rc, _out, err = _run_cli(plain, ["check", "289", "--strict"])
+    case.check(rc == 2, f"strict check outside a repo must exit 2, got rc={rc}")
+    case.check("skipped" in err, f"strict check must still explain the skip, got: {err!r}")
+    return case
+
+
 def _case_usage_errors(tmp: Path) -> Case:
     case = Case("usage errors -> rc=2", [])
     repo = _selftest_repo(tmp / "usage")
     for argv in (["write", "289"], ["write", "abc", "standards"], ["write", "289", "Standards!"],
-                 ["check"], ["check", "abc"], [], ["bogus"]):
+                 ["check"], ["check", "abc"], [], ["bogus"],
+                 ["check", "289", "--expect-axis", "Standards!"],
+                 ["check", "289", "--expect-axis"]):
         rc, _out, _err = _run_cli(repo, argv)
         case.check(rc == 2, f"argv={argv!r} must exit 2, got rc={rc}")
     return case
@@ -409,6 +535,7 @@ def run_selftest() -> int:
         base = Path(tmp)
         for builder in (_case_same_sha, _case_new_commit_warns, _case_no_marker_warns,
                         _case_multi_axis_independent, _case_explicit_sha,
+                        _case_strict_mode, _case_expect_axis, _case_not_git_repo,
                         _case_usage_errors):
             case = builder(base)
             cases.append(case)
@@ -449,16 +576,23 @@ def main(argv: list[str]) -> int:
         print(f"marker: wrote {display} @ {short_sha(sha)}")
         return 0
 
-    # check：只提示、不拦截（退出码恒 0）。连 git 环境都不可用时也只降级为提示，
+    # check：默认只提示、不拦截（退出码恒 0）。连 git 环境都不可用时也只降级为提示，
     # 因为它挂在 pre-push 上——门禁脚本自身的故障不该改变推送结论（#253 的教训）。
+    # `--strict`（#309 AC6）给 scripts/push-ticket.sh 用：同样的判定，有问题时退出 3。
+    # 两条路径的唯一差别是退出码，warning 文案一条不改（pre-push 输出保持逐字一致）。
     try:
         root = repo_root()
         head = git_head(root)
     except MarkerError as exc:
         print(f"pre-push: review marker check skipped; {exc}", file=sys.stderr)
-        return 0
-    for warning in check_markers(root, args.issue, head):
+        # 默认 check 必须恒 0（pre-push 契约）；`--strict` 是拦截语义，环境坏了不能当成
+        # 「验证过」——报 2（环境错误），由 push-ticket 折算成参数/环境错误。
+        return 2 if args.strict else 0
+    warnings = check_markers(root, args.issue, head, tuple(args.expect_axis))
+    for warning in warnings:
         print(f"pre-push: {warning}", file=sys.stderr)
+    if args.strict and warnings:
+        return 3
     return 0
 
 

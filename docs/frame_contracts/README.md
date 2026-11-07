@@ -33,6 +33,8 @@
 
 先读 [general](general.md)（总则），再按需读各契约。每份契约只写与总则不同的部分；跨契约引用格式：《帧契约：\<主题\>》§N（**禁止以行号引用契约**，见 general §11.2）。
 
+**按节取契约用 `scripts/contract_slice.py`**（#309 AC4）：`python3 scripts/contract_slice.py sysmon §2.9` 输出该节（`--children` 含子节、`--list` 列出全部契约的编号标题）。不要用 `sed -n` 按行号分页——行号在每次改契约后即失效（sysmon.md 已 770+ 行 / 105 KB）。
+
 ## 单一真相源原则
 
 | 内容 | 真相源 | 契约角色 |

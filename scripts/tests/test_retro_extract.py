@@ -144,5 +144,226 @@ class ExtractMaskedFailuresTest(unittest.TestCase):
         self.assertNotIn("match=rc!=0", masked)
 
 
+def _event(kind: str, time_ms: int, **data) -> dict:
+    return {"type": kind, "time": time_ms, "data": data}
+
+
+def _tool_call(call_id: str, name: str, time_ms: int, turn: int, arguments: dict | None = None) -> dict:
+    return _event(
+        "tool/call",
+        time_ms,
+        name=name,
+        callId=call_id,
+        turn=turn,
+        arguments=json.dumps(arguments or {}),
+    )
+
+
+def _tool_result(call_id: str, time_ms: int, turn: int) -> dict:
+    """构造 tool/result 事件；`turn` 不写进事件体（真实日志的 result 也没有 turn 字段）。
+
+    保留该参数是为了与 `_tool_call(...)` 签名对称：调用点四处都写 `turn`，删掉会让
+    每个用例去记「这两个 helper 参数不同」，而它恰好也是真实日志的形状（turn 只标在 call 上）。
+    实现侧靠 callId 配对拿到 turn，因此这里多一个参数不进事件体。
+    """
+    del turn  # 形状说明见上：result 事件没有 turn 字段
+    return _event("tool/result", time_ms, message={"toolCallId": call_id, "content": []})
+
+
+def _assistant(turn: int, step: int, time_ms: int) -> dict:
+    return _event("assistant/message", time_ms, turn=turn, step=step, message={"content": []})
+
+
+class DecomposeTest(unittest.TestCase):
+    """`--decompose` 的三态：单 turn / 多 turn 含轮间 idle / 含 ask 阻塞（#309 AC9）。
+
+    口径锁死 `turn_wall = model_gen + tool_exec + idle`。ask 与等待型工具**是
+    tool_exec 的子集**：它们只单列，绝不再加进守恒等式——实现若把它们重复计入总墙钟，
+    下面的守恒断言立刻红。
+    """
+
+    @staticmethod
+    def _decompose(events: list[dict]) -> list[str]:
+        return retro_extract.decompose_section(events)
+
+    @staticmethod
+    def _turn_line(lines: list[str], turn: int) -> str:
+        for line in lines:
+            if line.startswith(f"- turn {turn}:"):
+                return line
+        raise AssertionError(f"turn {turn} missing from decompose output: {lines}")
+
+    def test_single_turn_splits_model_and_tool(self) -> None:
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 2000),  # 2s 模型生成
+            _tool_call("c1", "bash", 2000, 1),  # 2s → 4s 工具执行
+            _tool_result("c1", 4000, 1),
+            _event("step/end", 4000, turn=1, step=1),
+            _event("turn/end", 6000, turn=1),
+            {"type": "session", "data": {}},
+        ]
+        lines = self._decompose(events)
+        turn1 = self._turn_line(lines, 1)
+        self.assertIn("wall=6s", turn1)
+        self.assertIn("model=2s(33%)", turn1)
+        self.assertIn("tool=2s(33%)", turn1)
+        self.assertIn("idle=2s(33%)", turn1)
+        self.assertTrue(any("closed_turns=1" in line and "wall=6s" in line for line in lines))
+
+    def test_idle_between_turns_is_not_charged_to_either_turn(self) -> None:
+        # turn1 结束后到 turn2 开始前有 5s 轮间空档（人读结果/等待），不该进任何 turn。
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 1000),
+            _event("step/end", 1000, turn=1, step=1),
+            _event("turn/end", 2000, turn=1),
+            _event("turn/start", 7000, turn=2),
+            _event("step/start", 7000, turn=2, step=1),
+            _assistant(2, 1, 9000),
+            _event("step/end", 9000, turn=2, step=1),
+            _event("turn/end", 10000, turn=2),
+        ]
+        lines = self._decompose(events)
+        turn1 = self._turn_line(lines, 1)
+        turn2 = self._turn_line(lines, 2)
+        self.assertIn("wall=2s", turn1)
+        self.assertIn("model=1s(50%)", turn1)
+        self.assertIn("wall=3s", turn2)
+        self.assertIn("model=2s(67%)", turn2)
+        self.assertTrue(any("closed_turns=2" in line and "wall=5s" in line for line in lines))
+
+    def test_ask_block_is_a_subset_not_added_to_tool_wall(self) -> None:
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 1000),  # 1s 模型生成
+            _tool_call("c1", "ask_user_question", 1000, 1, {"question": "merge?"}),
+            _tool_result("c1", 9000, 1),  # 8s 人工应答 = ask 阻塞，已在工具区间内
+            _tool_call("c2", "bash", 9000, 1),
+            _tool_result("c2", 10000, 1),  # 1s 工具执行
+            _event("step/end", 10000, turn=1, step=1),
+            _event("turn/end", 12000, turn=1),
+        ]
+        lines = self._decompose(events)
+        turn1 = self._turn_line(lines, 1)
+        # tool_exec 是 1s–10s 的区间并集 = 9s（含 ask）；ask 只单列 8s，绝不再加。
+        self.assertIn("wall=12s", turn1)
+        self.assertIn("model=1s(8%)", turn1)
+        self.assertIn("tool=9s(75%)", turn1)
+        self.assertIn("idle=2s(17%)", turn1)
+        self.assertIn("ask=8s", turn1)
+        ask_section = "\n".join(lines).split("## ask blocks", 1)[1]
+        self.assertIn("ask_user_question: calls=1 total=8s", ask_section)
+        # 守恒：若实现把 ask 也加进 tool，turn 行里的 tool 会变成 17s 之类的错值。
+        self.assertNotIn("tool=17s", turn1)
+
+    def test_wait_type_tool_listed_with_calls_and_total(self) -> None:
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 1000),
+            _tool_call("c1", "job_output", 1000, 1, {"job_id": "j1", "wait": True}),
+            _tool_result("c1", 7000, 1),
+            _tool_call("c2", "job_output", 7000, 1, {"job_id": "j2", "wait": False}),
+            _tool_result("c2", 8000, 1),  # wait=false 是即时取结果，不算等待型
+            _tool_call("c3", "wait_agent", 8000, 1, {}),
+            _tool_result("c3", 10000, 1),
+            _event("step/end", 10000, turn=1, step=1),
+            _event("turn/end", 11000, turn=1),
+        ]
+        lines = self._decompose(events)
+        wait_section = "\n".join(lines).split("## wait-type tools", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("job_output: calls=1 total=6s", wait_section)
+        self.assertIn("wait_agent: calls=1 total=2s", wait_section)
+        self.assertIn("total: calls=2 total=8s", wait_section)
+        self.assertNotIn("calls=3", wait_section)
+
+    def test_parallel_calls_are_counted_once(self) -> None:
+        # 两个 bash 同时跑 2s：区间并集 2s，不是相加的 4s。
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 1000),
+            _tool_call("c1", "bash", 1000, 1),
+            _tool_call("c2", "bash", 1000, 1),
+            _tool_result("c1", 3000, 1),
+            _tool_result("c2", 3000, 1),
+            _event("step/end", 3000, turn=1, step=1),
+            _event("turn/end", 4000, turn=1),
+        ]
+        turn1 = self._turn_line(self._decompose(events), 1)
+        self.assertIn("tool=2s(50%)", turn1)
+
+    def test_open_turn_is_listed_but_not_summed(self) -> None:
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 1000),
+            _event("step/end", 1000, turn=1, step=1),
+            _event("turn/end", 2000, turn=1),
+            _event("turn/start", 3000, turn=2),  # 当前会话尾部：没有 turn/end
+            _event("step/start", 3000, turn=2, step=1),
+            _assistant(2, 1, 4000),
+        ]
+        lines = self._decompose(events)
+        session_line = next(line for line in lines if "closed_turns" in line)
+        self.assertIn("closed_turns=1", session_line)
+        self.assertIn("open_turns=1", session_line)
+        self.assertIn("wall=2s", session_line)  # 只合计已闭合的 turn 1
+        open_line = self._turn_line(lines, 2)
+        self.assertIn("open turn", open_line)
+        self.assertIn("model=1s", open_line)
+
+    def test_duplicate_results_do_not_inflate_tool_time(self) -> None:
+        # 真实会话里同一 callId 会出现多条 result（重投/重放）。取最后一条会把区间拉到
+        # 会话尾部——#297 实测把「工具执行 40.3 min」虚报成 106 min。只认第一条 result。
+        events = [
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 1000),
+            _tool_call("c1", "bash", 1000, 1),
+            _tool_result("c1", 2000, 1),  # 真结果：1s
+            _tool_result("c1", 60000, 1),  # 重投：若取这条，tool 会变成 59s
+            _event("step/end", 2000, turn=1, step=1),
+            _event("turn/end", 3000, turn=1),
+        ]
+        turn1 = self._turn_line(self._decompose(events), 1)
+        self.assertIn("tool=1s(33%)", turn1)
+        self.assertNotIn("tool=59s", turn1)
+
+    def test_decompose_flag_appends_section_without_touching_default_output(self) -> None:
+        if shutil.which("zstd") is None:
+            self.skipTest("zstd CLI not installed; the end-to-end digest test needs it")
+        events = [
+            {"type": "session", "data": {}},
+            _event("turn/start", 0, turn=1),
+            _event("step/start", 0, turn=1, step=1),
+            _assistant(1, 1, 2000),
+            _tool_call("c1", "bash", 2000, 1),
+            _tool_result("c1", 4000, 1),
+            _event("step/end", 4000, turn=1, step=1),
+            _event("turn/end", 6000, turn=1),
+        ]
+        tmp = Path(tempfile.mkdtemp(prefix="dz_retro_decompose_"))
+        try:
+            raw = tmp / "session.v4.jsonl"
+            raw.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+            packed = tmp / "session.v4.jsonl.zstd"
+            subprocess.run(
+                ["zstd", "-q", "-f", str(raw), "-o", str(packed)], check=True, capture_output=True
+            )
+            plain = retro_extract.extract(packed)
+            decomposed = retro_extract.extract(packed, decompose=True)
+            # 默认输出一字不改；--decompose 是纯追加。
+            self.assertTrue(decomposed.startswith(plain))
+            self.assertNotIn("## decompose", plain)
+            self.assertIn("## decompose (turn wall clock)", decomposed)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
