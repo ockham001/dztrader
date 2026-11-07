@@ -8,7 +8,9 @@
 #       （#227）/ commit subject（#265）/ push-scope 自测（#265）/ 门禁脚本参数自测
 #       （#281，build.sh/test.sh 重复 flag 必须累积）/ Windows CI 预算分档（#267）/
 #       孤儿导出（#274）/ CI 快路径分类（#289，与 ci.yml scope job 共用一份 denylist）/
-#       审查验证标记（#289，pre-push 读取）/ 前端五件套。
+#       SYSMON 指标键集合（#309，四处副本 + snapshot_builder 分支覆盖）/ push 纪律
+#       （#309，push-ticket.sh 的 scope+验证标记+push 串联）/ 审查验证标记（#289，pre-push
+#       读取）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
@@ -268,6 +270,26 @@ check_ci_scope() {
     fi
 }
 
+check_sysmon_metric_keys() {
+    # 指标键集合检查器（#309 AC3）：同一份 15 键集合在 5 处有副本（sysmon.h 的
+    # SYSMON_METRIC_KEYS / 契约 sysmon §2.5 键列表 / TS 夹具 / 两个 webui 测试夹具），
+    # 当前一致但没有任何检查器绑定——#295 审查 finding 5 的「两份夹具 13/15 vs 15/15」
+    # 只能靠人眼发现。先跑自测（四源相等 / 少键 / 多键 / 夹具缺键 / 缺分支 / 兜底漂移 /
+    # 解析失败），再扫真实树。显式串联：`set -u -o pipefail` 没有 `-e`，自测失败会被
+    # 后一条的 0 覆盖，step 打印 ok 而检查器已坏（#281/#284/#289 修过 3 处同类）。
+    "$PYTHON" "$ROOT/scripts/check_sysmon_metric_keys.py" --selftest || return $?
+    "$PYTHON" "$ROOT/scripts/check_sysmon_metric_keys.py"
+}
+
+check_push_ticket() {
+    # push 纪律脚本（#309 AC6）：本波唯一违例 #297 的 git push 距首个审查 spawn 仅 19 s，
+    # `pre-push` 的「no review marker」warning 是 warning-only，被无视后 `--force-with-lease`
+    # 又产生第二个 CI run（19 min）。push-ticket.sh 把 check-push-scope + review_marker
+    # 严格判定 + git push 串成一条命令（缺失/不一致默认拒绝，逃生口 DZ_ALLOW_UNREVIEWED_PUSH）；
+    # selftest 用假 git/gh 在临时仓库复现三态，不联网、不碰工作区。
+    "$ROOT/scripts/push-ticket.sh" --selftest
+}
+
 check_review_marker() {
     # 只读验证轮的机器标记（#289 AC6）：#253 的「修复后只读验证轮被宿主 turn 错误中止 →
     # 未验证即合并」只靠文档约束无效（动作点看不见）。脚本把「哪个轴上跑过验证、验证的是
@@ -353,6 +375,8 @@ run_step "gate script arg parsing (#281)" check_script_args
 run_step "Windows CI budget bands (#267)" check_ci_budget
 run_step "orphan exports (#274)" check_orphan_exports
 run_step "ci scope fast path (#289)" check_ci_scope
+run_step "sysmon metric key set (#309)" check_sysmon_metric_keys
+run_step "push ticket discipline (#309)" check_push_ticket
 run_step "review verification marker (#289)" check_review_marker
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend

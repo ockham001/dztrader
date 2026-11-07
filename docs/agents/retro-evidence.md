@@ -86,6 +86,29 @@ python3 scripts/retro_extract.py --all --recent 5
 
 输出 `.cache/retro/<session-id>-digest.md`，已按复盘需要汇总：轮次墙钟、人工消息、审批（`approval/asked`）、工具失败（`isError`）、≥60s 长作业（`job/settled`）、子代理调用、工具计数、`llm/retry`。再按复盘候选（导航 / 自动检查 / 规范 / AGENTS / 工具经济 / 信息获取）归类。
 
+### 4.1 墙钟分解（`--decompose`）
+
+`--decompose` 只**追加** `## decompose` 小节，默认输出一字不改：
+
+```bash
+python3 scripts/retro_extract.py --latest --decompose
+python3 scripts/retro_extract.py --session "$BASE/session-<session-id>/session.v4.jsonl.zstd" --decompose
+```
+
+口径：`turn_wall = model_gen + tool_exec + idle`，每个事件只计一次——`model_gen` 取该 step 内首个 `assistant/message − step/start`；`tool_exec` 按 `callId` 配对 `tool/call ↔ tool/result` 并取**区间并集**（同一 turn 内并行调用不重复叠加）。`ask_user_question` 阻塞与等待型工具（`wait_agent` / `job_output(wait=true)`）**是 `tool_exec` 的子集**，只单列次数与总时长，绝不再加进守恒等式；两个 turn 之间的人工停顿（轮间 idle）不属于任何 turn。
+
+**数据判据（下次别把 span 当耗时）**：会话的 `span = max(time) − min(time)` 包含轮间空档与人工应答，**不等于审查/执行耗时**——107 个带时间盒子会话的实测里，span 相对首轮墙钟会高估 **2.4×**。判据是**首轮墙钟**（`turn 1` 的 `turn_wall`）或 `--decompose` 的四分类，不是日志首尾差。
+
+读契约按节切，不要再用 `sed -n` 按行号分页（改契约后行号即失效，`sysmon.md` 已 105 KB）：
+
+```bash
+python3 scripts/contract_slice.py sysmon §2.9              # 切一节（默认不含子节）
+python3 scripts/contract_slice.py sysmon §2.9 --children   # 含子节
+python3 scripts/contract_slice.py --list                   # 全部契约的编号标题（替代 grep '^##'）
+```
+
+未知契约/未知节号会 exit 1 并给候选（同父级下的兄弟节，而非全文件模糊匹配）；围栏代码块里的假标题不算节。
+
 找「今天有哪些主会话」时按 mtime 看 `session-*/` 并抽查首条 human 消息（Linux `find -printf`；路径含空格也安全）：
 
 ```bash

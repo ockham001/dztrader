@@ -11,6 +11,7 @@
 #include "shm_writer.h"
 #include "sysmon_controller.h"
 #include "sysmon_history_service.h"
+#include "sysmon_snapshot_fixture.h"
 #include "test_temp_dir.h"
 
 #include <dztrader/core/this_process.h>
@@ -53,69 +54,11 @@ std::string unique_channel_name(const std::string& base) {
            std::to_string(rd());
 }
 
+/// 契约合法的最小快照：形状（15 键 availability + clock 空态）的唯一实现在
+/// `sysmon_snapshot_fixture.h`（#309 AC5）；本文件只给本例关心的数值。
 nlohmann::json minimal_snapshot() {
-    return {
-        {"source", "dzsysmon"},
-        {"timestamp", 1790000005000},
-        {"sampling",
-         {{"measure_interval_ms", 1000},
-          {"last_sample_unix_ms", 1790000005123},
-          {"missed_ticks", 0}}},
-        {"platform",
-         {{"family", "linux"},
-          {"version", "Ubuntu 24.04.1 LTS"},
-          {"kernel", "6.8.0-45-generic"},
-          {"arch", "x86_64"},
-          {"build", 0}}},
-        {"system",
-         {{"hostname", "trade-01"},
-          {"cpu_model", "test cpu"},
-          {"logical_cores", 8},
-          {"boot_time_unix_sec", 1789990000},
-          {"uptime_sec", 10005}}},
-        {"cpu",
-         {{"total", {{"usage_ratio", 0.25}}},
-          {"cores", nlohmann::json::array()},
-          {"saturated_cores", nlohmann::json::array()},
-          {"load_average", nullptr},
-          {"context_switches_per_sec", nullptr},
-          {"interrupts_per_sec", nullptr}}},
-        {"memory", nullptr},
-        {"swap", nullptr},
-        {"volumes", nullptr},
-        {"disk_io", nullptr},
-        {"network", nullptr},
-        {"shm_dir", nullptr},
-        {"clock",
-         {{"offset_ms", nullptr},
-          {"bound_ms", nullptr},
-          {"source", ""},
-          {"source_stratum", nullptr},
-          {"last_probe_unix_ms", 0},
-          {"servers", nlohmann::json::array()},
-          {"daemons", nlohmann::json::array()},
-          {"daemon_conflict", false},
-          {"kernel_synced", nullptr}}},
-        {"availability",
-         {{"platform_description", "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)"},
-          {"metrics",
-           {{"system", {{"available", true}}},
-            {"cpu.total", {{"available", true}}},
-            {"cpu.cores", {{"available", false}, {"reason", "not_implemented"}}},
-            {"cpu.load_average", {{"available", false}, {"reason", "not_implemented"}}},
-            {"cpu.context_switches", {{"available", false}, {"reason", "not_implemented"}}},
-            {"cpu.frequency", {{"available", false}, {"reason", "not_implemented"}}},
-            {"temperature", {{"available", false}, {"reason", "not_implemented"}}},
-            {"memory", {{"available", false}, {"reason", "not_implemented"}}},
-            {"swap", {{"available", false}, {"reason", "not_implemented"}}},
-            {"volumes", {{"available", false}, {"reason", "not_implemented"}}},
-            {"disk_io", {{"available", false}, {"reason", "not_implemented"}}},
-            {"network", {{"available", false}, {"reason", "not_implemented"}}},
-            {"shm_dir", {{"available", false}, {"reason", "not_implemented"}}},
-            {"clock.offset", {{"available", false}, {"reason", "no_reference"}}},
-            {"clock.sync_service", {{"available", true}}}}},
-          {"semantic_hints", nlohmann::json::object()}}},
-    };
+    return dztrader::test::sysmon_snapshot_fixture(
+        {.cpu_usage_ratio = 0.25, .cpu_model = "test cpu", .logical_cores = 8});
 }
 
 class SysmonControllerTest : public ::testing::Test {

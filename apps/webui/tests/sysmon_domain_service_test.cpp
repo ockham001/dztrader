@@ -1,6 +1,7 @@
 #include "ws_broadcaster.h"
 #include "mirror_store.h"
 #include "sysmon_domain_service.h"
+#include "sysmon_snapshot_fixture.h"
 
 #include <dztrader/platform/sysmon.h>
 
@@ -31,71 +32,13 @@ public:
 };
 
 /// 构造一份契约合法的首版快照（系统信息 + CPU 总使用率；其余域 null）。
+/// 形状（15 键 availability + clock 空态）的唯一实现在 `sysmon_snapshot_fixture.h`
+/// （#309 AC5）；本文件只给本例关心的数值。
 nlohmann::json make_snapshot() {
-    return {
-        {"source", "dzsysmon"},
-        {"timestamp", 1790000005000},
-        {"sampling",
-         {{"measure_interval_ms", 1000},
-          {"last_sample_unix_ms", 1790000005123},
-          {"missed_ticks", 0}}},
-        {"platform",
-         {{"family", "linux"},
-          {"version", "Ubuntu 24.04.1 LTS"},
-          {"kernel", "6.8.0-45-generic"},
-          {"arch", "x86_64"},
-          {"build", 0}}},
-        {"system",
-         {{"hostname", "trade-01"},
-          {"cpu_model", "AMD Ryzen 9 7950X 16-Core Processor"},
-          {"logical_cores", 32},
-          {"boot_time_unix_sec", 1789990000},
-          {"uptime_sec", 10005}}},
-        {"cpu",
-         {{"total", {{"usage_ratio", 0.187}}},
-          {"cores", nlohmann::json::array()},
-          {"core_frequencies", nullptr},
-          {"saturated_cores", nlohmann::json::array()},
-          {"load_average", nullptr},
-          {"context_switches_per_sec", nullptr},
-          {"interrupts_per_sec", nullptr}}},
-        {"temperature", nullptr},
-        {"memory", nullptr},
-        {"swap", nullptr},
-        {"volumes", nullptr},
-        {"disk_io", nullptr},
-        {"network", nullptr},
-        {"shm_dir", nullptr},
-        {"clock",
-         {{"offset_ms", nullptr},
-          {"bound_ms", nullptr},
-          {"source", ""},
-          {"source_stratum", nullptr},
-          {"last_probe_unix_ms", 0},
-          {"servers", nlohmann::json::array()},
-          {"daemons", nlohmann::json::array()},
-          {"daemon_conflict", false},
-          {"kernel_synced", nullptr}}},
-        {"availability",
-         {{"platform_description", "Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)"},
-          {"metrics",
-           {{"system", {{"available", true}}},
-            {"cpu.total", {{"available", true}}},
-            {"cpu.cores", {{"available", false}, {"reason", "not_implemented"}}},
-            {"cpu.load_average", {{"available", false}, {"reason", "not_implemented"}}},
-            {"cpu.context_switches", {{"available", false}, {"reason", "not_implemented"}}},
-            {"cpu.frequency", {{"available", false}, {"reason", "not_implemented"}}},
-            {"memory", {{"available", false}, {"reason", "not_implemented"}}},
-            {"swap", {{"available", false}, {"reason", "not_implemented"}}},
-            {"volumes", {{"available", false}, {"reason", "not_implemented"}}},
-            {"disk_io", {{"available", false}, {"reason", "not_implemented"}}},
-            {"network", {{"available", false}, {"reason", "not_implemented"}}},
-            {"shm_dir", {{"available", false}, {"reason", "not_implemented"}}},
-            {"temperature", {{"available", false}, {"reason", "not_implemented"}}},
-            {"clock.offset", {{"available", false}, {"reason", "no_reference"}}},
-            {"clock.sync_service", {{"available", true}}}}},
-          {"semantic_hints", nlohmann::json::object()}}},
-    };
+    return dztrader::test::sysmon_snapshot_fixture(
+        {.cpu_usage_ratio = 0.187,
+         .cpu_model = "AMD Ryzen 9 7950X 16-Core Processor",
+         .logical_cores = 32});
 }
 
 nlohmann::json make_config() { return platform::SysmonConfig::default_config(); }
