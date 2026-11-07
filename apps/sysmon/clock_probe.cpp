@@ -11,15 +11,22 @@
 namespace dztrader::sysmon {
 namespace {
 
-/// 纳秒 -> 毫秒（快照 payload 的偏移/误差界单位；保留小数，契约 §2.9 未规定精度）。
-double to_milliseconds(int64_t nanos) noexcept { return static_cast<double>(nanos) / 1'000'000.0; }
+/// 纳秒 -> 毫秒（**double**，用于快照 payload 的偏移/误差界；保留小数，契约 §2.9 未规定精度）。
+constexpr double to_milliseconds_f64(int64_t nanos) noexcept {
+    return static_cast<double>(nanos) / 1'000'000.0;
+}
 
-/// 契约 §2.9 / §7 的五种失败原因（发送方义务：只取这五个值）。
-constexpr const char* kErrorTimeout = "timeout";
-constexpr const char* kErrorKodRate = "kod_rate";
-constexpr const char* kErrorKodDeny = "kod_deny";
-constexpr const char* kErrorBadEcho = "bad_echo";
-constexpr const char* kErrorUnreachable = "unreachable";
+/// 纳秒 -> 毫秒（**整型**，用于 Unix 毫秒时刻；与 `to_milliseconds_f64` 刻意分开：
+/// 时刻是整数语义，取整口径不同，混用两处会在边界上差 1 ms）。
+constexpr int64_t to_milliseconds_i64(int64_t nanos) noexcept { return nanos / 1'000'000; }
+
+// 五种失败原因的取值来自类型层单一真相源（platform::SYSMON_CLOCK_ERROR_*）——发送方与
+// 快照校验共用一份，避免「改一个取值」时两处静默漂移（review-checklist §2.4）。
+constexpr const char* kErrorTimeout = platform::SYSMON_CLOCK_ERROR_TIMEOUT;
+constexpr const char* kErrorKodRate = platform::SYSMON_CLOCK_ERROR_KOD_RATE;
+constexpr const char* kErrorKodDeny = platform::SYSMON_CLOCK_ERROR_KOD_DENY;
+constexpr const char* kErrorBadEcho = platform::SYSMON_CLOCK_ERROR_BAD_ECHO;
+constexpr const char* kErrorUnreachable = platform::SYSMON_CLOCK_ERROR_UNREACHABLE;
 
 }  // namespace
 
@@ -55,6 +62,7 @@ bool ClockProber::probe(const std::vector<std::string>& hosts,
         return false;  // 不排队、不叠加（契约 §1.1 的权威拒绝由调用方记日志）
     }
     in_flight_ = true;
+    ++round_token_;  // 新一轮的令牌：上一轮遗留的迟到回调会因令牌不符被丢弃
     done_ = std::move(done);
     pending_.clear();
     remaining_ = 0;
@@ -93,9 +101,10 @@ bool ClockProber::probe(const std::vector<std::string>& hosts,
         item.t1 = ntp::from_unix_nanoseconds(now.wall_ns);
         item.steady_ns = now.steady_ns;
         item.settled = false;
-        transport_.async_exchange(
-            details_[slot].host, ntp::build_request(item.t1), timeout_ms,
-            [this, slot](NtpExchange result) { handle_exchange(slot, std::move(result)); });
+        transport_.async_exchange(details_[slot].host, ntp::build_request(item.t1), timeout_ms,
+                                  [this, slot, token = round_token_](NtpExchange result) {
+                                      handle_exchange(slot, token, std::move(result));
+                                  });
     }
     issuing_ = false;
     if (finish_requested_ || remaining_ == 0) {
@@ -114,9 +123,10 @@ void ClockProber::mark_failed(platform::SysmonClockServerInfo& detail, const cha
     detail.error = std::string(error);
 }
 
-void ClockProber::handle_exchange(std::size_t slot, NtpExchange result) {
-    // 迟到的回调（上一轮已收尾）：直接丢弃。单台失败不影响本轮其它台。
-    if (!in_flight_ || slot >= details_.size() || remaining_ == 0) {
+void ClockProber::handle_exchange(std::size_t slot, uint64_t round_token, NtpExchange result) {
+    // 迟到的回调（上一轮的违约回调）直接丢弃：轮次令牌必须匹配当前轮，否则会把旧结果当成
+    // 本轮结果提前结算，并吞掉本轮的真实回调。单台失败不影响本轮其它台。
+    if (!in_flight_ || round_token != round_token_ || slot >= details_.size() || remaining_ == 0) {
         return;
     }
     platform::SysmonClockServerInfo& detail = details_[slot];
@@ -171,9 +181,9 @@ void ClockProber::handle_exchange(std::size_t slot, NtpExchange result) {
                     }
                     detail.ok = true;
                     detail.error = std::nullopt;
-                    detail.offset_ms = to_milliseconds(sample->offset_ns);
-                    detail.bound_ms = to_milliseconds(sample->bound_ns);
-                    detail.rtt_ms = to_milliseconds(sample->rtt_ns);
+                    detail.offset_ms = to_milliseconds_f64(sample->offset_ns);
+                    detail.bound_ms = to_milliseconds_f64(sample->bound_ns);
+                    detail.rtt_ms = to_milliseconds_f64(sample->rtt_ns);
                     detail.stratum = response->stratum;
                     break;
                 }
@@ -229,7 +239,7 @@ void ClockProber::finish_round() {
     ProbeOutcome outcome;
     outcome.servers = details_;
     // 完成时刻按此刻的墙钟：`last_probe_unix_ms` 是「最近一轮探测的完成时刻」（契约 §2.9）。
-    outcome.finished_unix_ms = moment_().wall_ns / 1'000'000;
+    outcome.finished_unix_ms = to_milliseconds_i64(moment_().wall_ns);
 
     // 聚合值：最小 RTT 的那台；同 RTT 取 bound_ms 更小者（契约 §2.7）。
     const platform::SysmonClockServerInfo* best = nullptr;

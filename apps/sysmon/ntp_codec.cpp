@@ -53,8 +53,9 @@ int64_t round_div(int64_t numerator, int64_t denominator) noexcept {
 
 Timestamp from_unix_nanoseconds(int64_t unix_ns) noexcept {
     if (unix_ns < 0) {
-        // 1970 年之前的时刻不在本模块的重心上（方案基线内不可能出现）；
-        // 归零而不是回绕出一个无意义的 era 值。
+        // 调用方违约（precondition 要求 >= 0，见头文件）：1970 年之前的时刻在方案基线内
+        // 不可能出现。此处**不是**静默软回退成一个看似合法的时间戳——而是产出纪元原点
+        // （1900-01-01），它在差值计算里必然表现为「巨大的负偏移」，不会被误当成正常样本。
         return Timestamp{};
     }
     const int64_t seconds = unix_ns / kNanosecondsPerSecond;

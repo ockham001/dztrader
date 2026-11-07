@@ -21,7 +21,7 @@
 namespace dztrader::sysmon {
 namespace {
 
-/// 2026-09-21T12:53:20Z：用例里的「当前墙钟」基准（Unix 秒 1790000000，NTP 秒 3998988800）。
+/// 2026-09-21T14:13:20Z：用例里的「当前墙钟」基准（Unix 秒 1790000000，NTP 秒 3998988800）。
 constexpr int64_t kWallBaseNs = 1'790'000'000LL * 1'000'000'000LL;
 
 /// 脚本化时刻读数：墙钟与单调时钟同步推进，模拟交互耗时（用例完全不依赖真实时间）。
@@ -122,7 +122,6 @@ public:
                         Handler handler) override {
         sent_hosts.push_back(host);
         last_timeout_ms = timeout_ms;
-        ++call_count;
         const auto it = replies.find(host);
         NtpExchange result;
         if (it == replies.end()) {
@@ -179,19 +178,20 @@ public:
     FakeMoment* moment = nullptr;         ///< 非空时按应答耗时推进读数（模拟真实往返）
     std::vector<std::string> sent_hosts;  ///< 实际发出请求的 host（断言去重与跳过）
     int32_t last_timeout_ms = 0;
-    int call_count = 0;
 };
 
 /// 跑一轮探测并把结果取出（假传输同步回调，所以结果在 probe() 返回后必定就绪）。
-ProbeOutcome run_round(ClockProber& prober,
-                       const std::vector<std::string>& hosts,
-                       int32_t timeout_ms = 1500) {
+///
+/// 返回 `std::optional` 而不是 `value_or({})`：失败时就地终止用例，否则「本轮没交付」会被后续
+/// 断言级联成「servers 为空」的误导性失败（unit-test-standard §1.1）。
+std::optional<ProbeOutcome> run_round(ClockProber& prober,
+                                      const std::vector<std::string>& hosts,
+                                      int32_t timeout_ms = 1500) {
     std::optional<ProbeOutcome> outcome;
     const bool started = prober.probe(
         hosts, timeout_ms, [&outcome](ProbeOutcome result) { outcome = std::move(result); });
     EXPECT_TRUE(started) << "no round should be in flight before this call";
-    EXPECT_TRUE(outcome.has_value()) << "round must complete synchronously with the fake transport";
-    return outcome.value_or(ProbeOutcome{});
+    return outcome;
 }
 
 /// 构造一台正常响应的脚本（只给时延、本地偏差与 root dispersion）。
@@ -229,7 +229,9 @@ TEST(ClockProbeTest, AllServersSucceedAggregatesFastestRtt) {
                          {"medium.example", answer(30'000'000, 5'000'000, 10'000'000, 3)}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"slow.example", "fast.example", "medium.example"});
+    auto outcome_opt = run_round(prober, {"slow.example", "fast.example", "medium.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     ASSERT_EQ(outcome.servers.size(), 3U);
     for (const auto& server : outcome.servers) {
         EXPECT_TRUE(server.ok) << server.host;
@@ -265,7 +267,9 @@ TEST(ClockProbeTest, PartialTimeoutKeepsAggregateFromSuccessfulServer) {
     // "dead.example" 未登记 => 超时
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"dead.example", "ok.example"});
+    auto outcome_opt = run_round(prober, {"dead.example", "ok.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     ASSERT_EQ(outcome.servers.size(), 2U);
     EXPECT_FALSE(outcome.servers[0].ok);
     ASSERT_TRUE(outcome.servers[0].error.has_value());
@@ -295,7 +299,9 @@ TEST(ClockProbeTest, AllFailuresYieldUnavailableAggregateNotZero) {
                          {"c.example", broken}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"a.example", "b.example", "c.example"});
+    auto outcome_opt = run_round(prober, {"a.example", "b.example", "c.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     EXPECT_FALSE(outcome.offset_ms.has_value()) << "must not fake 0 when every server failed";
     EXPECT_FALSE(outcome.bound_ms.has_value());
     EXPECT_FALSE(outcome.source_stratum.has_value());
@@ -316,7 +322,31 @@ TEST(ClockProbeTest, AllFailuresYieldUnavailableAggregateNotZero) {
     }
 }
 
-// AC：origin 回显不匹配 => 该台 bad_echo（防伪造与迟到包），不参与聚合。
+// AC2 字面形态：三台**全部超时**（不是混合失败）——聚合值不可用、明细逐台 timeout。
+TEST(ClockProbeTest, AllTimeoutYieldsUnavailableAggregate) {
+    FakeTransport transport;
+    FakeMoment moment;
+    transport.moment = &moment;
+    // 三台都未登记 => 全部超时
+    ClockProber prober(transport, [&moment]() { return moment(); });
+
+    auto outcome_opt = run_round(prober, {"a.example", "b.example", "c.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
+    EXPECT_FALSE(outcome.offset_ms.has_value()) << "no server answered => must be unavailable";
+    EXPECT_FALSE(outcome.bound_ms.has_value());
+    EXPECT_FALSE(outcome.source_stratum.has_value());
+    EXPECT_TRUE(outcome.source.empty());
+    ASSERT_EQ(outcome.servers.size(), 3U);
+    for (const auto& server : outcome.servers) {
+        EXPECT_FALSE(server.ok) << server.host;
+        ASSERT_TRUE(server.error.has_value()) << server.host;
+        EXPECT_EQ(*server.error, "timeout") << server.host;
+    }
+    EXPECT_EQ(transport.sent_hosts.size(), 3U) << "every configured server is still contacted";
+}
+
+// origin 回显不匹配 => 该台 bad_echo（防伪造与迟到包），不参与聚合。
 TEST(ClockProbeTest, OriginEchoMismatchIsBadEcho) {
     FakeTransport transport;
     FakeMoment moment;
@@ -332,7 +362,9 @@ TEST(ClockProbeTest, OriginEchoMismatchIsBadEcho) {
     transport.replies = {{"forged.example", forged}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"forged.example"});
+    auto outcome_opt = run_round(prober, {"forged.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     ASSERT_EQ(outcome.servers.size(), 1U);
     ASSERT_TRUE(outcome.servers[0].error.has_value());
     EXPECT_EQ(*outcome.servers[0].error, "bad_echo");
@@ -347,7 +379,9 @@ TEST(ClockProbeTest, UnsynchronisedSourceIsRejected) {
     transport.replies = {{"unsync.example", answer(10'000'000, 0, 0, /*stratum=*/16)}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"unsync.example"});
+    auto outcome_opt = run_round(prober, {"unsync.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     ASSERT_EQ(outcome.servers.size(), 1U);
     ASSERT_TRUE(outcome.servers[0].error.has_value());
     EXPECT_EQ(*outcome.servers[0].error, "bad_echo");
@@ -362,7 +396,9 @@ TEST(ClockProbeTest, KissRateBacksOffThenRecovers) {
     transport.replies = {{"rate.example", kod_reply({'R', 'A', 'T', 'E'})}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto first = run_round(prober, {"rate.example"});
+    auto first_opt = run_round(prober, {"rate.example"});
+    ASSERT_TRUE(first_opt.has_value()) << "round must be delivered";
+    const auto first = std::move(*first_opt);
     ASSERT_EQ(first.servers.size(), 1U);
     ASSERT_TRUE(first.servers[0].error.has_value());
     EXPECT_EQ(*first.servers[0].error, "kod_rate");
@@ -370,7 +406,9 @@ TEST(ClockProbeTest, KissRateBacksOffThenRecovers) {
     EXPECT_FALSE(first.offset_ms.has_value());
 
     // 第二轮仍在退避窗口内：不发包，明细仍带 kod_rate（明细恒与配置的服务器列表对齐）。
-    const auto second = run_round(prober, {"rate.example"});
+    auto second_opt = run_round(prober, {"rate.example"});
+    ASSERT_TRUE(second_opt.has_value()) << "round must be delivered";
+    const auto second = std::move(*second_opt);
     EXPECT_EQ(transport.sent_hosts.size(), 1U) << "RATE must stop contacting that server";
     ASSERT_EQ(second.servers.size(), 1U);
     ASSERT_TRUE(second.servers[0].error.has_value());
@@ -379,7 +417,9 @@ TEST(ClockProbeTest, KissRateBacksOffThenRecovers) {
     // 退避到期：重新发包（此处改成超时，用发包次数断言「确实又发了」）。
     moment.advance(kKissRateBackoffNs + 1'000'000'000LL);
     transport.replies.clear();
-    const auto third = run_round(prober, {"rate.example"});
+    auto third_opt = run_round(prober, {"rate.example"});
+    ASSERT_TRUE(third_opt.has_value()) << "round must be delivered";
+    const auto third = std::move(*third_opt);
     EXPECT_EQ(transport.sent_hosts.size(), 2U) << "backoff expires => probe again";
     ASSERT_EQ(third.servers.size(), 1U);
     ASSERT_TRUE(third.servers[0].error.has_value());
@@ -395,7 +435,9 @@ TEST(ClockProbeTest, KissDenyBlacklistsAcrossRounds) {
                          {"rstr.example", kod_reply({'R', 'S', 'T', 'R'})}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto first = run_round(prober, {"deny.example", "rstr.example"});
+    auto first_opt = run_round(prober, {"deny.example", "rstr.example"});
+    ASSERT_TRUE(first_opt.has_value()) << "round must be delivered";
+    const auto first = std::move(*first_opt);
     ASSERT_EQ(first.servers.size(), 2U);
     ASSERT_TRUE(first.servers[0].error.has_value());
     EXPECT_EQ(*first.servers[0].error, "kod_deny");
@@ -405,7 +447,9 @@ TEST(ClockProbeTest, KissDenyBlacklistsAcrossRounds) {
 
     // 黑名单跨轮保持：即便时间过去很久（远超 RATE 退避）也不再发包。
     moment.advance(1000LL * 1'000'000'000LL);
-    const auto second = run_round(prober, {"deny.example", "rstr.example"});
+    auto second_opt = run_round(prober, {"deny.example", "rstr.example"});
+    ASSERT_TRUE(second_opt.has_value()) << "round must be delivered";
+    const auto second = std::move(*second_opt);
     EXPECT_EQ(transport.sent_hosts.size(), 2U) << "blacklist persists until process restart";
     ASSERT_EQ(second.servers.size(), 2U);
     ASSERT_TRUE(second.servers[0].error.has_value());
@@ -423,14 +467,130 @@ TEST(ClockProbeTest, OtherKissCodeIsIgnoredAndProbesAgain) {
     transport.replies = {{"init.example", kod_reply({'I', 'N', 'I', 'T'})}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto first = run_round(prober, {"init.example"});
+    auto first_opt = run_round(prober, {"init.example"});
+    ASSERT_TRUE(first_opt.has_value()) << "round must be delivered";
+    const auto first = std::move(*first_opt);
     ASSERT_EQ(first.servers.size(), 1U);
     ASSERT_TRUE(first.servers[0].error.has_value());
     EXPECT_EQ(*first.servers[0].error, "bad_echo") << "no usable timestamp from a KoD packet";
     EXPECT_EQ(transport.sent_hosts.size(), 1U);
 
-    run_round(prober, {"init.example"});
+    ASSERT_TRUE(run_round(prober, {"init.example"}).has_value());
     EXPECT_EQ(transport.sent_hosts.size(), 2U) << "non-RATE/DENY KoD must not block the server";
+}
+
+// 时间戳自相矛盾（服务端处理时间为负）的可用响应必须被拒为 bad_echo，而不是产出畸形样本。
+TEST(ClockProbeTest, SelfContradictoryTimestampsBecomeBadEcho) {
+    FakeTransport transport;
+    FakeMoment moment;
+    transport.moment = &moment;
+    // 服务端处理时间为负（T3 < T2）：derive_sample 拒收 => 该台 bad_echo。
+    ScriptedReply contradictory = answer(10'000'000, 0);
+    contradictory.server_processing_ns = -5'000'000;
+    transport.replies = {{"contradictory.example", contradictory}};
+    ClockProber prober(transport, [&moment]() { return moment(); });
+
+    auto outcome_opt = run_round(prober, {"contradictory.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
+    ASSERT_EQ(outcome.servers.size(), 1U);
+    ASSERT_TRUE(outcome.servers[0].error.has_value());
+    EXPECT_EQ(*outcome.servers[0].error, "bad_echo");
+    EXPECT_FALSE(outcome.offset_ms.has_value());
+}
+
+// 单调往返小于服务端处理时间（rtt < 0）同样拒收。用「时钟不推进」的 moment 构造：
+// 服务端声称处理了 5 ms，而本地单调时钟走动为 0 => rtt = 0 − 5 ms < 0。
+TEST(ClockProbeTest, NegativeRttBecomesBadEcho) {
+    class FrozenMomentTransport final : public NtpTransport {
+    public:
+        void async_exchange(std::string /*host*/,
+                            std::array<uint8_t, ntp::kPacketSize> request,
+                            int32_t,
+                            Handler handler) override {
+            const auto t1 = FakeTransport::origin_from_request(request);
+            NtpExchange result;
+            result.status = NtpExchange::Status::Received;
+            // T2 = T1、T3 = T2 + 5 ms（服务端处理 5 ms），但本地读数不推进 => rtt < 0。
+            result.packet =
+                make_packet_bytes(2, {'G', 'P', 'S', '\0'}, 0, t1, t1, offset_stamp(t1, 5'000'000));
+            handler(std::move(result));
+        }
+    } transport;
+    FakeMoment moment;
+    ClockProber prober(transport, [&moment]() { return moment(); });
+
+    auto outcome_opt = run_round(prober, {"frozen.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
+    ASSERT_EQ(outcome.servers.size(), 1U);
+    ASSERT_TRUE(outcome.servers[0].error.has_value());
+    EXPECT_EQ(*outcome.servers[0].error, "bad_echo") << "negative rtt must not yield a sample";
+    EXPECT_FALSE(outcome.offset_ms.has_value());
+}
+
+// 空服务器列表（配置校验会拦，但 probe() 自身必须安全）：同步交付空明细 + 聚合不可用，
+// 不得挂起等待一个永远不会来的回调。
+TEST(ClockProbeTest, EmptyHostListCompletesSynchronously) {
+    FakeTransport transport;
+    FakeMoment moment;
+    ClockProber prober(transport, [&moment]() { return moment(); });
+
+    auto outcome_opt = run_round(prober, {});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
+    EXPECT_TRUE(outcome.servers.empty());
+    EXPECT_FALSE(outcome.offset_ms.has_value());
+    EXPECT_TRUE(outcome.source.empty());
+    EXPECT_TRUE(transport.sent_hosts.empty()) << "nothing to send";
+    EXPECT_FALSE(prober.probe_in_flight()) << "an empty round must not leave the prober busy";
+}
+
+// 上一轮违约产生的迟到回调不得被当作新一轮的结果（slot 复用 + 轮次令牌）。
+TEST(ClockProbeTest, StaleCallbackFromPreviousRoundIsDiscarded) {
+    class CaptureTransport final : public NtpTransport {
+    public:
+        void async_exchange(std::string,
+                            std::array<uint8_t, ntp::kPacketSize>,
+                            int32_t,
+                            Handler handler) override {
+            handlers.push_back(std::move(handler));
+        }
+        std::vector<Handler> handlers;
+    } transport;
+
+    FakeMoment moment;
+    ClockProber prober(transport, [&moment]() { return moment(); });
+
+    // 第一轮：结算，但保存 handler 以便事后「违约再调一次」。
+    int first_completions = 0;
+    ASSERT_TRUE(prober.probe({"a.example"}, 1500,
+                             [&first_completions](ProbeOutcome) { ++first_completions; }));
+    ASSERT_EQ(transport.handlers.size(), 1U);
+    NtpExchange timeout;
+    timeout.status = NtpExchange::Status::Timeout;
+    transport.handlers[0](timeout);
+    EXPECT_EQ(first_completions, 1);
+
+    // 第二轮：同一 host（同 slot 复用）重新在飞，此时旧 handler 再次被调用。
+    int second_completions = 0;
+    std::optional<ProbeOutcome> second_outcome;
+    ASSERT_TRUE(prober.probe({"a.example"}, 1500, [&](ProbeOutcome result) {
+        second_outcome = std::move(result);
+        ++second_completions;
+    }));
+    EXPECT_TRUE(prober.probe_in_flight())
+        << "second round must still be waiting for its own callback";
+    transport.handlers[0](timeout);  // 旧轮的迟到回调（轮次令牌不符）
+    EXPECT_EQ(second_completions, 0) << "stale callback must not settle the new round";
+    EXPECT_TRUE(prober.probe_in_flight());
+
+    // 新一轮自己的回调到达后才交付。
+    ASSERT_EQ(transport.handlers.size(), 2U);
+    transport.handlers[1](timeout);
+    EXPECT_EQ(second_completions, 1);
+    ASSERT_TRUE(second_outcome.has_value());
+    EXPECT_EQ(second_outcome->servers.size(), 1U);
 }
 
 // AC：min-RTT 选择在「同 RTT」时按 bound 更小者决胜（契约 §2.7）。
@@ -442,7 +602,9 @@ TEST(ClockProbeTest, TieOnRttBreaksBySmallerBound) {
                          {"tight.example", answer(20'000'000, 6'000'000, 10'000'000)}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"loose.example", "tight.example"});
+    auto outcome_opt = run_round(prober, {"loose.example", "tight.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     EXPECT_EQ(outcome.source, "tight.example") << "equal rtt => smaller bound wins";
     ASSERT_TRUE(outcome.offset_ms.has_value());
     EXPECT_DOUBLE_EQ(*outcome.offset_ms, 6.0);
@@ -516,7 +678,9 @@ TEST(ClockProbeTest, DuplicateHostsAreProbedOnce) {
     transport.replies = {{"dup.example", answer(10'000'000, 2'000'000)}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    const auto outcome = run_round(prober, {"dup.example", "dup.example", "other.example"});
+    auto outcome_opt = run_round(prober, {"dup.example", "dup.example", "other.example"});
+    ASSERT_TRUE(outcome_opt.has_value()) << "round must be delivered";
+    const auto outcome = std::move(*outcome_opt);
     EXPECT_EQ(transport.sent_hosts.size(), 2U) << "duplicates collapse to one probe";
     ASSERT_EQ(outcome.servers.size(), 2U) << "one detail per unique host (contract §7)";
     EXPECT_EQ(outcome.servers[0].host, "dup.example");
@@ -532,7 +696,7 @@ TEST(ClockProbeTest, FullyBlacklistedRoundCompletesWithoutSending) {
     transport.replies = {{"deny.example", kod_reply({'D', 'E', 'N', 'Y'})}};
     ClockProber prober(transport, [&moment]() { return moment(); });
 
-    run_round(prober, {"deny.example"});
+    ASSERT_TRUE(run_round(prober, {"deny.example"}).has_value());
     ASSERT_EQ(transport.sent_hosts.size(), 1U);
 
     int completions = 0;

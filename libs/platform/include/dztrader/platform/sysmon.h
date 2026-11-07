@@ -77,6 +77,22 @@ inline constexpr std::array<const char*, 15> SYSMON_METRIC_KEYS = {
     SYSMON_METRIC_CLOCK_SYNC_SERVICE,
 };
 
+// ===== 时钟探测的失败原因（契约 sysmon §2.9 `servers[].error`；#297）=====
+//
+// 唯一真相源：发送方（探测核心）产出这些取值，接收方（`SysmonSnapshot::validate`）校验
+// 合法集合。两处各写一份字面量会在「改一个取值」时静默漂移，所以在此集中定义。
+inline constexpr const char* SYSMON_CLOCK_ERROR_TIMEOUT = "timeout";
+inline constexpr const char* SYSMON_CLOCK_ERROR_KOD_RATE = "kod_rate";
+inline constexpr const char* SYSMON_CLOCK_ERROR_KOD_DENY = "kod_deny";
+inline constexpr const char* SYSMON_CLOCK_ERROR_BAD_ECHO = "bad_echo";
+inline constexpr const char* SYSMON_CLOCK_ERROR_UNREACHABLE = "unreachable";
+
+/// `servers[].error` 的合法取值全集（契约 sysmon §2.9；校验与发送方共用）。
+inline constexpr std::array<const char*, 5> SYSMON_CLOCK_ERROR_CODES = {
+    SYSMON_CLOCK_ERROR_TIMEOUT,  SYSMON_CLOCK_ERROR_KOD_RATE,    SYSMON_CLOCK_ERROR_KOD_DENY,
+    SYSMON_CLOCK_ERROR_BAD_ECHO, SYSMON_CLOCK_ERROR_UNREACHABLE,
+};
+
 /// 配置 payload / 配置文件的业务段全集（契约 sysmon §3.1；顺序固定）。
 inline constexpr std::array<const char*, 7> SYSMON_CONFIG_SECTIONS = {
     "sampling", "disk", "network", "history", "realtime", "thresholds", "clock"};

@@ -185,7 +185,7 @@ private:
     struct Pending {
         ntp::Timestamp t1;      ///< 我方发送时刻（即报文里的 transmit timestamp）
         int64_t steady_ns = 0;  ///< 发送时刻的单调时钟读数（往返基线）
-        bool settled = true;    ///< 是否已结算（重复回调幂等忽略）
+        bool settled = true;    ///< 本 slot 是否已结算（重复回调幂等忽略；轮次由回调闭包携带）
     };
 
     /// KoD 状态：`blocked = true` 表示拉黑到进程重启，否则按单调时钟退避到 `until_ns`。
@@ -195,7 +195,7 @@ private:
     };
 
     /// 处理一次交互结果并推进结算计数。
-    void handle_exchange(std::size_t slot, NtpExchange result);
+    void handle_exchange(std::size_t slot, uint64_t round_token, NtpExchange result);
 
     /// 记录 KoD 状态（跨轮保持）。
     void note_kiss(const std::string& host, ntp::KissCode code, int64_t now_steady_ns);
@@ -216,6 +216,10 @@ private:
     std::vector<Pending> pending_;  ///< 本轮每台的上下文（下标 == `details_` 的下标）
     std::vector<platform::SysmonClockServerInfo> details_;  ///< 本轮明细骨架
     std::size_t remaining_ = 0;                             ///< 尚未结算的台数
+    /// 轮次令牌：每轮自增，发包时的值由回调闭包带回。没有它时，上一轮违约产生的迟到回调会在
+    /// 新一轮已对同一 slot 发包后（slot 复用、`settled` 已重置）被当成本轮结果，提前结算并
+    /// 吞掉本轮真实回调。令牌不符即丢弃。
+    uint64_t round_token_ = 0;
     RoundHandler done_;
     bool in_flight_ = false;         ///< 本轮探测在飞
     bool issuing_ = false;           ///< 正在 probe() 的发包循环里（同步回调要延后收尾）

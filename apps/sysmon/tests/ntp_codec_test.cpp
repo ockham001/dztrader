@@ -10,13 +10,15 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace dztrader::sysmon::ntp {
 namespace {
 
-/// 2026-09-21T12:53:20Z 的 NTP 秒字段（Unix 1790000000 + 2208988800 = 3998988800）。
+/// 2026-09-21T14:13:20Z 的 NTP 秒字段（Unix 1790000000 + 2208988800 = 3998988800）。
 constexpr uint32_t kNtpAnchorSec = 3'998'988'800U;
 
 /// 构造 48 字节报文（逐字段按 RFC 5905 §7.3 的布局写入，不经过被测代码）。
@@ -60,11 +62,19 @@ std::array<uint8_t, kPacketSize> make_packet(uint8_t leap,
     return packet;
 }
 
-/// 同秒内按纳秒偏移构造时间戳（不跨秒，保持用例可读）。
+/// 独立的分数换算 oracle：`fraction = round(ns × 2^32 / 1e9)`。
+///
+/// 刻意**不**调用被测的 `nanoseconds_to_fraction()`——夹具与被测实现互为 oracle 会让
+/// 「两边一致地算错」也保持绿色（review-checklist §2.2 对比测试的 oracle 不得与被测实现共享）。
+constexpr uint32_t fraction_of_ns_oracle(int64_t ns) {
+    return static_cast<uint32_t>((ns * ((1LL << 32) + 0)) / 1'000'000'000LL);
+}
+
+/// 同秒内按纳秒偏移构造时间戳（不跨秒，保持用例可读；分数用独立 oracle 换算）。
 Timestamp stamp_at(uint32_t seconds, int64_t offset_ns) {
     Timestamp stamp;
     stamp.seconds = seconds;
-    stamp.fraction = nanoseconds_to_fraction(offset_ns);
+    stamp.fraction = fraction_of_ns_oracle(offset_ns);
     return stamp;
 }
 
@@ -181,6 +191,23 @@ TEST(NtpCodecTest, RejectsKissOfDeathAndUnsynchronisedSource) {
     ASSERT_TRUE(kod_response.has_value());
     EXPECT_EQ(classify_response(*kod_response, t1), Verdict::KissOfDeath);
     EXPECT_EQ(kiss_code(*kod_response), KissCode::Rate);
+
+    // 判定顺序是语义：KoD 包的时间戳无定义，其 origin 常常也算不出来。即使回显不匹配，
+    // 也必须先归为 KoD（否则 KoD 代码会被回显校验吞掉，退避/拉黑永远不会发生）。
+    auto kod_bad_echo = make_kod_packet({'R', 'A', 'T', 'E'}, t1);
+    // 把 origin 段改成与我方 T1 不同的值
+    const auto put32_origin = [&kod_bad_echo](std::size_t offset, uint32_t value) {
+        kod_bad_echo[offset] = static_cast<uint8_t>((value >> 24) & 0xFFU);
+        kod_bad_echo[offset + 1] = static_cast<uint8_t>((value >> 16) & 0xFFU);
+        kod_bad_echo[offset + 2] = static_cast<uint8_t>((value >> 8) & 0xFFU);
+        kod_bad_echo[offset + 3] = static_cast<uint8_t>(value & 0xFFU);
+    };
+    put32_origin(24, 0x1122'3344U);
+    const auto kod_bad_echo_response = parse_response(kod_bad_echo);
+    ASSERT_TRUE(kod_bad_echo_response.has_value());
+    EXPECT_EQ(classify_response(*kod_bad_echo_response, t1), Verdict::KissOfDeath)
+        << "KoD must be classified before the origin-echo check";
+    EXPECT_EQ(kiss_code(*kod_bad_echo_response), KissCode::Rate);
 
     // 服务端把时间戳照抄回我方 T1：若按普通包计算会得到「完美 0 偏差」，必须由 stratum 判定拦下。
     const auto unsync =
@@ -307,10 +334,20 @@ TEST(NtpCodecTest, FractionConversionPrecision) {
     EXPECT_EQ(nanoseconds_to_fraction(1'000'000'000), 0xFFFF'FFFCU)
         << "输入钳制到 [0, 999999999] 后不得溢出成 2^32 或进位到下一秒";
 
-    // 往返一致：以上精确可表示的分数 -> 纳秒 -> 分数 恒等
-    for (uint32_t fraction :
-         {0x0000'0000U, 0x1000'0000U, 0x2000'0000U, 0x4000'0000U, 0x8000'0000U, 0xE000'0000U}) {
-        EXPECT_EQ(nanoseconds_to_fraction(fraction_to_nanoseconds(fraction)), fraction);
+    // 往返一致必须与**独立手算表**对齐，不能让两个方向互相验证——那样两边一起算错也保持绿色
+    // （review-checklist §2.2：对比测试的 oracle 不得与被测实现共享）。
+    // 先断言 fraction -> ns 命中手算值，再断言这些手算 ns 编码回分数命中同一原始值。
+    const std::array<std::pair<uint32_t, int64_t>, 6> exact_pairs{{
+        {0x0000'0000U, 0},
+        {0x1000'0000U, 62'500'000},
+        {0x2000'0000U, 125'000'000},
+        {0x4000'0000U, 250'000'000},
+        {0x8000'0000U, 500'000'000},
+        {0xE000'0000U, 875'000'000},
+    }};
+    for (const auto& [fraction, expected_ns] : exact_pairs) {
+        EXPECT_EQ(fraction_to_nanoseconds(fraction), expected_ns) << "fraction " << fraction;
+        EXPECT_EQ(nanoseconds_to_fraction(expected_ns), fraction) << "ns " << expected_ns;
     }
     // 不可精确表示的组合只能就近取整，但误差必须 <= 1 ns（保亚微秒精度）
     EXPECT_EQ(fraction_to_nanoseconds(0x5555'5555U), 333'333'333);
@@ -341,6 +378,47 @@ TEST(NtpCodecTest, ConvertsUnixNanosecondsToTimestamp) {
     EXPECT_EQ(last_nano.fraction, 0xFFFF'FFFCU);
     // 与时间戳往返一致（纳秒精度内）
     EXPECT_EQ(fraction_to_nanoseconds(last_nano.fraction), 999'999'999);
+}
+
+// 长度 > 48 的报文合法（多余部分是扩展字段/MAC），必须正常解析而不是判为畸形。
+TEST(NtpCodecTest, AcceptsOversizedPacket) {
+    const auto origin = stamp_at(kNtpAnchorSec, 0);
+    const auto base = make_usable_packet(origin, origin, origin);
+    auto oversized = std::vector<uint8_t>(base.begin(), base.end());
+    oversized.resize(68, 0xAB);  // 追加 20 字节扩展字段
+    const auto response = parse_response(oversized);
+    ASSERT_TRUE(response.has_value());
+    EXPECT_EQ(response->stratum, 2);
+    EXPECT_EQ(response->origin.fraction, origin.fraction);
+}
+
+// era 展开的半周期边界：|差值| < 2^31 秒按原方向，> 2^31 秒按「最近表示」换 era。
+// 恰好 2^31 秒两向等距（无唯一最近表示），实现按「不换 era」处理，此处不断言该歧义点。
+TEST(NtpCodecTest, DifferenceEraBoundary) {
+    const Timestamp base{/*seconds=*/0U, /*fraction=*/0U};
+    const Timestamp just_below{/*seconds=*/(1U << 31) - 1U, /*fraction=*/0U};
+    EXPECT_EQ(difference_nanoseconds(just_below, base),
+              static_cast<int64_t>(just_below.seconds) * 1'000'000'000LL)
+        << "just below half an era keeps the forward direction";
+    // 2^31 + 1 秒：超过半周期 => 反方向的最近表示 = -(2^31 - 1) 秒
+    const Timestamp past_half{/*seconds=*/(1U << 31) + 1U, /*fraction=*/0U};
+    EXPECT_EQ(difference_nanoseconds(past_half, base), -((1LL << 31) - 1) * 1'000'000'000LL)
+        << "past half an era flips to the nearest representation";
+}
+
+// nanoseconds_to_fraction 的负输入必须钳制到 0（契约 §2.7「分数部分用整数运算」，
+// 负分数是非法值，不得回绕成巨大的分数）。
+TEST(NtpCodecTest, NegativeNanosecondsClampToZeroFraction) {
+    EXPECT_EQ(nanoseconds_to_fraction(-1), 0U);
+    EXPECT_EQ(nanoseconds_to_fraction(-1'000'000'000), 0U);
+    EXPECT_EQ(nanoseconds_to_fraction(std::numeric_limits<int64_t>::min()), 0U);
+}
+
+// 负 Unix 纳秒属调用方违约（precondition >= 0）：返回纪元原点，不回绕出看似合法的 era 值。
+TEST(NtpCodecTest, FromUnixNanosecondsRejectsNegative) {
+    const auto stamp = from_unix_nanoseconds(-1);
+    EXPECT_EQ(stamp.seconds, 0U) << "negative input must not wrap into a plausible era value";
+    EXPECT_EQ(stamp.fraction, 0U);
 }
 
 // 解析失败时必须给出失败原因（编排层据此产出 bad_echo 明细），默认参数可省略。

@@ -50,7 +50,9 @@ struct Timestamp {
 
 /// 把 Unix 纪元纳秒换算为 NTP 时间戳（秒按 32 位 era 回绕；分数四舍五入到最近值）。
 ///
-/// @param unix_ns 自 Unix 纪元起的纳秒数（要求 >= 0；本模块只处理 1970 年之后的时刻）
+/// @param unix_ns 自 Unix 纪元起的纳秒数（**precondition：>= 0**；本模块只处理 1970 年之后的
+///        时刻）。负值属调用方违约，返回纪元原点时间戳而不是回绕出一个看似合法的 era 值。
+/// @note 该契约由 `NtpCodecTest.FromUnixNanosecondsRejectsNegative` 锁定。
 [[nodiscard]] Timestamp from_unix_nanoseconds(int64_t unix_ns) noexcept;
 
 /// 把 NTP 时间戳的 32 位分数部分换算为纳秒（整数运算，四舍五入；结果钳制到 [0, 999999999]）。
@@ -81,10 +83,16 @@ enum class ParseError {
     BadMode,     ///< 不是服务端模式（mode 4）
 };
 
-/// 解析后的服务端响应（只保留本模块消费的字段）。
+/// 解析后的服务端响应。
 ///
-/// `root_delay` / `root_dispersion` 保持协议字段名（便于与抓包/契约对照），单位已换算为
-/// **纳秒**：协议里它们是 16.16 定点秒（root delay 有符号、root dispersion 无符号）。
+/// **完整保留报文头字段是有意的**（不是「只留消费端用到的」）：本结构同时是诊断与抓包对照的
+/// 唯一形态——`leap` / `poll` / `precision` / `root_delay` 目前没有生产消费者，但删掉它们会让
+/// 「收到的报文究竟长什么样」无处可查，排查「服务器回了什么」时只能重新写一遍解析器；协议字段
+/// 已在契约 §2.7 明确定义，保留成本是零（纯值结构）。`ParseError` 同理：编排层当前把它统一归入
+/// `bad_echo`，但它是「为什么判畸形」的唯一可观测出口，保留它让分层与未来细化有地方落脚。
+///
+/// 单位已换算为**纳秒**（`root_delay` / `root_dispersion` 协议为 16.16 定点秒：前者有符号、
+/// 后者无符号）。
 struct Response {
     uint8_t leap = 0;             ///< LI（闰秒标志），本模块不参与判定
     uint8_t version = 0;          ///< VN
@@ -92,8 +100,8 @@ struct Response {
     uint8_t stratum = 0;          ///< 参考源层级；0 = KoD、>= 16 = 参考源自身未同步
     uint8_t poll = 0;             ///< Poll
     int8_t precision = 0;         ///< Precision
-    int64_t root_delay = 0;       ///< 根延迟（纳秒；协议为有符号 16.16 定点秒）
-    int64_t root_dispersion = 0;  ///< 根色散（纳秒；协议为无符号 16.16 定点秒）
+    int64_t root_delay = 0;       ///< `root delay`（纳秒；协议为有符号 16.16 定点秒）
+    int64_t root_dispersion = 0;  ///< `root dispersion`（纳秒；协议为无符号 16.16 定点秒）
     uint32_t reference_id = 0;    ///< 参考标识；stratum = 0 时为 KoD 的四个 ASCII 字符
     Timestamp origin;             ///< origin timestamp（应为服务端回显的我方 T1）
     Timestamp receive;            ///< receive timestamp（T2）
