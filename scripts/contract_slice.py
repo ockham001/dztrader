@@ -208,10 +208,9 @@ def slice_text(
     end = len(text.splitlines())
     for heading in headings[index + 1 :]:
         is_child = _is_descendant(heading.number, target.number)
-        if not include_children and is_child:
-            end = heading.line
-            break
-        if include_children and not is_child:
+        if not include_children or not is_child:
+            # 本节的内容区在第一个「非子节」标题处结束；默认模式连子节也不含，
+            # 所以遇到的第一个标题就结束（叶子节因此不会吞掉后面的整章）。
             end = heading.line
             break
     lines = text.splitlines()[target.line : end]
