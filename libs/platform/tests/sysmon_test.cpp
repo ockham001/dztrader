@@ -342,7 +342,8 @@ nlohmann::json clock_probed_state() {
 ///
 /// `clock = null` 表示「该域被配置关闭」，按 §3.1.1 两键应为 `disabled_by_config`；
 /// 非 null 且带聚合偏差时偏差键可用，否则沿用骨架期空态的 `no_reference`。
-/// 服务检测能力由 #298 交付，非关闭态下如实为 `not_implemented`。
+/// 服务枚举能力自 #298 落地起在两平台基线内恒可用（`daemons` 为空只是事实），
+/// 因此非关闭态下为 `available=true`（契约 §2.5）。
 /// 校验层**刻意不校验**可用性键与域之间的对应关系（校验器看不到配置，那是发送方义务）。
 nlohmann::json make_snapshot_with_clock(nlohmann::json clock) {
     auto j = nlohmann::json(make_snapshot());
@@ -357,7 +358,7 @@ nlohmann::json make_snapshot_with_clock(nlohmann::json clock) {
                                : nlohmann::json{{"available", false}, {"reason", "no_reference"}});
     j["availability"]["metrics"]["clock.sync_service"] =
         disabled ? nlohmann::json{{"available", false}, {"reason", "disabled_by_config"}}
-                 : nlohmann::json{{"available", false}, {"reason", "not_implemented"}};
+                 : nlohmann::json{{"available", true}};
     return j;
 }
 

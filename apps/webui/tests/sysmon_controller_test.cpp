@@ -113,7 +113,7 @@ nlohmann::json minimal_snapshot() {
             {"network", {{"available", false}, {"reason", "not_implemented"}}},
             {"shm_dir", {{"available", false}, {"reason", "not_implemented"}}},
             {"clock.offset", {{"available", false}, {"reason", "no_reference"}}},
-            {"clock.sync_service", {{"available", false}, {"reason", "not_implemented"}}}}},
+            {"clock.sync_service", {{"available", true}}}}},
           {"semantic_hints", nlohmann::json::object()}}},
     };
 }

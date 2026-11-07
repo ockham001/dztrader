@@ -77,7 +77,7 @@ _避免_：时钟漂移、NTP 偏差、时间误差
 _避免_：不确定度、置信区间、精度
 
 **时间同步服务**：
-由操作系统负责把本机墙钟对齐真实时间的常驻服务（Linux `chronyd` / `ntpd` / `systemd-timesyncd`，Windows `W32Time`）；`dzsysmon` 只枚举它们是否在运行（检测不到时卡片标黄、不弹窗），校时动作始终由这些服务完成，本系统不写时钟。
+由操作系统负责把本机墙钟对齐真实时间的常驻服务（Linux `chronyd` / `ntpd` / `systemd-timesyncd`，Windows `W32Time`）；`dzsysmon` 只枚举它们是否在运行（检测不到时卡片标黄、不弹窗），枚举**不 exec 任何外部命令**——Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配，Windows 查服务控制管理器（ADR 0047）。校时动作始终由这些服务完成，本系统不写时钟。
 _避免_：校时程序、NTP 客户端、对时服务
 
 **历史库**：

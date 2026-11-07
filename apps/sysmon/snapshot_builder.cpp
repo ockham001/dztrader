@@ -55,6 +55,20 @@ void mark_not_implemented(platform::SysmonAvailability& availability, const char
     mark_unavailable(availability, key, kReasonNotImplemented);
 }
 
+/// 判断「是否 ≥2 种不同服务同时运行」（契约 sysmon §2.9 `daemon_conflict` 的定义）。
+///
+/// 派生量而不是独立事实：校验器（§7）按同一规则核对，发送方若在两处各算一次就会漂移。
+/// 名字唯一性由校验器保证，采集层不会产出重复名字，因此直接数 `running=true` 即可。
+bool any_two_daemons_running(const std::vector<platform::SysmonClockDaemonInfo>& daemons) {
+    std::size_t running_count = 0;
+    for (const auto& daemon : daemons) {
+        if (daemon.running && ++running_count >= 2) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// 把原始卷读数转换为快照条目（契约 sysmon §2.4）：
 /// 容量读不到（total/free 任一为 nullopt）→ `available=false` + reason，三个容量字段为 null。
 /// `used_bytes = total − free` 并钳制到 `[0, total]`，`used_ratio` 由之计算（total=0 时为 null）。
@@ -289,6 +303,12 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                          ? std::nullopt
                          : std::optional<platform::SysmonClockInfo>(
                                clock_metrics.info.value_or(platform::SysmonClockInfo{}));
+    if (snapshot.clock.has_value()) {
+        // `daemon_conflict` 是 `daemons[]` 的**派生量**，不是独立事实（契约 §2.9 / §7：
+        // 校验器要求它与「运行中的不同服务数 >= 2」一致）。在这里统一由明细算出，
+        // 避免每个填充点各算一次、也避免调用方填了 daemons 却忘了改标记导致整帧被拒。
+        snapshot.clock->daemon_conflict = any_two_daemons_running(snapshot.clock->daemons);
+    }
 
     // availability：每帧必须覆盖全部 15 个固定键。
     snapshot.availability.platform_description = make_platform_description(system_info);
@@ -362,13 +382,13 @@ platform::SysmonSnapshot build_snapshot(std::string_view source,
                 mark_unavailable(snapshot.availability, key, kReasonNoReference);
             }
         } else if (metric == platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE) {
-            // 配置关闭时同样为 disabled_by_config（契约 §3.1.1 两键同口径）。
-            // 未关闭时同步服务枚举能力由 #298 交付；本票如实标 not_implemented，不虚报
-            // available=true（契约 §2.5 的「基线内恒为 available=true」描述能力落地后的稳态）。
+            // 契约 sysmon §2.5（#298 落地后）：同步服务枚举能力在两平台基线内**恒为可用**
+            // ——`daemons` 为空数组或全部 `running=false` 是「未检测到在运行的同步服务」
+            // 这一**事实**，不是能力不可用。只有配置关闭时才是 disabled_by_config。
             if (clock_metrics.disabled) {
                 mark_unavailable(snapshot.availability, key, kReasonDisabledByConfig);
             } else {
-                mark_not_implemented(snapshot.availability, key);
+                mark_available(snapshot.availability, key);
             }
         } else if (metric == platform::SYSMON_METRIC_MEMORY) {
             // 配置关闭优先；能力可用但本帧未读到数值时仍为 available（数值为 null）。

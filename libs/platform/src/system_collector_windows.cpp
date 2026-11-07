@@ -48,6 +48,10 @@
 #include <psapi.h>     // GetPerformanceInfo：内存与页文件口径（契约 sysmon §2.4）
 #include <winioctl.h>  // DISK_PERFORMANCE / IOCTL_DISK_PERFORMANCE：每物理盘 I/O（契约 sysmon §2.4）
 #include <winreg.h>
+// 时间同步服务检测（#298，契约 sysmon §2.9）：SC_HANDLE / OpenSCManagerW /
+// QueryServiceStatusEx / SERVICE_STATUS_PROCESS。`WIN32_LEAN_AND_MEAN` 排除了 winsvc.h，
+// 必须显式引入（链接库 advapi32 在 libs/platform/CMakeLists.txt 声明）。
+#include <winsvc.h>
 // 每网卡累计计数器（契约 sysmon §2.4）：GetIfTable2 / FreeMibTable 与 MIB_IF_TABLE2 /
 // MIB_IF_ROW2。**不要直接 include netioapi.h**：用户态下它期望已被 iphlpapi.h 拉起的
 // 上下文（NTSTATUS 等来自 winnt.h 的类型），单独引入会在 netioapi.h 内部刷出大量
@@ -986,6 +990,56 @@ RawNetworkSnapshot query_network() {
     return snapshot;
 }
 
+/// Windows 时间同步服务的名字（契约 sysmon §2.9 平台口径的单一真相源）。
+///
+/// 服务名与帧内 `daemons[].name` 是同一个字符串：宽字符用于 SCM 查询，窄字符用于 payload。
+/// 两处各写一遍会在改名时漂移（契约 §2.9 只认 `W32Time` 这一种写法）。
+constexpr const wchar_t* kWindowsTimeServiceNameW = L"W32Time";
+constexpr const char* kWindowsTimeServiceName = "W32Time";
+
+/// 查询 `W32Time` 服务状态（契约 sysmon §2.9）：走服务控制管理器 API
+/// （`OpenSCManagerW` + `OpenServiceW` + `QueryServiceStatusEx`），
+/// **不 exec `w32tm`**——其输出受显示语言与 OEM 代码页影响，解析不可靠（ADR 0047）。
+///
+/// 查询成功返回一条 `W32Time` 并带真实运行状态（`running` 可为 false：W32Time 未启用是
+/// Windows 10/11 的常见状态）；服务管理器/服务查询失败时返回空列表与 `kernel_synced
+/// = std::nullopt`——「读不到」不是「没同步」，不得用 false 冒充（契约 §2.9）。
+RawTimeSyncStatus query_time_sync_services() {
+    RawTimeSyncStatus status;
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (manager == nullptr) {
+        // 拿不到服务管理器（权限/服务不可用）：如实降级，不猜服务状态。
+        return status;
+    }
+    SC_HANDLE service = OpenServiceW(manager, kWindowsTimeServiceNameW, SERVICE_QUERY_STATUS);
+    if (service == nullptr) {
+        // 服务不存在（被移除/未安装）与「查询失败」在此无法区分：两者都报空列表 + null，
+        // 不虚构一条 running=false 的条目（契约 §2.9：空数组也表达「检测失败」）。
+        CloseServiceHandle(manager);
+        return status;
+    }
+    SERVICE_STATUS_PROCESS service_status{};
+    DWORD bytes_needed = 0;
+    const BOOL queried = QueryServiceStatusEx(
+        service, SC_STATUS_PROCESS_INFO, reinterpret_cast<LPBYTE>(&service_status),
+        static_cast<DWORD>(sizeof(service_status)), &bytes_needed);
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    if (queried == 0) {
+        return status;
+    }
+
+    // 以「W32Time 是否在运行」作为内核同步判据的**代理量**（契约 §2.9 表格）：
+    // 查询成功即以此为 `kernel_synced`，查询失败时保持 null。
+    const bool running = service_status.dwCurrentState == SERVICE_RUNNING;
+    RawTimeSyncService daemon;
+    daemon.name = kWindowsTimeServiceName;
+    daemon.running = running;
+    status.daemons.push_back(std::move(daemon));
+    status.kernel_synced = running;
+    return status;
+}
+
 /// Windows 采集器：系统信息每次现取；负载代理持有 PDH 查询与加权状态。
 class WindowsSystemCollector final : public SystemCollector {
 public:
@@ -1021,6 +1075,10 @@ public:
     RawDiskIoSnapshot collect_disk_io() override { return query_disk_io(); }
 
     RawNetworkSnapshot collect_network() override { return query_network(); }
+
+    /// 时间同步服务检测（#298，契约 sysmon §2.9）：经服务控制管理器查询 `W32Time`，
+    /// **不 exec `w32tm`**（其输出受显示语言与 OEM 代码页影响，ADR 0047）。
+    RawTimeSyncStatus collect_time_sync_services() override { return query_time_sync_services(); }
 
 private:
     WindowsLoadAverageSampler load_sampler_;

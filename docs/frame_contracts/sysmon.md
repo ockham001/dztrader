@@ -200,7 +200,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 >
 > `clock.offset` / `clock.sync_service`（§2.9）是**两个独立键**：`clock.offset` 表示**偏差测量能力**——最近一轮探测存在可用聚合值时 `available=true`，本轮无可用参考源时为 `available=false` + `reason="no_reference"`（「尚未探测」由 `clock.last_probe_unix_ms = 0` 区分，前端显示「尚未探测」而不是「不可用」）。与其它指标键不同，`clock.offset` **不是能力粘性**——它表达「最近一轮探测是否成功」，上一轮成功后下一轮全部失败时回到 `available=false`（「测不到」必须显示为不可用而不是陈旧值）；误差界过大只影响质量判定（§2.8），**不改写本键可用性**（「测不准」与「测不到」是不同事实）。`clock.sync_service` 表示**同步服务枚举能力**——两平台基线内恒为 `available=true`，`daemons` 为空数组或全部 `running=false` 是「未检测到在运行的同步服务」这一**事实**（卡片内标黄、不弹窗），不改写可用性。**两键独立**：同步服务未运行不影响偏差测量，偏差测不到也不影响服务枚举。配置关闭 `clock` 域时两键均为 `available=false` + `reason="disabled_by_config"`（`clock` 为 `null`，§3.1.1）。
 >
-> **分阶段落地的过渡态**：本域按票落地（#293 子票），类型层先登记两键（#295），偏差测量与服务检测分别在 #299 / #298 接线。落地前快照如实报 `available=false`（`clock.offset` = `no_reference`、`clock.sync_service` = `not_implemented`）——本段前文描述的是**能力落地后**的稳态；#298 落地即把 `clock.sync_service` 翻为恒 `available=true`，不改变本契约语义。
+> **分阶段落地的过渡态**：本域按票落地（#293 子票）。类型层先登记两键（#295），同步服务检测的平台接缝由 #298 落地——自该票起 `clock.sync_service` 即恒为 `available=true`（检测失败仍报空列表 + `kernel_synced = null`，是事实而不是能力不可用）。偏差测量与「每轮探测开始时执行检测、结果随本轮进快照」的接线由 #299 落地：在此之前 `clock.offset` 如实报 `available=false` + `no_reference`，且 `daemons` 为空数组（检测能力已可用、结果尚未接入）。本段前文描述的是**全部能力落地后**的稳态，#299 落地不改变本契约语义。
 
 ### 2.6 快照示例（节选）
 
@@ -441,7 +441,7 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 - `ok=false`：`error` 非空，取 `timeout`（超时未响应）/ `kod_rate`（KoD RATE，已退避）/ `kod_deny`（KoD DENY/RSTR，已拉黑）/ `bad_echo`（origin 回显不匹配或畸形包）/ `unreachable`（解析/连接失败）；四个测量字段为 `null`（失败样本不产出任何测量值）。
 - 只保留最近一轮；**不进任何历史**。
 
-`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。检测到 ≥2 种不同服务同时运行时置 `daemon_conflict=true`，只写一条日志 + 卡片提示，**不弹窗、不判故障**。
+`daemons` 的平台口径：**Linux 只列出正在运行的服务**（进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`，`running` 恒为 true；`/proc/<pid>/comm` 被内核截断为 15 字节，因此 `systemd-timesyncd` 的**可观察值是 `systemd-timesyn`**——检测按这个事实匹配，不把未截断名当作唯一写法）；**Windows 查询成功时为 `W32Time` 一条**并带其服务运行状态（`running` 可为 false）。空数组 = 未检测到在运行的服务（Linux 一个都没起）**或检测本身失败**（如进程表不可读、服务管理器查询失败，此时 `kernel_synced = null`）——两者都不是能力不可用（§2.5）。检测到 ≥2 种不同服务同时运行时置 `daemon_conflict=true`，只写一条日志 + 卡片提示，**不弹窗、不判故障**（该日志义务随检测接线由 #299 落地；#298 只交付检测接缝与派生标记）。
 
 **不可用语义（关键）**：
 
