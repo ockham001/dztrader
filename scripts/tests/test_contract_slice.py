@@ -68,6 +68,20 @@ class RealContractTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("### 3.1.1", result.stdout)
 
+    def test_children_stops_at_next_non_child_section(self) -> None:
+        # `--children` 只应把「编号子节」带进来，不能顺带吞掉后面的同级章（§3.2）。
+        result = run_cli("sysmon", "§3.1", "--children")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("### 3.2", result.stdout)
+
+    def test_leaf_section_does_not_swallow_rest_of_document(self) -> None:
+        # §2.9 是叶子节：默认与 --children 输出必须一致（不因后续章节而变长）。
+        default = run_cli("sysmon", "§2.9")
+        children = run_cli("sysmon", "§2.9", "--children")
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertEqual(default.stdout, children.stdout)
+        self.assertNotIn("## 3.", default.stdout)
+
     def test_unknown_section_exits_1_with_candidates_on_stderr(self) -> None:
         result = run_cli("sysmon", "§7.9")
         self.assertEqual(result.returncode, 1)
