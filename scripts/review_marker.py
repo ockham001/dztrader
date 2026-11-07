@@ -249,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     write_parser.add_argument("sha", nargs="?", default=None, type=sha_arg)
 
     check_parser = sub.add_parser(
-        "check", help="warn when HEAD differs from the marker (always exits 0)")
+        "check", help="warn when HEAD differs from the marker (default exits 0; --strict exits 3)")
     check_parser.add_argument("issue", type=issue_arg)
     check_parser.add_argument(
         "--strict", action="store_true",

@@ -160,6 +160,13 @@ def _tool_call(call_id: str, name: str, time_ms: int, turn: int, arguments: dict
 
 
 def _tool_result(call_id: str, time_ms: int, turn: int) -> dict:
+    """构造 tool/result 事件；`turn` 不写进事件体（真实日志的 result 也没有 turn 字段）。
+
+    保留该参数是为了与 `_tool_call(...)` 签名对称：调用点四处都写 `turn`，删掉会让
+    每个用例去记「这两个 helper 参数不同」，而它恰好也是真实日志的形状（turn 只标在 call 上）。
+    实现侧靠 callId 配对拿到 turn，因此这里多一个参数不进事件体。
+    """
+    del turn  # 形状说明见上：result 事件没有 turn 字段
     return _event("tool/result", time_ms, message={"toolCallId": call_id, "content": []})
 
 

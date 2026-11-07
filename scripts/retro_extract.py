@@ -32,7 +32,8 @@ DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.
   ask 阻塞     = ask_user_question 的 result − call，**是 tool_exec 的子集**，单列不重复计入
  等待型工具   = wait_agent / `job_output(wait=true)` 的 result − call，同样是 tool_exec 的
                 子集，单列次数与总时长；非阻塞的 `job_output(wait=false)` 不计入
-  未闭合 turn（当前会话尾部）只列 model/tool 秒数并标注，不计入整会话合计。
+  未闭合 turn（当前会话尾部，无 turn/end）若已有时间戳就列出 model/tool 秒数与
+  ask/wait 子集计数并标注，但**不计入整会话合计**（wall 未知，无法做占比）。
 
 依赖：Python 3.10+ 标准库 + `zstd` CLI（不引入 Python 第三方依赖）。
 注意：当前会话在 turn 结束才落盘后续事件；复盘“已结束的会话”最完整。

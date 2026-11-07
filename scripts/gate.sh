@@ -16,7 +16,7 @@
 #   ./scripts/gate.sh test  [--tail N] [test.sh 参数...]
 #   ./scripts/gate.sh test --list                    # 直通 ctest -N，一行一个用例名
 #   ./scripts/gate.sh preflight [--tail N] [preflight.sh 参数...]
-#   ./scripts/gate.sh ledger [check_ledger.py 参数...]  # 台账体检（只读；spec 母票/悬空承诺/triage）
+#   ./scripts/gate.sh ledger [check_ledger.py 参数...]  # 台账体检（只读；spec 母票/悬空承诺/triage/拍板记录）
 #   ./scripts/gate.sh wait-ci [wait-ci.sh 参数...]   # 透传，前台阻塞，退出码真实
 #
 # 行为:
@@ -34,6 +34,8 @@
 #     可能重叠 —— 由 preflight.sh 自身的 npm 门控脚本处理。
 #   - ledger 透传给 `scripts/check_ledger.py`（需要 `gh` 登录态与网络）。它是 spec 母票
 #     收口前的必跑体检（issue #213）：子票全关后母票必须单独收口，靠记忆发现不了。
+#     R4（#309 AC1）另报「open + ready-for-agent 但正文缺非空 `## 拍板记录` 段」的票
+#     ——有无拍板记录决定 implement 会话是否要提问，靠文档约束已两次失效。
 #
 # 退出码: 0=通过；非 0=被包装命令的真实退出码（wait-ci 额外有 1=失败/取消、2=超时）。
 

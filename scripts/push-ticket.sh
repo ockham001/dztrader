@@ -330,7 +330,7 @@ if [ "$marker_rc" = "0" ]; then
     echo "push-ticket: review markers ok (#$ISSUE: ${MARKER_AXES[*]})"
 elif [ "$marker_rc" = "3" ]; then
     if [ "${DZ_ALLOW_UNREVIEWED_PUSH:-0}" = "1" ]; then
-        echo "push-ticket: WARNING: unreviewed push allowed by DZ_ALLOW_UNREVIEWED_PUSH=1 (emergency only)" >&2
+        echo "push-ticket: warning: unreviewed push allowed by DZ_ALLOW_UNREVIEWED_PUSH=1 (emergency only)" >&2
         echo "push-ticket:   HEAD=$head_sha" >&2
         relay_marker >&2
         echo "push-ticket: proceeding to git push; record this override in the close-out report" >&2

@@ -6,11 +6,13 @@
  * @brief 契约合法的最小 SYSMON 快照夹具的**唯一实现**（#309 AC5）。
  *
  * 为什么必须只有一份（`docs/unit-test-standard.md` §5.4）：`sysmon_controller_test` 与
- * `sysmon_domain_service_test` 原先各有一份 52 行逐字相同的 `nlohmann::json` 内联快照，
- * #295 审查 finding 5 的漂移（两份 `availability.metrics` 13/15 vs 15/15）正是这类
- * 内联副本的产物；`check_shared_test_headers.py` 只认 `#include` 关系，拦不住内联副本。
- * 两份副本里唯一合法的差异是「本例关心的数值」（CPU 总量、核数、型号），因此用
- * `SysmonSnapshotSeed` 表达，形状（键集合、clock 空态、availability 15 键）固定在本头。
+ * `sysmon_domain_service_test` 原先各有一份 `nlohmann::json` 内联快照，二者已实质漂移
+ * ——controller 那份缺 `cpu.core_frequencies`（`validate_snapshot_cpu` 的必填键）与根级
+ * `temperature` 占位，等于一份过不了 `SysmonSnapshot::validate` 的夹具；#295 审查
+ * finding 5 的「两份 `availability.metrics` 13/15 vs 15/15」是同源的键数漂移。
+ * `check_shared_test_headers.py` 只认 `#include` 关系，拦不住内联副本，因此形状
+ * （键集合、clock 空态、availability 15 键）必须在唯一实现里固定；两处用例真正该表达
+ * 的差异只有「本例关心的数值」（CPU 总量、型号、核数），用 `SysmonSnapshotSeed` 表达。
  *
  * 固定形状对齐《帧契约：系统监控》§2.5：`availability.metrics` 覆盖全部
  * `SYSMON_METRIC_KEYS`（15 键）；§2.9 `clock` 域为「尚未探测」空态

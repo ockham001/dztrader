@@ -8,7 +8,7 @@
 #       （#227）/ commit subject（#265）/ push-scope 自测（#265）/ 门禁脚本参数自测
 #       （#281，build.sh/test.sh 重复 flag 必须累积）/ Windows CI 预算分档（#267）/
 #       孤儿导出（#274）/ CI 快路径分类（#289，与 ci.yml scope job 共用一份 denylist）/
-#       SYSMON 指标键集合（#309，四处副本 + snapshot_builder 分支覆盖）/ push 纪律
+#       SYSMON 指标键集合（#309，4 处数据副本 + snapshot_builder 的 15 分支镜像）/ push 纪律
 #       （#309，push-ticket.sh 的 scope+验证标记+push 串联）/ 审查验证标记（#289，pre-push
 #       读取）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
@@ -271,11 +271,13 @@ check_ci_scope() {
 }
 
 check_sysmon_metric_keys() {
-    # 指标键集合检查器（#309 AC3）：同一份 15 键集合在 5 处有副本（sysmon.h 的
-    # SYSMON_METRIC_KEYS / 契约 sysmon §2.5 键列表 / TS 夹具 / 两个 webui 测试夹具），
+    # 指标键集合检查器（#309 AC3）：同一份 15 键集合有 4 处数据副本（sysmon.h 的
+    # SYSMON_METRIC_KEYS / 契约 sysmon §2.5 键列表 / TS 夹具 / webui 共享测试夹具
+    # `sysmon_snapshot_fixture.h`——#309 AC5 抽取后内联副本只剩这一处），外加
+    # snapshot_builder 的 15 个显式分支（分支集合必须等于键集合，兜底只能是未实现语义）。
     # 当前一致但没有任何检查器绑定——#295 审查 finding 5 的「两份夹具 13/15 vs 15/15」
-    # 只能靠人眼发现。先跑自测（四源相等 / 少键 / 多键 / 夹具缺键 / 缺分支 / 兜底漂移 /
-    # 解析失败），再扫真实树。显式串联：`set -u -o pipefail` 没有 `-e`，自测失败会被
+    # 只能靠人眼发现。先跑自测（四源相等 / 少键 / 多键 / 顺序漂移 / 夹具缺键 / 缺分支 /
+    # 兜底漂移 / 注释掉登记不算数 / 解析失败），再扫真实树。显式串联：`set -u -o pipefail` 没有 `-e`，自测失败会被
     # 后一条的 0 覆盖，step 打印 ok 而检查器已坏（#281/#284/#289 修过 3 处同类）。
     "$PYTHON" "$ROOT/scripts/check_sysmon_metric_keys.py" --selftest || return $?
     "$PYTHON" "$ROOT/scripts/check_sysmon_metric_keys.py"

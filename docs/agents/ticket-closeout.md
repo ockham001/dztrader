@@ -83,7 +83,7 @@
 > **push / 建 PR 的硬前置（#284 AC2）**：先确认**最后一轮只读验证已返回且无 BLOCKING**。未返回时先 `wait_agent` 阻塞等待（`subagent` 等 `subagent-settled` 通知），**不得先 push / 建 PR 再验**——#252 因此把一次修复放大成两个串行 CI 周期（≈56min，时间线见 §1 第 11 条）。只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3。
 
 ```bash
-./scripts/push-ticket.sh <issue>          # scope + 审查验证标记 + git push 串行（#309 AC6）
+./scripts/push-ticket.sh <issue> -u origin <branch>   # scope + 审查验证标记 + git push 串行（#309 AC6）
 gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）" --body-file <body 文件>
 ./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（后台作业启动，见下）
 ```

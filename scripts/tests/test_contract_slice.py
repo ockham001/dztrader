@@ -36,6 +36,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "contract_slice.py"
 CONTRACT_DIR = REPO_ROOT / "docs" / "frame_contracts"
 
+# `MiniContractTest` 自己渲染 mini 契约文本，与 `contract_slice.py --selftest` 内部的渲染器
+# 长得像但**不合并**（unit-test-standard §5.2「重复基建需有据」）：selftest 必须自造夹具才能
+# 在无仓库时跑；本文件必须自造夹具才能断言「未知契约/围栏/重复」的出错路径。若让测试调用
+# 被测模块的渲染器，夹具形状就由实现决定——实现把假标题也当节时，测试会跟着一起错而仍绿
+# （独立 oracle 的价值正是「两边不一致时才红」）。两处各自演化是有意的。
+
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     """进程级驱动切节工具；不经过 shell，取真实 stdout / stderr / 退出码。"""
@@ -117,20 +123,6 @@ class RealContractTest(unittest.TestCase):
         }
         self.assertEqual(listed, expected, "--list must not silently drop a contract")
         self.assertIn("§2.9 时钟偏差域（clock）", result.stdout)
-
-    def test_list_does_not_emit_fenced_fake_headings(self) -> None:
-        # sysmon §2.6 的示例 JSON 围栏里出现过 `"section": ...` 一类文本；
-        # 只要围栏内出现 `## ` 形态的假标题，--list 就不能把它当节。
-        result = run_cli("--list")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for line in result.stdout.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("§"):
-                self.assertRegex(
-                    stripped,
-                    r"^§\d+(\.\d+)* (?!§)",
-                    f"numbered outline line looks malformed: {line!r}",
-                )
 
     def test_selftest_passes(self) -> None:
         result = run_cli("--selftest")
@@ -244,6 +236,29 @@ class MiniContractTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("top body", result.stdout)
         self.assertNotIn("child body", result.stdout)
+
+    def test_selftest_rejects_contract_dir(self) -> None:
+        """`--selftest` 自带临时契约，再给 `--contract-dir` 只能被静默忽略——明确拒绝。"""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--selftest", "--contract-dir", str(self.contract_dir)],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("--contract-dir", result.stderr)
+
+    def test_missing_contract_dir_is_env_error(self) -> None:
+        """契约目录不存在是环境错误（exit 2），不是「未知契约」（exit 1）。"""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--contract-dir", str(self.contract_dir / "nope"),
+             "ghost", "§1"],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("contract directory not found", result.stderr)
 
     def test_exit_codes_separate_unknown_from_usage(self) -> None:
         # 1 = 未知契约/未知节（含候选）；2 = 参数错误。

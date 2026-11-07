@@ -76,11 +76,14 @@ SELFTEST_NO_MATCH = [
 # 段标题只认 `## 拍板记录`（可带全角/半角括号后缀，如「（2026-11-07）」）；`###` 三级
 # 标题与别的标题（`## 拍板记录结论`）不算本段，因为回填格式与 grep 口径都是二级标题。
 DECISION_HEADING = re.compile(r"^##\s+拍板记录\s*(?:（[^）]*）|\([^)]*\))?\s*$")
-# 段内容在下一个一/二/三级标题处终止（`####` 及更深的小节标题算内容，不截断本段）。
-SECTION_END = re.compile(r"^#{1,3}(?!#)")
+# 段内容在下一个一/二级标题处终止——按 Markdown 语义，`###` 及更深的小节标题是**本段内部**
+# 的结构，不能把一个先写「### 合并授权」再写正文的票判成空段（#309 审查 finding：误报）。
+SECTION_END = re.compile(r"^#{1,2}(?!#)")
 
 SELFTEST_LEDGER_HAS = [
     "## 拍板记录\n\n- **合并授权**：CI 绿 + 双轴审查通过即合并关单\n",
+    # 先写 `###` 子标题再写正文：`###` 是本段内部结构，不能判成空段（#309 审查 finding）。
+    "## 拍板记录\n\n### 合并授权\n\n- 条件式授权：CI 绿即合并\n",
     "# 背景\n\n正文\n\n## 拍板记录\n\n决策：按波一次授权\n\n## 其它\n\n- 内容\n",
     "## 拍板记录\n\n> 引用行不计，但下面有正文\n\n- 授权\n",
     "## 拍板记录（2026-11-07）\n\n- 授权\n",
@@ -322,12 +325,13 @@ def main() -> int:
     for number, title, age in stale:
         print(f"  - #{number}（{age} 天）{title}")
 
-    print(f"\n[WARN] ready-for-agent 缺拍板记录（{len(missing_ledger)}）")
+    # 级别随模式切换：`--strict` 下本项已计入 error，标题就不能再挂 `[WARN]`
+    # （gate.sh ledger 默认 --strict，否则门禁日志会出现「error 项标 WARN」的误导）。
+    level = "ERROR" if args.strict else "WARN"
+    print(f"\n[{level}] ready-for-agent 缺拍板记录（{len(missing_ledger)}）")
     for number, title, state in missing_ledger:
         detail = "无「## 拍板记录」段" if state == "missing" else "「## 拍板记录」段为空"
         print(f"  - #{number}（{title}）{detail}")
-    if args.strict and missing_ledger:
-        print("  （--strict：本项已计入 error 数）")
 
     verdict = "FAIL" if errors else "PASS"
     print(f"\n== 结果：{verdict}（{errors} error, {warnings} warning）==")

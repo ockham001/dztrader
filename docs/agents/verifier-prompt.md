@@ -16,7 +16,7 @@
 | large | > 1000 行 | **拆块**：Lead 按文件群拆给两个同轴 reviewer | #253 +1878/−44 = 1922 行：38.7min / 45.3min、133 / 167 calls |
 
 - **拆块判据是 context 压力，不是时间**：单个 reviewer 的 `git diff` 全量读入会挤掉它做判断的余量；拆块 = 同一轴的两份报告由 Lead 合并，不是新增轴、也不占新的 teammate 名额。
-- **产出优先：步骤序齐全即可**，不设时长与调用数上限。唯一的时间信号是 §1 / §2 模板的第 0 步 `T+8min` transcript 进度 interim——它是**进度信号**，与「是否超时」无关。
+- **产出优先：步骤序齐全即可**，不设时长与调用数上限。唯一的时间信号是三块模板的第 0 步 `T+8min` 进度 interim——它是**进度信号**，与「是否超时」无关。
 - 本波实测（#294–#298，14 个审查子会话）：首轮墙钟 median **5.5 min = 0.42×N**、超支 **9%**、nudge 命中率 **3%**；首轮 >N 的 10 个里 8 个没被 nudge、自行交付。时间盒既没拦住长尾、又让 verifier 在 T+8min 分心发 interim。
 
 ---
@@ -84,7 +84,8 @@
 **不要提出新 finding**（只验证这 N 条）。
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
-- 允许：`git diff` / `git show` / `git log` / `git grep` / `rg` / `grep` / `sed -n` / `ls`
+- 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /
+  `rg` / `grep` / `sed -n` / `ls` / `python3 scripts/contract_slice.py`（按节取契约）
 - 允许：`python3 scripts/review_marker.py write <issue> <axis>`（交付时写标记）
 
 步骤（照做，不要扩展）：
@@ -104,7 +105,7 @@
 
 > 该模板返回后，Lead 才能进入 [ticket-closeout.md](ticket-closeout.md) §4 的 push / 建 PR（硬前置：最后一轮只读验证已返回且无 BLOCKING）；未返回先 `wait_agent`，#252 因跳过该动作点把一次修复放大成两个串行 CI 周期（≈56min，证据见 ticket-closeout §1 第 11 条）。
 >
-> 第 4 步写的标记由 `.githooks/pre-push` 只读检查（`review_marker.py check`，只 warning 不拦截），专门防 #253 的「验证轮被中止 → 未验证即合并」：那次修复 commit 推送时验证轮还没跑，验证准备随即被宿主 turn 中止，合并时该轮**从未发生**。标记让「哪个轴的验证停留在哪个 sha」在推送时可见；文件名为 `.cache/review/<issue>-<axis>.done`，`<axis>` 用 `standards` / `spec`。#309 AC6 起 `scripts/push-ticket.sh`（#309 AC6）把该检查从 warning 升为默认拒绝（逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1`）。
+> 第 4 步写的标记由 `.githooks/pre-push` 只读检查（`review_marker.py check`，只 warning 不拦截），专门防 #253 的「验证轮被中止 → 未验证即合并」：那次修复 commit 推送时验证轮还没跑，验证准备随即被宿主 turn 中止，合并时该轮**从未发生**。标记让「哪个轴的验证停留在哪个 sha」在推送时可见；文件名为 `.cache/review/<issue>-<axis>.done`，`<axis>` 用 `standards` / `spec`。#309 AC6 起 `scripts/push-ticket.sh` 把该检查从 warning 升为默认拒绝（逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1`）。
 
 ---
 

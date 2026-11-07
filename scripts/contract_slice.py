@@ -68,6 +68,10 @@ class SliceError(Exception):
     """未知契约/未知节号/重复编号（exit 1），消息里已含候选提示。"""
 
 
+class ContractDirError(Exception):
+    """契约目录不存在/不可读（exit 2）：环境前提不满足，不是「某个契约未知」。"""
+
+
 class UnknownSectionError(SliceError):
     """节号不存在；调用方补候选提示。"""
 
@@ -111,7 +115,7 @@ def iter_headings(text: str) -> list[Heading]:
 def contract_paths(contract_dir: Path) -> dict[str, Path]:
     """契约 stem → 文件路径；README.md 是目录地图，不入契约集。"""
     if not contract_dir.is_dir():
-        raise SliceError(f"contract directory not found: {contract_dir}")
+        raise ContractDirError(f"contract directory not found: {contract_dir}")
     return {
         path.stem: path
         for path in sorted(contract_dir.glob("*.md"))
@@ -281,13 +285,16 @@ def run(argv: list[str], contract_dir: Path = DEFAULT_CONTRACT_DIR) -> tuple[int
     if args.selftest:
         if args.stem or args.section or args.list or args.children:
             return 2, "", f"error: --selftest takes no other arguments\n{USAGE}"
+        if args.contract_dir is not None:
+            # selftest 自带临时契约；再给 --contract-dir 只会让它被静默忽略（#309 审查 N6）。
+            return 2, "", f"error: --selftest takes no --contract-dir\n{USAGE}"
         return selftest()
     if args.list:
         if args.stem or args.section or args.children:
             return 2, "", f"error: --list takes no contract stem or section\n{USAGE}"
         try:
             return 0, render_list(contract_dir) + "\n", ""
-        except SliceError as exc:
+        except ContractDirError as exc:
             return 2, "", f"error: {exc}"
     if not args.stem or not args.section:
         return 2, "", f"error: missing contract stem or section\n{USAGE}"
@@ -297,7 +304,7 @@ def run(argv: list[str], contract_dir: Path = DEFAULT_CONTRACT_DIR) -> tuple[int
         return 2, "", f"error: {exc}\n{USAGE}"
     try:
         paths = contract_paths(contract_dir)
-    except SliceError as exc:
+    except ContractDirError as exc:
         return 2, "", f"error: {exc}"
     stem = args.stem
     path = paths.get(stem)
