@@ -391,8 +391,10 @@ TEST(SysmonSnapshotValidateTest, AcceptsClockEmptyAndProbedStates) {
                                                     {"error", "timeout"}}});
     EXPECT_EQ(SysmonSnapshot::validate(make_snapshot_with_clock(all_failed)), std::nullopt);
 
-    // 五种失败原因都是合法取值（§2.9 servers[].error）。
-    for (const char* code : {"timeout", "kod_rate", "kod_deny", "bad_echo", "unreachable"}) {
+    // 五种失败原因都是合法取值（§2.9 servers[].error）。取值来自类型层单一真相源
+    // （`SYSMON_CLOCK_ERROR_CODES`），这里直接遍历它——校验器与发送方共用同一份，
+    // 改动取值时两侧不会各自漂移（review-checklist §2.4）。
+    for (const char* code : platform::SYSMON_CLOCK_ERROR_CODES) {
         auto state = clock_empty_state();
         auto entry = nlohmann::json{{"host", "ntp.aliyun.com"},
                                     {"ok", false},

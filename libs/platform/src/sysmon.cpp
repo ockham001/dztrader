@@ -525,9 +525,16 @@ std::optional<std::string> validate_snapshot_network(const json& network) {
 }
 
 /// `servers[].error` 的合法取值（契约 sysmon §2.9「失败原因」）。
+///
+/// 取值本身住在类型层 `SYSMON_CLOCK_ERROR_CODES`（发送方与校验共用一份，改动不会漂移）。
 const std::set<std::string>& clock_server_error_codes() {
-    static const std::set<std::string> codes = {"timeout", "kod_rate", "kod_deny", "bad_echo",
-                                                "unreachable"};
+    static const std::set<std::string> codes = [] {
+        std::set<std::string> set;
+        for (const char* code : SYSMON_CLOCK_ERROR_CODES) {
+            set.emplace(code);
+        }
+        return set;
+    }();
     return codes;
 }
 
