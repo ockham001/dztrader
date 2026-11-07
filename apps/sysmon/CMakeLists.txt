@@ -7,12 +7,14 @@
 # dzsysmon_obj：OBJECT 库（可复用源文件），测试链接它而无需拉入 main.cpp。
 # ============================================================
 add_library(dzsysmon_obj OBJECT
+    clock_probe.cpp
     config.cpp
     cpu_saturation.cpp
     cpu_usage.cpp
     disk_io.cpp
     history_recorder.cpp
     network.cpp
+    ntp_codec.cpp
     snapshot_builder.cpp
     thresholds.cpp
 )
