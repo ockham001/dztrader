@@ -799,6 +799,7 @@ public:
     std::optional<platform::RawShmDirInfo> shm_dir;
     platform::RawDiskIoSnapshot disk_io;
     platform::RawNetworkSnapshot network;
+    platform::RawTimeSyncStatus time_sync;
 
     platform::RawSystemInfo collect_system_info() override { return info; }
     std::optional<platform::RawCpuTimes> collect_cpu_times() override { return times; }
@@ -821,6 +822,7 @@ public:
     }
     platform::RawDiskIoSnapshot collect_disk_io() override { return disk_io; }
     platform::RawNetworkSnapshot collect_network() override { return network; }
+    platform::RawTimeSyncStatus collect_time_sync_services() override { return time_sync; }
 };
 
 // 契约 sysmon「测试接缝」：速率计算全部经 SystemCollector 接缝用假采集器确定性驱动。
@@ -1437,8 +1439,9 @@ TEST(SnapshotBuilderTest, ClockDomainIsUnprobedEmptyState) {
 }
 
 // 契约 sysmon §2.5（#295）：两个新键必须每帧登记且**独立**。空态下偏差「测不到」是
-// `no_reference`（非能力粘性）；服务检测能力尚未交付（#298）如实标 `not_implemented`，
-// 不虚报 `available=true`。
+// `no_reference`（非能力粘性）；服务枚举能力在 #298 落地后恒为可用（见
+// `ClockSyncServiceAvailableOnceDetectionLands`），因此「测到了偏差」与「服务能力可用」
+// 同时成立，两键互不影响。
 // S3 接缝（#295）：`ClockMetrics` 入参是本域唯一的事实来源——传入探测结果后快照原样透出，
 // 偏差有值即 `clock.offset` 可用（本键非能力粘性，表达「最近一轮是否测到」）。
 TEST(SnapshotBuilderTest, ClockDomainFilledFromProbeResult) {
@@ -1479,8 +1482,8 @@ TEST(SnapshotBuilderTest, ClockDomainFilledFromProbeResult) {
         snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_OFFSET);
     EXPECT_TRUE(offset_entry.available);
     EXPECT_EQ(offset_entry.reason, std::nullopt);
-    // 两键独立：偏差测到了不代表服务检测能力已交付（#298）。
-    EXPECT_FALSE(
+    // 两键独立但各自成立：偏差测到了、服务枚举能力在本版本恒可用（#298 落地）。
+    EXPECT_TRUE(
         snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE).available);
     EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
@@ -1529,11 +1532,70 @@ TEST(SnapshotBuilderTest, ClockAvailabilityKeysReportUnprobedState) {
     ASSERT_TRUE(offset_entry.reason.has_value());
     EXPECT_EQ(offset_entry.reason.value(), "no_reference");
 
+    // 两键独立：偏差「尚未探测」不影响服务枚举能力（#298 起恒可用，契约 §2.5）。
     const auto& service_entry =
         snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE);
-    EXPECT_FALSE(service_entry.available);
-    ASSERT_TRUE(service_entry.reason.has_value());
-    EXPECT_EQ(service_entry.reason.value(), "not_implemented");
+    EXPECT_TRUE(service_entry.available);
+    EXPECT_EQ(service_entry.reason, std::nullopt);
+}
+
+// 契约 sysmon §2.5（#298 落地）：同步服务枚举能力在两平台基线内**恒为 available=true**
+// ——`daemons` 为空数组或全部 `running=false` 是「未检测到在运行的同步服务」这一**事实**，
+// 不改写可用性；只有配置关闭时才 `disabled_by_config`。因此非关闭态**不再**出现
+// `not_implemented`（该原因在 #295 是分阶段过渡态，契约 §2.5 注记把翻转归 #298）。
+TEST(SnapshotBuilderTest, ClockSyncServiceAvailableOnceDetectionLands) {
+    const auto snapshot = build_with(make_linux_info(), make_full_metrics());
+    const auto& service_entry =
+        snapshot.availability.metrics.at(platform::SYSMON_METRIC_CLOCK_SYNC_SERVICE);
+    EXPECT_TRUE(service_entry.available);
+    EXPECT_EQ(service_entry.reason, std::nullopt);
+
+    // 未检测到服务（空数组）同样是「能力可用」：这是事实，不是不可用（§2.5 明文）。
+    // 空态快照本身即该形状（daemons 为空），上面已断言能力可用。
+    ASSERT_TRUE(snapshot.clock.has_value());
+    EXPECT_TRUE(snapshot.clock->daemons.empty());
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+}
+
+// 契约 sysmon §2.9 / §7（#298）：`daemon_conflict` 必须与「运行中的不同服务数 >= 2」
+// 一致——两个服务同时运行即为 true，一个或零个为 false。上层据此提示冲突（不判故障）。
+TEST(SnapshotBuilderTest, DaemonConflictTracksNumberOfRunningServices) {
+    const auto make_clock_with_daemons = [](std::vector<platform::SysmonClockDaemonInfo> daemons) {
+        ClockMetrics metrics;
+        platform::SysmonClockInfo info;
+        info.daemons = std::move(daemons);
+        metrics.info = std::move(info);
+        return metrics;
+    };
+
+    // 单个运行中：无冲突。
+    auto one_running = make_clock_with_daemons({
+        platform::SysmonClockDaemonInfo{.name = "chronyd", .running = true},
+    });
+    auto snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, one_running);
+    ASSERT_TRUE(snapshot.clock.has_value());
+    EXPECT_FALSE(snapshot.clock->daemon_conflict);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+
+    // 两个运行中：冲突标记为 true（契约 §2.9：≥2 种不同服务同时运行）。
+    auto two_running = make_clock_with_daemons({
+        platform::SysmonClockDaemonInfo{.name = "chronyd", .running = true},
+        platform::SysmonClockDaemonInfo{.name = "ntpd", .running = true},
+    });
+    snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, two_running);
+    ASSERT_TRUE(snapshot.clock.has_value());
+    EXPECT_TRUE(snapshot.clock->daemon_conflict);
+    // 校验器（契约 §7）会核对冲突标记与运行数的一致性——不一致即整帧被拒。
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
+
+    // 列出的服务全部未运行（Windows 形状）：不算冲突。
+    auto none_running = make_clock_with_daemons({
+        platform::SysmonClockDaemonInfo{.name = "W32Time", .running = false},
+    });
+    snapshot = build_with(make_linux_info(), make_full_metrics(), {}, {}, {}, {}, none_running);
+    ASSERT_TRUE(snapshot.clock.has_value());
+    EXPECT_FALSE(snapshot.clock->daemon_conflict);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(nlohmann::json(snapshot)), std::nullopt);
 }
 
 // 契约 sysmon §2.9 / §3.1.1（#296）：`clock` 域被配置关闭时（`clock.enabled=false` 或

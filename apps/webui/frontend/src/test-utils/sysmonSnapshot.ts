@@ -369,15 +369,18 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'shm_dir'
       || (networkAvailable && key === 'network')
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
+      // 契约 §2.5（#298）：服务枚举能力在两平台基线内恒可用——`daemons` 为空数组是
+      // 「未检测到在运行的同步服务」这一事实，不改写可用性（只有配置关闭才不可用）。
+      || key === 'clock.sync_service'
     // network 已由 #77 实现：默认不可用的现实原因是配置组关闭（disabled_by_config），
     // 不再是 not_implemented；温度/频率按各自的 B 组语义给 reason。
-    // 两个 clock 键按契约 §2.5 的空态语义给 reason：偏差「测不到」是 no_reference
-    // （本键非能力粘性）；服务检测能力由 #298 交付，空态如实给 not_implemented。
+    // 两个 clock 键按契约 §2.5 的语义给 reason：偏差「测不到」是 no_reference
+    // （本键非能力粘性）；服务枚举能力恒可用（见上方 available 判定），不走 reason 分支。
     const reason = key === 'temperature'
       ? 'no_sensor'
       : (key === 'cpu.frequency'
           ? 'unsupported'
-          : (key === 'network' ? 'disabled_by_config' : (key === 'clock.offset' ? 'no_reference' : 'not_implemented')))
+          : (key === 'network' ? 'disabled_by_config' : 'no_reference'))
     metrics[key] = available
       ? { available: true }
       : { available: false, reason }

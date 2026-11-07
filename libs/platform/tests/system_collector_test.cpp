@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -1457,6 +1458,253 @@ TEST(TemperatureAnomalyLogDedupTest, LogsOnceWhilePresentAndResetsAfterRecovery)
 }
 
 }  // namespace temperature_scan_test
+#endif  // defined(__linux__)
+
+// ===== #298 时间同步服务检测（契约 sysmon §2.9；S5 接缝）=====
+
+// 真机 oracle：检测必须返回可判定的三态而不是抛异常/崩溃；本机进程表可读时
+// `kernel_synced` 应是确定的 bool（容器内照实返回，容器看不到宿主服务是已知限制）。
+TEST(SystemCollectorTest, TimeSyncServiceDetectionFollowsContract) {
+    const auto collector = make_system_collector();
+    ASSERT_NE(collector, nullptr);
+
+    // 检测失败不抛异常：即使容器/受限环境也只降级为空列表 + null（契约 §2.9）。
+    // 真机不变量：名字非空、帧内唯一（契约 §7 的 `daemons[].name` 唯一性）。
+    const auto status = collector->collect_time_sync_services();
+    std::set<std::string> names;
+    for (const auto& daemon : status.daemons) {
+        EXPECT_FALSE(daemon.name.empty()) << "daemon name must be non-empty";
+        EXPECT_TRUE(names.insert(daemon.name).second) << "duplicate daemon name: " << daemon.name;
+    }
+#if defined(_WIN32)
+    // Windows 查询成功时为 `W32Time` 一条（running 可为 false）；枚举只含这一个名字，
+    // 且 `kernel_synced` 以「服务是否在运行」为代理量（契约 §2.9 表格）——两者必须一致。
+    for (const auto& daemon : status.daemons) {
+        EXPECT_EQ(daemon.name, "W32Time");
+    }
+    if (!status.daemons.empty()) {
+        EXPECT_EQ(status.kernel_synced, std::optional<bool>(status.daemons.front().running))
+            << "windows proxy: kernel_synced must mirror the W32Time service state";
+    } else {
+        EXPECT_EQ(status.kernel_synced, std::nullopt) << "failed query must report null, not false";
+    }
+#elif defined(__linux__)
+    // Linux 只列出正在运行的服务（running 恒为 true），名字只能是三种之一。
+    for (const auto& daemon : status.daemons) {
+        EXPECT_TRUE(daemon.running) << "linux only lists running services: " << daemon.name;
+        EXPECT_TRUE(daemon.name == "chronyd" || daemon.name == "ntpd" ||
+                    daemon.name == "systemd-timesyncd")
+            << daemon.name;
+    }
+#endif
+}
+
+#if defined(__linux__)
+// ===== #298 Linux 内部接缝：进程表扫描与 adjtimex 读取（契约 sysmon §2.9）=====
+
+namespace timesync_scan_test {
+
+using dztrader::platform::system_collector_linux_internal::kTaskCommMaxLength;
+using dztrader::platform::system_collector_linux_internal::kTimeSyncServiceNames;
+using dztrader::platform::system_collector_linux_internal::matches_time_sync_service;
+using dztrader::platform::system_collector_linux_internal::scan_process_names;
+
+/// 假 `/proc` 根 fixture：伪造 `<proc>/<pid>/comm`，使进程表扫描与精确匹配不依赖
+/// 真机是否恰好跑着同步服务（AGENTS 硬门禁 2 自管临时目录的豁免情形）。
+///
+/// 目录名可以是任意可解析为 PID 的数字串；非数字目录与无 `comm` 的进程按不可读处理。
+class FakeProcRootTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        std::error_code ec;
+        base_ = std::filesystem::temp_directory_path(ec) /
+                ("dzsysmon_proc_" + std::to_string(current_process_id()) + "_" +
+                 std::to_string(counter_++));
+        std::filesystem::remove_all(base_, ec);
+        ASSERT_TRUE(std::filesystem::create_directories(base_, ec)) << ec.message();
+    }
+
+    void TearDown() override {
+        std::error_code ec;
+        std::filesystem::remove_all(base_, ec);
+    }
+
+    /// 造一个 PID 目录并写入 `comm` 内容（内核原样返回，含换行）。
+    void add_process(const std::string& pid, const std::string& comm) {
+        std::error_code ec;
+        const auto dir = base_ / pid;
+        std::filesystem::create_directories(dir, ec);
+        std::ofstream output(dir / "comm");
+        ASSERT_TRUE(output.good()) << dir.string();
+        output << comm << '\n';
+        ASSERT_TRUE(output.good()) << dir.string();
+    }
+
+    /// 造一个 PID 目录但不写 `comm`（模拟读不到 comm 的进程）。
+    void add_process_without_comm(const std::string& pid) {
+        std::error_code ec;
+        std::filesystem::create_directories(base_ / pid, ec);
+    }
+
+    std::filesystem::path base_;
+    static int counter_;
+};
+
+int FakeProcRootTest::counter_ = 0;
+
+TEST_F(FakeProcRootTest, ListsEveryRunningServiceNameExactlyOnce) {
+    add_process("100", "chronyd");
+    add_process("101", "ntpd");
+    // 内核把 comm 截到 15 字节：`systemd-timesyncd` 实际读到 `systemd-timesyn`。
+    add_process("102", "systemd-timesyn");
+    // 同一种服务起两个进程：只列一条（`daemons[]` 是「有哪些服务」，不是进程列表）。
+    add_process("103", "chronyd");
+
+    const auto names = scan_process_names(base_);
+    const auto daemons = matches_time_sync_service(names);
+    ASSERT_EQ(daemons.size(), 3U);
+    // 输出顺序按服务清单固定（chronyd / ntpd / systemd-timesyncd），与进程枚举顺序无关，
+    // 使同一状态在任何机器上产出同一帧。
+    EXPECT_EQ(daemons[0].name, "chronyd");
+    EXPECT_EQ(daemons[1].name, "ntpd");
+    EXPECT_EQ(daemons[2].name, "systemd-timesyncd");
+    for (const auto& daemon : daemons) {
+        EXPECT_TRUE(daemon.running) << daemon.name;
+    }
+}
+
+TEST_F(FakeProcRootTest, MatchesProcessNameExactlyNotByPrefixOrCommandLine) {
+    // 契约 §2.9 明文：按进程名**精确**匹配，不按前缀、不按命令行猜测。
+    add_process("200", "chronyd-watcher");  // 前缀相同但不同程序
+    add_process("201", "mychronyd");        // 含子串但不同程序
+    add_process("202", "chronyc");          // chrony 客户端，不是守护进程
+    add_process("203", "ntpd");             // 唯一真正命中
+    add_process("204", "ntpdate");          // ntp 工具，不是守护进程
+    add_process("205", "chrony");           // 服务单元名常被误认，实际进程名是 chronyd
+
+    const auto names = scan_process_names(base_);
+    const auto daemons = matches_time_sync_service(names);
+    ASSERT_EQ(daemons.size(), 1U);
+    EXPECT_EQ(daemons[0].name, "ntpd");
+}
+
+TEST_F(FakeProcRootTest, ReadsTruncatedCommForTimesyncd) {
+    // 内核 comm 上限 15 字节（TASK_COMM_LEN-1），`systemd-timesyncd` 必然被截断为
+    // `systemd-timesyn`。检测必须按这个可观察事实匹配，而不是把未截断名当唯一写法。
+    // 上限本身也作为不变量断言（清单里唯一超长名字恰是 systemd-timesyncd）。
+    EXPECT_EQ(kTaskCommMaxLength, 15U);
+    EXPECT_EQ(std::string("systemd-timesyn").size(), kTaskCommMaxLength);
+    EXPECT_GT(std::string("systemd-timesyncd").size(), kTaskCommMaxLength);
+
+    add_process("300", "systemd-timesyn");
+    const auto daemons = matches_time_sync_service(scan_process_names(base_));
+    ASSERT_EQ(daemons.size(), 1U);
+    EXPECT_EQ(daemons[0].name, "systemd-timesyncd");
+}
+
+// 若某进程的 comm 恰好是未截断全名（非内核 /proc 来源，如被 prctl 显式设置或被其它
+// 采集路径喂入），精确匹配路径同样命中——两条路径不能只留一条。
+TEST_F(FakeProcRootTest, AcceptsUntruncatedFullNameToo) {
+    add_process("350", "systemd-timesyncd");
+    const auto daemons = matches_time_sync_service(scan_process_names(base_));
+    ASSERT_EQ(daemons.size(), 1U);
+    EXPECT_EQ(daemons[0].name, "systemd-timesyncd");
+}
+
+TEST_F(FakeProcRootTest, MissingOrUnreadableProcessTableYieldsEmptyList) {
+    // 进程表不可读（容器内看不到宿主、/proc 未挂载、权限受限）→ 空列表，不抛异常。
+    const auto missing = base_ / "does-not-exist";
+    EXPECT_TRUE(scan_process_names(missing).empty());
+    EXPECT_TRUE(matches_time_sync_service(scan_process_names(missing)).empty());
+
+    // 非数字目录（`self` / `sys` / 普通文件）与无 comm 的 PID 目录都跳过。
+    std::error_code ec;
+    std::filesystem::create_directories(base_ / "self", ec);
+    std::filesystem::create_directories(base_ / "sys", ec);
+    {
+        std::ofstream stray(base_ / "12345");  // 名为数字的文件而非目录
+        stray << "not a process\n";
+    }
+    add_process_without_comm("400");
+    add_process("401", "chronyd");
+    const auto daemons = matches_time_sync_service(scan_process_names(base_));
+    ASSERT_EQ(daemons.size(), 1U);
+    EXPECT_EQ(daemons[0].name, "chronyd");
+}
+
+TEST_F(FakeProcRootTest, IgnoresTrailingWhitespaceAndEmptyComm) {
+    // comm 以换行结尾（内核行为）；多余空白也要去掉，不能因 CRLF/空格漏判。
+    add_process("500", "chronyd  ");
+    add_process_without_comm("501");  // 无 comm
+    {
+        // 空 comm 文件（进程刚创建/comm 被清空）：不是任何服务。
+        std::error_code ec;
+        std::filesystem::create_directories(base_ / "502", ec);
+        std::ofstream out(base_ / "502" / "comm", std::ios::trunc);
+        ASSERT_TRUE(out.good());
+    }
+    add_process("503", "ntpd");
+
+    const auto daemons = matches_time_sync_service(scan_process_names(base_));
+    ASSERT_EQ(daemons.size(), 2U);
+    EXPECT_EQ(daemons[0].name, "chronyd");
+    EXPECT_EQ(daemons[1].name, "ntpd");
+}
+
+// 服务清单是单一真相源：`daemons[]` 的合法名字集合必须与契约 §2.9 列举的一致。
+// 顺序即输出顺序（固定），因此断言字面值而不是只断言 size。
+TEST(TimeSyncServiceNamesTest, ServiceListIsFixedAndOrdered) {
+    ASSERT_EQ(kTimeSyncServiceNames.size(), 3U);
+    EXPECT_EQ(kTimeSyncServiceNames[0], "chronyd");
+    EXPECT_EQ(kTimeSyncServiceNames[1], "ntpd");
+    EXPECT_EQ(kTimeSyncServiceNames[2], "systemd-timesyncd");
+}
+
+// 单条服务状态读取失败不影响其它条目（AC4）：这里用「进程表可读」的确定性输入覆盖
+// ——单条不可读只体现为该条不出现，已有的条目照常返回。
+TEST_F(FakeProcRootTest, SingleUnreadableEntryDoesNotAffectOthers) {
+    add_process("600", "chronyd");
+    add_process_without_comm("601");  // 该条读不到 comm
+    add_process("602", "ntpd");       // 其它条目不受影响
+
+    const auto daemons = matches_time_sync_service(scan_process_names(base_));
+    ASSERT_EQ(daemons.size(), 2U);
+    EXPECT_EQ(daemons[0].name, "chronyd");
+    EXPECT_EQ(daemons[1].name, "ntpd");
+}
+
+// 契约 sysmon §2.9：Linux 的 `kernel_synced` = `adjtimex` 的 `STA_UNSYNC` 取反。
+// 传 `modes=0` 是只读探测（普通用户可读），不申请任何时钟调整。
+// 这里用**内核 ABI 常量字面值**做独立真相源（`STA_UNSYNC` = 0x0040，来自 sys/timex.h
+// 的稳定 ABI），断言映射方向而不是重算实现——映射写反会让「已同步」与「未同步」互换，
+// 而这种错误在真机上只表现为卡片颜色不对，没有编译期信号。
+TEST(LinuxKernelSyncedTest, MapsUnsyncFlagInverse) {
+    using dztrader::platform::system_collector_linux_internal::kernel_synced_from_status;
+    // 无任何标志位 = 内核认为已同步。
+    EXPECT_TRUE(kernel_synced_from_status(0));
+    // 仅 STA_UNSYNC（0x0040）：未同步。
+    EXPECT_FALSE(kernel_synced_from_status(0x0040));
+    // 其它标志位（如 STA_PLL 0x0001 / STA_NANO 0x2000）不影响这一判据。
+    EXPECT_TRUE(kernel_synced_from_status(0x0001));
+    EXPECT_TRUE(kernel_synced_from_status(0x2000));
+    EXPECT_FALSE(kernel_synced_from_status(0x0040 | 0x2000));
+}
+
+// adjtimex 只读探测：真机可读时给出确定布尔值；读不到必须是 `null` 而不是 `false`
+// （「读不到」≠「没同步」，契约 §2.9）。测试环境里 adjtimex 通常可读，因此两种结果都
+// 接受，但断言**不会**出现「异常/崩溃」这一第三态。
+TEST(LinuxKernelSyncedTest, ReadsAdjtimexAsDefiniteStateOrNull) {
+    using dztrader::platform::system_collector_linux_internal::read_kernel_synced;
+    const auto first = read_kernel_synced();
+    // 同一内核状态连续两次读取必须一致（映射是纯函数，不引入随机性）。
+    const auto second = read_kernel_synced();
+    EXPECT_EQ(first, second);
+    if (!first.has_value()) {
+        GTEST_SKIP() << "adjtimex unreadable in this environment (reported as null, not false)";
+    }
+}
+
+}  // namespace timesync_scan_test
 #endif  // defined(__linux__)
 
 }  // namespace dztrader::test

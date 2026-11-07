@@ -16,6 +16,8 @@
  * 不依赖真机驱动是否暴露无效通道。
  */
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -237,6 +239,60 @@ struct TemperatureScanResult {
 /// @param logged 调用方持有的去重状态；函数按本帧结果就地更新
 /// @return 本帧是否应记一条 WARN
 [[nodiscard]] bool should_log_implausible_temperatures(uint32_t implausible_channels, bool& logged);
+
+// ===== /proc/<pid>/comm 同步服务进程扫描（契约 sysmon §2.9；Linux 实现内部接缝）=====
+
+/// 本版本检测的时间同步服务清单（契约 sysmon §2.9 平台口径的单一真相源）。
+///
+/// **顺序即 `daemons[]` 的输出顺序**（固定，使同一状态在任何机器上产出同一帧）。
+/// 只含三种 Linux 常见服务：`chronyd` / `ntpd` / `systemd-timesyncd`；不检测非主流服务
+/// （契约 §8「没有的东西」）。
+inline constexpr std::array<std::string_view, 3> kTimeSyncServiceNames = {"chronyd", "ntpd",
+                                                                          "systemd-timesyncd"};
+
+/// 内核 `comm` 字段的可观察长度上限：`TASK_COMM_LEN` 为 16，含结尾 `'\0'`，
+/// 因此**至多 15 个字符**（`/proc/<pid>/comm` 返回 comm + '\n'）。
+/// 契约 sysmon §2.9 的 `systemd-timesyncd` 实际被截断为 `systemd-timesyn`，检测按
+/// 这个事实匹配（而不是把未截断名当作唯一写法）。
+inline constexpr std::size_t kTaskCommMaxLength = 15;
+
+/// 扫描进程表，返回每个可读 PID 的进程名（`/proc/<pid>/comm` 去空白后的内容）。
+///
+/// 不可读的 PID 目录（无 `comm`、权限不足）与非数字目录（`self` / `sys` / `net`）
+/// 直接跳过；进程表整体不可读时返回空数组（不抛异常）。输出顺序不保证，
+/// 消费方按服务清单排序（见 `matches_time_sync_service`）。
+///
+/// @param proc_root `/proc` 根目录，默认 `/proc`；测试可注入假根，用临时目录确定性
+///        覆盖精确匹配与截断匹配，不依赖真机恰好跑着同步服务
+[[nodiscard]] std::vector<std::string> scan_process_names(
+    const std::filesystem::path& proc_root = "/proc");
+
+/// 从进程名列表里挑出正在运行的同步服务（契约 sysmon §2.9）。
+///
+/// **按进程名精确匹配**（不按前缀、不按命令行猜测）：`chronyd-watcher` / `mychronyd` /
+/// `chronyc` 都不算。对 `systemd-timesyncd` 额外接受内核截断形态 `systemd-timesyn`
+/// （`kTaskCommMaxLength` 的可观察事实）。
+///
+/// 输出：只含**在运行**的服务（`running` 恒为 true），按 `kTimeSyncServiceNames` 顺序，
+/// 每种服务最多一条（同一服务起两个进程只列一次——`daemons[]` 是「有哪些服务」）。
+[[nodiscard]] std::vector<RawTimeSyncService> matches_time_sync_service(
+    const std::vector<std::string>& process_names);
+
+/// 读内核「时钟是否已同步」判据（契约 sysmon §2.9）：`adjtimex` 只读模式
+/// （`modes = 0`，普通用户可读）取 `status & STA_UNSYNC` 取反。
+///
+/// @return 读不到（调用失败/平台不支持）时 `std::nullopt`——「读不到」是独立事实，
+///         不得用 `false` 冒充
+[[nodiscard]] std::optional<bool> read_kernel_synced();
+
+/// 把 `adjtimex` 的 `status` 位图映射为「内核认为时钟已同步」（契约 sysmon §2.9）。
+///
+/// 纯函数：判据只有 `STA_UNSYNC`（未置位 = 已同步），其它标志位（`STA_PLL` / `STA_NANO`
+/// 等）不影响结论。抽出来是为了让映射方向可确定性断言——写反会让「已同步」与「未同步」
+/// 互换，真机上只表现为卡片颜色不对，没有任何编译期信号。
+///
+/// @param adjtimex_status `struct timex::status` 原值
+[[nodiscard]] bool kernel_synced_from_status(int adjtimex_status);
 
 }  // namespace dztrader::platform::system_collector_linux_internal
 

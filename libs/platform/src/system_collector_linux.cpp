@@ -21,6 +21,7 @@
 
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/timex.h>  // adjtimex：内核「未同步」标志（契约 sysmon §2.9）
 #include <sys/utsname.h>
 #include <unistd.h>
 
@@ -34,6 +35,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -450,6 +452,8 @@ private:
 
 /// sysfs 温度传感器根目录（每个子目录对应一颗传感器芯片）。
 constexpr const char* kHwmonRoot = "/sys/class/hwmon";
+/// 进程表根目录（`/proc/<pid>/comm` 是同步服务检测的唯一数据来源，契约 sysmon §2.9）。
+constexpr const char* kProcRoot = "/proc";
 /// sysfs CPU 拓扑根目录（每个 `cpuN` 子目录对应一个逻辑核）。
 constexpr const char* kCpuRoot = "/sys/devices/system/cpu";
 /// 温度输入文件名：`temp<N>_input`（毫摄氏度）。
@@ -843,6 +847,17 @@ public:
     RawDiskIoSnapshot collect_disk_io() override { return read_disk_io(); }
 
     RawNetworkSnapshot collect_network() override { return read_network(); }
+
+    /// 时间同步服务检测（#298，契约 sysmon §2.9）：扫 `/proc` 精确匹配常见服务名，
+    /// 另读 `adjtimex` 取内核「未同步」标志。**不 exec 任何外部命令**（ADR 0047）。
+    /// 检测失败一律降级为空列表 + `null`，不抛异常（容器内看不到宿主服务即此形态）。
+    RawTimeSyncStatus collect_time_sync_services() override {
+        RawTimeSyncStatus status;
+        status.daemons = system_collector_linux_internal::matches_time_sync_service(
+            system_collector_linux_internal::scan_process_names(kProcRoot));
+        status.kernel_synced = system_collector_linux_internal::read_kernel_synced();
+        return status;
+    }
 
 private:
     LinuxMemorySwapReader memory_reader_;
@@ -1439,6 +1454,85 @@ bool should_log_implausible_temperatures(uint32_t implausible_channels, bool& lo
     }
     logged = true;
     return true;
+}
+
+// ===== /proc/<pid>/comm 同步服务进程扫描与 adjtimex 判据（契约 sysmon §2.9）=====
+
+namespace {
+
+/// 目录名是否为纯 PID：`/proc` 顶层的进程目录名全为十进制数字。
+bool is_pid_directory_name(std::string_view name) {
+    return !name.empty() && std::all_of(name.begin(), name.end(),
+                                        [](unsigned char c) { return std::isdigit(c) != 0; });
+}
+
+/// 进程名是否命中某条服务：精确匹配，或命中该服务的**内核截断形态**。
+///
+/// 内核 comm 上限 15 字节（`TASK_COMM_LEN-1`），因此任何超过该长度的标准服务名在
+/// `/proc/<pid>/comm` 里必然被截断（`systemd-timesyncd` → `systemd-timesyn`）。
+/// 按可观察事实匹配，而不是只认未截断写法——否则该服务永远检测不到。
+bool process_name_matches_service(std::string_view process_name, std::string_view service_name) {
+    if (process_name == service_name) {
+        return true;
+    }
+    return service_name.size() > kTaskCommMaxLength &&
+           process_name == service_name.substr(0, kTaskCommMaxLength);
+}
+
+}  // namespace
+
+std::vector<std::string> scan_process_names(const std::filesystem::path& proc_root) {
+    std::vector<std::string> names;
+    for (const auto& entry : list_directory(proc_root)) {
+        if (!is_pid_directory_name(entry.path().filename().string())) {
+            continue;
+        }
+        // comm 不存在/无权限/为空 → 该条跳过（单个进程读不到不影响其它条目）。
+        auto name = read_sysfs_line(entry.path() / "comm");
+        if (name.empty()) {
+            continue;
+        }
+        names.push_back(std::move(name));
+    }
+    return names;
+}
+
+std::vector<RawTimeSyncService> matches_time_sync_service(
+    const std::vector<std::string>& process_names) {
+    std::vector<RawTimeSyncService> daemons;
+    // 按服务清单顺序输出（与进程枚举顺序无关）：同一状态在任何机器上产出同一帧。
+    for (const auto service_name : kTimeSyncServiceNames) {
+        const bool running =
+            std::any_of(process_names.begin(), process_names.end(),
+                        [service_name](const std::string& process_name) {
+                            return process_name_matches_service(process_name, service_name);
+                        });
+        if (!running) {
+            continue;  // Linux 只列出正在运行的服务（契约 §2.9 平台口径）
+        }
+        RawTimeSyncService daemon;
+        daemon.name = std::string(service_name);
+        daemon.running = true;
+        daemons.push_back(std::move(daemon));
+    }
+    return daemons;
+}
+
+std::optional<bool> read_kernel_synced() {
+    struct timex state;
+    std::memset(&state, 0, sizeof(state));
+    state.modes = 0;  // 只读：不申请任何调整
+    const int result = ::adjtimex(&state);
+    if (result < 0) {
+        // 读不到（权限/内核不支持）：null 而不是 false（「读不到」≠「没同步」）。
+        return std::nullopt;
+    }
+    return kernel_synced_from_status(state.status);
+}
+
+bool kernel_synced_from_status(int adjtimex_status) {
+    // 契约 sysmon §2.9：`STA_UNSYNC` 置位 = 内核认为未同步，取反即「已同步」。
+    return (adjtimex_status & STA_UNSYNC) == 0;
 }
 
 }  // namespace system_collector_linux_internal

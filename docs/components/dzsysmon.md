@@ -11,7 +11,8 @@
 - 已实现历史查询（#79）：`dzweb` 只读打开历史库并经 REST `GET /api/sysmon/history` 提供（契约 sysmon §6.1），监控页提供「实时 / 历史」视图切换；历史查询不走帧、历史视图不订阅 WS。
 - **阈值越限（#123 改为日志；ADR 0034）**：判定对象为内存使用率、交换使用率、全部卷剩余空间与 CPU 饱和；进入越限写 `warning`、恢复写 `info`、持续期每 `thresholds.log_repeat_sec`（默认 600s）重记一条 `info`。资源类**不产生任何 `NOTIFY_UI`**，快照也不携带越限集合（契约 sysmon §2.8）；UI 上的使用率色标由 #125（卷）落地，#120 收口补齐监控页内存 / 交换使用率色标（与卷、顶栏共用同一组常量）。
 - 已实现运行期配置与配置展示（#81）：配置帧 SET/RTN 全量生效、运行期切换历史记录、监控页「配置」区展示当前生效配置并提供 admin 编辑入口（契约 sysmon §3）。
-- 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表、NTP 时间偏移；不支持容器内采集（见「部署限制」）。
+- 已实现时钟域平台接缝（#298，契约 sysmon §2.9）：`SystemCollector` 新增 `collect_time_sync_services()`，检测本机常见时间同步服务是否在运行并给出内核同步判据，**不 exec 任何外部命令**（ADR 0047）。Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`（内核把 comm 截断到 15 字节，`systemd-timesyncd` 的可观察值是 `systemd-timesyn`），另读 `adjtimex` 只读模式取 `STA_UNSYNC` 取反作为与守护进程无关的同步判据；Windows 经服务控制管理器 API（`OpenSCManagerW` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。检测失败（进程表不可读、服务管理器查询失败）降级为空列表 + `kernel_synced = null`，不抛异常；「读不到」不当成 `false`。`daemon_conflict` 由快照构造从 `daemons[]` 派生（契约 §2.9 / §7），采集层只如实返回列表、不判故障。每轮探测开始时执行检测并由 #299 接线进快照；`clock.sync_service` 自本票起恒 `available=true`。
+- 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表；不支持容器内采集（见「部署限制」）。不读取时间守护进程的内部状态、不写系统时钟（ADR 0047）。
 
 ## 进程与编排
 

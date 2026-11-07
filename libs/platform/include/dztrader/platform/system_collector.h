@@ -235,6 +235,35 @@ struct RawNetworkSnapshot {
     std::string unavailable_reason;
 };
 
+/// 单个时间同步服务的运行状态（契约 sysmon §2.9 `daemons[]` 的采集侧口径）。
+///
+/// 采集层只如实返回「本机有哪些常见同步服务、各自是否在运行」，**不判故障**
+/// （≥2 种同时运行是否算冲突由上层决定，ADR 0047）。
+struct RawTimeSyncService {
+    /// 服务名（Linux `chronyd` / `ntpd` / `systemd-timesyncd`；Windows `W32Time`）。
+    std::string name;
+    /// 是否正在运行。Linux 只列出运行中的服务（恒为 true）；Windows 可为 false。
+    bool running = false;
+};
+
+/// 本机时间同步服务检测结果（契约 sysmon §2.9；检测接缝 S5）。
+///
+/// 检测**不 exec 任何外部命令**：Linux 扫 `/proc/<pid>/comm` 精确匹配进程名，另读
+/// `adjtimex` 只读模式取内核「未同步」标志；Windows 经服务控制管理器 API 查 `W32Time`
+/// 状态（不解析 `w32tm` 的本地化输出）。
+///
+/// 失败一律降级为空列表（不抛异常）：进程表不可读、服务管理器查询失败、平台不支持时
+/// `daemons` 为空且 `kernel_synced` 为 `std::nullopt`——「读不到」不是「没同步」，
+/// 不得用 `false` 冒充（契约 §2.9）。
+struct RawTimeSyncStatus {
+    /// 检测到的服务（顺序固定，见契约 §2.9 的服务清单）；空 = 未检测到在运行的服务，
+    /// **或检测本身失败**（两者都是事实，由 `kernel_synced` 是否可读辅助区分）。
+    std::vector<RawTimeSyncService> daemons;
+    /// 内核/服务层「时钟是否已同步」的辅助判据：Linux 取 `adjtimex` 的 `STA_UNSYNC`
+    /// 取反；Windows 以 `W32Time` 是否在运行作为代理量。`std::nullopt` = 读不到。
+    std::optional<bool> kernel_synced;
+};
+
 /// 系统指标采集接缝。
 ///
 /// 唯一实现入口：`make_system_collector()`（按编译平台返回对应实现）。
@@ -313,6 +342,17 @@ public:
     /// 失败原因随结果返回（`RawNetworkSnapshot::unavailable_reason`），由快照构造直接映射；
     /// 单个网卡读不到时只是不出现在 `interfaces` 里。
     virtual RawNetworkSnapshot collect_network() = 0;
+
+    /// 检测本机常见时间同步服务的运行状态与内核同步判据（契约 sysmon §2.9）。
+    ///
+    /// **不 exec 任何外部命令**（ADR 0047）：Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配
+    /// `chronyd` / `ntpd` / `systemd-timesyncd`，另读 `adjtimex`（只读模式，普通用户可读）
+    /// 取 `STA_UNSYNC` 取反作为 `kernel_synced`；Windows 经服务控制管理器 API
+    /// （`OpenSCManager` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。
+    ///
+    /// 检测失败（进程表不可读、服务管理器查询失败）返回空列表 + `kernel_synced = null`，
+    /// 不抛异常、不崩溃；「读不到」不得写成 `false`。
+    virtual RawTimeSyncStatus collect_time_sync_services() = 0;
 
 protected:
     SystemCollector() = default;
