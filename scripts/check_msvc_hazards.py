@@ -118,15 +118,15 @@ def tracked_sources():
         ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE, "CMakeLists.txt",
          "*/CMakeLists.txt", "cmake"],
         capture_output=True, check=True).stdout
-    files = [f for f in out.decode().split("\0") if f.endswith((".h", ".cpp"))]
+    tracked = [f for f in out.decode().split("\0") if f]
+    files = [f for f in tracked if f.endswith((".h", ".cpp"))]
     for invariant in (DZ_TEST_CMAKE, CTP_CMAKE):
         if os.path.exists(invariant):
             files.append(invariant)
     # R7 需要 target 图（同一目录下两个 target 是否撞产物名），.h/.cpp 里看不到。
-    for cmake in out.decode().split("\0"):
-        if cmake.endswith("CMakeLists.txt") and os.path.exists(cmake):
-            files.append(cmake)
-    return files
+    files += [f for f in tracked if f.endswith("CMakeLists.txt") and os.path.exists(f)]
+    # CTP_CMAKE 既是 invariant 文件又是受控 CMakeLists：去重，避免同一文件被扫两遍。
+    return list(dict.fromkeys(files))
 
 
 def include_lines(lines):
@@ -286,8 +286,10 @@ def check_c4702_exemption(path, text):
 # R7: every target that overrides OUTPUT_NAME while another target already uses that
 # name as its own target/output name. The CMakeLists that declares both is where the
 # MSVC import-library collision is created (see the module docstring).
+# 块尾允许两种形态：多行（`PROPERTIES` 后换行、缩进若干后 `)`）与单行（`... )` 收尾）。
+# 用「行尾的 `)`」定位块尾而不是第一个 `)`，属性值里的生成表达式不含 `)`，但仍以行尾为准更稳。
 SET_TARGET_PROPS_RE = re.compile(
-    r'set_target_properties\(\s*([\w-]+)\s+PROPERTIES(.*?)\n\)', re.S)
+    r'set_target_properties\(\s*([\w-]+)\s+PROPERTIES(.*?)\)\s*(?:\r?\n|$)', re.S)
 ADD_EXE_RE = re.compile(r'add_executable\(\s*([\w-]+)')
 ADD_LIB_RE = re.compile(r'add_library\(\s*([\w-]+)')
 
@@ -303,16 +305,22 @@ def check_output_name_collision(path, text):
     archive output elsewhere; that is what this rule enforces, per CMakeLists that
     declares the sharing.
 
-    Scoped to one file: it compares the property block's OUTPUT_NAME against the
-    target names declared in the same CMakeLists. Cross-directory sharing is reported
-    where the property lives (the offender's own file), which is the file to edit.
+    Scoped to one file -- and that scope is *complete*, not a shortcut: the two
+    outputs only collide when they resolve to the same path, and the default output
+    directory is the target directory's own binary dir (both generators), so two
+    targets in **different** CMakeLists cannot land on the same `.lib`. What the rule
+    must not do is treat a **comment** mentioning ARCHIVE_OUTPUT_DIRECTORY as the
+    property, hence comments are stripped before the exemption test.
     """
     if not path.endswith("CMakeLists.txt"):
         return []
     declared = set(ADD_EXE_RE.findall(text)) | set(ADD_LIB_RE.findall(text))
     errors = []
     for m in SET_TARGET_PROPS_RE.finditer(text):
-        target, props = m.group(1), m.group(2)
+        target = m.group(1)
+        # 注释里提到属性名不算设置它（否则加一行「记得设 ARCHIVE_OUTPUT_DIRECTORY」
+        # 的注释就会让规则永远豁免——规则被文字绕过，这是 lint 的常见失效形态）
+        props = "\n".join(line.split("#")[0] for line in m.group(2).split("\n"))
         name = re.search(r'OUTPUT_NAME\s+([\w-]+)', props)
         if not name:
             continue
