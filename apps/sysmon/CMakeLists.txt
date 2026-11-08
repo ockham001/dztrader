@@ -9,6 +9,7 @@
 add_library(dzsysmon_obj OBJECT
     app.cpp
     clock_probe.cpp
+    clock_thresholds.cpp
     config.cpp
     cpu_saturation.cpp
     cpu_usage.cpp
@@ -94,8 +95,10 @@ foreach(testfile ${DZSYSMON_TESTS})
         set(test_properties RUN_SERIAL TRUE)
     elseif(testname STREQUAL "clock_e2e_test")
         # #299：起测试专用可执行文件 dzsysmon_clock_e2e_runner（真实进程主体 + 假 NTP 传输），
-        # 需先构建它。两个用例要等「下一个整分钟」：TZ 秒级偏移生效时约 8s，平台不支持时
-        # 各最多 ~60s（共 ~130s）+ 进程启动，故 TIMEOUT 取 240 留余量。
+        # 需先构建它。`TIMEOUT` 经 `gtest_discover_tests` 透传，作用域是**每个用例**而不是
+        # 整个目标——用例数随票增长（#301 起 14 个），单例取值不受影响。
+        # 单个用例里最长的等待是「下一个整分钟」：TZ 秒级偏移生效时约 8s，平台不支持时最多
+        # ~60s，外加若干 5–10s 的条件等待，故单例 TIMEOUT 取 240 留足余量。
         set(test_needs_daemon FALSE)
         set(test_needs_clock_runner TRUE)
         set(test_properties RUN_SERIAL TRUE TIMEOUT 240)

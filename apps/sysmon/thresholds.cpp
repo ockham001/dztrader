@@ -134,28 +134,6 @@ ThresholdInputs make_threshold_inputs(const CpuMetrics& cpu_metrics,
     return inputs;
 }
 
-bool ThresholdEvaluator::repeat_due(SubjectState& state,
-                                    int64_t now_monotonic_ms,
-                                    int64_t repeat_ms) {
-    if (repeat_ms <= 0) {
-        return false;  // 0 = 不重记（契约 §2.8）
-    }
-    const int64_t since = state.since_monotonic_ms;
-    const int64_t milestone = (now_monotonic_ms - since) / repeat_ms;
-    // 间隔运行期改变：按新间隔重排已记录的里程碑序号（当前 tick 不触发）。
-    // 这样重排后的下一个到期点仍落在 `since + N × 新间隔` 上，而不是沿用旧间隔的相位。
-    if (repeat_ms != state.scheduled_repeat_ms) {
-        state.scheduled_repeat_ms = repeat_ms;
-        state.recorded_milestone = milestone;
-        return false;
-    }
-    if (milestone <= state.recorded_milestone) {
-        return false;  // 本里程碑已记过（或尚未到达）
-    }
-    state.recorded_milestone = milestone;  // 跳过的里程碑不补发
-    return true;
-}
-
 ThresholdEvaluator::Result ThresholdEvaluator::evaluate(
     const ThresholdInputs& inputs, const platform::SysmonThresholdsConfig& config) {
     Result result;
@@ -266,19 +244,14 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
         if (!breached) {
             return outcome;  // 从未越限的对象不建状态
         }
-        it = states_.emplace(key, SubjectState{}).first;
+        it = states_.emplace(key, ActivityPeriod{}).first;
     }
     auto& state = it->second;
 
     if (breached) {
         if (!state.active) {
             // 进入新的活动期：墙钟记起点（供日志表达"始于何时"），单调时钟作重记基准。
-            state.active = true;
-            state.since_unix_sec = inputs.now_unix_sec;
-            state.since_monotonic_ms = inputs.now_monotonic_ms;
-            // 第一条重记出现在"进入时刻 + 一个间隔"（里程碑 1）；之后每个间隔一条。
-            state.recorded_milestone = 0;
-            state.scheduled_repeat_ms = repeat_ms;
+            state.start(inputs.now_unix_sec, inputs.now_monotonic_ms, repeat_ms);
             outcome.state = ThresholdState::Entered;
             outcome.produced = true;
             outcome.active_sec = 0;
@@ -288,10 +261,10 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
         // 活动期内：阈值持续满足不重记，但每满间隔记一条「仍越限」。
         // 里程碑按**活动期起点**对齐（契约 §2.8）：第 N 条在 since + N×间隔，
         // 因此长时间运行也不会把重记时刻漂到周期的别处。
-        if (repeat_due(state, inputs.now_monotonic_ms, repeat_ms)) {
+        if (state.repeat_due(inputs.now_monotonic_ms, repeat_ms)) {
             outcome.state = ThresholdState::Ongoing;
             outcome.produced = true;
-            outcome.active_sec = (inputs.now_monotonic_ms - state.since_monotonic_ms) / 1000;
+            outcome.active_sec = state.elapsed_sec(inputs.now_monotonic_ms);
             outcome.since_unix_sec = state.since_unix_sec;
         }
         return outcome;
@@ -301,7 +274,7 @@ ThresholdEvaluator::TransitionOutcome ThresholdEvaluator::transition(
     if (state.active) {
         outcome.state = ThresholdState::Recovered;
         outcome.produced = true;
-        outcome.active_sec = (inputs.now_monotonic_ms - state.since_monotonic_ms) / 1000;
+        outcome.active_sec = state.elapsed_sec(inputs.now_monotonic_ms);
         outcome.since_unix_sec = state.since_unix_sec;
     }
     states_.erase(it);

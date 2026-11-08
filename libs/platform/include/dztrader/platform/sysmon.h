@@ -124,13 +124,22 @@ inline constexpr const char* SYSMON_GROUP_CPU_FREQUENCY = "cpu_frequency";
 /// 而字面量散落会在两处各写一套后漂移。
 inline constexpr const char* SYSMON_GROUP_CLOCK = "clock";
 
-// ===== 阈值越限判定对象 kind（契约 sysmon §2.8；#123）=====
+// ===== 阈值越限判定对象 kind（契约 sysmon §2.8；#123 / 时间判定对象 #301）=====
 // 日志记录里的稳定取值，**不进快照、不构成协议语义**（ADR 0034）。`cpu_saturated` 只出现
 // 在日志与 UI 色标里：CPU 饱和从来不发通知，改日志后它也成了一等判定对象。
 inline constexpr const char* SYSMON_THRESHOLD_MEMORY_USED = "memory_used";
 inline constexpr const char* SYSMON_THRESHOLD_SWAP_USED = "swap_used";
 inline constexpr const char* SYSMON_THRESHOLD_VOLUME_FREE = "volume_free";
 inline constexpr const char* SYSMON_THRESHOLD_CPU_SATURATED = "cpu_saturated";
+
+/// 时间判定对象（契约 sysmon §2.8「时间判定对象」；#301，ADR 0047）。
+///
+/// 与上面四个资源类有两点差异：
+/// 1. `clock_offset` 的 **error 档**产生 `NOTIFY_UI` 弹窗（warn 档与 `clock_bound` 都只写
+///    日志）——ADR 0047 对 ADR 0034 静默原则的部分修订；
+/// 2. 判定时机在**每次探测完成时**，不是计量 tick。
+inline constexpr const char* SYSMON_THRESHOLD_CLOCK_OFFSET = "clock_offset";
+inline constexpr const char* SYSMON_THRESHOLD_CLOCK_BOUND = "clock_bound";
 
 // ===== 快照 payload（契约 sysmon §快照）=====
 

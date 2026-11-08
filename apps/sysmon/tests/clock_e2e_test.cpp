@@ -39,6 +39,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -779,6 +780,254 @@ TEST_F(ClockE2ETest, ManualTriggerIgnoredWhenClockDisabled) {
     EXPECT_EQ(wait_for_log("clock probe skipped | reason=disabled_by_config source=manual", 1, 2s),
               1U)
         << "manual query must be ignored (and logged) while the clock domain is disabled";
+}
+
+// ===== #301 阈值判定与告警（契约 sysmon §2.8「时间判定对象」）=====
+
+// AC1 / AC6：偏差越过 error 阈值 → `error` 日志 + `NOTIFY_UI`（`popup=true`）。
+// 这是 ADR 0047 对 ADR 0034 静默原则的唯一例外：偏差 ≥ 1 秒会让策略里所有壁钟判断
+// 系统性偏移，必须让人立刻决策。
+TEST_F(ClockE2ETest, OffsetOverErrorThresholdLogsErrorAndSendsPopup) {
+    // fake-offset-1500：服务端快 1500ms → 聚合偏差约 −1500ms（绝对值越 error 阈值 1000）。
+    write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000);
+    start_child();
+
+    // 先确认探测本身跑通（这是判定的前提，也让后续 NOTIFY_UI 断言有意义）。
+    const auto probed = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(probed.has_value()) << "startup probe did not complete";
+    ASSERT_FALSE(probed->at("clock").at("offset_ms").is_null());
+    const double offset_ms = probed->at("clock").at("offset_ms").get<double>();
+    EXPECT_LT(offset_ms, -1400.0) << "fake transport must produce an error-tier offset";
+    // 日志/通知里的数值格式化与判定模块同一口径（`{:+.1f}`）；用它反推期望文本——
+    // 偏差含 ½·RTT 抖动（真实单调时钟测出来的），硬编码 `-1500.0` 会随机器负载偶发红。
+    const std::string expected_offset = std::format("{:+.1f}", offset_ms);
+
+    // `NOTIFY_UI` 是 error 级别且要求弹窗（契约 notify-ui：`level=error` + `popup=true`
+    // 必须打断）。
+    const auto notification = wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s);
+    ASSERT_TRUE(notification.has_value())
+        << "error-tier offset must raise a NOTIFY_UI popup (contract sysmon §2.8 / ADR 0047)";
+    EXPECT_EQ(notification->at("source"), kInstanceName);
+    EXPECT_EQ(notification->at("level"), "error");
+    EXPECT_EQ(notification->at("popup"), true)
+        << "clock offset error tier is a popup-class fault (ADR 0047)";
+    EXPECT_NE(notification->at("message").get<std::string>().find("clock offset exceeds error"),
+              std::string::npos);
+    // 弹窗正文带当前偏差与 error 阈值（事后能从通知本身判断严重程度）。
+    EXPECT_NE(notification->at("message").get<std::string>().find("offset_ms=" + expected_offset),
+              std::string::npos);
+
+    // 日志：error 级别 + 判定对象 + 两档阈值。
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 1, 2s), 1U);
+    const std::string log = read_log();
+    EXPECT_NE(log.find("subject=clock_offset state=entered"), std::string::npos);
+    EXPECT_NE(log.find("offset_ms=" + expected_offset + " warn_ms=100 error_ms=1000"),
+              std::string::npos);
+    // 每轮探测仍只有一条 `clock probe finished`：判定日志是**另一类**记录，不挤占该义务。
+    EXPECT_EQ(probe_finished_log_lines(), 1U);
+}
+
+// AC1 / AC6：偏差越过 warn 阈值但未到 error → `warning` 日志，**不**弹窗（ADR 0047 边界）。
+TEST_F(ClockE2ETest, OffsetOverWarnThresholdLogsWarningWithoutPopup) {
+    // fake-offset-300：偏差约 −300ms，落在 [100, 1000) 的 warning 档。
+    write_config({"fake-offset-300"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000);
+    start_child();
+
+    const auto probed = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(probed.has_value()) << "startup probe did not complete";
+    ASSERT_FALSE(probed->at("clock").at("offset_ms").is_null());
+    const double offset_ms = probed->at("clock").at("offset_ms").get<double>();
+    EXPECT_LT(offset_ms, -290.0);
+    // 期望文本由实际值反推（偏差含 ½·RTT 抖动；硬编码会随机器负载偶发红）。
+    const std::string expected_offset = std::format("{:+.1f}", offset_ms);
+
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 1, 2s), 1U);
+    const std::string log = read_log();
+    EXPECT_NE(log.find("subject=clock_offset state=entered"), std::string::npos);
+    EXPECT_NE(log.find("offset_ms=" + expected_offset + " warn_ms=100 error_ms=1000"),
+              std::string::npos);
+    // warn 档绝不弹窗：ADR 0047 明确 warn 与同步服务检测不进打断通道。
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 3s).has_value())
+        << "warn-tier offset must not pop up (ADR 0047)";
+}
+
+// AC2：`bound_ms` 越界只产生质量提示（warning 日志），**不**弹窗、**不**改变偏差判定。
+TEST_F(ClockE2ETest, BoundOverAlarmLogsWarningWithoutPopupAndKeepsOffsetJudgment) {
+    // fake-dispersion-900：偏差约 0（远低于 warn），误差界约 900ms（越 200ms 质量阈值）。
+    write_config({"fake-dispersion-900"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000);
+    start_child();
+
+    const auto probed = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(probed.has_value()) << "startup probe did not complete";
+    // 前提：偏差确实在阈值以内（否则本用例会同时验证两件事，说不清质量判据的独立性）。
+    ASSERT_FALSE(probed->at("clock").at("offset_ms").is_null());
+    EXPECT_LT(std::abs(probed->at("clock").at("offset_ms").get<double>()), 100.0);
+    ASSERT_FALSE(probed->at("clock").at("bound_ms").is_null());
+    EXPECT_GT(probed->at("clock").at("bound_ms").get<double>(), 200.0);
+
+    // 质量记录：判定对象是 `clock_bound`，warning 级别。
+    EXPECT_EQ(wait_for_log("clock bound threshold exceeded", 1, 2s), 1U);
+    const std::string log = read_log();
+    EXPECT_NE(log.find("subject=clock_bound state=entered"), std::string::npos);
+    EXPECT_NE(log.find("bound_alarm_ms=200"), std::string::npos);
+    // 偏差在阈值以内：**没有** `clock_offset` 的越限记录（质量判据不改偏差判定）。
+    EXPECT_EQ(log.find("subject=clock_offset"), std::string::npos);
+    // 质量提示永远不弹窗（契约 §2.8）。
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 3s).has_value())
+        << "measurement quality degradation must not pop up (contract sysmon §2.8)";
+}
+
+// AC6（反向）：判定在**每次探测完成时**发生——手动查询触发的新一轮也要参与判定。
+TEST_F(ClockE2ETest, ManualRoundIsAlsoJudged) {
+    write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    const int64_t first_probe_ms = startup->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    // 启动轮已弹窗一次（进入 error 档）。
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value())
+        << "startup error-tier episode must raise one popup";
+    EXPECT_EQ(probe_finished_log_lines(), 1U);
+
+    // 把两档阈值都抬到偏差之上（1500ms 因此不再越限）：改配置本身**不**触发探测
+    // （契约 §3.1：只有 clock 域由关转开才立即探测），因此下一轮只可能是下面手动触发的。
+    ASSERT_TRUE(send_set_config({{"clock", {{"offset_warn_ms", 1600}, {"offset_error_ms", 2000}}},
+                                 {"realtime", {{"push_interval_sec", 300}}}}));
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
+    // 改阈值后仍无新探测完成（判定没有凭空发生）。
+    EXPECT_EQ(probe_finished_log_lines(), 1U);
+
+    // 手动触发新一轮：本轮被判定 → 1500ms < 1600ms 的 warn 线 → 恢复记录。
+    // 恢复记录的存在是「手动轮同样被判定」的直接证据（不用弱断言"没有新记录"）。
+    ASSERT_TRUE(send_query_clock());
+    const auto triggered = wait_for_snapshot(
+        [first_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > first_probe_ms;
+        },
+        10s);
+    ASSERT_TRUE(triggered.has_value()) << "manual round did not complete";
+    EXPECT_EQ(probe_finished_log_lines(), 2U) << "manual round must emit its own probe log";
+    EXPECT_EQ(wait_for_log("clock offset threshold recovered", 1, 2s), 1U)
+        << "the manual round must be judged with the current thresholds (contract sysmon §2.8)";
+    // 恢复不弹窗；弹窗只在进入 / 升级时发生。
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 2s).has_value())
+        << "recovery must not pop up (contract sysmon §2.8)";
+}
+
+// AC1 反向 / AC6：**同一 error 活动期内**重复探测不重复弹窗（契约 §2.8：error 档只在
+// 进入 / 升级时弹窗，因此不需要冷却）。这是「不按判定对象额外限流」的前提。
+TEST_F(ClockE2ETest, SameErrorEpisodeDoesNotRepeatPopup) {
+    write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    const int64_t first_probe_ms = startup->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    // 进入 error 档：一条弹窗。
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value())
+        << "startup error-tier episode must raise one popup";
+    // 进入记录只有一条（活动期起点）。
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 1, 2s), 1U);
+
+    // 同一活动期内再手动触发一轮：偏差仍越 error 线（档位不变），因此既无新进入记录、
+    // 也无新弹窗——这是「无冷却」得以成立的依据。
+    ASSERT_TRUE(send_query_clock());
+    const auto triggered = wait_for_snapshot(
+        [first_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > first_probe_ms;
+        },
+        10s);
+    ASSERT_TRUE(triggered.has_value()) << "manual round did not complete";
+    EXPECT_EQ(probe_finished_log_lines(), 2U) << "the manual round must actually have run";
+    // 本轮**没有**产生越限/恢复记录（档位不变的 activity 内）。注意 `clock probe finished`
+    // 只是与判定同级的另一条日志，不能证明判定路径被执行过；「手动轮被判定」的正向证据
+    // 在上面的 `ManualRoundIsAlsoJudged`（它以恢复记录为证）。
+    EXPECT_EQ(log_occurrences("clock offset threshold exceeded"), 1U)
+        << "the same error episode must not log a second entry";
+    EXPECT_EQ(log_occurrences("clock offset threshold recovered"), 0U)
+        << "the same error episode must not recover";
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 2s).has_value())
+        << "the same error episode must not pop up again (contract sysmon §2.8: no cooldown "
+           "needed)";
+}
+
+// AC5（接线）：**活动期打开时**关闭 `clock` 域必须静默清除判定状态。
+//
+// 这是判定器最容易漏的一条清除路径：关闭通常发生在两轮探测之间（探测已完成、管理员
+// 随后改配置），此时「探测完成时发现域已关闭」那条分支根本不会执行。若不清除，重开域
+// 的首探会带着**跨关闭期**的旧起点判一次，写出本该被清除的 `recovered` 记录
+// （契约 §2.8「配置关闭静默清除」明确禁止）。
+//
+// 做法：建立 error 活动期 → 关闭域（偏差回落为 0 的配置不变，但域关闭期间不探测）
+// → 重开域（立即首探）→ 断言**没有**恢复记录（旧活动期已被清除，而不是被"恢复"掉）。
+TEST_F(ClockE2ETest, DisablingActiveEpisodeClearsStateSilently) {
+    write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/1,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    // 前提：确实处于 error 活动期（进入日志 + 弹窗都在）。
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value());
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 1, 2s), 1U);
+    EXPECT_EQ(wait_for_log("clock offset threshold recovered", 0, 0s), 0U);
+
+    // 关闭域（活动期仍在）：判定状态必须被静默清除、**不写**恢复日志。
+    ASSERT_TRUE(send_set_config({{"clock", {{"enabled", false}}}}));
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
+    // 等一帧域为 null 的快照作为同步点，确认关闭已生效。
+    ASSERT_TRUE(wait_for_snapshot(
+                    [](const nlohmann::json& payload) { return payload["clock"].is_null(); }, 5s)
+                    .has_value())
+        << "clock domain must be null after clock.enabled=false";
+    EXPECT_EQ(log_occurrences("clock offset threshold recovered"), 0U)
+        << "config disable is a silent clear, not a recovery (contract sysmon §2.8)";
+
+    // 重开域：立即首探（偏差仍约 −1500ms → 越 error 线）。若旧活动期没被清除，这一轮
+    // 会判成 ongoing（无弹窗）；清除后必须是**全新**的进入（再弹一次窗）。
+    ASSERT_TRUE(send_set_config({{"clock", {{"enabled", true}}}}));
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
+    const auto reopened = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return !payload["clock"].is_null() &&
+                   payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(reopened.has_value()) << "re-enabling must probe immediately (contract §3.1)";
+    // 全新活动期 → 再弹一次窗（证明旧活动期确实被清掉了，而不是"接着旧的 ongoing"）。
+    EXPECT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value())
+        << "re-enabling after a silent clear must start a fresh episode (and pop up again)";
+    // 进入记录累计两条（关闭前 1 + 重开后 1），且**始终没有**恢复记录。
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 2, 2s), 2U);
+    EXPECT_EQ(log_occurrences("clock offset threshold recovered"), 0U)
+        << "a silently cleared episode must never be reported as recovered";
 }
 
 }  // namespace

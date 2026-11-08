@@ -13,6 +13,7 @@
 - 已实现运行期配置与配置展示（#81）：配置帧 SET/RTN 全量生效、运行期切换历史记录、监控页「配置」区展示当前生效配置并提供 admin 编辑入口（契约 sysmon §3）。
 - 已实现时钟域平台接缝（#298，契约 sysmon §2.9）：`SystemCollector` 新增 `collect_time_sync_services()`，检测本机常见时间同步服务是否在运行并给出内核同步判据，**不 exec 任何外部命令**（ADR 0047）。Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`（内核把 comm 截断到 15 字节，`systemd-timesyncd` 的可观察值是 `systemd-timesyn`），另读 `adjtimex` 只读模式取 `STA_UNSYNC` 取反作为与守护进程无关的同步判据；Windows 经服务控制管理器 API（`OpenSCManagerW` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。检测失败（进程表不可读、服务管理器查询失败）降级为空列表 + `kernel_synced = null`，不抛异常；「读不到」不当成 `false`。`daemon_conflict` 由快照构造从 `daemons[]` 派生（契约 §2.9 / §7），采集层只如实返回列表、不判故障。#298 只交付接缝与派生标记；「每轮探测开始时执行检测并接线进快照」由 #299 落地（见下条）；`clock.sync_service` 自 #298 起恒 `available=true`。
 - 已实现时钟偏差探测（#299，契约 sysmon §2.7/§2.9）：真实 Asio/UDP 的 NTPv4 客户端传输（每台服务器一个 socket + 独立超时，异步、不阻塞采集与帧处理）；启动后**立即**探测一次，随后按 `clock.probe_times` 的「每天 HH:MM 列表」（进程本地时区）用单调时钟定时器排到下一个墙钟时刻、**每次重算**（错过的时刻跳过不补采、不区分周末与节假日）；每轮开始时执行同步服务检测（不 exec 外部命令，#298 接缝），结果与探测聚合值/每台明细一起写入快照 `clock` 域并**立即推送一帧**（探测全部失败也推——「测不到」是要展示的事实）；每轮恰好一条日志（偏差 / 误差界 / 来源 / 成功台数；全部失败升为 `warning`），`daemon_conflict=true` 时另写一条。`clock` 域关闭时停止定时器并清空该域（关闭期间在飞的探测结果丢弃）；运行期由关闭转开启时**立即**发起一轮探测（契约 §3.1「与进程启动同款」，不必空等下一个 `probe_times` 时刻）；任意 `SET_SYSMON_CONFIG` 成功后从当前时刻按新配置重排探测定时器。
+- 已实现时钟偏差阈值判定与告警（#301，契约 sysmon §2.8「时间判定对象」；ADR 0047）：判定发生在**每次探测完成时**（不是计量 tick）。`clock_offset` 双档——`|offset_ms| ≥ offset_warn_ms` 记 `warning`、`≥ offset_error_ms` 记 `error` 并**发 `NOTIFY_UI`（`popup=true`）**；活动期内 warning→error 升级再记一条 `error` 并弹窗，error→warning 降级记 `info` 且活动期不结束；`clock_bound` 独立的测量质量判据（`bound_ms > bound_alarm_ms` 记 `warning`）**只写日志，不弹窗、不改变偏差判定**（卡片内的「测量质量」提示由 #302 交付）。进入 / 持续重记 / 恢复与资源类同口径（共用活动期记账），探测失败保留活动状态、配置关闭静默清除。这是 `dzsysmon` 继「历史库不可用」「配置下发失败」之后的**第三类** `NOTIFY_UI` 来源（配置下发失败含 `SET_SYSMON_CONFIG` 与 `SET_LOG_CONFIG` 两个站点），也是 ADR 0034 静默原则的唯一例外。
 - 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表；不支持容器内采集（见「部署限制」）。不读取时间守护进程的内部状态、不写系统时钟（ADR 0047）。
 
 ## 进程与编排
@@ -41,7 +42,7 @@
 | 探测 | `clock.probe_times`（每天 HH:MM，本地时区） | 到点发起一轮 NTP 探测（#299）；`clock` 域关闭时不排期 |
 
 历史记录不占独立定时器：每个**计量** tick 顺带观测一次快照（记录窗口的 min/max 需要全部样本），窗口边界由墙钟桶对齐决定（`sampling.record_interval_sec` + 相位偏移）。
-阈值越限判定同样不占独立定时器：每个计量 tick 用「内存/交换/全部卷/CPU 饱和」的当前事实推进一次状态机并写日志（1s 判定、5s 推送，越限被发现的时间不超过一个计量间隔）。
+资源类阈值越限判定同样不占独立定时器：每个计量 tick 用「内存/交换/全部卷/CPU 饱和」的当前事实推进一次状态机并写日志（1s 判定、5s 推送，越限被发现的时间不超过一个计量间隔）。**时间判定（`clock_offset` / `clock_bound`）例外**：它在**每次探测完成时**推进一次（#301），不挂在计量 tick 上——探测是低频事件而非周期采样，没有「持续采样」的概念（契约 sysmon §2.8）。
 
 - **计量与推送解耦**：事件通道是广播介质，任何写入都会唤醒全部已注册进程（含策略），推送不得跟随 1s 计量（契约 sysmon §4、ADR 0023）。
 - **时钟纪律**：asio `steady_timer`（单调时钟，免疫 NTP 跳变）；deadline 按「上次 deadline + interval」推进做漂移校正；错过 tick 跳过并累加 `sampling.missed_ticks`（区分机器空闲与监控停顿），不补采；handler 内不做阻塞 I/O。
@@ -98,7 +99,7 @@
   - `clock`（#296，契约 sysmon §3.1）：时钟偏差监控域的开关（`enabled`）、探测服务器（`servers`）、探测时刻（`probe_times`）、单台超时（`probe_timeout_ms`）、手动限流（`manual_min_interval_sec`）与三个时间阈值（`offset_warn_ms` / `offset_error_ms` / `bound_alarm_ms`）。**域开关是两层入口关闭取或**：`clock.enabled` 与 `sampling.groups.clock` 同时为 true 才启用；关闭时 `clock` 域为 `null`、两键 `disabled_by_config`，`apply_snapshot_output_config()` 同时清掉最近一轮结果（关闭期与重开后首轮探测前都不得展示旧值）。三个时间阈值**不住** `thresholds` 段：它们与探测参数同属一个功能单元，且 error 档会弹窗（ADR 0047）。探测调度由 #299 接线：启动即探 + `probe_times` 时刻表（本地时区、错过跳过不补采）；关闭时停止定时器并清空域；`enabled`/`groups.clock` 由关闭转开启时立即探测一次（契约 §3.1）；SET 成功后从当前时刻按新配置重排探测定时器。
   - 旧配置迁移：读到旧 `alerts` 段时把可映射的键值搬到 `thresholds`（不可映射的键丢弃）、写回配置文件、记一条日志，**不报错、不阻塞启动**；默认配置生成器直接产出 `thresholds` 形状（契约 sysmon §3.1）。
 - 运行期修改：`SET_SYSMON_CONFIG` 为 RFC 7386 merge patch（任意位置 `null` 非法；空对象无操作但仍回 RTN），成功回推全量 `RTN_SYSMON_CONFIG`；失败按四件套处理——回滚旧值 → 日志 → `NOTIFY_UI` error（`popup=true`）→ 回推旧值（契约 sysmon §3.3、通用规则 §8）。
-- 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排三个定时器（计量 / 推送 / 探测）→ 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `devices` / `clock` 域开关）在下一个推送周期之前就可见（不必等 5 秒基线）；`thresholds` 的改动在下一次计量 tick 起作用（越限判定与历史记录同频）。
+- 生效顺序（契约 sysmon §3.1.1，顺序是语义的一部分）：校验 → 原子持久化（保留 `log`/未知 section）→ 内存镜像替换 → 重排三个定时器（计量 / 推送 / 探测）→ 记录窗口重配 → 保留策略发布 → 历史开关切换 → 回推 RTN → 成功时立即推送一帧快照。因此只影响快照构造的配置（`hide_virtual` / `devices` / `clock` 域开关）在下一个推送周期之前就可见（不必等 5 秒基线）；`thresholds` 的改动在下一次计量 tick 起作用（资源类越限判定与历史记录同频）；例外是 `thresholds.log_repeat_sec`——它同时是时间判定的重记间隔，该间隔在**下一轮探测完成时**生效（#301）。
 - 配置展示与编辑入口（#81）：监控页「配置」tab 展示当前生效配置（所有已认证用户可读），admin 经表单下发**差异 patch** 并保持 pending 直到 WS `sysmon_config` 回推（REST 200 只表示已写事件通道）；非 admin 只读。读取镜像配置也可用 REST `GET /api/sysmon/config`（未就绪 503）。
 - 触发场景：初始化完成主动 RTN 一次；每次 SET 后回推；`QUERY_FULL_SNAPSHOT` 响应时回推（契约 sysmon §3.2）。
 
@@ -213,40 +214,54 @@
 
 ## 阈值越限与日志
 
-帧语义与越限/恢复条件见[契约 sysmon §2.8](../frame_contracts/sysmon.md)；本节只写实现结构与该契约不规定但写错代价高的部分。资源越限不产生 `NOTIFY_UI`，改为日志 + UI 色标（#80 实现、#123 改造，ADR 0034）。
+帧语义与越限/恢复条件见[契约 sysmon §2.8](../frame_contracts/sysmon.md)；本节只写实现结构与该契约不规定但写错代价高的部分。资源越限不产生 `NOTIFY_UI`，改为日志 + UI 色标（#80 实现、#123 改造，ADR 0034）；**时钟偏差的 error 档是唯一例外**（#301，ADR 0047）。
 
 ### 分层
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 判定状态机 | `apps/sysmon/thresholds.{h,cpp}`（`ThresholdEvaluator`） | 进入 / 周期重记 / 恢复；纯逻辑，注入墙钟与单调时钟，不读全局配置、不写帧、不写日志 |
-| 输入构造 | 同文件 `make_threshold_inputs` | 把一次计量的 CPU 饱和/内存/交换/全部卷事实转成判定输入 |
-| 日志记录 | `main.cpp` `evaluate_thresholds()` | 把纯函数产出的「待写日志记录」（级别、判定对象、状态、当前值、阈值、活动期持续秒数）落成日志；`cpu_saturated` 无单值阈值——`current_value` 为饱和核数、`threshold_value` 为 `nullopt`，index 集合只出现在日志文本 `saturated_cores=`（契约 sysmon §2.8） |
+| 活动期记账 | `apps/sysmon/threshold_activity.{h}`（`ActivityPeriod` / `ThresholdKey`） | 「进入记起点 / 里程碑重记 / 恢复结束」的唯一实现，资源类与时间判定共用（同一口径不写两遍） |
+| 资源判定状态机 | `apps/sysmon/thresholds.{h,cpp}`（`ThresholdEvaluator`） | 进入 / 周期重记 / 恢复；纯逻辑，注入墙钟与单调时钟，不读全局配置、不写帧、不写日志 |
+| 资源输入构造 | 同文件 `make_threshold_inputs` | 把一次计量的 CPU 饱和/内存/交换/全部卷事实转成判定输入 |
+| 时间判定状态机 | `apps/sysmon/clock_thresholds.{h,cpp}`（`ClockThresholdEvaluator`） | `clock_offset`（双档）/ `clock_bound`（独立质量）的进入 / 升级 / 降级 / 重记 / 恢复；同样纯逻辑，额外产出「是否弹窗」 |
+| 日志与通知落地 | `app.cpp` `evaluate_thresholds()` / `evaluate_clock_thresholds()` | 把纯函数产出的「待写日志记录」落成日志，并按 `notify_popup` 发 `NOTIFY_UI`；`cpu_saturated` 无单值阈值——`current_value` 为饱和核数、`threshold_value` 为 `nullopt`，index 集合只出现在日志文本 `saturated_cores=`（契约 sysmon §2.8） |
 
-**为什么先构造输入再做判定**：「`used = total − available`」口径与「全部卷逐卷一条判定对象」都属于输入转换；把它做成纯函数后，`thresholds_test` 可以用假采集结果确定性验证边界语义（等于阈值算越限、`total_bytes = 0` 的卷不参与判定、读不到不等于恢复），而不必起真实进程或真实磁盘。
+**为什么先构造输入再做判定**：「`used = total − available`」口径与「全部卷逐卷一条判定对象」都属于输入转换；把它做成纯函数后，`thresholds_test` 可以用假采集结果确定性验证边界语义（等于阈值算越限、`total_bytes = 0` 的卷不参与判定、读不到不等于恢复），而不必起真实进程或真实磁盘。时间判定同理：`clock_thresholds_test` 注入假探测结果与假时钟，CI 不需要外网或真实 NTP。
 
 ### 状态机语义（容易写错的点）
 
-- 每个判定对象维护**活动期**：进入时记 `since`（墙钟），恢复时结束；`volume_free` 逐卷一条（按挂载点区分），其余每类一个。
+- 每个判定对象维护**活动期**：进入时记 `since`（墙钟），恢复时结束；`volume_free` 逐卷一条（按挂载点区分），其余每类一个（`clock_offset` / `clock_bound` 各一个）。
 - **进入与恢复各记一条**（级别与内容义务见契约 sysmon §2.8）——一次活动期有明确起点与终点，事后可从日志判断它何时开始、何时结束。
 - **持续期按 `thresholds.log_repeat_sec` 重记**（含活动期已持续秒数；`0` 表示不重记）。重记计时用**单调时钟**（NTP 步进不影响节奏），基准是该活动期的进入时刻：里程碑恒为 `进入时刻 + N × 间隔`，中间漏掉的里程碑不补发（一条「仍越限」已足够表达"它还在持续"）；运行期改动间隔后按新间隔重排，后续里程碑仍落在 `进入时刻 + N × 新间隔` 上。`since` 用墙钟，写在**进入**那条日志里——UI 不再呈现"高水位始于何时"（ADR 0034），这条日志是唯一能回答它的地方。
-- **"能力被配置关闭 / 判定对象消失"不是恢复**：对应指标类别被配置关闭（`disabled_by_config`）、交换分区被移除、某卷从 `volumes[]` 消失时，静默清除活动状态、**不写恢复日志**（清除原因不是"指标回到阈值以下"）。
-- 本帧读不到数值（能力仍在，`used_ratio = null` 或整个指标域为 `null`）→ **保留**活动状态、不写恢复日志——"读不到"不是"已恢复"。跨越采集缺口后真正恢复时，恢复日志的持续秒数按活动期起点计算，如实反映总时长。
+- **"能力被配置关闭 / 判定对象消失"不是恢复**：对应指标类别被配置关闭（`disabled_by_config`）、交换分区被移除、某卷从 `volumes[]` 消失、`clock` 域关闭时，静默清除活动状态、**不写恢复日志**（清除原因不是"指标回到阈值以下"）。
+- 本帧读不到数值（能力仍在，`used_ratio = null` 或整个指标域为 `null`）→ **保留**活动状态、不写恢复日志——"读不到"不是"已恢复"。跨越采集缺口后真正恢复时，恢复日志的持续秒数按活动期起点计算，如实反映总时长。时间判定同口径：探测失败（`offset_ms` / `bound_ms` 为 `null`）保留活动状态。
 - **卷的判定范围恒为本机全部卷**：逐卷一条判定对象，不存在「关注哪一卷」这一层；`total_bytes = 0` 的卷无法计算百分比，不参与判定。卷从 `volumes[]` 消失（卸载/热拔）时静默清除；卷域整体读不到时**不**清（无法区分"消失"与"暂时枚举不到"）。
 - **`cpu_saturated` 不按「空集」判恢复**：每核序列整体未采到时 `saturated` 全部为 false（契约 §2.7），那只是"本帧无信息"；只有本帧每核使用率确实可读且没有饱和核才算恢复。
 - 日志文本是英文、小写开头、无句号、`prose | k=v`（AGENTS 日志门禁），不构成协议语义，消费方不得解析。
 
+### 时间判定对象（`clock_offset` / `clock_bound`，#301）
+
+与资源类的差异只有三点，其余口径（活动期、里程碑重记、读不到不伪造恢复、配置关闭静默清除）完全共用：
+
+1. **判定时机是每次探测完成时**，不是计量 tick（`on_clock_probe_finished` → `evaluate_clock_thresholds`）。定时探测、启动首探与手动查询触发的轮次走同一条判定路径——判定不感知触发来源。
+2. **`clock_offset` 是一个判定对象、两个级别**：活动期从「进入 warning 或 error」开始、回到 `< offset_warn_ms` 结束。进入按当前档记一条；活动期内 warning→error 记 `error` 并弹窗（升级）、error→warning 记 `info`（降级且**不结束活动期**——偏差仍越 warn 线，问题没有消失）。因此资源类的三态（进入/重记/恢复）在这里扩展成六态（另加 `EnteredError` / `Escalated` / `Downgraded`）。
+3. **只有 `clock_offset` 的 error 档产生 `NOTIFY_UI`**（`popup=true`）。`clock_bound` 与 warn 档永远只写日志（卡片色标 / 质量提示由 #302 交付，本票不接前端）。
+
+`clock_bound` 独立于 `clock_offset`：两个判定对象各自维护活动期，一方越限不改变另一方；「测不准」（误差界大，网络问题）与「真的偏」（时钟问题）混成一个数事后无法区分该修哪个。日志字段因此也不同——`clock_offset` 记 `offset_ms` + **两档阈值**（`warn_ms` / `error_ms`），`clock_bound` 记 `bound_ms` + `bound_alarm_ms`。
+
+边界口径（契约 §2.8「相等按表处理」）：偏差 `≥` 阈值算越限；误差界 `>` 才算越限、`≤` 算恢复——两者刻意不同（偏差阈值是「偏离到该程度就要处理」，误差界阈值是「测量差到这个程度已经不能信」）。
+
 ### 与 `NOTIFY_UI` 的边界
 
-- 四类资源判定（内存使用率、交换使用率、卷剩余空间、CPU 饱和）**不产生任何 `NOTIFY_UI`**。`dzsysmon` 的 `NOTIFY_UI` 此后只剩真故障：历史库不可用与配置下发失败——两者都是一次性、需人处理的故障，级别与弹窗语义按契约 notify-ui。
-- **不按判定对象额外限流**：防刷屏完全由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证——同一活动期内不会重复记进入，也不会连记多条恢复。
+- 四类资源判定（内存使用率、交换使用率、卷剩余空间、CPU 饱和）**不产生任何 `NOTIFY_UI`**。自 #301 起 `dzsysmon` 的 `NOTIFY_UI` 有三个来源：历史库不可用、配置下发失败与**时钟偏差的 error 档**——前两者是一次性真故障，后者是「策略里所有壁钟判断都会系统性偏移」的故障，都需人立刻决策；级别与弹窗语义按契约 notify-ui。
+- **不按判定对象额外限流**：防刷屏完全由「进入/恢复各一条 + 按 `log_repeat_sec` 重记」保证——同一活动期内不会重复记进入，也不会连记多条恢复。时钟偏差的 error 档同样只在**进入 / 升级**时弹窗，同一活动期内不重复弹窗，因此也不需要冷却（契约 §2.8）。
 - 不写历史库、不进快照：历史只记录指标事实，越限可由历史事实重新推导；活动状态不跨帧可见，只有日志与 UI 色标。
-- 默认阈值（内存 90%、交换 50%、卷空闲空间低于 10%、CPU 单核连续 10 次采样 ≥ 90%）足以零配置工作；全部阈值与 `log_repeat_sec` 取自当前生效配置 `thresholds`，运行期修改经 `SET_SYSMON_CONFIG` 即时生效（监控页「配置」tab 提供 admin 编辑入口）。
+- 默认阈值（内存 90%、交换 50%、卷空闲空间低于 10%、CPU 单核连续 10 次采样 ≥ 90%、时钟偏差 100/1000ms、误差界 200ms）足以零配置工作；资源类阈值与 `log_repeat_sec` 取自 `thresholds` 段，三个时间阈值取自 `clock` 段（与探测参数同属一个功能单元，契约 §3.1），运行期修改经 `SET_SYSMON_CONFIG` 即时生效（监控页「配置」tab 提供 admin 编辑入口）。
 
 ### 已知限制
 
 - 资源高水位没有「始于何时」的 UI 呈现：需要时查日志（`logs/dzsysmon_<date>.log`），持续时长由间隔重记的条目以及恢复日志的持续秒数推断。这是有意取舍（ADR 0034）。
-- 日志是唯一的状态载体：日志被清空或超出保留期后，无法再还原某段活动期的起止时刻（快照不携带活动状态，前端也没有可恢复的副本）。
+- 日志是唯一的状态载体：日志被清空或超出保留期后，无法再还原某段活动期的起止时刻（快照不携带活动状态，前端也没有可恢复的副本）。时间判定同样不写历史库（ADR 0047），越限区间只能从日志重建。
 
 ## 第三方归属
 
