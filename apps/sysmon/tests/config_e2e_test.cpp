@@ -134,10 +134,15 @@ protected:
     }
 
     /// 最小合法 dzsysmon 配置：只参数化本文件用到的启动值，其余取契约默认值。
+    ///
+    /// `clock_enabled` 默认 **false**：#299 起 clock 域启用时启动即探测，默认配置里的真实
+    /// NTP 服务器会让 e2e 依赖外网。只有两个 clock 专项用例显式打开它，且服务器取环回
+    /// 不可路由地址（探测快速失败，不访问外网）。
     void write_config(bool history_enabled = true,
                       int push_interval_sec = kLongPushIntervalSec,
                       int measure_interval_ms = 1000,
-                      bool cpu_enabled = true) {
+                      bool cpu_enabled = true,
+                      bool clock_enabled = false) {
         nlohmann::json cfg = {
             {"log", {{"level", "debug"}, {"flush_on", "info"}}},
             {"sampling",
@@ -170,8 +175,10 @@ protected:
               {"volume_free_pct", 10.0},
               {"log_repeat_sec", 600}}},
             {"clock",
-             {{"enabled", true},
-              {"servers", nlohmann::json::array({"ntp.aliyun.com"})},
+             {{"enabled", clock_enabled},
+              // 环回地址：即便 clock 域被打开，也绝不访问真实 NTP 服务器（本机无监听时
+              // 快速失败，结果只可能是 no_reference，不影响本文件的配置断言）。
+              {"servers", nlohmann::json::array({"127.0.0.1"})},
               {"probe_times", nlohmann::json::array()},
               {"probe_timeout_ms", 1500},
               {"manual_min_interval_sec", 10},
@@ -181,6 +188,12 @@ protected:
         };
         std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
         ofs << cfg.dump(2);
+    }
+
+    /// 打开 clock 域（两个 clock 专项用例用）：探测目标为环回地址，快速失败、不访问外网。
+    void enable_clock_domain() {
+        write_config(/*history_enabled=*/true, kLongPushIntervalSec, /*measure_interval_ms=*/1000,
+                     /*cpu_enabled=*/true, /*clock_enabled=*/true);
     }
 
     void create_event_channel() {
@@ -728,6 +741,7 @@ TEST_F(ConfigE2ETest, RuntimeHistoryEnableFailureNotifiesAndKeepsRealtime) {
 // 这条覆盖「生产者侧把配置读进测量结果」——纯函数测试（手工设 ClockMetrics.disabled）
 // 覆盖不到配置读取与关闭取或的合并。
 TEST_F(ConfigE2ETest, ClockGroupDisableAndReEnableAtRuntime) {
+    enable_clock_domain();
     start_child();
     const auto startup = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
     ASSERT_TRUE(startup.has_value());
@@ -783,6 +797,7 @@ TEST_F(ConfigE2ETest, ClockGroupDisableAndReEnableAtRuntime) {
 // AC5（第二层入口）：`clock.enabled=false` 与 `sampling.groups.clock=false` **关闭取或**——
 // 任一层关闭即整域关闭；两层都打开才恢复。RTN 各自如实回推持久化值（不做镜像同步）。
 TEST_F(ConfigE2ETest, ClockSectionEnabledIsOrOfTwoSwitches) {
+    enable_clock_domain();
     start_child();
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
     pending_.clear();
@@ -846,9 +861,9 @@ TEST_F(ConfigE2ETest, InvalidClockPatchRejectedAndRolledBack) {
             << item.label;
 
         // 回推旧值：夹具写入的 `probe_times: []` 与默认阈值原样保留（不是补丁里的非法值，
-        // 也不是契约默认时刻）。夹具留空 `probe_times` 只为让定时探测这一侧保持静默——它
-        // 不禁止「启动首次探测」（契约 §3.1 明文），而 `servers` 仍是真实主机名；本用例不
-        // 依赖该点，探测接线后（#299）这台 e2e 需要换成注入替身或不可路由地址。
+        // 也不是契约默认时刻）。夹具默认关闭 clock 域（`clock.enabled=false`）——#299 起
+        // 启用即启动首探，关闭它是本文件不测探测的用例避免访问网络的方式；探测本身由
+        // `clock_e2e_test` 用注入替身覆盖。
         const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
         ASSERT_TRUE(config.has_value()) << item.label;
         EXPECT_TRUE((*config)["clock"]["probe_times"].empty()) << item.label;
