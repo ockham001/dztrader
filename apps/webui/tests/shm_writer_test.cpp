@@ -221,6 +221,21 @@ TEST_F(WebuiShmWriterTest, WriteSetSysmonConfigNullWriterWritesNothing) {
     EXPECT_EQ(reader_->next_frame(), nullptr);
 }
 
+TEST_F(WebuiShmWriterTest, WriteQuerySysmonClock) {
+    // 契约 sysmon §1.1：形态 3 单向下行动作帧——定向到固定实例 dzsysmon、空 payload、无 RTN
+    shm_writer_->write_query_sysmon_clock();
+    auto view = next_frame_view(DZ_FRAME_QUERY_SYSMON_CLOCK);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_STREQ(view->ext_inst_id(), "dzsysmon");
+    EXPECT_EQ(view->ext_inst_payload_size(), 0U);
+}
+
+TEST_F(WebuiShmWriterTest, WriteQuerySysmonClockNullWriterWritesNothing) {
+    ShmWriter writer{std::shared_ptr<shm::MultiWriter>()};
+    writer.write_query_sysmon_clock();
+    EXPECT_EQ(reader_->next_frame(), nullptr);
+}
+
 TEST_F(WebuiShmWriterTest, WriteTdModifyConfig) {
     // 契约 td-config §3：{op, params} 定向到目标交易网关，instance_id = 网关进程名。
     const nlohmann::json payload = {{"op", "AddAccount"},

@@ -77,6 +77,12 @@ public:
     /// 最终状态由 WS sysmon_config 推送 (RTN_SYSMON_CONFIG 全量回推) 决定
     void write_set_sysmon_config(const nlohmann::json& payload);
 
+    /// 写 QUERY_SYSMON_CLOCK 帧 (契约 sysmon §1.1: 手动触发一次时钟探测, 形态 3 单向
+    /// 下行动作帧、空 payload、无 RTN; 定向到固定实例 dzsysmon)
+    /// 响应仅表示"已写事件通道", 生效信号是随后的 WS sysmon_snapshot (clock 域更新);
+    /// 限流由 dzsysmon 侧权威判定, 被拒绝时无错误反馈
+    void write_query_sysmon_clock();
+
     /// 写 TD_REQ_MODIFY_CONFIG 帧 (契约 td-config §3: 交易网关配置写请求, op-based)
     /// gateway: 目标交易网关进程名 (如 "dztd_ctp")
     /// op_req_json: 契约 td-config §3 的 {op, params}——dzweb 不解析柜台特有字段,

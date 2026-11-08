@@ -200,7 +200,8 @@ protected:
                       const std::vector<std::string>& probe_times,
                       bool clock_enabled = true,
                       int push_interval_sec = 300,
-                      int measure_interval_ms = 1000) {
+                      int measure_interval_ms = 1000,
+                      int manual_min_interval_sec = 10) {
         nlohmann::json groups = {
             {"cpu", true},         {"memory", true},        {"swap", true},
             {"volumes", true},     {"disk_io", true},       {"network", true},
@@ -233,7 +234,7 @@ protected:
               {"servers", clock_servers},
               {"probe_times", probe_times},
               {"probe_timeout_ms", 10000},
-              {"manual_min_interval_sec", 10},
+              {"manual_min_interval_sec", manual_min_interval_sec},
               {"offset_warn_ms", 100},
               {"offset_error_ms", 1000},
               {"bound_alarm_ms", 200}}},
@@ -277,6 +278,13 @@ protected:
         }
         writer_->notify_subscribers();
         return true;
+    }
+
+    /// 发一帧手动时钟查询（#300，契约 sysmon §1.1）：形态 3 单向下行动作帧、空 payload、
+    /// 定向 `instance_id=dzsysmon`、无 RTN。`write_ext_inst_raw` 内部已唤醒订阅者。
+    bool send_query_clock() {
+        (void)writer_->refresh_subscribers();
+        return platform::write_ext_inst_raw(*writer_, DZ_FRAME_QUERY_SYSMON_CLOCK, kInstanceName);
     }
 
     static nlohmann::json payload_of(const shm::FrameView& view) {
@@ -389,6 +397,23 @@ protected:
 
     /// 统计「探测完成」日志行数（每轮恰好一条；`clock probe skipped` 不计入）。
     std::size_t probe_finished_log_lines() const { return log_occurrences("clock probe finished"); }
+
+    /// 条件等待：轮询进程日志直到某段文本出现 @p expected 次（超时返回当时的次数）。
+    ///
+    /// 日志与事件通道是两条独立路径——「下一帧周期快照到达」不蕴含「QUERY 帧已被处理并
+    /// 落日志」，直接读文件会在 CI 调度延迟时误红。用例据此把日志断言写成条件等待
+    /// （与本文件头的「断言全部用条件等待 + 超时即失败」自约一致）。
+    std::size_t wait_for_log(std::string_view needle,
+                             std::size_t expected,
+                             std::chrono::milliseconds timeout) const {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::size_t count = log_occurrences(needle);
+        while (count < expected && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(10ms);
+            count = log_occurrences(needle);
+        }
+        return count;
+    }
 
     static void restore_env(const char* key, const std::optional<std::string>& value) {
         if (value.has_value()) {
@@ -650,6 +675,110 @@ TEST_F(ClockE2ETest, DisablingClockStopsTimerAndClearsDomain) {
     EXPECT_EQ(log_occurrences("clock probe skipped"), 0U);
     // 原定时刻的定时探测照常发生：启动 1 + 重开立即 1 + 到点 1。
     EXPECT_EQ(probe_finished_log_lines(), 3U);
+}
+
+// ===== #300 手动查询（契约 sysmon §1.1）=====
+
+// AC1 / AC2：手动触发后发起一轮新探测，结果走**既有快照推送路径**广播（不新增 RTN 帧、
+// 不新增镜像域、不新增 WS 消息名）——断言全部来自事件通道上的 RTN_SYSMON_SNAPSHOT。
+TEST_F(ClockE2ETest, ManualTriggerProbesAgainAndBroadcastsSnapshot) {
+    write_config({"fake-ok"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    const int64_t first_probe_ms = startup->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    EXPECT_EQ(probe_finished_log_lines(), 1U);
+
+    ASSERT_TRUE(send_query_clock());
+    const auto triggered = wait_for_snapshot(
+        [first_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > first_probe_ms;
+        },
+        10s);
+    ASSERT_TRUE(triggered.has_value())
+        << "manual query did not produce a fresh probe result (contract sysmon §1.1)";
+    // 结果经既有快照路径到达（与定时探测同一形状、同一校验）：聚合值来自本轮成功台，
+    // 数值是假服务端的确定性偏差（证明是真跑了一轮探测，而不只是时间戳前进）。
+    EXPECT_EQ(triggered->at("clock").at("source"), "fake-ok");
+    EXPECT_NEAR(triggered->at("clock").at("offset_ms").get<double>(), kFakeOffsetMs,
+                kOffsetToleranceMs);
+    EXPECT_GT(triggered->at("clock").at("bound_ms").get<double>(), 0.0);
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*triggered), std::nullopt);
+    // 手动轮次同样「每轮恰好一条」探测完成日志。
+    EXPECT_EQ(probe_finished_log_lines(), 2U)
+        << "manual round must emit exactly one probe-finished log line";
+}
+
+// AC3 / AC6：限流窗口内重复触发被 dzsysmon 拒绝（日志可见），快照不被刷新——不排队、
+// 不叠加，拒绝没有错误通道（契约 sysmon §1.1）。限流只约束**重复**触发：首次触发没有
+// 「上次触发」可比，因此受理（同一判定见 `judge_manual_trigger`）。
+TEST_F(ClockE2ETest, ManualTriggerRateLimitedWithinWindow) {
+    write_config({"fake-ok"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/1,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/10);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    const int64_t first_probe_ms = startup->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    EXPECT_EQ(probe_finished_log_lines(), 1U);
+
+    // 第一次手动触发：受理并完成（假传输即时响应，远短于 10s 限流窗口）。
+    ASSERT_TRUE(send_query_clock());
+    const auto accepted = wait_for_snapshot(
+        [first_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > first_probe_ms;
+        },
+        10s);
+    ASSERT_TRUE(accepted.has_value()) << "first manual trigger must be accepted";
+    const int64_t accepted_probe_ms = accepted->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    EXPECT_EQ(probe_finished_log_lines(), 2U);
+
+    // 限流窗口内（距上次受理不足 10s）第二次触发：拒绝；快照不被刷新。
+    // 用下一帧周期快照做同步点（推送间隔 1s）：clock 域仍是首次手动轮次的结果。
+    ASSERT_TRUE(send_query_clock());
+    const auto periodic = wait_for_snapshot(
+        [accepted_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() == accepted_probe_ms;
+        },
+        5s);
+    ASSERT_TRUE(periodic.has_value())
+        << "periodic snapshot stream stopped after a rate-limited manual trigger";
+    EXPECT_EQ(periodic->at("clock").at("source"), "fake-ok");
+    EXPECT_EQ(probe_finished_log_lines(), 2U)
+        << "rate-limited manual trigger must not start a new probe round";
+    // 日志与快照是两条独立路径：条件等待到拒绝日志出现（快照到达不蕴含日志已落盘）。
+    EXPECT_EQ(wait_for_log("clock probe skipped | reason=manual_rate_limited source=manual", 1, 2s),
+              1U)
+        << "rate-limited manual trigger must be visible in the log (contract sysmon §1.1)";
+}
+
+// 契约 sysmon §1.1：`clock` 域被配置关闭时手动查询同样被忽略并记日志（不发起探测、无 RTN）。
+TEST_F(ClockE2ETest, ManualTriggerIgnoredWhenClockDisabled) {
+    write_config({"fake-ok"}, {}, /*clock_enabled=*/false, /*push_interval_sec=*/1,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/10);
+    start_child();
+    const auto startup = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s);
+    ASSERT_TRUE(startup.has_value()) << "runner did not push the startup snapshot";
+    ASSERT_TRUE((*startup)["clock"].is_null());
+
+    ASSERT_TRUE(send_query_clock());
+    // 用下一帧周期快照做同步点：域仍为 null，且从未产生探测完成日志。
+    const auto periodic = wait_for_snapshot(
+        [](const nlohmann::json& payload) { return payload["clock"].is_null(); }, 5s);
+    ASSERT_TRUE(periodic.has_value()) << "snapshot stream stopped while clock domain was disabled";
+    EXPECT_EQ(probe_finished_log_lines(), 0U);
+    // 日志与快照是两条独立路径：条件等待到忽略日志出现。
+    EXPECT_EQ(wait_for_log("clock probe skipped | reason=disabled_by_config source=manual", 1, 2s),
+              1U)
+        << "manual query must be ignored (and logged) while the clock domain is disabled";
 }
 
 }  // namespace

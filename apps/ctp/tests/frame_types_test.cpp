@@ -88,9 +88,11 @@ TEST(FrameTypes, SysmonClusterIsContiguousInSystemSegment) {
     constexpr DzFrameType kSystemSegmentBegin = 0;
     constexpr DzFrameType kSystemSegmentEnd = 31;
     EXPECT_GE(DZ_FRAME_RTN_SYSMON_SNAPSHOT, kSystemSegmentBegin);
-    EXPECT_LE(DZ_FRAME_RTN_SYSMON_CONFIG, kSystemSegmentEnd);
+    EXPECT_LE(DZ_FRAME_QUERY_SYSMON_CLOCK, kSystemSegmentEnd);
     // 总则 §3 分配规则：新帧追加在段尾（当前段尾 = 策略可见帧 SHUTDOWN），禁止插空档。
     EXPECT_EQ(DZ_FRAME_RTN_SYSMON_SNAPSHOT, DZ_FRAME_SHUTDOWN + 1);
     EXPECT_EQ(DZ_FRAME_SET_SYSMON_CONFIG, DZ_FRAME_RTN_SYSMON_SNAPSHOT + 1);
     EXPECT_EQ(DZ_FRAME_RTN_SYSMON_CONFIG, DZ_FRAME_SET_SYSMON_CONFIG + 1);
+    // #300：手动时钟查询动作帧追加在段尾（形态 3、无 RTN，契约 sysmon §1.1）
+    EXPECT_EQ(DZ_FRAME_QUERY_SYSMON_CLOCK, DZ_FRAME_RTN_SYSMON_CONFIG + 1);
 }

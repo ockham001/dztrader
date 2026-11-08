@@ -23,6 +23,7 @@
 #include <dztrader/shm/writer.h>
 
 #include <filesystem>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <optional>
@@ -123,18 +124,39 @@ protected:
         return captured;
     }
 
-    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧 payload
-    std::optional<nlohmann::json> capture_inst_frame(DzFrameType type,
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧视图。
+    ///
+    /// 视图指向 reader 内部缓冲，只在下次 `next_frame()` 之前有效——调用方必须在同一作用域
+    /// 内取完所需字段（解析 payload 或读 size 后即离开）。
+    std::optional<FrameView> capture_inst_frame_view(DzFrameType type,
                                                      const std::string& instance) {
         if (!reader_) return std::nullopt;
         while (const auto* raw = reader_->next_frame()) {
             const FrameView view(raw);
             if (view.type() != type) continue;
             if (std::string(view.ext_inst_id()) != instance) continue;
-            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-            return nlohmann::json::parse(data, data + view.ext_inst_payload_size());
+            return view;
         }
         return std::nullopt;
+    }
+
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧 payload
+    std::optional<nlohmann::json> capture_inst_frame(DzFrameType type,
+                                                     const std::string& instance) {
+        const auto view = capture_inst_frame_view(type, instance);
+        if (!view.has_value()) return std::nullopt;
+        const auto* data = reinterpret_cast<const char*>(view->ext_inst_payload());
+        return nlohmann::json::parse(data, data + view->ext_inst_payload_size());
+    }
+
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧的 payload 字节数。
+    /// 帧不存在返回 `nullopt`；`0` = 空 payload（形态 3 动作帧没有 JSON 可解析，
+    /// 不能用 `capture_inst_frame` 的 JSON 解析路径）。
+    std::optional<std::size_t> capture_inst_frame_payload_size(DzFrameType type,
+                                                               const std::string& instance) {
+        const auto view = capture_inst_frame_view(type, instance);
+        if (!view.has_value()) return std::nullopt;
+        return view->ext_inst_payload_size();
     }
 
     std::shared_ptr<Repository> repo_;
@@ -290,6 +312,57 @@ TEST_F(SysmonControllerTest, SetConfigEmptyPatchStillDispatched) {
     ASSERT_TRUE(frame.has_value());
     EXPECT_TRUE(frame->is_object());
     EXPECT_TRUE(frame->empty());
+}
+
+// ===== POST /api/sysmon/clock/probe（契约 rest §2.8、契约 sysmon §1.1）=====
+
+/// 构造带 user_id 属性的 POST 请求（无 body；JWT advice 在真实链路里注入 user_id）。
+drogon::HttpRequestPtr post_request(const std::string& user_id) {
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(drogon::Post);
+    req->getAttributes()->insert("user_id", user_id);
+    return req;
+}
+
+TEST_F(SysmonControllerTest, ProbeClock403ForNonAdmin) {
+    repo_->create_user("regular", "Regular User", "reg@test.com", "pass", "user");
+    drogon::HttpResponsePtr captured;
+    ctrl_->probe_clock(post_request("regular"),
+                       [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(nlohmann::json::parse(captured->getBody()).value("error", ""), "admin required");
+}
+
+TEST_F(SysmonControllerTest, ProbeClock503WhenShmNotReady) {
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    // 无 ShmWriter 的控制器（API-only 模式，契约 rest §1 的 shm 未就绪降级）
+    auto ctrl = std::make_shared<SysmonCtrl>(repo_, mirror_, nullptr);
+    drogon::HttpResponsePtr captured;
+    ctrl->probe_clock(post_request("admin"),
+                      [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    EXPECT_EQ(captured->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_EQ(nlohmann::json::parse(captured->getBody()).value("error", ""), "shm not available");
+}
+
+TEST_F(SysmonControllerTest, ProbeClockDispatchesActionFrame) {
+    repo_->create_user("admin", "Administrator", "admin@test.com", "pass", "admin");
+    enable_shm();
+    drogon::HttpResponsePtr captured;
+    ctrl_->probe_clock(post_request("admin"),
+                       [&captured](const drogon::HttpResponsePtr& r) { captured = r; });
+    ASSERT_NE(captured, nullptr);
+    // 契约 rest §1：200 只表示"已写事件通道"，生效信号是随后的 WS sysmon_snapshot
+    EXPECT_EQ(captured->getStatusCode(), drogon::k200OK);
+    const auto body = nlohmann::json::parse(captured->getBody());
+    EXPECT_TRUE(body.value("ok", false));
+    EXPECT_EQ(body.value("message", ""), "dispatched");
+    // 帧侧：形态 3 单向下行动作帧，定向到固定实例 dzsysmon，空 payload、无 RTN
+    const auto payload_size =
+        capture_inst_frame_payload_size(DZ_FRAME_QUERY_SYSMON_CLOCK, "dzsysmon");
+    ASSERT_TRUE(payload_size.has_value());
+    EXPECT_EQ(*payload_size, 0U);
 }
 
 // ===== GET /api/sysmon/history（《帧契约：系统监控》§6.1、契约 rest §2.8）=====

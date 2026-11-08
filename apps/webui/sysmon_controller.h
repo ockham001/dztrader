@@ -16,12 +16,14 @@ namespace dztrader::webui {
 
 /// 系统监控 REST（契约 rest §2.8，《帧契约：系统监控》§6）。
 /// 读端点（snapshot / history / config）只要求已认证：认证在 JWT advice 层完成，
-/// handler 内**不**做角色判断；写端点（PUT config）在 handler 内校验 admin。
+/// handler 内**不**做角色判断；写端点（PUT config / POST clock/probe）在 handler 内校验 admin。
 /// - GET /api/sysmon/snapshot：读取镜像当前快照；镜像尚未就绪回 503。
 /// - GET /api/sysmon/history：只读查询历史库（《帧契约：系统监控》§6.1）；降级回 200 +
 /// available=false。
 /// - GET /api/sysmon/config：读取镜像中的当前生效配置；镜像尚未就绪回 503。
 /// - PUT /api/sysmon/config：运行期配置 merge patch（admin），直发 SET_SYSMON_CONFIG。
+/// - POST /api/sysmon/clock/probe：手动触发一次时钟探测（admin），直发 QUERY_SYSMON_CLOCK；
+/// 事件通道未就绪回 503，限流拒绝由 dzsysmon 判定（本端点无错误反馈）。
 class SysmonCtrl : public drogon::HttpController<SysmonCtrl, false>, public ControllerBase {
 public:
     SysmonCtrl(std::shared_ptr<Repository> repo,
@@ -38,6 +40,7 @@ public:
     ADD_METHOD_TO(SysmonCtrl::get_history, "/api/sysmon/history", drogon::Get);
     ADD_METHOD_TO(SysmonCtrl::get_config, "/api/sysmon/config", drogon::Get);
     ADD_METHOD_TO(SysmonCtrl::set_config, "/api/sysmon/config", drogon::Put);
+    ADD_METHOD_TO(SysmonCtrl::probe_clock, "/api/sysmon/clock/probe", drogon::Post);
     METHOD_LIST_END
 
     void get_snapshot(const drogon::HttpRequestPtr& req,
@@ -57,6 +60,12 @@ public:
     /// 响应只表示"已写事件通道"；生效信号 = WS `sysmon_config`（契约 rest §1、契约 sysmon §3）。
     void set_config(const drogon::HttpRequestPtr& req,
                     std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+    /// POST /api/sysmon/clock/probe：手动触发一次时钟探测（admin，契约 rest §2.8）。
+    /// 响应只表示"已写事件通道"；生效信号 = 随后的 WS `sysmon_snapshot`（`clock` 域更新，
+    /// 契约 sysmon §1.1）。限流窗口内或探测在飞时 dzsysmon 直接忽略（无错误响应）。
+    void probe_clock(const drogon::HttpRequestPtr& req,
+                     std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
     /// 取镜像固定实例（`dzsysmon`）下的某个域并回 200；域缺失回 503 + @p error_message。

@@ -113,7 +113,7 @@ struct ProbeOutcome {
 enum class ManualTriggerDecision {
     Allowed,        ///< 允许立即发起一轮探测
     ProbeInFlight,  ///< 已有探测在飞：拒绝（不排队、不叠加）
-    RateLimited,    ///< 距上次触发不足 `manual_min_interval_sec`：拒绝
+    RateLimited,    ///< 距上次**受理**的触发不足 `manual_min_interval_sec`：拒绝
 };
 
 /**

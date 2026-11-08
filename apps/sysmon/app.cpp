@@ -1012,6 +1012,38 @@ private:
         }
     }
 
+    /// 手动时钟查询（契约 sysmon §1.1）：形态 3 单向下行动作帧，**无 RTN**。
+    ///
+    /// 限流在 dzsysmon 侧权威判定：探测在飞或距上次受理的触发不足
+    /// `clock.manual_min_interval_sec` 时直接忽略并记一条日志（不排队、不叠加）；该拒绝
+    /// **没有错误通道**（与 `FLUSH_LOG` 同类：非 SET 请求无反馈）。前端按钮置灰只是体验层，
+    /// 协议不承诺。结果不单独回帧——探测完成走既有快照推送路径（§4 触发 5）。
+    void handle_manual_clock_probe() {
+        if (!clock_domain_enabled()) {
+            // 域关闭时同样忽略并记日志（契约 §1.1）。
+            SPDLOG_WARN("clock probe skipped | reason=disabled_by_config source=manual");
+            return;
+        }
+        const int64_t now_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch())
+                                          .count();
+        switch (judge_manual_trigger(now_steady_ns, last_manual_trigger_steady_ns_,
+                                     config_.clock.manual_min_interval_sec,
+                                     clock_prober_->probe_in_flight())) {
+            case ManualTriggerDecision::Allowed:
+                break;
+            case ManualTriggerDecision::ProbeInFlight:
+                SPDLOG_WARN("clock probe skipped | reason=probe_in_flight source=manual");
+                return;
+            case ManualTriggerDecision::RateLimited:
+                SPDLOG_WARN("clock probe skipped | reason=manual_rate_limited source=manual");
+                return;
+        }
+        // 只记「受理」的触发：被拒绝的触发不推进限流窗口（否则拒绝本身会延长窗口）。
+        last_manual_trigger_steady_ns_ = now_steady_ns;
+        begin_clock_probe_round();
+    }
+
     /// 一轮探测完成：每轮一条日志 → 写 `clock` 域 → **立即推送一帧快照** → 排下一轮。
     ///
     /// 探测失败（全部超时）也推送：「测不到」本身是要展示的事实（契约 §4 触发 5）。
@@ -1238,6 +1270,9 @@ private:
                 case DZ_FRAME_SET_SYSMON_CONFIG:
                     apply_sysmon_config(view);
                     return;
+                case DZ_FRAME_QUERY_SYSMON_CLOCK:
+                    handle_manual_clock_probe();
+                    return;
                 case DZ_FRAME_SET_LOG_CONFIG:
                     apply_log_config(view);
                     return;
@@ -1369,6 +1404,9 @@ private:
     std::unique_ptr<ClockProber> clock_prober_;
     /// 本轮探测开始时采集的同步服务状态；探测完成时并入快照（两次探测之间不刷新）。
     std::optional<platform::RawTimeSyncStatus> round_time_sync_;
+    /// 上次**受理**的手动触发时刻（单调时钟纳秒；`nullopt` = 从未手动触发）。限流窗口的
+    /// 起点（契约 sysmon §1.1）：被拒绝的触发不推进窗口，否则拒绝本身会延长限流。
+    std::optional<int64_t> last_manual_trigger_steady_ns_;
     platform::RawSystemInfo system_info_;
     std::optional<platform::RawCpuTimes> prev_cpu_times_;
     std::chrono::steady_clock::time_point prev_sample_time_{};
