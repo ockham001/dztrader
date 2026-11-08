@@ -59,6 +59,45 @@ export const SYSMON_CLOCK_UNPROBED: SysmonClockInfo = {
   kernel_synced: null,
 }
 
+/// 时钟域字节与探测时刻的固定取值（夹具常量；探测时刻刻意落在快照 timestamp 之前，
+/// 相对时间才是个确定的读数）。`2026-10-21T15:00:00Z` = 夹具 timestamp。
+const CLOCK_FIXTURE_PROBE_MS = Date.UTC(2026, 9, 21, 14, 59, 30)
+
+/// 正常态（契约 §2.6 快照示例形状）：三台服务器，`ntp.aliyun.com` 成功且 RTT 最小（聚合值
+/// 来自它），另两台一台 RTT 更大、一台失败（部分失败是合法形态，明细里要能看出原因）。
+export const SYSMON_CLOCK_LIVE: SysmonClockInfo = {
+  offset_ms: 12.5,
+  bound_ms: 18.3,
+  source: 'ntp.aliyun.com',
+  source_stratum: 2,
+  last_probe_unix_ms: CLOCK_FIXTURE_PROBE_MS,
+  servers: [
+    { host: 'ntp.aliyun.com', ok: true, offset_ms: 12.5, bound_ms: 18.3, rtt_ms: 24.1, stratum: 2, error: null },
+    { host: 'ntp.tencent.com', ok: true, offset_ms: 14.2, bound_ms: 21.6, rtt_ms: 36.8, stratum: 3, error: null },
+    { host: 'cn.pool.ntp.org', ok: false, offset_ms: null, bound_ms: null, rtt_ms: null, stratum: null, error: 'timeout' },
+  ],
+  daemons: [{ name: 'chronyd', running: true }],
+  daemon_conflict: false,
+  kernel_synced: true,
+}
+
+/// 全部失败态（契约 §2.9 第二个空态示例）：探测过（`last_probe_unix_ms > 0`）但无可用参考源，
+/// 每台带各自 `error`、四项测量全 null。**不得用 0 或上一轮结果冒充**。
+export const SYSMON_CLOCK_ALL_FAILED: SysmonClockInfo = {
+  offset_ms: null,
+  bound_ms: null,
+  source: '',
+  source_stratum: null,
+  last_probe_unix_ms: CLOCK_FIXTURE_PROBE_MS,
+  servers: [
+    { host: 'ntp.aliyun.com', ok: false, offset_ms: null, bound_ms: null, rtt_ms: null, stratum: null, error: 'timeout' },
+    { host: 'ntp.tencent.com', ok: false, offset_ms: null, bound_ms: null, rtt_ms: null, stratum: null, error: 'unreachable' },
+  ],
+  daemons: [],
+  daemon_conflict: false,
+  kernel_synced: null,
+}
+
 export interface SysmonSnapshotOptions {
   /** 指标可用性覆盖（合并到默认映射；默认 system / cpu.* / memory / swap 可用） */
   metrics?: Record<string, SysmonAvailabilityEntry>
@@ -106,6 +145,14 @@ export interface SysmonSnapshotOptions {
   interruptsPerSec?: number | null
   /** 跨平台语义提示（availability.semantic_hints）；默认携带 disk_io 口径提示 */
   semanticHints?: Record<string, string>
+  /**
+   * 时钟域（契约 sysmon §2.9；#302）。**三态显式**：
+   * - 不传（默认）：域内「尚未探测」空态（`SYSMON_CLOCK_UNPROBED`），`clock.offset` 不可用 + `no_reference`；
+   * - 传 `null`：域被配置关闭（`clock = null`，两键 `disabled_by_config`）；
+   * - 传对象：按该对象的 `offset_ms` 派生 `clock.offset` 可用性（有聚合值即可用，否则 `no_reference`）。
+   *   可用 `SYSMON_CLOCK_LIVE` / `SYSMON_CLOCK_ALL_FAILED` 两个导出常量直接给值。
+   */
+  clock?: SysmonClockInfo | null
 }
 
 const GIB = 1024 ** 3
@@ -355,6 +402,11 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
   const networkAvailable = resourceAvailable
     || options.network !== undefined
     || options.virtualNetwork === true
+  // 时钟域：不传 = 尚未探测（域对象存在、测量全 null）；传 null = 配置关闭；传对象 = 按聚合值派生
+  const clockDisabled = options.clock === null
+  const clockOffsetAvailable = options.clock !== undefined
+    && options.clock !== null
+    && options.clock.offset_ms !== null
   const metrics: Record<string, SysmonAvailabilityEntry> = {}
   for (const key of SYSMON_METRIC_KEYS) {
     const available = key === 'system'
@@ -369,18 +421,24 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'shm_dir'
       || (networkAvailable && key === 'network')
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
+      // 必须按键限定：裸 `|| clockOffsetAvailable` 会让**每个**指标键都可用（温度 / 频率 /
+      // 网络等本应不可用的键被时钟选项顺手点亮），夹具就不再反映契约形状。
+      || (key === 'clock.offset' && clockOffsetAvailable)
       // 契约 §2.5（#298）：服务枚举能力在两平台基线内恒可用——`daemons` 为空数组是
       // 「未检测到在运行的同步服务」这一事实，不改写可用性（只有配置关闭才不可用）。
-      || key === 'clock.sync_service'
+      || (key === 'clock.sync_service' && !clockDisabled)
     // network 已由 #77 实现：默认不可用的现实原因是配置组关闭（disabled_by_config），
     // 不再是 not_implemented；温度/频率按各自的 B 组语义给 reason。
     // 两个 clock 键按契约 §2.5 的语义给 reason：偏差「测不到」是 no_reference
     // （本键非能力粘性）；服务枚举能力恒可用（见上方 available 判定），不走 reason 分支。
-    const reason = key === 'temperature'
-      ? 'no_sensor'
-      : (key === 'cpu.frequency'
-          ? 'unsupported'
-          : (key === 'network' ? 'disabled_by_config' : 'no_reference'))
+    // 配置关闭（clock = null）时两键都按 disabled_by_config（契约 §2.5 末句）。
+    const reason = clockDisabled
+      ? 'disabled_by_config'
+      : (key === 'temperature'
+          ? 'no_sensor'
+          : (key === 'cpu.frequency'
+              ? 'unsupported'
+              : (key === 'network' ? 'disabled_by_config' : 'no_reference')))
     metrics[key] = available
       ? { available: true }
       : { available: false, reason }
@@ -457,8 +515,17 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
           ? [...VIRTUAL_NETWORK, ...DEFAULT_NETWORK].map(entry => ({ ...entry }))
           : (resourceAvailable ? DEFAULT_NETWORK.map(entry => ({ ...entry })) : null)),
     shm_dir: options.shmDir !== undefined ? options.shmDir : { ...DEFAULT_SHM_DIR },
-    // 展开复制（含新数组）：避免用例改 snap.clock 时污染模块级常量与后续用例。
-    clock: { ...SYSMON_CLOCK_UNPROBED, servers: [], daemons: [] },
+    // 时钟域（#302）：默认「尚未探测」域内空态；显式 null = 配置关闭；显式对象按其形状原样
+    // 给值（含 servers / daemons 的展开复制，避免用例改动污染模块级常量）。
+    clock: options.clock === null
+      ? null
+      : (options.clock !== undefined
+          ? {
+              ...options.clock,
+              servers: options.clock.servers.map(server => ({ ...server })),
+              daemons: options.clock.daemons.map(daemon => ({ ...daemon })),
+            }
+          : { ...SYSMON_CLOCK_UNPROBED, servers: [], daemons: [] }),
     availability: {
       platform_description: 'Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)',
       metrics,

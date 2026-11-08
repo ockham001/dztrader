@@ -34,8 +34,22 @@ R5 gtest + nlohmann::json needs /wd4702 (C4702 -> /WX -> C2220)
     td_data_controller_test and reddened Windows CI (run 41809910544, ~35 min).
     This rule checks the single-definition invariant instead of each call site.
 
+R7 two exe targets with the same OUTPUT_NAME collide on the MSVC import library
+    An MSVC link of an executable also emits `import library` + `.exp` next to the
+    ARCHIVE_OUTPUT_DIRECTORY, whose path ignores RUNTIME_OUTPUT_DIRECTORY. Two
+    targets sharing OUTPUT_NAME (e.g. `dzsysmon` and the test-only
+    `dzsysmon_clock_e2e_runner` in a *different directory) therefore write the same
+    `.lib`/`.exp`; under parallel link one of them dies with
+    `LNK1104: cannot open file '<dir>/<name>.exp'` (Windows CI run 42475557497 -- the
+    Linux gate build is serialized enough to never reproduce it). Renaming the
+    product is not an option when the exe stem is semantic (instance_id / config /
+    log / snapshot `source` derive from it), so the fix is to move the archive
+    output into the tests dir: R7 requires a target whose OUTPUT_NAME equals another
+    target's name to also set ARCHIVE_OUTPUT_DIRECTORY.
+
 Usage: python3 scripts/check_msvc_hazards.py [files...]
-Default file set: tracked .h/.cpp under apps/ and libs/ plus cmake/DzTest.cmake.
+Default file set: tracked .h/.cpp under apps/ and libs/ plus cmake/DzTest.cmake
+and every tracked CMakeLists.txt (R7 needs the target graph, not single files).
 Exit 1 on any violation, 0 when clean.
 """
 
@@ -101,13 +115,18 @@ CTP_CMAKE = "apps/ctp/CMakeLists.txt"
 
 def tracked_sources():
     out = subprocess.run(
-        ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE],
+        ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE, "CMakeLists.txt",
+         "*/CMakeLists.txt", "cmake"],
         capture_output=True, check=True).stdout
-    files = [f for f in out.decode().split("\0") if f.endswith((".h", ".cpp"))]
+    tracked = [f for f in out.decode().split("\0") if f]
+    files = [f for f in tracked if f.endswith((".h", ".cpp"))]
     for invariant in (DZ_TEST_CMAKE, CTP_CMAKE):
         if os.path.exists(invariant):
             files.append(invariant)
-    return files
+    # R7 需要 target 图（同一目录下两个 target 是否撞产物名），.h/.cpp 里看不到。
+    files += [f for f in tracked if f.endswith("CMakeLists.txt") and os.path.exists(f)]
+    # CTP_CMAKE 既是 invariant 文件又是受控 CMakeLists：去重，避免同一文件被扫两遍。
+    return list(dict.fromkeys(files))
 
 
 def include_lines(lines):
@@ -264,6 +283,129 @@ def check_c4702_exemption(path, text):
              "Windows CI with C2220 under /WX; restore the /wd4702 block in dz_add_test")]
 
 
+# R7: every target that overrides OUTPUT_NAME while another target already uses that
+# name as its own target/output name. The CMakeLists that declares both is where the
+# MSVC import-library collision is created (see the module docstring).
+SET_TARGET_PROPS_HEAD_RE = re.compile(r'set_target_properties\(\s*([\w-]+)\s+PROPERTIES')
+ADD_EXE_RE = re.compile(r'add_executable\(\s*([\w-]+)')
+ADD_LIB_RE = re.compile(r'add_library\(\s*([\w-]+)')
+
+
+def _balanced_span(text, open_paren):
+    """Return (end_index, body) for the paren pair starting at ``open_paren``.
+
+    CMake property values may legitimately contain parentheses
+    (``COMPILE_DEFINITIONS FOO(1)``), and a quoted generator expression may contain
+    both parens and a `#`-looking character, so neither a lazy regex nor a quote-aware
+    scan is sufficient on its own. Counting depth (and honouring double quotes) is the
+    only shape that cannot truncate the block early -- an early cut silently drops the
+    `OUTPUT_NAME` that follows the parenthesised value, which is a *missed finding*,
+    i.e. the failure mode this rule exists to prevent.
+    """
+    depth = 0
+    in_quote = False
+    idx = open_paren
+    while idx < len(text):
+        ch = text[idx]
+        if in_quote:
+            if ch == '"':
+                in_quote = False
+            elif ch == "\\":
+                idx += 1  # escaped char inside a quoted value
+        elif ch == '"':
+            in_quote = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return idx, text[open_paren + 1:idx]
+        idx += 1
+    return -1, ""
+
+
+def _strip_cmake_comments(body):
+    """Drop `#`-to-end-of-line comments so a comment cannot satisfy a property test.
+
+    Quotes are tracked so that a `#` inside a quoted value is preserved (CMake treats
+    it literally). A line whose `#` opens at the very start is a full-line comment.
+    """
+    out = []
+    for line in body.split("\n"):
+        in_quote = False
+        cut = len(line)
+        for pos, ch in enumerate(line):
+            if in_quote:
+                if ch == '"':
+                    in_quote = False
+                elif ch == "\\":
+                    continue
+            elif ch == '"':
+                in_quote = True
+            elif ch == "#":
+                cut = pos
+                break
+        out.append(line[:cut])
+    return "\n".join(out)
+
+
+def iter_set_target_properties(text):
+    """Yield (line_number, target, property_body) for each set_target_properties block."""
+    for m in SET_TARGET_PROPS_HEAD_RE.finditer(text):
+        # 头正则已确认 `set_target_properties(` + target + `PROPERTIES` 存在，
+        # 因此这两个 find 必然命中（返回 -1 时下面的平衡扫描会安全地 yield 空）。
+        open_paren = text.find("(", m.start() + len("set_target_properties"))
+        end, body = _balanced_span(text, open_paren)
+        if end < 0:
+            continue
+        # body 里去掉 `PROPERTIES` 之前的 target 名部分
+        body = body[body.find("PROPERTIES") + len("PROPERTIES"):]
+        yield text[:m.start()].count("\n") + 1, m.group(1), _strip_cmake_comments(body)
+
+
+def check_output_name_collision(path, text):
+    """R7: identical OUTPUT_NAME across targets -> MSVC import library collision.
+
+    An MSVC exe link emits `<ARCHIVE_OUTPUT_DIRECTORY>/<OUTPUT_NAME>.lib` **and** `.exp`;
+    RUNTIME_OUTPUT_DIRECTORY does not move those. Two targets sharing OUTPUT_NAME
+    (dzsysmon vs dzsysmon_clock_e2e_runner) therefore race on the same `.exp` and one
+    dies with LNK1104 under parallel link -- invisible to the Linux gate (#302, run
+    42475557497). The only legitimate way to share the stem is to also move the
+    archive output elsewhere; that is what this rule enforces, per CMakeLists that
+    declares the sharing.
+
+    Scoped to one file -- and that scope is *complete*, not a shortcut: the two
+    outputs only collide when they resolve to the same path, and the default output
+    directory is the target directory's own binary dir (both generators), so two
+    targets in **different** CMakeLists cannot land on the same `.lib`. What the rule
+    must not do is treat a **comment** mentioning ARCHIVE_OUTPUT_DIRECTORY as the
+    property, hence comments are stripped before the exemption test.
+    """
+    if not path.endswith("CMakeLists.txt"):
+        return []
+    declared = set(ADD_EXE_RE.findall(text)) | set(ADD_LIB_RE.findall(text))
+    errors = []
+    for line, target, props in iter_set_target_properties(text):
+        # 注释已在 iter_... 里剥掉：一行「记得设 ARCHIVE_OUTPUT_DIRECTORY」的注释
+        # 不能让规则永久豁免（文字绕过 lint 是常见失效形态）。
+        name = re.search(r'OUTPUT_NAME\s+([\w-]+)', props)
+        if not name:
+            continue
+        product = name.group(1)
+        if product not in declared or product == target:
+            continue
+        if "ARCHIVE_OUTPUT_DIRECTORY" in props:
+            continue
+        errors.append(
+            (line,
+             "R7: target '%s' takes OUTPUT_NAME '%s' from the sibling target '%s' but does "
+             "not move its import library; on MSVC both write the same "
+             "`<build>/<dir>/%s.lib`/`.exp` and parallel link fails with LNK1104. Add "
+             "ARCHIVE_OUTPUT_DIRECTORY (e.g. ${DZ_TESTS_DIR}) to this property block"
+             % (target, product, product, product)))
+    return errors
+
+
 def check_ctp_api_dll_next_to_tests(path, text):
     """R6: a ctp *test* target that links the imported CTP API needs the DLL beside the exe.
 
@@ -305,6 +447,7 @@ def check_file(path):
     errors += check_deprecated_crt(path, text)
     errors += check_c4702_exemption(path, text)
     errors += check_ctp_api_dll_next_to_tests(path, text)
+    errors += check_output_name_collision(path, text)
     return sorted(set(errors))
 
 

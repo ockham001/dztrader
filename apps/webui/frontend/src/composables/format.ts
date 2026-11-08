@@ -4,7 +4,7 @@
  * 为什么收敛成一份：同一**单位族**的数值此前在监控页 / 历史图表 / 配置页 / 日志页各自格式化
  * （字节数、比率等），于是同一量在不同页面显示不同精度与不同单位档（同一块 22 TiB 的卷，
  * 旧实现按 GiB 定标会渲染成 `22528.0 GiB`），切换单位档或精度时也必然漏掉某一页。
- * 本模块是这些数值的**唯一**实现：本文件之外不得再为字节/比率/延迟/温度/计数自行写
+ * 本模块是这些数值的**唯一**实现：本文件之外不得再为字节/比率/延迟/温度/计数/毫秒自行写
  * `toFixed`。
  *
  * 明确的例外（不是遗漏）：
@@ -21,6 +21,7 @@
  *   **宽度稳定优先于单值精度**（Grafana / Netdata 的有效数字自适应会让每秒刷新的列宽跳动）。
  * - 速率 = 字节值 + `/s`。
  * - 百分比 1 位、负载 2 位、延迟 2 位、温度 1 位、IOPS 与计数取整、计数带千分位。
+ * - 毫秒（时钟偏差 / 误差界，契约 sysmon §2.9）1 位；偏差带符号（正 = 本地快）。
  *
  * 不可用语义（契约 sysmon §2.5）：`null` / `NaN` / `±Infinity` 一律返回
  * {@link UNAVAILABLE_TEXT}——**不得用 0 冒充**。非法负值只在**字节与速率**格式化器里视为
@@ -107,6 +108,30 @@ export function formatDecimal(value: number | null | undefined, digits = 2): str
 export function formatLatency(milliseconds: number | null | undefined): string {
   if (!isFiniteNumber(milliseconds)) return UNAVAILABLE_TEXT
   return `${milliseconds.toFixed(2)} ms`
+}
+
+/**
+ * 毫秒量（时钟偏差 / 误差界）：固定 1 位 + `ms`（`12.3 ms`）；不可用时为不可用占位。
+ *
+ * 与 {@link formatLatency} 的 2 位精度**刻意不同**：延迟是磁盘 I/O 的派生量，抖动在小数第二
+ * 位有意义；时钟偏差是 NTP 采样给出的量，1 位毫秒已是判据分辨率（契约 sysmon §2.8 的阈值
+ * 都以整毫秒给出），多给一位只会让每秒刷新的数字无谓跳变。
+ */
+export function formatMilliseconds(milliseconds: number | null | undefined): string {
+  if (!isFiniteNumber(milliseconds)) return UNAVAILABLE_TEXT
+  return `${milliseconds.toFixed(1)} ms`
+}
+
+/**
+ * 带符号毫秒量（时钟偏差）：正值加 `+`（`+12.3 ms` / `-12.3 ms` / `0.0 ms`）。
+ *
+ * 符号是**语义的一部分**，不是排版偏好：正 = 本地墙钟快于参考源，负 = 本地慢，方向决定该往
+ * 哪边修（契约 sysmon §2.9）。恰好 0 无方向可表，按既有 `formatSignedVolume` 的先例不加符号。
+ */
+export function formatSignedMilliseconds(milliseconds: number | null | undefined): string {
+  if (!isFiniteNumber(milliseconds)) return UNAVAILABLE_TEXT
+  const text = formatMilliseconds(milliseconds)
+  return milliseconds > 0 ? `+${text}` : text
 }
 
 /** 温度：固定 1 位 + `°C`（`45.5 °C`）；调用方只在该指标可用时传入有效值 */

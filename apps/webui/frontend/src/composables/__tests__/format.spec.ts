@@ -10,9 +10,11 @@ import {
   formatFrequency,
   formatIops,
   formatLatency,
+  formatMilliseconds,
   formatNumberAuto,
   formatPercent,
   formatPerSec,
+  formatSignedMilliseconds,
   formatTemperature,
 } from '../format'
 
@@ -125,6 +127,26 @@ describe('formatDecimal / formatLatency：固定小数位', () => {
     expect(formatLatency(0)).toBe('0.00 ms')
     expect(formatLatency(null)).toBe(UNAVAILABLE_TEXT)
     expect(formatLatency(Number.POSITIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatMilliseconds / formatSignedMilliseconds：时钟偏差与误差界（#302）', () => {
+  it('毫秒固定 1 位 + ms；0 是合法真实值（真实测到 0 偏差）', () => {
+    expect(formatMilliseconds(12.34)).toBe('12.3 ms')
+    expect(formatMilliseconds(12.36)).toBe('12.4 ms')
+    expect(formatMilliseconds(0)).toBe('0.0 ms')
+    expect(formatMilliseconds(-12.3)).toBe('-12.3 ms')  // 符号由带符号格式化器负责，本函数不吞负号
+    expect(formatMilliseconds(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatMilliseconds(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+    expect(formatMilliseconds(Number.POSITIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
+  })
+
+  it('偏差带符号：正 = 本地快加 +，负保留 -，恰好 0 不加符号', () => {
+    expect(formatSignedMilliseconds(12.34)).toBe('+12.3 ms')
+    expect(formatSignedMilliseconds(-12.34)).toBe('-12.3 ms')
+    expect(formatSignedMilliseconds(0)).toBe('0.0 ms')
+    expect(formatSignedMilliseconds(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatSignedMilliseconds(Number.NEGATIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
   })
 })
 

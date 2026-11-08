@@ -13,7 +13,8 @@
 - 已实现运行期配置与配置展示（#81）：配置帧 SET/RTN 全量生效、运行期切换历史记录、监控页「配置」区展示当前生效配置并提供 admin 编辑入口（契约 sysmon §3）。
 - 已实现时钟域平台接缝（#298，契约 sysmon §2.9）：`SystemCollector` 新增 `collect_time_sync_services()`，检测本机常见时间同步服务是否在运行并给出内核同步判据，**不 exec 任何外部命令**（ADR 0047）。Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`（内核把 comm 截断到 15 字节，`systemd-timesyncd` 的可观察值是 `systemd-timesyn`），另读 `adjtimex` 只读模式取 `STA_UNSYNC` 取反作为与守护进程无关的同步判据；Windows 经服务控制管理器 API（`OpenSCManagerW` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。检测失败（进程表不可读、服务管理器查询失败）降级为空列表 + `kernel_synced = null`，不抛异常；「读不到」不当成 `false`。`daemon_conflict` 由快照构造从 `daemons[]` 派生（契约 §2.9 / §7），采集层只如实返回列表、不判故障。#298 只交付接缝与派生标记；「每轮探测开始时执行检测并接线进快照」由 #299 落地（见下条）；`clock.sync_service` 自 #298 起恒 `available=true`。
 - 已实现时钟偏差探测（#299，契约 sysmon §2.7/§2.9）：真实 Asio/UDP 的 NTPv4 客户端传输（每台服务器一个 socket + 独立超时，异步、不阻塞采集与帧处理）；启动后**立即**探测一次，随后按 `clock.probe_times` 的「每天 HH:MM 列表」（进程本地时区）用单调时钟定时器排到下一个墙钟时刻、**每次重算**（错过的时刻跳过不补采、不区分周末与节假日）；每轮开始时执行同步服务检测（不 exec 外部命令，#298 接缝），结果与探测聚合值/每台明细一起写入快照 `clock` 域并**立即推送一帧**（探测全部失败也推——「测不到」是要展示的事实）；每轮恰好一条日志（偏差 / 误差界 / 来源 / 成功台数；全部失败升为 `warning`），`daemon_conflict=true` 时另写一条。`clock` 域关闭时停止定时器并清空该域（关闭期间在飞的探测结果丢弃）；运行期由关闭转开启时**立即**发起一轮探测（契约 §3.1「与进程启动同款」，不必空等下一个 `probe_times` 时刻）；任意 `SET_SYSMON_CONFIG` 成功后从当前时刻按新配置重排探测定时器。
-- 已实现时钟偏差阈值判定与告警（#301，契约 sysmon §2.8「时间判定对象」；ADR 0047）：判定发生在**每次探测完成时**（不是计量 tick）。`clock_offset` 双档——`|offset_ms| ≥ offset_warn_ms` 记 `warning`、`≥ offset_error_ms` 记 `error` 并**发 `NOTIFY_UI`（`popup=true`）**；活动期内 warning→error 升级再记一条 `error` 并弹窗，error→warning 降级记 `info` 且活动期不结束；`clock_bound` 独立的测量质量判据（`bound_ms > bound_alarm_ms` 记 `warning`）**只写日志，不弹窗、不改变偏差判定**（卡片内的「测量质量」提示由 #302 交付）。进入 / 持续重记 / 恢复与资源类同口径（共用活动期记账），探测失败保留活动状态、配置关闭静默清除。这是 `dzsysmon` 继「历史库不可用」「配置下发失败」之后的**第三类** `NOTIFY_UI` 来源（配置下发失败含 `SET_SYSMON_CONFIG` 与 `SET_LOG_CONFIG` 两个站点），也是 ADR 0034 静默原则的唯一例外。
+- 已实现时钟偏差阈值判定与告警（#301，契约 sysmon §2.8「时间判定对象」；ADR 0047）：判定发生在**每次探测完成时**（不是计量 tick）。`clock_offset` 双档——`|offset_ms| ≥ offset_warn_ms` 记 `warning`、`≥ offset_error_ms` 记 `error` 并**发 `NOTIFY_UI`（`popup=true`）**；活动期内 warning→error 升级再记一条 `error` 并弹窗，error→warning 降级记 `info` 且活动期不结束；`clock_bound` 独立的测量质量判据（`bound_ms > bound_alarm_ms` 记 `warning`）**只写日志，不弹窗、不改变偏差判定**（卡片内的「测量质量」提示见下条）。进入 / 持续重记 / 恢复与资源类同口径（共用活动期记账），探测失败保留活动状态、配置关闭静默清除。这是 `dzsysmon` 继「历史库不可用」「配置下发失败」之后的**第三类** `NOTIFY_UI` 来源（配置下发失败含 `SET_SYSMON_CONFIG` 与 `SET_LOG_CONFIG` 两个站点），也是 ADR 0034 静默原则的唯一例外。
+- 已实现监控页时间卡片（#302，契约 sysmon §2.9 / §2.8，纯前端消费方）：实时网格新增「时间」卡片，主数值为带符号偏差（1 位毫秒、正 = 本地快）、副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间；偏差按 `clock.offset_warn_ms` / `offset_error_ms` 着色（复用 `useResourceLevel` 的定档实现与同一套 `data-level` 色标词表，`danger` 即契约的「error 红」），误差界 `> bound_alarm_ms` 时另给「测量质量」提示且**不改变**偏差着色（两个判定对象独立）；展开显示每台服务器明细（主机 / 偏差 / 误差界 / RTT / stratum / 失败原因，失败台的测量列一律「不可用」而不是 0）与同步服务检测列表（`daemons[]` 空数组显示「未检测到运行中的服务」这一事实，`daemon_conflict` 显示卡片内冲突提示，均不弹窗）。三种空态（`clock = null` 配置关闭 / `last_probe_unix_ms = 0` 尚未探测 / `> 0` 且 `offset_ms = null` 全部失败）都渲染这张卡且都显示明确文案、不显示 0。「立即查询」按钮仅 admin 可用（非 admin 可见但 disabled），置灰时长取 `clock.manual_min_interval_sec`（0 = 不限流），清除信号是随后的 WS `sysmon_snapshot`（`clock.last_probe_unix_ms` 严格前进）而非 REST 200（契约 §1.1：限流拒绝无错误通道）；相对时间以快照 `timestamp` 为基准（与 `last_probe_unix_ms` 同一时间轴，不混用本机墙钟）。**顶栏不加时钟徽章**（既有「无 NTP 徽章」断言保持有效）。
 - 本进程不采集：进程级指标、GPU、SMART、风扇、电池、登录用户列表；不支持容器内采集（见「部署限制」）。不读取时间守护进程的内部状态、不写系统时钟（ADR 0047）。
 
 ## 进程与编排
@@ -49,7 +50,7 @@
 - 初始化完成后立即推送一次；收到 `QUERY_FULL_SNAPSHOT`（通用规则 §7）响应推送一次。推送失败（如事件通道写满）只记日志、不重试，下一刻度继续（契约 sysmon §4）。
 - 运行期修改间隔 / 探测时刻（`SET_SYSMON_CONFIG`）立即生效：取消当前 pending wait 并按新间隔 / 新时刻重排，不等待当前周期结束；配置展示与编辑入口见「配置」章节。
 - **探测定时器语义**（#299）：`probe_times` 是「每天 HH:MM 列表」而非固定间隔——每次探测完成后用当前墙钟重算「下一个严格晚于现在的本地时刻」，换算成 `steady_timer` 的延时；进程停顿期间错过的时刻因此被自然跳过（不补采）。探测完成（成功或失败）立即推送一帧快照并重排下一轮。
-- **手动查询**（#300，契约 sysmon §1.1）：收到定向 `DZ_FRAME_QUERY_SYSMON_CLOCK`（形态 3 单向下行动作帧、空 payload、无 RTN）后发起一轮探测，结果复用既有快照推送路径广播（不新增 RTN 帧 / 镜像域 / WS 消息名）。限流在 dzsysmon 侧权威判定——探测在飞或距上次**受理**的触发不足 `clock.manual_min_interval_sec` 时直接忽略并记日志（不排队、不叠加；被拒绝的触发不推进窗口），域关闭时同样忽略并记日志；拒绝没有错误通道（与 `FLUSH_LOG` 同类）。前端入口 `POST /api/sysmon/clock/probe`（admin）；按钮置灰为体验层（#302 交付），协议不承诺。
+- **手动查询**（#300，契约 sysmon §1.1）：收到定向 `DZ_FRAME_QUERY_SYSMON_CLOCK`（形态 3 单向下行动作帧、空 payload、无 RTN）后发起一轮探测，结果复用既有快照推送路径广播（不新增 RTN 帧 / 镜像域 / WS 消息名）。限流在 dzsysmon 侧权威判定——探测在飞或距上次**受理**的触发不足 `clock.manual_min_interval_sec` 时直接忽略并记日志（不排队、不叠加；被拒绝的触发不推进窗口），域关闭时同样忽略并记日志；拒绝没有错误通道（与 `FLUSH_LOG` 同类）。前端入口 `POST /api/sysmon/clock/probe`（admin）；按钮置灰为体验层（#302 已交付：置灰时长取同一配置项，清除信号是随后的快照），协议不承诺。
 
 ### 事件驱动边界
 
@@ -245,7 +246,7 @@
 
 1. **判定时机是每次探测完成时**，不是计量 tick（`on_clock_probe_finished` → `evaluate_clock_thresholds`）。定时探测、启动首探与手动查询触发的轮次走同一条判定路径——判定不感知触发来源。
 2. **`clock_offset` 是一个判定对象、两个级别**：活动期从「进入 warning 或 error」开始、回到 `< offset_warn_ms` 结束。进入按当前档记一条；活动期内 warning→error 记 `error` 并弹窗（升级）、error→warning 记 `info`（降级且**不结束活动期**——偏差仍越 warn 线，问题没有消失）。因此资源类的三态（进入/重记/恢复）在这里扩展成六态（另加 `EnteredError` / `Escalated` / `Downgraded`）。
-3. **只有 `clock_offset` 的 error 档产生 `NOTIFY_UI`**（`popup=true`）。`clock_bound` 与 warn 档永远只写日志（卡片色标 / 质量提示由 #302 交付，本票不接前端）。
+3. **只有 `clock_offset` 的 error 档产生 `NOTIFY_UI`**（`popup=true`）。`clock_bound` 与 warn 档永远只写日志；前端的卡片色标与「测量质量」提示由 #302 交付（同样**不弹窗**，只在卡片内着色 / 提示）。
 
 `clock_bound` 独立于 `clock_offset`：两个判定对象各自维护活动期，一方越限不改变另一方；「测不准」（误差界大，网络问题）与「真的偏」（时钟问题）混成一个数事后无法区分该修哪个。日志字段因此也不同——`clock_offset` 记 `offset_ms` + **两档阈值**（`warn_ms` / `error_ms`），`clock_bound` 记 `bound_ms` + `bound_alarm_ms`。
 

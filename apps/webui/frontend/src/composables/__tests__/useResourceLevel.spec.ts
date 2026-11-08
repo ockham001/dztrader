@@ -3,6 +3,7 @@ import {
   RESOURCE_DANGER_RATIO,
   RESOURCE_WARN_RATIO,
   resourceLevel,
+  thresholdLevel,
   worstResourceLevel,
 } from '../useResourceLevel'
 
@@ -22,6 +23,31 @@ describe('resourceLevel 阈值边界（含边界）', () => {
 
   it.each(cases)('ratio=%s → %s', (ratio, expected) => {
     expect(resourceLevel(ratio)).toBe(expected)
+  })
+})
+
+describe('thresholdLevel 数值 + 双档阈值定档（#302：资源类与时钟偏差共用同一语义）', () => {
+  // 时钟偏差的阈值来自配置（契约 sysmon §3.1 `offset_warn_ms` / `offset_error_ms`），
+  // 资源类来自本模块常量。两者共用同一份「≥ 阈值即进入该档」判定与等级词表。
+  const cases: Array<[number, number, number, string]> = [
+    [0, 100, 1000, 'normal'],
+    [99.9, 100, 1000, 'normal'],
+    [100, 100, 1000, 'warn'],        // 恰好等于 warn 阈值算进入（契约 §2.8：≥）
+    [999, 100, 1000, 'warn'],
+    [1000, 100, 1000, 'danger'],     // 恰好等于 error 阈值算进入（契约 §2.8：≥）
+    [5000, 100, 1000, 'danger'],
+  ]
+
+  it.each(cases)('value=%s warn=%s danger=%s → %s', (value, warn, danger, expected) => {
+    expect(thresholdLevel(value, warn, danger)).toBe(expected)
+  })
+
+  it('resourceLevel 的阈值点定档与 thresholdLevel 同口径（字面等级，不拿转发目标当 oracle）', () => {
+    // 用字面等级做期望：`resourceLevel` 只是转发 `thresholdLevel`，拿后者当期望等于
+    // 「自己等于自己」——转发写坏时两边同时变，这条断言就永远不会红。
+    expect(resourceLevel(RESOURCE_WARN_RATIO)).toBe('warn')
+    expect(resourceLevel(RESOURCE_DANGER_RATIO)).toBe('danger')
+    expect(resourceLevel(0.5)).toBe('normal')
   })
 })
 

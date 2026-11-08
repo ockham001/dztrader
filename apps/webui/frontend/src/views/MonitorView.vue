@@ -16,8 +16,10 @@ import {
   formatFrequency,
   formatIops,
   formatLatency,
+  formatMilliseconds,
   formatPerSec,
   formatPercent,
+  formatSignedMilliseconds,
   formatTemperature,
 } from '@/composables/format'
 import {
@@ -25,6 +27,24 @@ import {
   normalizeTemperatureReadings,
 } from '@/composables/sysmonTemperature'
 import { semanticHintText } from '@/composables/sysmonSemanticHint'
+import {
+  CLOCK_DAEMON_CONFLICT_TEXT,
+  CLOCK_DISABLED_DESC,
+  CLOCK_DISABLED_TITLE,
+  CLOCK_NO_DAEMON_DESC,
+  CLOCK_NO_DAEMON_TEXT,
+  CLOCK_QUALITY_HINT,
+  CLOCK_UNPROBED_DESC,
+  CLOCK_UNPROBED_TITLE,
+  clockBoundAlarm,
+  clockDomainState,
+  clockFailureSummary,
+  clockOffsetLevel,
+  clockProbeAgeSec,
+  clockServerCells,
+  resolveClockThresholds,
+  sortClockDaemons,
+} from '@/composables/sysmonClock'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
@@ -59,6 +79,12 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // 卡片折叠（#127）：每核明细 / 每传感器明细 / 每盘七项指标 / 每网卡十项指标默认收起、展开显示全部；
 // 折叠状态不持久化；可用性空态不进折叠。列数 <md 单列、md–xl 双列、≥xl 三列（沿用既有断点，
 // 不使用容器查询），图表用容器自适应重排。
+// 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
+// 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间；偏差按配置阈值着色（与资源类共用
+// `useResourceLevel` 的定档实现与同一套等级词表），误差界越界另给「测量质量」提示且**不改变**
+// 偏差着色；展开显示每台服务器明细与同步服务检测（多服务运行给冲突提示）。三种空态（配置关闭 /
+// 尚未探测 / 全部失败）都渲染这张卡且都不显示 0；「立即查询」置灰时长取 `manual_min_interval_sec`，
+// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。**顶栏不加时钟徽章**。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 /** 历史视图 store（#79）：与实时 store 完全独立，切换视图不影响 WS 与实时快照 */
@@ -299,6 +325,76 @@ async function onToggleShowAll(next: boolean): Promise<void> {
   const result = await sysmon.setHideVirtual(!next)
   if (result === PENDING_TIMEOUT) return
   if (result === false) toast.error('显示全部网卡切换下发失败')
+}
+
+// ---- 时钟偏差（#302，契约 sysmon §2.9 / §2.8）：卡片主数值 + 每台明细 + 同步服务检测 ----
+// 状态分类、定档、质量判据、失败原因文案全部在 `@/composables/sysmonClock`（纯函数，可单测）；
+// 本视图只负责取 store 已净化的域与渲染。三条口径要点：
+// - 三种空态**都渲染卡片**（配置关闭 = 明确的空态而不是整块消失）：`clock` 域的 null 是
+//   「这项监控被关掉了」这一运维事实，静默消失会让读者以为功能不存在；
+// - 偏差着色按 `|offset_ms|` 与配置阈值（与资源类共用同一份定档实现与同一套等级词表）；
+// - 「测量质量」提示由 `bound_ms > bound_alarm_ms` 独立决定，**不改变**偏差着色（契约 §2.8）。
+const clock = computed(() => sysmon.clock)
+const clockState = computed(() => clockDomainState(clock.value))
+// 阈值取生效配置镜像（未到达时按契约 §3.1 默认值，避免卡片先按一套阈值着色、配置到达后跳变）
+const clockThresholds = computed(() => resolveClockThresholds(sysmon.config?.clock))
+const clockLevel = computed<ResourceLevel | null>(
+  () => clockOffsetLevel(clock.value?.offset_ms ?? null, clockThresholds.value),
+)
+const clockQualityAlarm = computed(
+  () => clockBoundAlarm(clock.value?.bound_ms ?? null, clockThresholds.value),
+)
+// 「上次探测多久之前」：时间基准取快照 timestamp（服务端时间轴），**不用本机 Date.now()**——
+// 两者若有系统时钟偏差，相对时间会跟着偏；快照 timestamp 与 last_probe_unix_ms 同一时间轴。
+const clockProbeAge = computed(() => {
+  const c = clock.value
+  const snapshotTs = snapshot.value?.timestamp
+  if (!c || typeof snapshotTs !== 'number') return null
+  const ageSec = clockProbeAgeSec(c.last_probe_unix_ms, snapshotTs)
+  // 文案复用本组件既有的 `formatAge`（同一份「多久以前」口径），不新写第二套相对时间函数
+  return ageSec === null ? null : formatAge(ageSec)
+})
+const clockServers = computed(() => clock.value?.servers ?? [])
+const clockDaemons = computed(() => sortClockDaemons(clock.value?.daemons ?? []))
+const clockFailure = computed(() => clockFailureSummary(clockServers.value))
+const clockDetailOpen = ref(false)
+// sync_service 键（契约 §2.5）：服务枚举能力恒可用；配置关闭时该键不可用，此时空态已表达。
+// 另外**尚未探测**时不渲染本区：服务检测在「每轮探测开始时」执行（契约 §2.9），首轮探测前
+// `daemons` 是空数组并不代表「没查到服务」——此时把空数组当事实展示会凭空报出一个未做过的检测。
+const clockDaemonAvailable = computed(() => isAvailable('clock.sync_service'))
+const clockDaemonVisible = computed(
+  () => clockDaemonAvailable.value && (clockState.value === 'live' || clockState.value === 'unavailable'),
+)
+// 「立即查询」：admin 可见（非 admin 渲染为 disabled 并给出原因，与网络开关同一口径）
+const canProbeClock = computed(() => auth.isAdmin)
+const clockProbePending = computed(() => sysmon.clockProbePending)
+const clockProbeCooldownSec = computed(() => sysmon.clockProbeCooldownSec)
+// 只有「已有探测能力且域未关闭」时才提供按钮：配置关闭时按钮无处可点（点击也只写事件通道，
+// dzsysmon 会忽略）。admin 之外仍渲染 disabled —— 可见但不可点，避免「功能不存在」的误解。
+const clockProbeDisabled = computed(() => !canProbeClock.value
+  || clockProbePending.value
+  || clockProbeCooldownSec.value > 0
+  || clockState.value === 'disabled')
+const clockProbeLabel = computed(() => {
+  // 冷却文案优先：成功触发后两条约束同时成立（等快照 + N 秒限流），pending 可能先解除，
+  // 而按钮仍不可点——此时必须说「N 秒后可再次查询」而不是「查询中…」，否则用户看到的是
+  // 一个点不动、又自称正在查询的按钮。因此有冷却剩余就显示冷却，没有才显示 pending。
+  if (clockProbeCooldownSec.value > 0) return `${clockProbeCooldownSec.value} 秒后可再次查询`
+  if (clockProbePending.value) return '查询中…'
+  return '立即查询'
+})
+
+/**
+ * 「立即查询」：结果契约对齐配置类操作（true = 已触发、等快照；false = 防空转 / HTTP 失败；
+ * PENDING_TIMEOUT = 超时，usePending 已 toast）。REST 成功只表示「已写事件通道」——协议不承诺
+ * 本次触发一定生效（dzsysmon 权威限流，契约 sysmon §1.1），因此这里**不**提示「已探测完成」。
+ */
+async function onProbeClock(): Promise<void> {
+  const result = await sysmon.probeClock()
+  if (result === PENDING_TIMEOUT) return
+  if (result === false && !clockProbePending.value && clockProbeCooldownSec.value === 0) {
+    toast.error('立即查询时钟偏差下发失败')
+  }
 }
 
 // ---- 卡片折叠（#127）：维度明细默认收起，展开后显示全部 ----
@@ -1110,6 +1206,158 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <div class="ds-empty__desc">{{ unavailableDesc('network') }}</div>
         </div>
       </section>
+
+      <!-- 时间（#302，契约 sysmon §2.9）：偏差主数值 + 误差界/来源/stratum/上次探测相对时间；
+           偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
+           （独立于偏差着色，契约 §2.8）；展开后是每台服务器明细 + 同步服务检测。
+           三种空态都渲染这张卡（配置关闭也是明确空态而不是整块消失），且都不显示 0。
+           顶栏不加徽章：本卡片只进监控页实时网格（既有「无 NTP 徽章」断言保持有效）。 -->
+      <section class="ds-card monitor-view__card" data-test="monitor-clock">
+        <div class="monitor-view__card-head">
+          <h2 class="ds-card__title monitor-view__card-title">
+            <span class="monitor-view__card-icon"><Icon name="clock_time" :size="14" /></span>时间
+          </h2>
+          <!-- 立即查询（admin）：置灰时长取配置 clock.manual_min_interval_sec；清除信号是随后的
+               WS sysmon_snapshot（last_probe_unix_ms 前进），不是 REST 200（契约 sysmon §1.1）。 -->
+          <div class="monitor-view__clock-probe">
+            <button
+              class="ds-btn ds-btn--secondary ds-btn--sm"
+              type="button"
+              data-test="monitor-clock-probe"
+              :disabled="clockProbeDisabled"
+              :title="canProbeClock ? '立即触发一轮时钟探测（结果随快照更新）' : '仅管理员可手动查询'"
+              @click="onProbeClock"
+            ><Icon name="clock_time" :size="12" />{{ clockProbeLabel }}</button>
+          </div>
+        </div>
+
+        <!-- 正常 / 不可用主线：主数值（偏差）、副信息（误差界 / 来源 / stratum / 上次探测） -->
+        <template v-if="clock && clockState !== 'unprobed'">
+          <div class="monitor-view__metric-row" :data-level="clockLevel">
+            <span class="monitor-view__metric" data-test="monitor-clock-offset">
+              {{ formatSignedMilliseconds(clock.offset_ms) }}
+            </span>
+            <button
+              v-if="clock.servers.length > 0"
+              class="ds-btn ds-btn--tertiary ds-btn--sm"
+              type="button"
+              :aria-expanded="clockDetailOpen"
+              data-test="monitor-clock-detail-toggle"
+              @click="clockDetailOpen = !clockDetailOpen"
+            >{{ clockDetailOpen ? '收起' : '展开明细' }}</button>
+          </div>
+          <!-- 有可用参考源：副信息 = 误差界 / 来源服务器 / stratum / 上次探测相对时间 -->
+          <p v-if="clockState === 'live'" class="monitor-view__meta" data-test="monitor-clock-summary">
+            误差界 {{ formatMilliseconds(clock.bound_ms) }}
+            · 来源 {{ clock.source }}（stratum {{ clock.source_stratum ?? UNAVAILABLE_TEXT }}）
+            <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
+          </p>
+          <!-- 探测全部失败：偏差不可用，给出逐台原因（不得显示 0 或上一轮结果，契约 §2.9）；
+               此时没有「来源 / stratum」可写，只报事实与原因，不留空标签。 -->
+          <p v-else class="monitor-view__hint" data-test="monitor-clock-unavailable">
+            {{ UNAVAILABLE_TEXT }} · {{ clockFailure }}
+            <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
+          </p>
+          <!-- 测量质量提示：误差界 > bound_alarm_ms 才出现，**不改变**上面偏差的着色（契约 §2.8） -->
+          <p
+            v-if="clockQualityAlarm"
+            class="monitor-view__hint monitor-view__hint--alert"
+            data-test="monitor-clock-quality"
+          >{{ CLOCK_QUALITY_HINT }}（阈值 {{ clockThresholds.bound_alarm_ms }} ms）</p>
+
+          <!-- 展开明细：每台服务器单独结果（主机 / 偏差 / 误差界 / RTT / stratum / 失败原因） -->
+          <div v-if="clockDetailOpen" class="monitor-view__clock-detail">
+            <h3 class="monitor-view__panel-title">服务器明细</h3>
+            <ul v-if="clockServers.length > 0" class="monitor-view__clock-servers">
+              <li
+                v-for="server in clockServers"
+                :key="server.host"
+                class="monitor-view__clock-server"
+                data-test="monitor-clock-server"
+                :data-host="server.host"
+                :data-ok="server.ok"
+                :title="server.host"
+              >
+                <div class="monitor-view__io-device">
+                  {{ server.host }}
+                  <span class="ds-tag" :class="server.ok ? 'ds-tag--success' : 'ds-tag--danger'">
+                    {{ server.ok ? '成功' : '失败' }}
+                  </span>
+                </div>
+                <dl class="monitor-view__io-metrics">
+                  <div
+                    v-for="cell in clockServerCells(server)"
+                    :key="cell.key"
+                    class="monitor-view__io-metric"
+                  >
+                    <dt class="monitor-view__io-label">{{ cell.label }}</dt>
+                    <dd
+                      class="monitor-view__io-value"
+                      :data-test="`monitor-clock-server-${cell.key}`"
+                    >{{ cell.value }}</dd>
+                  </div>
+                </dl>
+              </li>
+            </ul>
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-clock-servers-empty">
+              <div class="ds-empty__title">暂无服务器明细</div>
+              <div class="ds-empty__desc">最近一轮探测没有返回任何服务器结果</div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 尚未探测（契约 §2.9：last_probe_unix_ms = 0）：明确文案，不是 0、也不是「不可用」 -->
+        <div
+          v-else-if="clockState === 'unprobed'"
+          class="ds-empty monitor-view__empty"
+          data-test="monitor-clock-unprobed"
+        >
+          <div class="ds-empty__title">{{ CLOCK_UNPROBED_TITLE }}</div>
+          <div class="ds-empty__desc">{{ CLOCK_UNPROBED_DESC }}</div>
+        </div>
+
+        <!-- 配置关闭（契约 §2.9：clock = null 的唯一含义）：明确空态 + 启用入口提示 -->
+        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-clock-disabled">
+          <div class="ds-empty__title">{{ CLOCK_DISABLED_TITLE }}</div>
+          <div class="ds-empty__desc">{{ CLOCK_DISABLED_DESC }}</div>
+        </div>
+
+        <!-- 同步服务检测（契约 §2.9 daemons[]）：空数组是「未检测到在运行的服务」这一事实，
+             不是能力不可用（§2.5）——因此显示明确文案并在卡片内标黄，不弹窗、不判故障。 -->
+        <div
+          v-if="clockDaemonVisible"
+          class="monitor-view__clock-daemons"
+          data-test="monitor-clock-daemons"
+        >
+          <h3 class="monitor-view__panel-title">时间同步服务</h3>
+          <ul v-if="clockDaemons.length > 0" class="monitor-view__list">
+            <li
+              v-for="daemon in clockDaemons"
+              :key="daemon.name"
+              class="monitor-view__list-row"
+              data-test="monitor-clock-daemon"
+              :data-name="daemon.name"
+            >
+              <span class="monitor-view__list-label">{{ daemon.name }}</span>
+              <span
+                class="monitor-view__list-value"
+                :class="daemon.running ? 'monitor-view__daemon--running' : 'monitor-view__daemon--stopped'"
+              >{{ daemon.running ? '运行中' : '未运行' }}</span>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="monitor-view__hint monitor-view__hint--alert"
+            data-test="monitor-clock-daemon-none"
+          >{{ CLOCK_NO_DAEMON_TEXT }} · {{ CLOCK_NO_DAEMON_DESC }}</p>
+          <!-- 多服务同时运行：卡片内提示（契约 §2.9 明文「只写一条日志 + 卡片提示，不弹窗、不判故障」） -->
+          <p
+            v-if="clock?.daemon_conflict"
+            class="monitor-view__hint monitor-view__hint--alert"
+            data-test="monitor-clock-daemon-conflict"
+          >{{ CLOCK_DAEMON_CONFLICT_TEXT }}</p>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -1559,6 +1807,56 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   color: var(--text-tertiary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
+}
+
+/* 时钟卡片的「需要关注」提示（#302）：测量质量劣化 / 未检测到同步服务 / 多服务冲突。
+   与常规语义提示（中性灰）区分——这三条都是「该看一眼」但**不弹窗**的状态（契约 §2.8 静默原则）。 */
+.monitor-view__hint--alert {
+  color: var(--status-warning-default);
+}
+
+/* 时钟卡片的「立即查询」按钮（#302）：与卡片标题同排，不抢主数值的位置 */
+.monitor-view__clock-probe {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 时钟卡片明细区（#302）：与主数值之间留白，复用面板标题 / 列表 / io-metrics 既有范式 */
+.monitor-view__clock-detail {
+  margin-top: var(--spacer-8);
+}
+
+.monitor-view__clock-servers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-8);
+}
+
+/* 每台服务器一行：与磁盘 I/O 行同一视觉（边框 + 圆角 + io-metrics 网格），不新增范式 */
+.monitor-view__clock-server {
+  display: grid;
+  gap: var(--spacer-8);
+  min-width: 0;
+  padding: var(--spacer-8) var(--spacer-12);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-6);
+}
+
+/* 同步服务检测区：与明细区之间留白 */
+.monitor-view__clock-daemons {
+  margin-top: var(--spacer-12);
+}
+
+/* 服务运行状态色（#302）：运行中用成功色、未运行用中性色——未运行不是故障，不上告警色 */
+.monitor-view__daemon--running {
+  color: var(--status-success-default);
+}
+
+.monitor-view__daemon--stopped {
+  color: var(--text-tertiary);
 }
 
 .monitor-view__list {
