@@ -12,6 +12,7 @@
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/udp.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <gtest/gtest.h>
@@ -95,6 +96,8 @@ protected:
     std::array<uint8_t, 1024> server_buffer_{};
     udp::endpoint sender_;
     std::vector<uint8_t> reply_buffer_;
+    /// 迟到响应用例的定时器（成员持有，避免 async_wait 期间被销毁）。
+    std::shared_ptr<boost::asio::steady_timer> late_reply_;
 };
 
 TEST_F(UdpNtpTransportTest, ReceivesServerResponseBytes) {
@@ -172,9 +175,11 @@ TEST_F(UdpNtpTransportTest, TimesOutWhenServerDoesNotReply) {
     EXPECT_LT(elapsed, 1500ms) << "timeout did not bound the exchange";
 }
 
-TEST_F(UdpNtpTransportTest, UnresolvableHostIsUnreachable) {
-    // 超过 DNS 名字长度上限（255）的主机名在本地即被判非法：getaddrinfo 立即返回
-    // EAI_NONAME，不产生 DNS 查询、不依赖网络（空主机名反而会被解析成回环，不适用）。
+TEST_F(UdpNtpTransportTest, UnresolvableHostFailsExactlyOnce) {
+    // 超过 DNS 名字长度上限（255）的主机名在 glibc 上本地即被判非法（EAI_NONAME，不发
+    // DNS 查询）；Windows CRT 的 resolver 行为不保证本地拒绝，可能落到超时。两种状态都
+    // 是「这一台失败」的合法映射，本用例只锁定**恰好回调一次**且不卡死（映射分支的
+    // 确定性覆盖见 `clock_probe_test` 的假传输用例）。
     const std::string unresolvable(300, 'x');
     UdpNtpTransport transport(io_, server_port_);
     std::optional<NtpExchange> received;
@@ -190,7 +195,45 @@ TEST_F(UdpNtpTransportTest, UnresolvableHostIsUnreachable) {
 
     ASSERT_EQ(calls, 1);
     ASSERT_TRUE(received.has_value());
-    EXPECT_EQ(received->status, NtpExchange::Status::Unreachable);
+    EXPECT_TRUE(received->status == NtpExchange::Status::Unreachable ||
+                received->status == NtpExchange::Status::Timeout);
+}
+
+TEST_F(UdpNtpTransportTest, LateResponseAfterTimeoutIsDropped) {
+    // 超时先结算后，服务端迟到的响应不得产生第二次回调（「恰好一次」的竞争分支）。
+    UdpNtpTransport transport(io_, server_port_);
+    constexpr int32_t kTimeoutMs = 50;
+    int calls = 0;
+    std::optional<NtpExchange> received;
+    transport.async_exchange("127.0.0.1", make_request(4U), kTimeoutMs, [&](NtpExchange result) {
+        ++calls;
+        received = std::move(result);
+    });
+
+    // 收到请求后 200ms 再回包：必然晚于 50ms 超时。
+    serve_once([this](const uint8_t* data, std::size_t bytes, const udp::endpoint& from) {
+        late_reply_ = std::make_shared<boost::asio::steady_timer>(io_);
+        late_reply_->expires_after(200ms);
+        std::vector<uint8_t> response(data, data + bytes);
+        late_reply_->async_wait(
+            [this, from, response = std::move(response)](const boost::system::error_code& ec) {
+                if (ec) {
+                    return;
+                }
+                reply(response, from);
+            });
+    });
+
+    io_.restart();
+    io_.run_for(1s);
+
+    ASSERT_EQ(calls, 1);
+    ASSERT_TRUE(received.has_value());
+    EXPECT_EQ(received->status, NtpExchange::Status::Timeout);
+    // 迟到响应在超时结算后才发出；再给事件循环一点时间，确认没有第二次回调。
+    io_.restart();
+    io_.run_for(100ms);
+    EXPECT_EQ(calls, 1);
 }
 
 TEST_F(UdpNtpTransportTest, ConcurrentExchangesStayIndependent) {

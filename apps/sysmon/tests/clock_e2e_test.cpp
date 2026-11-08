@@ -6,16 +6,16 @@
  * 做法：起**测试专用可执行文件**（CMake 目标 `dzsysmon_clock_e2e_runner`，产出
  * `tests/dzsysmon` = 同一份进程主体 + 假 NTP 传输，见 `clock_e2e_runner.cpp` /
  * `clock_fake_transport.h`），用真实事件通道观察帧序与快照内容。网络部分是注入替身，
- * 全程不访问外网（契约 sysmon §2.7 的唯一注入接缝）。
+ * 全程不访问外网（注入接缝见 `clock_probe.h` 的 `NtpTransport`）。
  *
  * 断言全部用「条件等待 + 超时即失败」表达，不用固定 sleep 当同步手段。
  * 信号量与事件通道是机器全局命名空间，与 dev 栈/并行测试互扰：检测到占用时默认
  * GTEST_SKIP，`DZ_SYSMON_E2E_STRICT=1` 时 FAIL（与既有 sysmon e2e 同约定）。该用例 RUN_SERIAL。
  *
  * 定时探测用例要等到「下一个整分钟」。为了让用例在支持 POSIX TZ 秒级偏移的平台上只等
- * 约 3 秒，SetUp 把子进程的 `TZ` 设成「本地秒数 = 57」的时区；若平台不支持秒级偏移
- * （TZ 解析失败），测试与子进程回退到同一套本地时区语义，目标时刻仍然正确，只是要等
- * 最多 60 秒——正确性不依赖该优化。
+ * 约 8 秒，SetUp 把子进程的 `TZ` 设成「本地秒数 = 52」的时区（留出两次 SET 帧的余量）；
+ * 若平台不支持秒级偏移（TZ 解析失败），测试与子进程回退到同一套本地时区语义，目标时刻
+ * 仍然正确，只是要等最多 60 秒——正确性不依赖该优化。
  */
 
 #include "sysmon_e2e_support.h"
@@ -376,10 +376,9 @@ protected:
         return content;
     }
 
-    /// 统计「探测完成」日志行数（每轮恰好一条；`clock probe skipped` 不计入）。
-    std::size_t probe_finished_log_lines() const {
+    /// 统计日志中某段文本出现的次数（用例用它数「每轮一条」与「在飞拒绝」两类日志）。
+    std::size_t log_occurrences(std::string_view needle) const {
         const std::string log = read_log();
-        constexpr std::string_view needle = "clock probe finished";
         std::size_t count = 0;
         for (std::size_t pos = log.find(needle); pos != std::string::npos;
              pos = log.find(needle, pos + needle.size())) {
@@ -387,6 +386,9 @@ protected:
         }
         return count;
     }
+
+    /// 统计「探测完成」日志行数（每轮恰好一条；`clock probe skipped` 不计入）。
+    std::size_t probe_finished_log_lines() const { return log_occurrences("clock probe finished"); }
 
     static void restore_env(const char* key, const std::optional<std::string>& value) {
         if (value.has_value()) {
@@ -580,7 +582,8 @@ TEST_F(ClockE2ETest, RuntimeProbeTimesRescheduleAndFire) {
         << "scheduled round must emit exactly one more log line";
 }
 
-// AC4 的反向：`clock` 域关闭时停止定时探测并清空该域（关闭期间到点也不得探测）。
+// AC4 的反向 + 契约 §3.1：`clock` 域关闭时停止定时探测并清空该域；false→true 时**立即**
+// 发起一轮探测（与进程启动同款），且重开不得复活关闭前的旧值。
 TEST_F(ClockE2ETest, DisablingClockStopsTimerAndClearsDomain) {
     write_config({"fake-ok"}, {});
     start_child();
@@ -592,8 +595,9 @@ TEST_F(ClockE2ETest, DisablingClockStopsTimerAndClearsDomain) {
     ASSERT_TRUE(startup_probe.has_value());
     const int64_t first_probe_ms =
         startup_probe->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    EXPECT_EQ(probe_finished_log_lines(), 1U);
 
-    // 先排一个即将到点的探测，再立刻关闭域：定时器必须被取消。
+    // 先排一个即将到点的定时探测，再关闭域：该等待必须被取消。
     const auto [target, boundary_deadline] = next_local_minute(/*min_seconds_ahead=*/4);
     ASSERT_TRUE(send_set_config({{"clock", {{"probe_times", {target}}}}}));
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
@@ -609,29 +613,43 @@ TEST_F(ClockE2ETest, DisablingClockStopsTimerAndClearsDomain) {
             << key;
     }
     EXPECT_EQ(platform::SysmonSnapshot::validate(*disabled), std::nullopt);
-
-    // 等过原定探测时刻：若定时器没被取消，这里会多出一条探测完成日志（结果被丢弃，
-    // 快照域仍为 null——所以日志是唯一可观察证据）。
-    const auto observe_until = boundary_deadline + 3s;
-    while (std::chrono::steady_clock::now() < observe_until) {
-        ASSERT_EQ(probe_finished_log_lines(), 1U)
-            << "disabled clock domain still probed (timer was not stopped)";
-        std::this_thread::sleep_for(50ms);
-    }
     EXPECT_EQ(probe_finished_log_lines(), 1U);
-    EXPECT_GT(first_probe_ms, 0);
 
-    // 重新开启：域回到域内空态（不是 null），后续仍可探测。
+    // 重新开启：SET 同步推送的一帧是域内空态（关闭时清掉的结果不得复活），随后**立即**
+    // 发起一轮探测（契约 §3.1「与进程启动同款」），不必空等下一个 `probe_times` 时刻。
     ASSERT_TRUE(send_set_config({{"clock", {{"enabled", true}}}}));
     const auto restored = wait_for_snapshot(
-        [](const nlohmann::json& payload) { return !payload["clock"].is_null(); }, 5s);
-    ASSERT_TRUE(restored.has_value()) << "re-enabling the clock domain did not restore it";
-    // 重开后首轮探测前是域内空态：关闭时清掉的结果不得复活（关闭期与重开首轮前都不得
-    // 展示旧值，契约 §3.1.1 / 组件文档）。
-    EXPECT_EQ((*restored)["clock"]["last_probe_unix_ms"].get<int64_t>(), 0)
-        << "re-enabling must not resurrect the cleared probe result";
+        [](const nlohmann::json& payload) {
+            return !payload["clock"].is_null() &&
+                   payload["clock"]["last_probe_unix_ms"].get<int64_t>() == 0;
+        },
+        5s);
+    ASSERT_TRUE(restored.has_value())
+        << "re-enabling must restore an empty state (the cleared result must not resurrect)";
     EXPECT_TRUE((*restored)["clock"]["offset_ms"].is_null());
     EXPECT_EQ(platform::SysmonSnapshot::validate(*restored), std::nullopt);
+
+    const auto reprobed = wait_for_snapshot(
+        [first_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > first_probe_ms;
+        },
+        5s);
+    ASSERT_TRUE(reprobed.has_value())
+        << "contract sysmon §3.1: re-enabling the clock domain must probe immediately";
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*reprobed), std::nullopt);
+    EXPECT_EQ(probe_finished_log_lines(), 2U);
+
+    // 关闭时那个到点等待必须**失效**：重开后只应存在一个新的到点等待。若旧等待仍会回调，
+    // 原定时刻会有两个 handler 同时到点——一个发起探测、另一个被在飞拒绝并记 `skipped` 日志。
+    const auto observe_until = boundary_deadline + 3s;
+    while (std::chrono::steady_clock::now() < observe_until) {
+        EXPECT_EQ(log_occurrences("clock probe skipped"), 0U)
+            << "leaked probe timer: a canceled wait fired after re-enable";
+        std::this_thread::sleep_for(50ms);
+    }
+    EXPECT_EQ(log_occurrences("clock probe skipped"), 0U);
+    // 原定时刻的定时探测照常发生：启动 1 + 重开立即 1 + 到点 1。
+    EXPECT_EQ(probe_finished_log_lines(), 3U);
 }
 
 }  // namespace

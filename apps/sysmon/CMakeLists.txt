@@ -94,10 +94,11 @@ foreach(testfile ${DZSYSMON_TESTS})
         set(test_properties RUN_SERIAL TRUE)
     elseif(testname STREQUAL "clock_e2e_test")
         # #299：起测试专用可执行文件 dzsysmon_clock_e2e_runner（真实进程主体 + 假 NTP 传输），
-        # 需先构建它；定时探测用例要等到下一个整分钟，超时留足（最坏 ≈65s + 进程启动）。
+        # 需先构建它。两个用例要等「下一个整分钟」：TZ 秒级偏移生效时约 8s，平台不支持时
+        # 各最多 ~60s（共 ~130s）+ 进程启动，故 TIMEOUT 取 240 留余量。
         set(test_needs_daemon FALSE)
         set(test_needs_clock_runner TRUE)
-        set(test_properties RUN_SERIAL TRUE TIMEOUT 180)
+        set(test_properties RUN_SERIAL TRUE TIMEOUT 240)
     elseif(testname STREQUAL "collector_oracle_test")
         # 真机 oracle（#136 AC5）：读 ctest 注入的 DZTRADER_HOME/shm（全仓测试共享同一目录），
         # DiskDomainsHoldOnRealMachine 先 collect_shm_dir 再用 recursive_directory_iterator

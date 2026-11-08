@@ -1263,6 +1263,9 @@ private:
     void apply_sysmon_config(const shm::FrameView& view) {
         bool applied = false;
         const bool history_enabled_before = config_.history.enabled;
+        // `clock` 域开关的**前**状态：契约 §3.1 要求 false→true 时立即发起一轮探测
+        // （与进程启动同款），不能等下一个 `probe_times` 时刻。
+        const bool clock_enabled_before = clock_domain_enabled();
         try {
             config_store_.set_patch(shm::decode_ext_inst_json<nlohmann::json>(view));
             config_ = config_store_.current().get<platform::SysmonConfig>();
@@ -1285,6 +1288,12 @@ private:
                 // 重复 SET `enabled=true` 不构成状态切换；此处仍尝试建库，使用户无需先关再开
                 // （或重启进程）即可恢复历史记录。
                 enable_history_at_runtime();
+            }
+            // 契约 §3.1：`clock` 域 false→true 时立即发起一轮探测（与进程启动同款），
+            // 避免开关打开后空等下一个 `probe_times` 时刻。放在其余副作用之后、回推/推送
+            // 之前：探测异步完成后再经 §4 触发 5 推送结果；此处不阻塞帧处理。
+            if (!clock_enabled_before && clock_domain_enabled()) {
+                begin_clock_probe_round();
             }
             applied = true;
             SPDLOG_INFO("sysmon config updated | measure_interval_ms={} push_interval_sec={}",

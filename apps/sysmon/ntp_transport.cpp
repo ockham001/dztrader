@@ -67,8 +67,10 @@ void UdpNtpTransport::async_exchange(std::string host,
     // 不让单台服务器把整轮探测拖成无限期。
     exchange->timer.expires_after(std::chrono::milliseconds(timeout_ms));
     exchange->timer.async_wait([this, exchange](const boost::system::error_code& ec) {
-        if (ec) {
-            return;  // 已被 finish() 取消
+        // `done` 兜底：定时器已到期但 handler 尚未执行时被响应抢先结算（cancel 不会
+        // 使已到期的 handler 失效），此时不得再走 finish。
+        if (ec || exchange->done) {
+            return;
         }
         NtpExchange result;
         result.status = NtpExchange::Status::Timeout;

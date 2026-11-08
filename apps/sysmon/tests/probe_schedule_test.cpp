@@ -158,12 +158,13 @@ TEST(ProbeScheduleTest, RescheduleReplacesPendingWait) {
     boost::asio::io_context io;
     ProbeSchedule schedule(io);
     int calls = 0;
-    // 先排 3 秒后（08:29:57 → 08:30），再重排到 200ms 后：旧等待必须被取消。
-    schedule.reschedule(local_wall(8, 29, 57), {"08:30"}, [&calls] { ++calls; });
-    schedule.reschedule(local_wall(8, 29, 59, 800), {"08:30"}, [&calls] { ++calls; });
+    // 先排 500ms 后（08:29:59.500 → 08:30），再重排到 100ms 后：旧等待必须被取消。
+    // 观测窗 1s 覆盖**旧等待的到点时刻**——若取消失效，calls 会是 2（不是恒真的 1）。
+    schedule.reschedule(local_wall(8, 29, 59, 500), {"08:30"}, [&calls] { ++calls; });
+    schedule.reschedule(local_wall(8, 29, 59, 900), {"08:30"}, [&calls] { ++calls; });
     ASSERT_TRUE(schedule.armed());
     io.restart();
-    io.run_for(2s);
+    io.run_for(1s);
     EXPECT_EQ(calls, 1);
     EXPECT_FALSE(schedule.armed());
 }

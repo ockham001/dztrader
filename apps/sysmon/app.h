@@ -7,7 +7,8 @@
  *
  * `main.cpp` 只保留 `int main`；本头文件把 `run` 暴露给**测试专用可执行文件**
  * （`tests/clock_e2e_runner.cpp`）注入假 NTP 传输——进程级 e2e 起的是真实进程与真实事件
- * 通道，只有网络部分用替身（契约 sysmon §2.7 的注入接缝；CI 不能依赖外网 NTP）。
+ * 通道，只有网络部分用替身（注入接缝见 `clock_probe.h` 的 `NtpTransport`；CI 不能依赖
+ * 外网 NTP）。契约 sysmon §2.7 定义的是探测的计算语义，不规定测试注入方式。
  */
 
 #include "clock_probe.h"
