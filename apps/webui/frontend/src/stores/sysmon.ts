@@ -1,9 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { sysmonApi, type SysmonConfigPatch } from '@/api/sysmon'
+import { resolveClockManualIntervalSec } from '@/composables/sysmonClock'
 import { PENDING_TIMEOUT, usePending } from '@/composables/usePending'
 import type {
   SysmonAvailabilityEntry,
+  SysmonClockDaemonInfo,
+  SysmonClockInfo,
+  SysmonClockServerInfo,
   SysmonConfigPayload,
   SysmonCoreFrequency,
   SysmonCpuCore,
@@ -22,7 +26,9 @@ import type {
 export const SYSMON_NETWORK_CONFIG_KEY = 'sysmon:network_config'
 /** 完整配置保存（admin 合并 patch）的 pending key；WS `sysmon_config` 到达时清除 */
 export const SYSMON_CONFIG_KEY = 'sysmon:config'
-/** 配置类操作超时（对齐 settings / mdConfig 的 CONFIG_OP_TIMEOUT_MS） */
+/** 时钟「立即查询」触发的 pending key；随后的 WS `sysmon_snapshot` 到达时清除 */
+export const SYSMON_CLOCK_PROBE_KEY = 'sysmon:clock_probe'
+/** 配置类操作（含「立即查询」）的 REST 超时（对齐 settings / mdConfig 的 CONFIG_OP_TIMEOUT_MS） */
 export const SYSMON_CONFIG_TIMEOUT_MS = 10_000
 
 /**
@@ -128,6 +134,10 @@ export const useSysmonStore = defineStore('sysmon', () => {
     snapshot.value = p as SysmonSnapshotPayload
     loaded.value = true
     error.value = null
+    // 「立即查询」的清除信号（#302，契约 sysmon §1.1）：读的是**净化后**的 `clock`
+    // （`last_probe_unix_ms` 的合法性判据只有一处），比较对象是触发时记下的基线，
+    // 因此在 snapshot 写入之后调用。
+    settleClockProbeFromSnapshot()
   }
 
   /** 指标可用性条目（契约 sysmon §2.5；缺失 = 不可用） */
@@ -525,6 +535,92 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return Array.isArray(s.network) && s.network.length === 0
   })
 
+  // ===== clock（#302）：时钟偏差域（契约 sysmon §2.9）=====
+
+  /**
+   * 时钟偏差域（契约 sysmon §2.9）。三态由**域对象本身**表达，store 不做二次改写：
+   * - `null`：域被配置关闭（契约 §2.9 注：这是 `clock = null` 的**唯一**含义）；
+   * - 对象且 `last_probe_unix_ms = 0`：尚未探测；
+   * - 对象且 `last_probe_unix_ms > 0` 而 `offset_ms = null`：本轮无可用参考源（全部失败）。
+   *
+   * 视图状态分类的唯一实现是 `composables/sysmonClock.clockDomainState`（纯函数，可单测），
+   * store 只负责**字段净化**：不做「null 折算成默认对象」之类的便利改写，否则「配置关闭」
+   * 与「尚未探测」两种语义会在 store 层被抹成一种（契约要求前端区分它们）。
+   *
+   * 净化规则（防御半截 payload，但**不改写事实**）：
+   * - `offset_ms` / `bound_ms` 用 `toFiniteNumber`（**允许负值**：偏差是有符号量，正 = 本地快）；
+   *   两者必须**同生共死**（契约 §2.9「有偏差就必有界」）——只有一个合法值时无法自证可信，
+   *   因此把两者一并置 null，不展示半对读数；
+   * - `last_probe_unix_ms` 用 `toNonNegativeInteger`，非法值按 0 处理（= 尚未探测，不伪造探测时刻）；
+   * - `source` 只接受非空字符串（空串是契约的「未探测成功」合法值，保留原样）；
+   * - `source_stratum` 只接受 `[1,15]` 整数（契约 §2.9 的取值域），其余为 null；
+   * - `servers` / `daemons` 逐条净化：host / name 为空串的条目剔除（它没有可展示的标识），
+   *   其余字段按各自语义净化；`servers` 按 host `localeCompare` 升序（不依赖发送端顺序，
+   *   与 `network` / `volumes` 的确定性展示同款）；
+   * - `daemon_conflict` / `kernel_synced`：前者严格取 `=== true`，后者保留三态（null = 读不到，
+   *   契约明文不得猜成 false）。
+   */
+  const clock = computed<SysmonClockInfo | null>(() => {
+    const s = snapshot.value
+    const raw = s?.clock
+    if (!raw || typeof raw !== 'object') return null
+    const offset = toFiniteNumber(raw.offset_ms)
+    const bound = toFiniteNumber(raw.bound_ms)
+    // 同生共死：契约 §2.9 明确「有偏差就必有界」，半对读数在交易场景里是误导
+    const bothMeasured = offset !== null && bound !== null
+    const source = typeof raw.source === 'string' ? raw.source.trim() : ''
+    const stratum = typeof raw.source_stratum === 'number'
+      && Number.isInteger(raw.source_stratum)
+      && raw.source_stratum >= 1
+      && raw.source_stratum <= 15
+      ? raw.source_stratum
+      : null
+    const lastProbe = toNonNegativeInteger(raw.last_probe_unix_ms) ?? 0
+    const servers: SysmonClockServerInfo[] = []
+    for (const entry of Array.isArray(raw.servers) ? raw.servers : []) {
+      const host = typeof entry?.host === 'string' ? entry.host.trim() : ''
+      if (!host) continue
+      const ok = entry?.ok === true
+      servers.push({
+        host,
+        ok,
+        // 成功台的四项测量按契约必非 null；失败台必为 null（失败样本不产出任何测量值）。
+        // 这里逐项净化，让「ok=true 但测量字段非法」这种畸形 payload 不至于渲染出假读数。
+        offset_ms: ok ? toFiniteNumber(entry?.offset_ms) : null,
+        bound_ms: ok ? toFiniteNumber(entry?.bound_ms) : null,
+        rtt_ms: ok ? toNonNegativeNumber(entry?.rtt_ms) : null,
+        stratum: ok && typeof entry?.stratum === 'number' && Number.isInteger(entry.stratum)
+          && entry.stratum >= 1 && entry.stratum <= 15
+          ? entry.stratum
+          : null,
+        error: ok ? null : (typeof entry?.error === 'string' && entry.error.trim() ? entry.error.trim() : null),
+      })
+    }
+    servers.sort((a, b) => a.host.localeCompare(b.host))
+    const daemons: SysmonClockDaemonInfo[] = []
+    for (const entry of Array.isArray(raw.daemons) ? raw.daemons : []) {
+      const name = typeof entry?.name === 'string' ? entry.name.trim() : ''
+      if (!name) continue
+      daemons.push({ name, running: entry?.running === true })
+    }
+    // 冲突标记以**净化后**的服务列表重算（契约 §2.9：daemon_conflict = 检测到 ≥2 种**不同**服务
+    // 同时运行）——payload 里的布尔与净化结果冲突时，展示层必须自洽（列表只显示一条却标着冲突，
+    // 或显示两条却没标冲突，都会让人无法判断）。两种来源都是「同一事实的两处定义」，这里让
+    // 列表事实优先；按名称去重后再数（同名重复条目是畸形 payload，不是两种服务）。
+    const runningNames = new Set(daemons.filter(daemon => daemon.running).map(daemon => daemon.name))
+    return {
+      offset_ms: bothMeasured ? offset : null,
+      bound_ms: bothMeasured ? bound : null,
+      source,
+      source_stratum: bothMeasured ? stratum : null,
+      last_probe_unix_ms: lastProbe,
+      servers,
+      daemons,
+      daemon_conflict: runningNames.size >= 2,
+      kernel_synced: typeof raw.kernel_synced === 'boolean' ? raw.kernel_synced : null,
+    }
+  })
+
   /** 生效配置镜像（契约 sysmon §3 RTN_SYSMON_CONFIG 全量回推）；未收到时为 null */
   const config = ref<SysmonConfigPayload | null>(null)
   /** 配置补拉进行中（防 Topbar / 监控页并发 init 重复请求） */
@@ -629,6 +725,99 @@ export const useSysmonStore = defineStore('sysmon', () => {
     return ok !== undefined
   }
 
+  // ===== 立即查询（#302）：契约 sysmon §1.1 / §3.1 =====
+
+  /** 触发挂起中（REST 已发出、等探测完成的快照）：按钮 disabled 防重复提交 */
+  const clockProbePending = computed(() => sysmonPending.pending[SYSMON_CLOCK_PROBE_KEY] ?? false)
+  /** 冷却剩余秒数（取 `clock.manual_min_interval_sec`；0 = 可再次点击） */
+  const clockProbeCooldownSec = ref(0)
+  /**
+   * 触发时刻的 `clock.last_probe_unix_ms`：快照里该字段**严格前进**才算「本轮探测完成」，
+   * 仅凭「来了一帧快照」不足以证明（周期推送每 5s 也来一帧）。
+   */
+  let clockProbeBaselineMs = 0
+  let clockCooldownTimer: ReturnType<typeof setInterval> | null = null
+
+  /** 清冷却计时器与剩余秒数（停用路径唯一实现：到点 / 触发失败 / 快照清除都走它） */
+  function stopClockProbeCooldown(): void {
+    if (clockCooldownTimer !== null) {
+      clearInterval(clockCooldownTimer)
+      clockCooldownTimer = null
+    }
+    clockProbeCooldownSec.value = 0
+  }
+
+  /**
+   * 启动冷却倒计时（契约 §3.1 `manual_min_interval_sec`；0 = 不限流，不启动）。
+   * 计时器每秒递减，到 0 自清（不在 7×24 进程里留一个永久 interval）；同时清 pending——
+   * 冷却结束仍没等到「探测完成」的快照说明 dzsysmon 忽略了本次触发（限流 / 探测在飞 / 域关闭，
+   * 契约 §1.1：拒绝没有错误通道），此时**静默恢复可点**，不弹超时错误（触发确实已发出）。
+   */
+  function startClockProbeCooldown(seconds: number): void {
+    stopClockProbeCooldown()
+    if (seconds <= 0) return
+    clockProbeCooldownSec.value = seconds
+    clockCooldownTimer = setInterval(() => {
+      if (clockProbeCooldownSec.value <= 1) {
+        stopClockProbeCooldown()
+        sysmonPending.fail(SYSMON_CLOCK_PROBE_KEY)
+        return
+      }
+      clockProbeCooldownSec.value -= 1
+    }, 1_000)
+  }
+
+  /**
+   * 快照到达时判断本轮探测是否完成（严格前进的 `last_probe_unix_ms`）并清 pending。
+   * 只在本端确有挂起触发时才比较：没有触发时快照前进是定时探测的正常节奏，与按钮无关。
+   * 读净化后的 `clock`（`last_probe_unix_ms` 的合法性判据只有一处，在 {@link clock}）。
+   */
+  function settleClockProbeFromSnapshot(): void {
+    if (!clockProbePending.value) return
+    const lastProbe = clock.value?.last_probe_unix_ms ?? 0
+    if (lastProbe <= clockProbeBaselineMs) return
+    sysmonPending.resolve(SYSMON_CLOCK_PROBE_KEY)
+  }
+
+  /**
+   * 手动触发一轮时钟探测（契约 sysmon §1.1 / 契约 rest §2.8，admin）。
+   *
+   * 语义边界（三条都来自契约，不是实现选择）：
+   * - **REST 成功 ≠ 探测发生**：响应只表示「已写事件通道」，限流窗口内 / 探测在飞 / 域关闭时
+   *   dzsysmon 直接忽略且无错误响应，所以按钮只表达「已触发、等下一次快照」，不表达「必已探测」。
+   * - **置灰时长取配置权威值** `clock.manual_min_interval_sec`（0 = 不限流）：与 dzsysmon 的
+   *   拒绝窗口同源，前端不另定一套时长。
+   * - **清除信号是快照**：`clock.last_probe_unix_ms` 严格前进即探测完成（本函数之外只有
+   *   {@link settleClockProbeFromSnapshot} 会清）。冷却到点也清，避免被忽略的触发把按钮钉住。
+   *
+   * 返回值对齐配置类操作：true = 已下发（等快照）；false = 防空转 / HTTP 失败；
+   * PENDING_TIMEOUT = 超时（usePending 已 toast，调用方据此去重双 toast）。
+   */
+  async function probeClock(): Promise<boolean | typeof PENDING_TIMEOUT> {
+    if (clockProbePending.value || clockProbeCooldownSec.value > 0) return false
+    clockProbeBaselineMs = clock.value?.last_probe_unix_ms ?? 0
+    const ok = await sysmonPending.run(
+      SYSMON_CLOCK_PROBE_KEY,
+      () => sysmonApi.probeClock(),
+      {
+        opLabel: '立即查询时钟偏差',
+        timeout: SYSMON_CONFIG_TIMEOUT_MS,
+        distinguishTimeout: true,
+      },
+    )
+    if (ok === PENDING_TIMEOUT) {
+      // usePending 已清 pending 并 toast；冷却不启动（请求根本没得到响应，等服务端恢复）
+      return PENDING_TIMEOUT
+    }
+    if (ok === undefined) {
+      // HTTP 失败（如 403 / 503 事件通道未就绪）：run() 已清 pending，冷却不启动
+      //（此处冷却必为 0——函数开头已在有冷却时提前返回），因此无需再停表，按钮立即恢复可点。
+      return false
+    }
+    startClockProbeCooldown(resolveClockManualIntervalSec(config.value?.clock))
+    return true
+  }
+
   return {
     snapshot,
     loaded,
@@ -650,6 +839,9 @@ export const useSysmonStore = defineStore('sysmon', () => {
     diskIo,
     network,
     networkFilteredAll,
+    clock,
+    clockProbePending,
+    clockProbeCooldownSec,
     config,
     hideVirtual,
     hideVirtualPending,
@@ -661,6 +853,7 @@ export const useSysmonStore = defineStore('sysmon', () => {
     applyConfig,
     setConfig,
     setHideVirtual,
+    probeClock,
     availabilityOf,
   }
 })

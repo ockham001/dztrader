@@ -10,10 +10,21 @@ import {
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { sysmonApi } from '@/api/sysmon'
 import { useToastStore } from '@/stores/toast'
-import { makeSysmonConfig, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
+import {
+  SYSMON_CLOCK_ALL_FAILED,
+  SYSMON_CLOCK_LIVE,
+  SYSMON_CLOCK_UNPROBED,
+  makeSysmonConfig,
+  makeSysmonSnapshot,
+} from '@/test-utils/sysmonSnapshot'
 
 vi.mock('@/api/sysmon', () => ({
-  sysmonApi: { getSnapshot: vi.fn(), setConfig: vi.fn(), getConfig: vi.fn() },
+  sysmonApi: {
+    getSnapshot: vi.fn(),
+    setConfig: vi.fn(),
+    getConfig: vi.fn(),
+    probeClock: vi.fn(),
+  },
 }))
 
 describe('useSysmonStore', () => {
@@ -1352,5 +1363,286 @@ describe('useSysmonStore 完整配置镜像与保存（#81）', () => {
     expect(sysmonPending.pending[SYSMON_CONFIG_KEY]).toBe(false)
     expect(sysmonPending.pending[SYSMON_NETWORK_CONFIG_KEY]).toBe(false)
     expect(store.config?.network.hide_virtual).toBe(false)
+  })
+})
+
+describe('useSysmonStore clock 域解析（#302，契约 sysmon §2.9）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('三种空态各自由域对象本身表达（null = 配置关闭，last_probe=0 = 尚未探测）', () => {
+    const store = useSysmonStore()
+    expect(store.clock).toBeNull()  // 无快照
+
+    store.applySnapshot(makeSysmonSnapshot({ clock: null }))
+    expect(store.clock).toBeNull()  // 配置关闭：clock = null 的唯一含义
+
+    store.applySnapshot(makeSysmonSnapshot())  // 默认夹具 = 尚未探测
+    expect(store.clock?.last_probe_unix_ms).toBe(0)
+    expect(store.clock?.offset_ms).toBeNull()
+    expect(store.clock?.servers).toEqual([])
+    // 尚未探测不得被 store 折算成「有值但为 0」
+    expect(store.clock?.offset_ms).toBeNull()
+    expect(store.clock?.bound_ms).toBeNull()
+  })
+
+  it('正常态：偏差/误差界/来源/stratum/探测时刻照 payload 保留（负偏差不被吞）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ clock: { ...SYSMON_CLOCK_LIVE, offset_ms: -12.5 } }))
+
+    expect(store.clock?.offset_ms).toBe(-12.5)  // 有符号量：负 = 本地慢
+    expect(store.clock?.bound_ms).toBe(18.3)
+    expect(store.clock?.source).toBe('ntp.aliyun.com')
+    expect(store.clock?.source_stratum).toBe(2)
+    expect(store.clock?.last_probe_unix_ms).toBe(SYSMON_CLOCK_LIVE.last_probe_unix_ms)
+    expect(store.clock?.offset_ms).toBe(-12.5)
+    expect(store.clock?.bound_ms).toBe(18.3)
+  })
+
+  it('偏差与误差界同生共死：只有一个合法值时一并置 null（不展示半对读数）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, bound_ms: null },
+    }))
+    expect(store.clock?.offset_ms).toBeNull()
+    expect(store.clock?.bound_ms).toBeNull()
+    expect(store.clock?.offset_ms).toBeNull()
+
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: null },
+    }))
+    expect(store.clock?.offset_ms).toBeNull()
+    expect(store.clock?.bound_ms).toBeNull()
+  })
+
+  it('全部失败：测量字段为 null、每台带原因；偏差不回落成 0', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }))
+
+    expect(store.clock?.last_probe_unix_ms).toBeGreaterThan(0)  // 探测过
+    expect(store.clock?.offset_ms).toBeNull()
+    expect(store.clock?.servers.map(server => [server.host, server.ok, server.error])).toEqual([
+      ['ntp.aliyun.com', false, 'timeout'],
+      ['ntp.tencent.com', false, 'unreachable'],
+    ])
+    expect(store.clock?.offset_ms).toBeNull()
+  })
+
+  it('每台服务器按 host 升序排序（确定性展示，不依赖发送端顺序）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: {
+        ...SYSMON_CLOCK_LIVE,
+        servers: [
+          { host: 'zzz.example', ok: true, offset_ms: 1, bound_ms: 2, rtt_ms: 3, stratum: 2, error: null },
+          { host: 'aaa.example', ok: false, offset_ms: null, bound_ms: null, rtt_ms: null, stratum: null, error: 'timeout' },
+        ],
+      },
+    }))
+    expect(store.clock?.servers.map(server => server.host)).toEqual(['aaa.example', 'zzz.example'])
+  })
+
+  it('畸形 payload 净化：空 host 剔除、stratum 越界归 null、失败台的测量字段一律清空', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: {
+        ...SYSMON_CLOCK_LIVE,
+        servers: [
+          { host: '   ', ok: true, offset_ms: 1, bound_ms: 2, rtt_ms: 3, stratum: 2, error: null },
+          { host: 'bad-stratum.example', ok: true, offset_ms: 1, bound_ms: 2, rtt_ms: 3, stratum: 99, error: null },
+          // ok=false 却带着测量字段：失败样本不产出任何测量值（契约 §2.9），一律清空
+          { host: 'failed.example', ok: false, offset_ms: 5, bound_ms: 6, rtt_ms: 7, stratum: 3, error: 'kod_deny' },
+        ],
+      },
+    }))
+
+    expect(store.clock?.servers.map(server => server.host)).toEqual(['bad-stratum.example', 'failed.example'])
+    expect(store.clock?.servers[0].stratum).toBeNull()
+    expect(store.clock?.servers[1]).toEqual({
+      host: 'failed.example',
+      ok: false,
+      offset_ms: null,
+      bound_ms: null,
+      rtt_ms: null,
+      stratum: null,
+      error: 'kod_deny',
+    })
+  })
+
+  it('daemon 列表净化 + 冲突标记按净化后「在运行」的服务数重算', () => {
+    const store = useSysmonStore()
+    // payload 标了冲突但只有一条在运行的服务：以列表事实为准（展示层必须自洽）
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: {
+        ...SYSMON_CLOCK_LIVE,
+        daemons: [{ name: 'chronyd', running: true }, { name: 'ntpd', running: false }],
+        daemon_conflict: true,
+      },
+    }))
+    expect(store.clock?.daemon_conflict).toBe(false)
+
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: {
+        ...SYSMON_CLOCK_LIVE,
+        daemons: [{ name: 'chronyd', running: true }, { name: 'ntpd', running: true }],
+        daemon_conflict: false,
+      },
+    }))
+    expect(store.clock?.daemon_conflict).toBe(true)
+
+    // 空 name 剔除
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, daemons: [{ name: ' ', running: true }] },
+    }))
+    expect(store.clock?.daemons).toEqual([])
+
+    // 同名条目重复（畸形 payload）不是「两种服务」：按名称去重后再判冲突
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: {
+        ...SYSMON_CLOCK_LIVE,
+        daemons: [{ name: 'chronyd', running: true }, { name: 'chronyd', running: true }],
+      },
+    }))
+    expect(store.clock?.daemon_conflict).toBe(false)
+    expect(store.clock?.daemons).toHaveLength(2)
+  })
+
+  it('kernel_synced 保留三态（null = 读不到，不得猜成 false）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ clock: { ...SYSMON_CLOCK_LIVE, kernel_synced: null } }))
+    expect(store.clock?.kernel_synced).toBeNull()
+    store.applySnapshot(makeSysmonSnapshot({ clock: { ...SYSMON_CLOCK_LIVE, kernel_synced: false } }))
+    expect(store.clock?.kernel_synced).toBe(false)
+  })
+
+  it('未探测空态常量与「尚未探测」语义一致（servers 为空数组而不是缺失）', () => {
+    expect(SYSMON_CLOCK_UNPROBED.servers).toEqual([])
+    expect(SYSMON_CLOCK_UNPROBED.daemons).toEqual([])
+    expect(SYSMON_CLOCK_UNPROBED.last_probe_unix_ms).toBe(0)
+  })
+})
+
+describe('useSysmonStore「立即查询」（#302，契约 sysmon §1.1）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('触发后挂起 pending，快照里 last_probe_unix_ms 前进即清除', async () => {
+    vi.mocked(sysmonApi.probeClock).mockResolvedValue({ ok: true })
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    store.applyConfig(makeSysmonConfig())
+
+    const result = await store.probeClock()
+    expect(result).toBe(true)
+    expect(sysmonApi.probeClock).toHaveBeenCalledTimes(1)
+    // REST 成功只表示「已写事件通道」：仍挂起，等探测完成的快照
+    expect(store.clockProbePending).toBe(true)
+
+    // 周期推送（探测时刻未变）不足以清除
+    store.applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    expect(store.clockProbePending).toBe(true)
+
+    // 探测完成：last_probe_unix_ms 严格前进
+    store.applySnapshot(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, last_probe_unix_ms: SYSMON_CLOCK_LIVE.last_probe_unix_ms + 5_000 },
+    }))
+    expect(store.clockProbePending).toBe(false)
+  })
+
+  it('置灰时长取配置 clock.manual_min_interval_sec（未到达配置时取契约默认 10 秒）', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sysmonApi.probeClock).mockResolvedValue({ ok: true })
+      const store = useSysmonStore()
+      store.applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+      store.applyConfig(makeSysmonConfig({ clock: { manual_min_interval_sec: 3 } }))
+
+      await store.probeClock()
+      expect(store.clockProbeCooldownSec).toBe(3)
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(store.clockProbeCooldownSec).toBe(2)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(store.clockProbeCooldownSec).toBe(0)
+      expect(store.clockProbePending).toBe(false)  // 冷却结束仍无快照 → 静默恢复可点
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('manual_min_interval_sec = 0 时不限流：不置灰，可连续触发', async () => {
+    vi.mocked(sysmonApi.probeClock).mockResolvedValue({ ok: true })
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig({ clock: { manual_min_interval_sec: 0 } }))
+    store.applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+
+    await store.probeClock()
+    expect(store.clockProbeCooldownSec).toBe(0)
+
+    // 挂起中仍防重复（pending 未清）
+    await expect(store.probeClock()).resolves.toBe(false)
+
+    // 快照清除 pending 后可再次触发
+    const next = { ...SYSMON_CLOCK_LIVE, last_probe_unix_ms: SYSMON_CLOCK_LIVE.last_probe_unix_ms + 1 }
+    store.applySnapshot(makeSysmonSnapshot({ clock: next }))
+    await expect(store.probeClock()).resolves.toBe(true)
+    expect(sysmonApi.probeClock).toHaveBeenCalledTimes(2)
+  })
+
+  it('HTTP 失败立即恢复可点（不伪造冷却、不弹双 toast）', async () => {
+    vi.mocked(sysmonApi.probeClock).mockRejectedValue(new Error('HTTP 403'))
+    const store = useSysmonStore()
+    store.applyConfig(makeSysmonConfig())
+
+    const result = await store.probeClock()
+    expect(result).toBe(false)
+    expect(store.clockProbePending).toBe(false)
+    expect(store.clockProbeCooldownSec).toBe(0)
+  })
+
+  it('超时返回 PENDING_TIMEOUT 且 pending 已清（usePending 已 toast）', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sysmonApi.probeClock).mockImplementation(() => new Promise(() => {}))
+      const store = useSysmonStore()
+
+      const pendingResult = store.probeClock()
+      expect(store.clockProbePending).toBe(true)
+      await vi.advanceTimersByTimeAsync(SYSMON_CONFIG_TIMEOUT_MS + 1)
+      const result = await pendingResult
+
+      expect(result).toBe(PENDING_TIMEOUT)
+      expect(store.clockProbePending).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('冷却窗口内拒绝重复触发（不发第二次请求）', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(sysmonApi.probeClock).mockResolvedValue({ ok: true })
+      const store = useSysmonStore()
+      store.applyConfig(makeSysmonConfig({ clock: { manual_min_interval_sec: 5 } }))
+
+      await store.probeClock()
+      // 快照清 pending，但冷却仍在
+      store.applySnapshot(makeSysmonSnapshot({
+        clock: { ...SYSMON_CLOCK_LIVE, last_probe_unix_ms: SYSMON_CLOCK_LIVE.last_probe_unix_ms + 1 },
+      }))
+      expect(store.clockProbePending).toBe(false)
+      expect(store.clockProbeCooldownSec).toBeGreaterThan(0)
+
+      await expect(store.probeClock()).resolves.toBe(false)
+      expect(sysmonApi.probeClock).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

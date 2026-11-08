@@ -3,6 +3,7 @@ import {
   RESOURCE_DANGER_RATIO,
   RESOURCE_WARN_RATIO,
   resourceLevel,
+  thresholdLevel,
   worstResourceLevel,
 } from '../useResourceLevel'
 
@@ -22,6 +23,28 @@ describe('resourceLevel 阈值边界（含边界）', () => {
 
   it.each(cases)('ratio=%s → %s', (ratio, expected) => {
     expect(resourceLevel(ratio)).toBe(expected)
+  })
+})
+
+describe('thresholdLevel 数值 + 双档阈值定档（#302：资源类与时钟偏差共用同一语义）', () => {
+  // 时钟偏差的阈值来自配置（契约 sysmon §3.1 `offset_warn_ms` / `offset_error_ms`），
+  // 资源类来自本模块常量。两者共用同一份「≥ 阈值即进入该档」判定与等级词表。
+  const cases: Array<[number, number, number, string]> = [
+    [0, 100, 1000, 'normal'],
+    [99.9, 100, 1000, 'normal'],
+    [100, 100, 1000, 'warn'],        // 恰好等于 warn 阈值算进入（契约 §2.8：≥）
+    [999, 100, 1000, 'warn'],
+    [1000, 100, 1000, 'danger'],     // 恰好等于 error 阈值算进入（契约 §2.8：≥）
+    [5000, 100, 1000, 'danger'],
+  ]
+
+  it.each(cases)('value=%s warn=%s danger=%s → %s', (value, warn, danger, expected) => {
+    expect(thresholdLevel(value, warn, danger)).toBe(expected)
+  })
+
+  it('resourceLevel 转发同一判定（资源类阈值不变）', () => {
+    expect(resourceLevel(RESOURCE_WARN_RATIO)).toBe(thresholdLevel(RESOURCE_WARN_RATIO, RESOURCE_WARN_RATIO, RESOURCE_DANGER_RATIO))
+    expect(resourceLevel(0.5)).toBe(thresholdLevel(0.5, RESOURCE_WARN_RATIO, RESOURCE_DANGER_RATIO))
   })
 })
 

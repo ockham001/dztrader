@@ -20,14 +20,29 @@ export const RESOURCE_DANGER_RATIO = 0.9
 export type ResourceLevel = 'normal' | 'warn' | 'danger'
 
 /**
+ * 数值 + 双档阈值 → 展示等级（边界含：恰好 warn 阈值 → warn、恰好 danger 阈值 → danger）。
+ *
+ * 这是本仓**唯一**的「数值定档」实现：资源类使用率由 {@link resourceLevel} 转发（阈值是
+ * 本模块常量），时钟偏差由调用方传入配置阈值（契约 sysmon §3.1 `clock.offset_warn_ms` /
+ * `offset_error_ms`）——阈值来源不同，但「≥ 阈值即进入该档」这一判定语义与等级词表只有一份
+ *（review-checklist §2.4：同一事实两处定义必然在改口径时漂移）。
+ *
+ * 入参须是已净化的有限值；不可用（null / NaN）由调用方自行分支，不得用 0 冒充后再套色标。
+ * 调用方负责取绝对值等口径转换（阈值恒为正向：时钟偏差按绝对值定档，契约 sysmon §2.8）。
+ */
+export function thresholdLevel(value: number, warnThreshold: number, dangerThreshold: number): ResourceLevel {
+  if (value >= dangerThreshold) return 'danger'
+  if (value >= warnThreshold) return 'warn'
+  return 'normal'
+}
+
+/**
  * 比率 → 展示等级（边界含：恰好 0.7 → warn、恰好 0.9 → danger）。
  * 入参须是已净化的有限比率；不可用（null / NaN）由调用方自行分支，
  * 不得用 0 冒充数据后再套色标。
  */
 export function resourceLevel(ratio: number): ResourceLevel {
-  if (ratio >= RESOURCE_DANGER_RATIO) return 'danger'
-  if (ratio >= RESOURCE_WARN_RATIO) return 'warn'
-  return 'normal'
+  return thresholdLevel(ratio, RESOURCE_WARN_RATIO, RESOURCE_DANGER_RATIO)
 }
 
 /** 等级排序：danger > warn > normal（顶栏资源图标 / 服务徽章的「取最差」共用） */
