@@ -3,18 +3,27 @@
 
 /**
  * @file clock_fake_transport.h
- * @brief 时钟探测进程级 e2e 的假 NTP 传输（#299）：脚本化、不碰真实网络。
+ * @brief 时钟探测进程级 e2e 的假 NTP 传输（#299 / #301）：脚本化、不碰真实网络。
  *
  * 只被测试专用可执行文件 `clock_e2e_runner.cpp` 使用（真实 `run()` + 假传输），因此单用途、
  * 无需登记为共享测试头。行为按配置里的 host 名脚本化：
  * - `fake-ok`         —— 成功响应：服务端时间比本机快 50ms，`stratum=2`，`root_dispersion=1ms`
  * - `fake-ok-slow`    —— 成功响应，但延迟 2.5s 才回调（用于观察「探测不阻塞采集」）
+ * - `fake-offset-N`   —— 成功响应，服务端时间比本机快 N 毫秒（`fake-offset-1500` → 偏差 −1500ms）。
+ *                        #301 用它脚本化跨越 warn / error 两个阈值档的确定性偏差；N 取整数，
+ *                        负号用 `fake-offset-negN`（`fake-offset-neg1500` → 偏差 +1500ms）。
+ * - `fake-dispersion-N` —— 成功响应，偏差为 0 但 `root_dispersion = N` 毫秒（观察误差界质量判据）。
  * - `fake-timeout`    —— 永不响应（超时）
  * - 其它（含真实主机名）—— 一律按超时处理：**e2e 绝不能因为配置里的真实主机名而访问外网**
  *
  * 响应报文用真实 NTPv4 布局（48 字节、mode 4、origin 回显请求的 transmit timestamp），
  * 因此被测的编解码/派生计算走的是与生产完全相同的路径；只有 socket 被替换成
  * `post` / `steady_timer`（后者用于慢响应场景）。
+ *
+ * `offset_ms` 与 `bound_ms` 的关系是实测出来的：`offset = −ahead`（服务端快 = 本地慢 = 负偏差），
+ * `bound_ms = ½·RTT + root_dispersion`，而 RTT 由假传输的**同步回调**决定（恒为 0），
+ * 因此 `bound_ms` 恰好等于报文里的 `root_dispersion`——`fake-dispersion-N` 因此能精确
+ * 落在质量阈值的任一侧。
  */
 
 #include "clock_probe.h"
@@ -30,7 +39,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace dztrader::sysmon::test {
@@ -40,8 +51,8 @@ inline constexpr int64_t kFakeServerAheadNs = 50'000'000;  // +50ms
 /// `fake-ok-slow` 的响应延迟：刻意长于两个推送周期（推送间隔 1s），使 e2e 能观察到
 /// **两帧**「探测在飞、计量样本仍在推进」的快照（异步探测不阻塞采集与帧处理）。
 inline constexpr std::chrono::milliseconds kFakeSlowDelay{2500};
-/// 响应报文的 `root_dispersion`（16.16 定点秒，1ms ≈ 66）。
-inline constexpr uint16_t kFakeRootDispersionFixed = 66;
+/// 响应报文的 `root_dispersion`：1ms（换算为 16.16 定点秒，见 `make_fake_response`）。
+inline constexpr int64_t kFakeRootDispersionNs = 1'000'000;
 /// 响应报文的参考源 stratum（[1,15] 内的一个普通值）。
 inline constexpr uint8_t kFakeStratum = 2;
 
@@ -71,18 +82,21 @@ inline int64_t ntp_to_unix_nanoseconds(const std::array<uint8_t, ntp::kPacketSiz
            ntp::fraction_to_nanoseconds(read_be32(packet, offset + 4));
 }
 
-/// 构造一份「服务端时间 = 请求 T1 + ahead_ns」的成功响应。
+/// 构造一份「服务端时间 = 请求 T1 + ahead_ns、root_dispersion = dispersion_ns」的成功响应。
 inline std::vector<uint8_t> make_fake_response(const std::array<uint8_t, ntp::kPacketSize>& request,
-                                               int64_t ahead_ns) {
+                                               int64_t ahead_ns,
+                                               int64_t dispersion_ns = kFakeRootDispersionNs) {
     std::array<uint8_t, ntp::kPacketSize> response{};
     response[0] = static_cast<uint8_t>((0U << 6) | (ntp::kClientVersion << 3) |
                                        ntp::kModeServer);  // LI=0 / VN=4 / Mode=4
     response[1] = kFakeStratum;
-    response[2] = 0;                                    // poll
-    response[3] = 0;                                    // precision
-    write_be32(response, 4, 0);                         // root delay
-    write_be32(response, 8, kFakeRootDispersionFixed);  // root dispersion
-    write_be32(response, 12, 0x4C4F434CU);              // reference id "LOCL"
+    response[2] = 0;             // poll
+    response[3] = 0;             // precision
+    write_be32(response, 4, 0);  // root delay
+    // root dispersion 是 16.16 定点秒（无符号）：raw = ns × 2^16 / 10^9。
+    // 用整数运算换算，与生产编解码的 `fixed_point_nanoseconds` 同一口径。
+    write_be32(response, 8, static_cast<uint32_t>(dispersion_ns * (1LL << 16) / 1'000'000'000LL));
+    write_be32(response, 12, 0x4C4F434CU);  // reference id "LOCL"
     // 16..23：reference timestamp（0）
     // 24..31：origin timestamp = 请求的 transmit timestamp（回显校验）
     for (std::size_t i = 0; i < 8; ++i) {
@@ -113,7 +127,8 @@ public:
                         std::array<uint8_t, ntp::kPacketSize> request,
                         int32_t /*timeout_ms*/,
                         Handler handler) override {
-        if (host == "fake-timeout" || !is_scripted(host)) {
+        const Script script = parse_script(host);
+        if (!script.recognised) {
             // 未脚本化的 host（含真实主机名）按超时处理：e2e 不得访问外网。
             boost::asio::post(io_, [handler = std::move(handler)]() mutable {
                 NtpExchange result;
@@ -122,9 +137,9 @@ public:
             });
             return;
         }
-        // fake-ok / fake-ok-slow：真实 NTPv4 响应报文，仅回调时机不同。
-        auto response = make_fake_response(request, kFakeServerAheadNs);
-        if (host == "fake-ok-slow") {
+        // 真实 NTPv4 响应报文：ahead 决定偏差、dispersion 决定误差界。
+        auto response = make_fake_response(request, script.ahead_ns, script.dispersion_ns);
+        if (script.slow) {
             // 用真实 asio 定时器延迟回调：探测在飞期间计量/推送定时器必须照常运行。
             auto timer = std::make_shared<boost::asio::steady_timer>(io_);
             timer->expires_after(kFakeSlowDelay);
@@ -150,9 +165,76 @@ public:
     }
 
 private:
-    /// 是否是本替身认识的脚本化 host（其余一律按超时，绝不回落到真实网络）。
-    static bool is_scripted(const std::string& host) {
-        return host == "fake-ok" || host == "fake-ok-slow" || host == "fake-timeout";
+    /// 一个 host 名脚本化出的响应参数。
+    struct Script {
+        bool recognised = false;  ///< false = 未脚本化（按超时处理，绝不回落到真实网络）
+        bool slow = false;        ///< 是否延迟回调（观察「探测不阻塞采集」）
+        /// 服务端相对本机的领先量（纳秒）。正值 → 服务端快 → 本地慢 → **负偏差**。
+        int64_t ahead_ns = kFakeServerAheadNs;
+        int64_t dispersion_ns = kFakeRootDispersionNs;
+    };
+
+    /// 把 host 名解析为响应参数（纯函数，便于按名字表推演）。
+    ///
+    /// 支持 `fake-offset-N` / `fake-offset-negN` / `fake-dispersion-N`：N 为毫秒整数。
+    static Script parse_script(const std::string& host) {
+        Script script;
+        if (host == "fake-ok") {
+            script.recognised = true;
+            return script;
+        }
+        if (host == "fake-ok-slow") {
+            script.recognised = true;
+            script.slow = true;
+            return script;
+        }
+        if (const auto millis = parse_suffix(host, "fake-offset-")) {
+            // `fake-offset-1500` → 本机慢 1500ms（偏差 −1500）；`fake-offset-neg1500` → 本地快。
+            script.recognised = true;
+            script.ahead_ns = millis->value * 1'000'000;
+            if (millis->negative) {
+                script.ahead_ns = -script.ahead_ns;
+            }
+            return script;
+        }
+        if (const auto millis = parse_suffix(host, "fake-dispersion-")) {
+            script.recognised = true;
+            script.ahead_ns = 0;  // 偏差为 0：只让误差界单独越界
+            script.dispersion_ns = millis->value * 1'000'000;
+            return script;
+        }
+        return script;  // 未脚本化（含 fake-timeout）：调用方按超时处理
+    }
+
+    struct SuffixValue {
+        int64_t value = 0;
+        bool negative = false;
+    };
+
+    /// 解析 `<prefix>[neg]<digits>`；不匹配返回 nullopt。
+    static std::optional<SuffixValue> parse_suffix(const std::string& host,
+                                                   std::string_view prefix) {
+        if (!host.starts_with(prefix)) {
+            return std::nullopt;
+        }
+        std::string_view rest = std::string_view(host).substr(prefix.size());
+        SuffixValue parsed;
+        if (rest.starts_with("neg")) {
+            parsed.negative = true;
+            rest.remove_prefix(3);
+        }
+        if (rest.empty()) {
+            return std::nullopt;
+        }
+        int64_t value = 0;
+        for (const char ch : rest) {
+            if (ch < '0' || ch > '9') {
+                return std::nullopt;  // 非数字：不是本函数的脚本化形态
+            }
+            value = value * 10 + (ch - '0');
+        }
+        parsed.value = value;
+        return parsed;
     }
 
     boost::asio::io_context& io_;

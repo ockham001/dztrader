@@ -264,6 +264,8 @@ protected:
 //
 // 这是本票最重要的外部承诺：弹窗通道必须只剩真故障。内存阈值配成 0（必然越限）仍然
 // 一条通知都不该出现——旧实现会在这里发 error+popup 并弹模态框打断盯盘。
+// 本用例的 `clock` 域关闭（见 `write_config`），因此 #301 的时钟偏差 error 档弹窗
+// 不会混进来；时钟弹窗由 `clock_e2e_test` 的 #301 用例单独覆盖。
 TEST_F(AlertE2ETest, ResourceThresholdBreachNeverProducesNotifyUi) {
     start_child();
 

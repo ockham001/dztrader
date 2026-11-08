@@ -483,10 +483,6 @@ Windows 上"空闲"与"可用"是同一个量（`PhysicalAvailable`），不得�
 
 **手动查询**：`DZ_FRAME_QUERY_SYSMON_CLOCK`（§1.1）触发一轮探测；限流在 dzsysmon 侧权威判定，拒绝只记日志、无错误通道。
 
-<!-- 计划符号（general §11.4）：契约先行定义的名字，实现落地后删除对应标记。 -->
-<!-- pending-symbol: clock_offset (#301) -->
-<!-- pending-symbol: clock_bound (#301) -->
-
 ---
 
 ## 3. 配置（SET/RTN_SYSMON_CONFIG）

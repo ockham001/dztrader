@@ -24,6 +24,7 @@
 #include "ntp_transport.h"
 #include "probe_schedule.h"
 #include "snapshot_builder.h"
+#include "clock_thresholds.h"
 #include "thresholds.h"
 #include "timer.h"
 
@@ -767,7 +768,8 @@ private:
     ///
     /// **资源类不产生任何 `NOTIFY_UI`**（ADR 0034）：判定结果只写日志。若这里再发通知，
     /// 弹窗通道就会被资源占用重新稀释——那正是本票要消除的问题。
-    /// 日志是唯一出口，`dzsysmon` 的 `NOTIFY_UI` 只剩历史库不可用与配置下发失败两类真故障。
+    /// 日志是唯一出口；`dzsysmon` 的 `NOTIFY_UI` 只剩历史库不可用、配置下发失败（本文件
+    /// 另外两处）与**时钟偏差的 error 档**（`evaluate_clock_thresholds`，#301 / ADR 0047）。
     void evaluate_thresholds() {
         const auto inputs = make_threshold_inputs(metrics_, memory_metrics_, disk_metrics_,
                                                   wall_clock_unix_ms() / 1000, steady_clock_ms());
@@ -1044,11 +1046,16 @@ private:
         begin_clock_probe_round();
     }
 
-    /// 一轮探测完成：每轮一条日志 → 写 `clock` 域 → **立即推送一帧快照** → 排下一轮。
+    /// 一轮探测完成：每轮一条日志 → **阈值判定** → 写 `clock` 域 → **立即推送一帧快照** →
+    /// 排下一轮。
     ///
     /// 探测失败（全部超时）也推送：「测不到」本身是要展示的事实（契约 §4 触发 5）。
+    /// 判定时机是**每次探测完成时**（契约 §2.8「时间判定对象」；#301）：探测是低频事件，
+    /// 没有「持续采样」的概念，因此不挂在计量 tick 上。
     void on_clock_probe_finished(ProbeOutcome outcome) {
         log_clock_probe_finished(outcome);
+        // 判定在写快照之前：本轮结果既是判定输入，也是随后推送给 UI 的事实，两者同源。
+        evaluate_clock_thresholds(outcome);
         // 完成时按**当前**配置判定：探测在飞期间被关闭则丢弃结果（关闭期不得展示旧值）。
         const bool enabled = clock_domain_enabled();
         if (enabled) {
@@ -1057,6 +1064,37 @@ private:
         round_time_sync_.reset();
         push_snapshot();
         schedule_next_clock_probe();
+    }
+
+    /// 时间判定对象（`clock_offset` / `clock_bound`）的判定与落地（契约 sysmon §2.8；#301）。
+    ///
+    /// 本方法是**唯一**把纯逻辑判定接到日志与 `NOTIFY_UI` 的地方：
+    /// - 记录落日志（级别由状态机随记录给出，不在调用方再按状态分一次支）；
+    /// - `notify_popup = true` 的记录（只有 `clock_offset` 的 error 档进入/升级）发
+    ///   `NOTIFY_UI` 且 `popup=true`——ADR 0047 对 ADR 0034 静默原则的**唯一**例外。
+    ///
+    /// 域关闭时传 `applicable=false`：判定器静默清除活动状态、不写恢复日志（配置关闭
+    /// 不是「指标回到阈值以下」）。探测失败（两个聚合值 `nullopt`）同理保留活动状态。
+    void evaluate_clock_thresholds(const ProbeOutcome& outcome) {
+        ClockThresholdInputs inputs;
+        // 完成时读**当前**配置：探测在飞期间被关闭时，本轮结果不参与判定（活动状态也被
+        // 静默清除，与快照丢弃本轮结果同一口径）。
+        inputs.applicable = clock_domain_enabled();
+        inputs.offset_ms = outcome.offset_ms;
+        inputs.bound_ms = outcome.bound_ms;
+        inputs.now_unix_sec = outcome.finished_unix_ms / 1000;
+        inputs.now_monotonic_ms = steady_clock_ms();
+        const ClockThresholdConfig config =
+            ClockThresholdConfig::from(config_.clock, config_.thresholds);
+        const auto result = clock_threshold_evaluator_.evaluate(inputs, config);
+        for (const auto& record : result.records) {
+            // 显式传 `source_loc`：日志格式带 `func=` / `file=:%#`，不带源位置这两项会是空的。
+            spdlog::log(spdlog::source_loc{__FILE__, __LINE__, SPDLOG_FUNCTION}, record.level, "{}",
+                        record.message);
+            if (record.notify_popup) {
+                notify_ui_->error(record.notify_message);
+            }
+        }
     }
 
     /// 由探测结果 + 本轮开始时的服务检测构造 `clock` 域（`daemon_conflict` 由快照构造派生）。
@@ -1423,6 +1461,9 @@ private:
     RateBaseline<platform::RawNetworkInfo> network_baseline_;
     /// 阈值越限状态机（#123）：进入/周期重记/恢复状态，只在 io_context 线程访问。
     ThresholdEvaluator threshold_evaluator_;
+    /// 时间判定状态机（#301，契约 §2.8「时间判定对象」）：`clock_offset` / `clock_bound`，
+    /// 判定时机是每次探测完成时（与资源类的计量 tick 不同）。同样只在 io_context 线程访问。
+    ClockThresholdEvaluator clock_threshold_evaluator_;
     CoreSaturationTracker saturation_tracker_;
     int64_t last_sample_unix_ms_ = 0;
     uint64_t missed_ticks_ = 0;

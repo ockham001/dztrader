@@ -37,6 +37,7 @@
 #include <dztrader/platform/sysmon.h>
 
 #include "snapshot_builder.h"
+#include "threshold_activity.h"
 
 namespace dztrader::sysmon {
 
@@ -96,16 +97,6 @@ struct ThresholdInputs {
                                                     int64_t now_unix_sec,
                                                     int64_t now_monotonic_ms);
 
-/// 判定对象标识：kind + subject（`volume_free` 时 subject 为挂载点，其余为空串）。
-///
-/// `(kind, subject)` 在单次评估内唯一，本类型是状态表键的单一标识类型——
-/// 避免把"两个字符串"当裸 pair 在接口间传递。
-struct ThresholdKey {
-    std::string kind;
-    std::string subject;
-    [[nodiscard]] auto operator<=>(const ThresholdKey& other) const = default;
-};
-
 /// 一次活动期内的记录状态（契约 sysmon §2.8 的三态）。
 enum class ThresholdState {
     Entered,    ///< 本帧进入越限（活动期起点，级别 warning）
@@ -163,19 +154,6 @@ public:
                                   const platform::SysmonThresholdsConfig& config);
 
 private:
-    /// 单个判定对象的**活动期**状态（每次"进入越限 → 回到阈值以内"是一次活动期）。
-    struct SubjectState {
-        bool active = false;             ///< 当前是否处于活动期
-        int64_t since_unix_sec = 0;      ///< 本次活动的起点（墙钟，Unix 秒）
-        int64_t since_monotonic_ms = 0;  ///< 本次活动期起点（单调时钟，重记基准）
-        /// 已记录到第几个里程碑：里程碑 = `since_monotonic_ms + N × 间隔`（N 从 1 起）。
-        /// 契约 §2.8 规定重记基准是**活动期起点**，因此用相对起点的序号，而不是
-        /// "上次记录时刻 + 间隔"——后者会把重记节奏漂到周期的别处。
-        int64_t recorded_milestone = 0;
-        /// `recorded_milestone` 所依据的重记间隔（毫秒）；运行期改变间隔时按新间隔重排。
-        int64_t scheduled_repeat_ms = 0;
-    };
-
     /// 推进一个"使用率"类判定对象（内存 / 交换同构：达到阈值进入、低于阈值恢复）。
     /// @param kind          判定对象 kind（契约 sysmon §2.8，同时用作日志里的对象标识）
     /// @param applicable    采集能力是否仍在；false = 静默清除该 kind 的全部状态
@@ -221,15 +199,7 @@ private:
     /// 静默清除某一 kind 的全部状态（配置关闭 / 能力消失；配置关闭不是"指标恢复"）。
     void erase_kind(const std::string& kind);
 
-    /// 周期重记判定：跨过一个尚未记录的里程碑时返回 true（契约 §2.8）。
-    ///
-    /// 里程碑 = `since + N × 间隔`，基准是**活动期起点**。中间漏掉的里程碑不补发
-    /// （一条「仍越限」已足够表达"它还在持续"）；`log_repeat_sec = 0` 恒为 false。
-    /// 间隔运行期改变时按新间隔重排已记录的序号（当前 tick 不触发），使后续里程碑
-    /// 仍然落在 `since + N × 新间隔` 上。
-    static bool repeat_due(SubjectState& state, int64_t now_monotonic_ms, int64_t repeat_ms);
-
-    std::map<ThresholdKey, SubjectState> states_;
+    std::map<ThresholdKey, ActivityPeriod> states_;
 };
 
 }  // namespace dztrader::sysmon

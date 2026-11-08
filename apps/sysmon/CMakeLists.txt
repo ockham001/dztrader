@@ -9,6 +9,7 @@
 add_library(dzsysmon_obj OBJECT
     app.cpp
     clock_probe.cpp
+    clock_thresholds.cpp
     config.cpp
     cpu_saturation.cpp
     cpu_usage.cpp
