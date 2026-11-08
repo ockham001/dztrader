@@ -376,8 +376,9 @@ const clockProbeDisabled = computed(() => !canProbeClock.value
   || clockProbeCooldownSec.value > 0
   || clockState.value === 'disabled')
 const clockProbeLabel = computed(() => {
-  // 冷却优先：成功触发后两条约束同时成立（等快照 + N 秒限流），前者可能先解除，
-  // 而按钮仍不可点，因此显示**更长的那个**约束，否则用户会看到「查询中…」却点不动。
+  // 冷却文案优先：成功触发后两条约束同时成立（等快照 + N 秒限流），pending 可能先解除，
+  // 而按钮仍不可点——此时必须说「N 秒后可再次查询」而不是「查询中…」，否则用户看到的是
+  // 一个点不动、又自称正在查询的按钮。因此有冷却剩余就显示冷却，没有才显示 pending。
   if (clockProbeCooldownSec.value > 0) return `${clockProbeCooldownSec.value} 秒后可再次查询`
   if (clockProbePending.value) return '查询中…'
   return '立即查询'

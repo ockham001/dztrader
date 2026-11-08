@@ -374,16 +374,37 @@ describe('时间卡片 · 「立即查询」按钮（契约 sysmon §1.1）', ()
     expect(sysmonApi.probeClock).not.toHaveBeenCalled()
   })
 
-  it('HTTP 失败立即恢复可点（不伪造冷却）', async () => {
+  it('HTTP 失败立即恢复可点，且不伪造冷却（冷却秒数仍为 0）', async () => {
     setRole('admin')
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig({ clock: { manual_min_interval_sec: 10 } }))
     vi.mocked(sysmonApi.probeClock).mockRejectedValue(new Error('HTTP 503'))
     const wrapper = await mountView()
 
     await wrapper.find('[data-test="monitor-clock-probe"]').trigger('click')
     await flushPromises()
 
+    // 请求根本没被受理，不能假装进入限流窗口（否则用户要白等 N 秒）
+    expect(useSysmonStore().clockProbeCooldownSec).toBe(0)
     expect(wrapper.find('[data-test="monitor-clock-probe"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="monitor-clock-probe"]').text()).toContain('立即查询')
+  })
+
+  it('REST 已下发但探测未完成：文案为「查询中…」（冷却文案之外的另一个置灰分支）', async () => {
+    setRole('admin')
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    // 配置 0 = 不限流：只剩「等快照」一条约束，pending 不被冷却文案盖住
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig({ clock: { manual_min_interval_sec: 0 } }))
+    // REST 永不 resolve：pending 保持在途，模拟「事件通道已写、探测还在进行」
+    vi.mocked(sysmonApi.probeClock).mockImplementation(() => new Promise(() => {}))
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="monitor-clock-probe"]').trigger('click')
+    await flushPromises()
+
+    expect(useSysmonStore().clockProbePending).toBe(true)
+    expect(wrapper.find('[data-test="monitor-clock-probe"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="monitor-clock-probe"]').text()).toContain('查询中…')
   })
 })
 
@@ -394,13 +415,24 @@ describe('时间卡片 · 不越界到顶栏', () => {
     vi.clearAllMocks()
   })
 
-  it('时钟卡片只在监控页实时网格内渲染（顶栏徽章不在本视图）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+  it.each([
+    ['正常态', SYSMON_CLOCK_LIVE],
+    ['全部失败态', SYSMON_CLOCK_ALL_FAILED],
+  ] as const)('%s下本视图可见文本不含 NTP 文案', async (_name, clock) => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock }))
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="monitor-clock"]').exists()).toBe(true)
     // 顶栏的 NTP 徽章已删除且不得回归（Topbar.spec.ts 的假数字断言保持有效、本票不改它）：
-    // 本视图可见文本里不含任何 NTP 文案（模板注释里的「NTP 徽章」不算可见内容）。
+    // 卡片只在监控页实时网格内，本视图可见文本里不含任何 NTP 文案。
+    expect(wrapper.text()).not.toContain('NTP')
+  })
+
+  it('配置关闭态下本视图可见文本不含 NTP 文案', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: null }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-clock"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('NTP')
   })
 })

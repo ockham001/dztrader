@@ -176,7 +176,7 @@ describe('clockFailureSummary：全部失败时的原因汇总', () => {
   })
 })
 
-describe('clockProbeAgeSec / clockProbeAgeText：上次探测的相对时间', () => {
+describe('clockProbeAgeSec：上次探测距今的秒数', () => {
   const nowMs = Date.UTC(2026, 9, 21, 15, 0, 0)
 
   it('快照未到达 / 尚未探测（0）时没有相对时间（null，不是 0 秒前）', () => {
@@ -192,7 +192,8 @@ describe('clockProbeAgeSec / clockProbeAgeText：上次探测的相对时间', (
   })
 
   it('本模块只算秒数：「多久以前」的文案复用视图既有 formatAge（不复制第二份实现）', () => {
-    // 这里锁住「只算秒」，文案口径由 MonitorView 的 formatAge 承担（其单测见 MonitorView.spec.ts）
+    // 这里锁住「只算秒」，文案口径由 MonitorView 的 `formatAge` 承担（视图侧断言见
+    // MonitorClockCard.spec.ts 的「显示带符号偏差…上次探测相对时间」用例）。
     expect(clockProbeAgeSec(nowMs - 31_000, nowMs)).toBe(31)
     expect(clockProbeAgeSec(nowMs - 60_000, nowMs)).toBe(60)
     expect(clockProbeAgeSec(nowMs - 90_000, nowMs)).toBe(90)

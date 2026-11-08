@@ -1611,14 +1611,38 @@ describe('useSysmonStore「立即查询」（#302，契约 sysmon §1.1）', () 
     try {
       vi.mocked(sysmonApi.probeClock).mockImplementation(() => new Promise(() => {}))
       const store = useSysmonStore()
+      // 超时 = 请求超时 + 冷却时长（默认 10s），必须等满这一段才判定「已下发但没等到结果」
+      const timeoutMs = SYSMON_CONFIG_TIMEOUT_MS + 10_000
 
       const pendingResult = store.probeClock()
       expect(store.clockProbePending).toBe(true)
-      await vi.advanceTimersByTimeAsync(SYSMON_CONFIG_TIMEOUT_MS + 1)
+      await vi.advanceTimersByTimeAsync(timeoutMs + 1)
       const result = await pendingResult
 
       expect(result).toBe(PENDING_TIMEOUT)
       expect(store.clockProbePending).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('被 dzsysmon 静默忽略的触发：冷却到点先静默恢复，不弹假的超时 toast', async () => {
+    vi.useFakeTimers()
+    try {
+      // REST 成功（已写事件通道），但本轮探测被限流忽略：不会有快照前进
+      vi.mocked(sysmonApi.probeClock).mockResolvedValue({ ok: true })
+      const store = useSysmonStore()
+      store.applyConfig(makeSysmonConfig({ clock: { manual_min_interval_sec: 10 } }))
+      store.applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+
+      const toastSpy = vi.spyOn(useToastStore(), 'error')
+      await store.probeClock()
+      await vi.advanceTimersByTimeAsync(11_000)  // 冷却 10s 到点
+
+      // 冷却到点即清 pending（静默恢复可点），**没有** error toast
+      expect(store.clockProbePending).toBe(false)
+      expect(store.clockProbeCooldownSec).toBe(0)
+      expect(toastSpy).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }

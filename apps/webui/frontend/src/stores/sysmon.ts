@@ -738,7 +738,11 @@ export const useSysmonStore = defineStore('sysmon', () => {
   let clockProbeBaselineMs = 0
   let clockCooldownTimer: ReturnType<typeof setInterval> | null = null
 
-  /** 清冷却计时器与剩余秒数（停用路径唯一实现：到点 / 触发失败 / 快照清除都走它） */
+  /**
+   * 清冷却计时器与剩余秒数。调用点只有两处：**到点自清**、**启动新倒计时前重启**。
+   * 快照清除**不**走这里——探测完成只说明本轮结束，`manual_min_interval_sec` 这段限流窗口
+   * 仍在（dzsysmon 侧窗口锚定的是「上次受理的触发」，与探测是否完成无关）。
+   */
   function stopClockProbeCooldown(): void {
     if (clockCooldownTimer !== null) {
       clearInterval(clockCooldownTimer)
@@ -796,12 +800,19 @@ export const useSysmonStore = defineStore('sysmon', () => {
   async function probeClock(): Promise<boolean | typeof PENDING_TIMEOUT> {
     if (clockProbePending.value || clockProbeCooldownSec.value > 0) return false
     clockProbeBaselineMs = clock.value?.last_probe_unix_ms ?? 0
+    // 冷却时长先算（下面超时要用）：`usePending.run` 的超时计时器成功后**不清**（默认
+    // keepPendingOnSuccess），它覆盖的是「等探测完成的快照」整段等待。因此该超时必须
+    // **严格晚于冷却结束**，否则被 dzsysmon 静默忽略的触发会先弹一条假的「超时」toast
+    // （默认 `manual_min_interval_sec`=10s 与 SYSMON_CONFIG_TIMEOUT_MS=10s 恰好等值，
+    // 这不是理论边界而是默认配置下的必然结果）。取「请求超时 + 冷却时长」即可保证冷却到点
+    // 的静默恢复（清 pending）总在最前，超时只在「已下发但从没等到结果」时才报。
+    const intervalSec = resolveClockManualIntervalSec(config.value?.clock)
     const ok = await sysmonPending.run(
       SYSMON_CLOCK_PROBE_KEY,
       () => sysmonApi.probeClock(),
       {
         opLabel: '立即查询时钟偏差',
-        timeout: SYSMON_CONFIG_TIMEOUT_MS,
+        timeout: SYSMON_CONFIG_TIMEOUT_MS + intervalSec * 1_000,
         distinguishTimeout: true,
       },
     )
@@ -814,7 +825,7 @@ export const useSysmonStore = defineStore('sysmon', () => {
       //（此处冷却必为 0——函数开头已在有冷却时提前返回），因此无需再停表，按钮立即恢复可点。
       return false
     }
-    startClockProbeCooldown(resolveClockManualIntervalSec(config.value?.clock))
+    startClockProbeCooldown(intervalSec)
     return true
   }
 

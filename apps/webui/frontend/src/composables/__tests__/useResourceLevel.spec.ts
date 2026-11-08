@@ -42,9 +42,12 @@ describe('thresholdLevel 数值 + 双档阈值定档（#302：资源类与时钟
     expect(thresholdLevel(value, warn, danger)).toBe(expected)
   })
 
-  it('resourceLevel 转发同一判定（资源类阈值不变）', () => {
-    expect(resourceLevel(RESOURCE_WARN_RATIO)).toBe(thresholdLevel(RESOURCE_WARN_RATIO, RESOURCE_WARN_RATIO, RESOURCE_DANGER_RATIO))
-    expect(resourceLevel(0.5)).toBe(thresholdLevel(0.5, RESOURCE_WARN_RATIO, RESOURCE_DANGER_RATIO))
+  it('resourceLevel 的阈值点定档与 thresholdLevel 同口径（字面等级，不拿转发目标当 oracle）', () => {
+    // 用字面等级做期望：`resourceLevel` 只是转发 `thresholdLevel`，拿后者当期望等于
+    // 「自己等于自己」——转发写坏时两边同时变，这条断言就永远不会红。
+    expect(resourceLevel(RESOURCE_WARN_RATIO)).toBe('warn')
+    expect(resourceLevel(RESOURCE_DANGER_RATIO)).toBe('danger')
+    expect(resourceLevel(0.5)).toBe('normal')
   })
 })
 

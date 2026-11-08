@@ -421,7 +421,9 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
       || key === 'shm_dir'
       || (networkAvailable && key === 'network')
       || (sensorAvailable && (key === 'temperature' || key === 'cpu.frequency'))
-      || clockOffsetAvailable
+      // 必须按键限定：裸 `|| clockOffsetAvailable` 会让**每个**指标键都可用（温度 / 频率 /
+      // 网络等本应不可用的键被时钟选项顺手点亮），夹具就不再反映契约形状。
+      || (key === 'clock.offset' && clockOffsetAvailable)
       // 契约 §2.5（#298）：服务枚举能力在两平台基线内恒可用——`daemons` 为空数组是
       // 「未检测到在运行的同步服务」这一事实，不改写可用性（只有配置关闭才不可用）。
       || (key === 'clock.sync_service' && !clockDisabled)
