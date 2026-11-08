@@ -92,4 +92,22 @@ void SysmonCtrl::set_config(
     callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
 }
 
+void SysmonCtrl::probe_clock(
+    const drogon::HttpRequestPtr& req,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {  // NOLINT
+    // 契约 rest §2.8：写类端点需 admin（服务端校验，不是前端隐藏）。
+    if (!is_admin(req)) {
+        callback(error_response(drogon::k403Forbidden, "admin required"));
+        return;
+    }
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
+        callback(error_response(drogon::k503ServiceUnavailable, "shm not available"));
+        return;
+    }
+    // 形态 3 单向下行动作帧：200 只表示已写事件通道，生效信号是随后的 WS sysmon_snapshot
+    // （契约 sysmon §1.1）。限流窗口内 dzsysmon 直接忽略且无错误响应——协议不承诺本次生效。
+    shm_writer_->write_query_sysmon_clock();
+    callback(json_response(drogon::k200OK, {{"ok", true}, {"message", "dispatched"}}));
+}
+
 }  // namespace dztrader::webui

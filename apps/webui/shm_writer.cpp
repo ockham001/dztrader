@@ -190,4 +190,20 @@ void ShmWriter::write_set_sysmon_config(const nlohmann::json& payload) {
     }
 }
 
+void ShmWriter::write_query_sysmon_clock() {
+    if (!event_writer_) {
+        spdlog::error("write query sysmon clock failed: event_writer null");
+        return;
+    }
+    // QUERY_SYSMON_CLOCK 是形态 3 单向下行动作帧 (契约 sysmon §1.1): 空 payload、无 RTN,
+    // 语义与 FLUSH_LOG 同类。结果不单独回帧, 由随后的 RTN_SYSMON_SNAPSHOT 广播体现。
+    const bool ok = platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_QUERY_SYSMON_CLOCK,
+                                                 platform::SYSMON_INSTANCE_NAME);
+    if (ok) {
+        spdlog::info("query sysmon clock written");
+    } else {
+        spdlog::error("write query sysmon clock failed");
+    }
+}
+
 }  // namespace dztrader::webui

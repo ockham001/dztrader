@@ -54,6 +54,14 @@ export const sysmonApi = {
   setConfig: (patch: SysmonConfigPatch) =>
     api.put<{ ok: boolean; message?: string }>('/api/sysmon/config', patch),
   /**
+   * 契约 rest §2.8 / 契约 sysmon §1.1：手动触发一次时钟探测（admin；事件通道未就绪时 503）。
+   *
+   * 响应仅表示「已写事件通道」，**不是**生效信号 —— 生效信号是随后的 WS `sysmon_snapshot`
+   * （`clock` 域更新）。限流窗口内或探测在飞时 dzsysmon 直接忽略且无错误响应（协议不承诺
+   * 本次触发一定生效）；前端按钮置灰只是体验层。
+   */
+  probeClock: () => api.post<{ ok: boolean; message?: string }>('/api/sysmon/clock/probe'),
+  /**
    * 《帧契约：系统监控》§6.1 / 契约 rest §2.8：历史曲线查询。
    *
    * 历史库不可用时**不**回 5xx —— 而是 200 + `{available:false, reason}`（库缺失 / 版本不符 /

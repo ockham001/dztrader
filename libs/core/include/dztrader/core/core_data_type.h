@@ -60,6 +60,8 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_SET_SYSMON_CONFIG ((DzFrameType)26)
 /** @brief 回推当前生效的系统监控配置 (dzsysmon→dzweb, 契约 sysmon) */
 #define DZ_FRAME_RTN_SYSMON_CONFIG ((DzFrameType)27)
+/** @brief 手动触发一次时钟探测 (dzweb→dzsysmon, 形态 3 无 RTN, 契约 sysmon §1.1) */
+#define DZ_FRAME_QUERY_SYSMON_CLOCK ((DzFrameType)28)
 
 /* ── UI 帧（32-63）: 逻辑持仓、策略上行输出 ── */
 /** @brief 设置逻辑持仓 (策略→平台, 契约 strategy) */

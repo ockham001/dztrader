@@ -538,6 +538,7 @@ constexpr std::pair<std::string_view, int> kFrozenCoreFrames[] = {
     {"DZ_FRAME_RTN_SYSMON_SNAPSHOT", 25},
     {"DZ_FRAME_SET_SYSMON_CONFIG", 26},
     {"DZ_FRAME_RTN_SYSMON_CONFIG", 27},
+    {"DZ_FRAME_QUERY_SYSMON_CLOCK", 28},
     {"DZ_FRAME_SET_LOGICAL_POSITION", 32},
     {"DZ_FRAME_OUTPUT_UI", 33},
     {"DZ_FRAME_SET_MD_CONFIG", 65},

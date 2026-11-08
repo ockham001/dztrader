@@ -9,6 +9,8 @@
  * - `DZ_FRAME_RTN_SYSMON_SNAPSHOT`：实时快照推送（无 `instance_id`，发送方固定 `dzsysmon`）
  * - `DZ_FRAME_SET_SYSMON_CONFIG`：运行期配置修改（定向，`instance_id=dzsysmon`）
  * - `DZ_FRAME_RTN_SYSMON_CONFIG`：回推当前生效配置（定向，`instance_id=dzsysmon`）
+ * - `DZ_FRAME_QUERY_SYSMON_CLOCK`：手动触发一次时钟探测（定向，`instance_id=dzsysmon`，
+ *   形态 3 单向下行动作帧、空 payload、无 RTN；结果经快照 `clock` 域广播，契约 sysmon §1.1）
  *
  * 本文件是**类型层真相源**：JSON 字段名、类型、可空性、取值范围以契约 sysmon 为准，
  * 本头保持一一对应；契约变更必须同步本文件（general §11.3）。

@@ -38,6 +38,7 @@ public:
     ADD_METHOD_TO(SysmonCtrl::get_history, "/api/sysmon/history", drogon::Get);
     ADD_METHOD_TO(SysmonCtrl::get_config, "/api/sysmon/config", drogon::Get);
     ADD_METHOD_TO(SysmonCtrl::set_config, "/api/sysmon/config", drogon::Put);
+    ADD_METHOD_TO(SysmonCtrl::probe_clock, "/api/sysmon/clock/probe", drogon::Post);
     METHOD_LIST_END
 
     void get_snapshot(const drogon::HttpRequestPtr& req,
@@ -57,6 +58,12 @@ public:
     /// 响应只表示"已写事件通道"；生效信号 = WS `sysmon_config`（契约 rest §1、契约 sysmon §3）。
     void set_config(const drogon::HttpRequestPtr& req,
                     std::function<void(const drogon::HttpResponsePtr&)>&& callback);
+
+    /// POST /api/sysmon/clock/probe：手动触发一次时钟探测（admin，契约 rest §2.8）。
+    /// 响应只表示"已写事件通道"；生效信号 = 随后的 WS `sysmon_snapshot`（`clock` 域更新，
+    /// 契约 sysmon §1.1）。限流窗口内或探测在飞时 dzsysmon 直接忽略（无错误响应）。
+    void probe_clock(const drogon::HttpRequestPtr& req,
+                     std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
 private:
     /// 取镜像固定实例（`dzsysmon`）下的某个域并回 200；域缺失回 503 + @p error_message。
