@@ -286,12 +286,81 @@ def check_c4702_exemption(path, text):
 # R7: every target that overrides OUTPUT_NAME while another target already uses that
 # name as its own target/output name. The CMakeLists that declares both is where the
 # MSVC import-library collision is created (see the module docstring).
-# 块尾允许两种形态：多行（`PROPERTIES` 后换行、缩进若干后 `)`）与单行（`... )` 收尾）。
-# 用「行尾的 `)`」定位块尾而不是第一个 `)`，属性值里的生成表达式不含 `)`，但仍以行尾为准更稳。
-SET_TARGET_PROPS_RE = re.compile(
-    r'set_target_properties\(\s*([\w-]+)\s+PROPERTIES(.*?)\)\s*(?:\r?\n|$)', re.S)
+SET_TARGET_PROPS_HEAD_RE = re.compile(r'set_target_properties\(\s*([\w-]+)\s+PROPERTIES')
 ADD_EXE_RE = re.compile(r'add_executable\(\s*([\w-]+)')
 ADD_LIB_RE = re.compile(r'add_library\(\s*([\w-]+)')
+
+
+def _balanced_span(text, open_paren):
+    """Return (end_index, body) for the paren pair starting at ``open_paren``.
+
+    CMake property values may legitimately contain parentheses
+    (``COMPILE_DEFINITIONS FOO(1)``), and a quoted generator expression may contain
+    both parens and a `#`-looking character, so neither a lazy regex nor a quote-aware
+    scan is sufficient on its own. Counting depth (and honouring double quotes) is the
+    only shape that cannot truncate the block early -- an early cut silently drops the
+    `OUTPUT_NAME` that follows the parenthesised value, which is a *missed finding*,
+    i.e. the failure mode this rule exists to prevent.
+    """
+    depth = 0
+    in_quote = False
+    idx = open_paren
+    while idx < len(text):
+        ch = text[idx]
+        if in_quote:
+            if ch == '"':
+                in_quote = False
+            elif ch == "\\":
+                idx += 1  # escaped char inside a quoted value
+        elif ch == '"':
+            in_quote = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return idx, text[open_paren + 1:idx]
+        idx += 1
+    return -1, ""
+
+
+def _strip_cmake_comments(body):
+    """Drop `#`-to-end-of-line comments so a comment cannot satisfy a property test.
+
+    Quotes are tracked so that a `#` inside a quoted value is preserved (CMake treats
+    it literally). A line whose `#` opens at the very start is a full-line comment.
+    """
+    out = []
+    for line in body.split("\n"):
+        in_quote = False
+        cut = len(line)
+        for pos, ch in enumerate(line):
+            if in_quote:
+                if ch == '"':
+                    in_quote = False
+                elif ch == "\\":
+                    continue
+            elif ch == '"':
+                in_quote = True
+            elif ch == "#":
+                cut = pos
+                break
+        out.append(line[:cut])
+    return "\n".join(out)
+
+
+def iter_set_target_properties(text):
+    """Yield (line_number, target, property_body) for each set_target_properties block."""
+    for m in SET_TARGET_PROPS_HEAD_RE.finditer(text):
+        # 头正则已确认 `set_target_properties(` + target + `PROPERTIES` 存在，
+        # 因此这两个 find 必然命中（返回 -1 时下面的平衡扫描会安全地 yield 空）。
+        open_paren = text.find("(", m.start() + len("set_target_properties"))
+        end, body = _balanced_span(text, open_paren)
+        if end < 0:
+            continue
+        # body 里去掉 `PROPERTIES` 之前的 target 名部分
+        body = body[body.find("PROPERTIES") + len("PROPERTIES"):]
+        yield text[:m.start()].count("\n") + 1, m.group(1), _strip_cmake_comments(body)
 
 
 def check_output_name_collision(path, text):
@@ -316,11 +385,9 @@ def check_output_name_collision(path, text):
         return []
     declared = set(ADD_EXE_RE.findall(text)) | set(ADD_LIB_RE.findall(text))
     errors = []
-    for m in SET_TARGET_PROPS_RE.finditer(text):
-        target = m.group(1)
-        # 注释里提到属性名不算设置它（否则加一行「记得设 ARCHIVE_OUTPUT_DIRECTORY」
-        # 的注释就会让规则永远豁免——规则被文字绕过，这是 lint 的常见失效形态）
-        props = "\n".join(line.split("#")[0] for line in m.group(2).split("\n"))
+    for line, target, props in iter_set_target_properties(text):
+        # 注释已在 iter_... 里剥掉：一行「记得设 ARCHIVE_OUTPUT_DIRECTORY」的注释
+        # 不能让规则永久豁免（文字绕过 lint 是常见失效形态）。
         name = re.search(r'OUTPUT_NAME\s+([\w-]+)', props)
         if not name:
             continue
@@ -329,7 +396,6 @@ def check_output_name_collision(path, text):
             continue
         if "ARCHIVE_OUTPUT_DIRECTORY" in props:
             continue
-        line = text[:m.start()].count("\n") + 1
         errors.append(
             (line,
              "R7: target '%s' takes OUTPUT_NAME '%s' from the sibling target '%s' but does "
