@@ -18,7 +18,7 @@
 | [architecture.md](architecture.md) | 进程模型、依赖方向、静态库、IPC 通道、策略接口约束 | 早期蓝图，方向有效；细节以代码为准（如订阅请求已由"master 转发"改为策略直发行情进程，见《帧契约：md-subscription》） |
 | [ui-trading.md](ui-trading.md) | UI 系统与交易接口规划 | 蓝图（Qt 后端、部分接口为规划项）；现状实现为 WebUI（Vue3 + dzweb），交易接口开发顺序以实际为准 |
 | [components/](components/) | 组件级架构设计（线程模型、通道、会话、设计原则） | 与代码同步维护；按组件一档，如 [dzmd_ctp.md](components/dzmd_ctp.md)、[dzsysmon.md](components/dzsysmon.md) |
-| [adr/](adr/) | 架构决策记录 | 按编号追溯决策 |
+| [adr/](adr/) | 架构决策记录 | 按编号追溯决策。系统监控时钟偏差监控（自测 NTP 偏差 + 同步服务检测）见 [ADR 0047](adr/0047-sysmon-clock-self-probe.md)（自测而非读守护进程、只读不校时、error 档是 ADR 0034 静默原则的唯一例外、不进历史库） |
 
 ## 代理约定（工具无关）
 

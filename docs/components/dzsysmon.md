@@ -11,7 +11,7 @@
 - 已实现历史查询（#79）：`dzweb` 只读打开历史库并经 REST `GET /api/sysmon/history` 提供（契约 sysmon §6.1），监控页提供「实时 / 历史」视图切换；历史查询不走帧、历史视图不订阅 WS。
 - **阈值越限（#123 改为日志；ADR 0034）**：判定对象为内存使用率、交换使用率、全部卷剩余空间与 CPU 饱和；进入越限写 `warning`、恢复写 `info`、持续期每 `thresholds.log_repeat_sec`（默认 600s）重记一条 `info`。资源类**不产生任何 `NOTIFY_UI`**，快照也不携带越限集合（契约 sysmon §2.8）；UI 上的使用率色标由 #125（卷）落地，#120 收口补齐监控页内存 / 交换使用率色标（与卷、顶栏共用同一组常量）。
 - 已实现运行期配置与配置展示（#81）：配置帧 SET/RTN 全量生效、运行期切换历史记录、监控页「配置」区展示当前生效配置并提供 admin 编辑入口（契约 sysmon §3）。
-- 已实现时钟域平台接缝（#298，契约 sysmon §2.9）：`SystemCollector` 新增 `collect_time_sync_services()`，检测本机常见时间同步服务是否在运行并给出内核同步判据，**不 exec 任何外部命令**（ADR 0047）。Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`（内核把 comm 截断到 15 字节，`systemd-timesyncd` 的可观察值是 `systemd-timesyn`），另读 `adjtimex` 只读模式取 `STA_UNSYNC` 取反作为与守护进程无关的同步判据；Windows 经服务控制管理器 API（`OpenSCManagerW` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。检测失败（进程表不可读、服务管理器查询失败）降级为空列表 + `kernel_synced = null`，不抛异常；「读不到」不当成 `false`。`daemon_conflict` 由快照构造从 `daemons[]` 派生（契约 §2.9 / §7），采集层只如实返回列表、不判故障。#298 只交付接缝与派生标记；「每轮探测开始时执行检测并接线进快照」由 #299 落地（见下条）；`clock.sync_service` 自 #298 起恒 `available=true`。
+- 已实现时钟域平台接缝（#298，契约 sysmon §2.9）：`SystemCollector` 新增 `collect_time_sync_services()`，检测本机常见时间同步服务是否在运行并给出内核同步判据，**不 exec 任何外部命令**（ADR 0047）。Linux 扫 `/proc/<pid>/comm` 按进程名精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`（内核把 comm 截断到 15 字节，`systemd-timesyncd` 的可观察值是 `systemd-timesyn`），另读 `adjtimex` 只读模式取 `STA_UNSYNC` 取反作为与守护进程无关的同步判据；Windows 经服务控制管理器 API（`OpenSCManagerW` + `QueryServiceStatusEx`）查 `W32Time`，不解析 `w32tm` 的本地化输出。检测失败（进程表不可读、服务管理器查询失败）降级为空列表 + `kernel_synced = null`，不抛异常；「读不到」不当成 `false`。`daemon_conflict` 由快照构造从 `daemons[]` 派生（契约 §2.9 / §7），采集层只如实返回列表、不判故障。检测在每轮探测开始时执行（#299 接线），`clock.sync_service` 恒 `available=true`。
 - 已实现时钟偏差探测（#299，契约 sysmon §2.7/§2.9）：真实 Asio/UDP 的 NTPv4 客户端传输（每台服务器一个 socket + 独立超时，异步、不阻塞采集与帧处理）；启动后**立即**探测一次，随后按 `clock.probe_times` 的「每天 HH:MM 列表」（进程本地时区）用单调时钟定时器排到下一个墙钟时刻、**每次重算**（错过的时刻跳过不补采、不区分周末与节假日）；每轮开始时执行同步服务检测（不 exec 外部命令，#298 接缝），结果与探测聚合值/每台明细一起写入快照 `clock` 域并**立即推送一帧**（探测全部失败也推——「测不到」是要展示的事实）；每轮恰好一条日志（偏差 / 误差界 / 来源 / 成功台数；全部失败升为 `warning`），`daemon_conflict=true` 时另写一条。`clock` 域关闭时停止定时器并清空该域（关闭期间在飞的探测结果丢弃）；运行期由关闭转开启时**立即**发起一轮探测（契约 §3.1「与进程启动同款」，不必空等下一个 `probe_times` 时刻）；任意 `SET_SYSMON_CONFIG` 成功后从当前时刻按新配置重排探测定时器。
 - 已实现时钟偏差阈值判定与告警（#301，契约 sysmon §2.8「时间判定对象」；ADR 0047）：判定发生在**每次探测完成时**（不是计量 tick）。`clock_offset` 双档——`|offset_ms| ≥ offset_warn_ms` 记 `warning`、`≥ offset_error_ms` 记 `error` 并**发 `NOTIFY_UI`（`popup=true`）**；活动期内 warning→error 升级再记一条 `error` 并弹窗，error→warning 降级记 `info` 且活动期不结束；`clock_bound` 独立的测量质量判据（`bound_ms > bound_alarm_ms` 记 `warning`）**只写日志，不弹窗、不改变偏差判定**（卡片内的「测量质量」提示见下条）。进入 / 持续重记 / 恢复与资源类同口径（共用活动期记账），探测失败保留活动状态、配置关闭静默清除。这是 `dzsysmon` 继「历史库不可用」「配置下发失败」之后的**第三类** `NOTIFY_UI` 来源（配置下发失败含 `SET_SYSMON_CONFIG` 与 `SET_LOG_CONFIG` 两个站点），也是 ADR 0034 静默原则的唯一例外。
 - 已实现监控页时间卡片（#302，契约 sysmon §2.9 / §2.8，纯前端消费方）：实时网格新增「时间」卡片，主数值为带符号偏差（1 位毫秒、正 = 本地快）、副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间；偏差按 `clock.offset_warn_ms` / `offset_error_ms` 着色（复用 `useResourceLevel` 的定档实现与同一套 `data-level` 色标词表，`danger` 即契约的「error 红」），误差界 `> bound_alarm_ms` 时另给「测量质量」提示且**不改变**偏差着色（两个判定对象独立）；展开显示每台服务器明细（主机 / 偏差 / 误差界 / RTT / stratum / 失败原因，失败台的测量列一律「不可用」而不是 0）与同步服务检测列表（`daemons[]` 空数组显示「未检测到运行中的服务」这一事实，`daemon_conflict` 显示卡片内冲突提示，均不弹窗）。三种空态（`clock = null` 配置关闭 / `last_probe_unix_ms = 0` 尚未探测 / `> 0` 且 `offset_ms = null` 全部失败）都渲染这张卡且都显示明确文案、不显示 0。「立即查询」按钮仅 admin 可用（非 admin 可见但 disabled），置灰时长取 `clock.manual_min_interval_sec`（0 = 不限流），清除信号是随后的 WS `sysmon_snapshot`（`clock.last_probe_unix_ms` 严格前进）而非 REST 200（契约 §1.1：限流拒绝无错误通道）；相对时间以快照 `timestamp` 为基准（与 `last_probe_unix_ms` 同一时间轴，不混用本机墙钟）。**顶栏不加时钟徽章**（既有「无 NTP 徽章」断言保持有效）。
@@ -47,6 +47,7 @@
 
 - **计量与推送解耦**：事件通道是广播介质，任何写入都会唤醒全部已注册进程（含策略），推送不得跟随 1s 计量（契约 sysmon §4、ADR 0023）。
 - **时钟纪律**：asio `steady_timer`（单调时钟，免疫 NTP 跳变）；deadline 按「上次 deadline + interval」推进做漂移校正；错过 tick 跳过并累加 `sampling.missed_ticks`（区分机器空闲与监控停顿），不补采；handler 内不做阻塞 I/O。
+- **探测定时器纪律**（#299，与上一条**不同**）：它没有固定间隔，**不做漂移校正**（`timer.h` 的漂移推进只服务计量与推送）；每次完成后用当前墙钟**重算**「下一个严格晚于现在的本地时刻」，错过的时刻被自然跳过（不补采，也不会因停顿补偿出连发）；等待延时的分母是墙钟差、等待本身走 `steady_timer`（单调时钟）。排期器另持**等待代次**——`stop()` / 重排都会自增，取消后仍可能被投递的旧 handler 按代次丢弃，避免旧等待误触发新一轮探测；配置关闭时停表（不保留 pending 等待）。
 - 初始化完成后立即推送一次；收到 `QUERY_FULL_SNAPSHOT`（通用规则 §7）响应推送一次。推送失败（如事件通道写满）只记日志、不重试，下一刻度继续（契约 sysmon §4）。
 - 运行期修改间隔 / 探测时刻（`SET_SYSMON_CONFIG`）立即生效：取消当前 pending wait 并按新间隔 / 新时刻重排，不等待当前周期结束；配置展示与编辑入口见「配置」章节。
 - **探测定时器语义**（#299）：`probe_times` 是「每天 HH:MM 列表」而非固定间隔——每次探测完成后用当前墙钟重算「下一个严格晚于现在的本地时刻」，换算成 `steady_timer` 的延时；进程停顿期间错过的时刻因此被自然跳过（不补采）。探测完成（成功或失败）立即推送一帧快照并重排下一轮。
@@ -74,6 +75,75 @@
 
 - 每网卡来源（#77；实现细节；契约只规定 payload 语义）：Linux 解析 `/proc/net/dev` 全部接口行（跳过两行表头；每行 `if: rx_bytes rx_packets rx_errs rx_drop ... tx_bytes tx_packets tx_errs tx_drop ...`），`is_virtual` 由 `/sys/class/net/<if>/device` 是否存在判定——该链接只由硬件设备驱动创建，因此 bond/bridge/vlan/tun/veth/docker0/loopback 等逻辑接口一律判为虚拟，**不用名字前缀白名单**（名字随发行版与容器运行时变化，前缀表必然漏）。Windows 用 `GetIfTable2`（IP Helper）遍历所有接口：`Alias` 作网卡名（转 UTF-8）、`InOctets`/`OutOctets`、包数取 `InUcastPkts + InNUcastPkts` 与 `OutUcastPkts + OutNUcastPkts`（合并单播与组播/广播即契约的"包数"）、`InErrors`/`OutErrors`、`InDiscards`/`OutDiscards`，`is_virtual = !InterfaceAndOperStatusFlags.HardwareInterface`（结构性标志，不是别名推断）。采集结果包含虚拟网卡与回环，**隐藏发生在快照构造阶段**——这样 `hide_virtual` 开关改动不需要重新采集、也不影响速率基线，改开关后立即推送一帧即生效。速率由 `compute_network_rates` 纯函数按 `interface` 匹配基线计算：新出现的网卡速率全 `null`（等同首次采样）、消失的网卡不再输出，因此网卡热插拔/删除**不会让序列错位串行**（不依赖数组下标）；计数器两平台均为 64 位，下降一律视为重置（该帧速率 `null`，下一采样重建基线）。网络采集失败只把该域置 `null`、不累加 `missed_ticks`。
 
+## 时钟偏差监控（#293 子票 #294–#302）
+
+已实现条目见「职责与范围」的 #298 / #299 / #301 / #302 四条；帧语义、`clock` 域 payload、15 键可用性、时间判定对象与配置 schema 见[契约 sysmon §2.5 / §2.7 / §2.8 / §2.9 / §3.1](../frame_contracts/sysmon.md)。本节只写契约不规定、但写错代价高的实现结构。
+
+### 分层
+
+| 层 | 位置 | 职责 |
+|---|---|---|
+| 报文编解码与派生 | [`apps/sysmon/ntp_codec.h`](../../apps/sysmon/ntp_codec.h) / `ntp_codec.cpp` | 48 字节请求构造、响应解析、NTP era 与 16.16 定点换算、`offset_ms` / `rtt_ms` / `bound_ms` 派生、origin 回显与 KoD 判定——**纯函数**，不读时钟、不做 I/O |
+| 传输接缝 | `NtpTransport`（[`apps/sysmon/clock_probe.h`](../../apps/sysmon/clock_probe.h)）+ [`apps/sysmon/ntp_transport.h`](../../apps/sysmon/ntp_transport.h) / `ntp_transport.cpp` | 真实 Asio 异步 UDP：每台服务器一个 socket + 独立超时定时器，不阻塞 io_context，**恰好回调一次**；UDP 端口可注入，平台单测用本地临时端口，不依赖 123 特权端口 |
+| 一轮编排 | `ClockProber`（[`apps/sysmon/clock_probe.h`](../../apps/sysmon/clock_probe.h) / `clock_probe.cpp`） | 每台各发一次、重复项去重、KoD 退避 / 拉黑跨轮保持、聚合取最小 RTT（同 RTT 取更小 `bound_ms`）、全部失败给不可用空态；手动限流纯判定 `judge_manual_trigger` 同文件 |
+| 探测定时排期 | [`apps/sysmon/probe_schedule.h`](../../apps/sysmon/probe_schedule.h) / `probe_schedule.cpp` | 把「每天 HH:MM 列表」折算成到下一个本地墙钟时刻的 `steady_timer` 延时；每次完成后重算 |
+| 阈值判定 | [`apps/sysmon/clock_thresholds.h`](../../apps/sysmon/clock_thresholds.h) / `clock_thresholds.cpp` | `clock_offset` 双档 / `clock_bound` 独立质量判据，纯状态机（细节见「阈值越限与日志」的时间判定对象节） |
+| 平台服务检测 | `SystemCollector::collect_time_sync_services()`（[`system_collector.h`](../../libs/platform/include/dztrader/platform/system_collector.h) 与两平台实现） | 枚举常见同步服务 + 内核同步判据；**不 exec 外部命令** |
+| 接线 | [`apps/sysmon/app.cpp`](../../apps/sysmon/app.cpp) | 启动首探、到点 / 手动触发、每轮一条日志、判定落地（日志 + `NOTIFY_UI`）、快照推送与重排 |
+
+**为什么编解码与编排分开**：报文层只吃字节、吐结构体（era 回绕、16.16 定点、origin 回显校验都在这一层），编排层只做「发几台、选哪台、怎么退避」。这样 `ntp_codec_test.cpp` 用构造字节确定性验证边界，`clock_probe_test.cpp` 用假传输验证多服务器语义，两者都不需要真实网络或真实时钟——CI 不能依赖外网 NTP（2026-11-04 开发机实测 8 台候选服务器有 4 台全部超时，见 [ADR 0047](../adr/0047-sysmon-clock-self-probe.md)）。
+
+**接缝只有一个**：传输是唯一可替换的接缝（`NtpTransport`），时钟读数（`MomentSource`）是第二个纯注入点（一次交互只在发送前与收到后各取一次读数）。进程级 e2e 用测试专用可执行文件 `dzsysmon_clock_e2e_runner`（真实 `run()` + 按 host 名脚本化的假传输），被测的编解码 / 派生 / 快照 / 判定 / 日志全部走生产路径，只有 socket 被替换。
+
+### 为什么自测而不读守护进程状态
+
+见 [ADR 0047](../adr/0047-sysmon-clock-self-probe.md) 决策 1，实现上只需要记住三条：
+
+1. **守护进程未开启时就没有答案**——而这正是要监控的场景之一（Windows 10/11 上 W32Time 常未启用），此时 `chronyc` / `timedatectl` / `w32tm` 都给不出读数。
+2. **chrony 命令 socket 普通用户不可读**（实测 `/run/chrony` 为 `drwx------`），读它要么加组要么提权，会把部署约束带进一个监控功能；Windows 的 `w32tm` 输出还受显示语言与 OEM 代码页影响，解析是已知脆弱面。
+3. **自测是单一代码路径**跨平台、在无守护进程时仍可用；服务检测只作辅助（回答「有没有人在管」），不解析其内部状态、不判故障。
+
+因此代码里没有任何读守护进程状态的入口：唯一的外部事实来源是本进程自己发出的 NTPv4 报文与平台服务枚举。
+
+### 探测调度与触发
+
+`clock.probe_times` 是**每天 HH:MM 的墙钟时刻**而不是固定间隔——盯盘人员关心的是「盘前 / 盘后各拿到一次」，固定间隔会在盘中反复打扰。定时器机制（单调时钟、每次重算、取消语义、与计量 / 推送定时器的关系）见「并发与调度」的「三定时器」与「探测定时器语义」，本节只记触发面：
+
+| 触发 | 语义 |
+|---|---|
+| 进程启动 | 初始化完成、首帧快照之后**立即**发起一轮（重启后不必空等到下一个时刻） |
+| 到点 | 排到下一个严格晚于当前时刻的本地墙钟时刻；**错过跳过、不补采**（停顿跨过的时刻不会连续补多轮，只迟到触发一次后重算）；不区分周末与节假日 |
+| 手动 | `DZ_FRAME_QUERY_SYSMON_CLOCK`（形态 3 单向下行动作帧、空 payload、无 RTN，契约 §1.1），结果复用既有快照推送路径（不新增 RTN 帧 / 镜像域 / WS 消息名） |
+| `clock` 域由关闭转开启 | 立即发起一轮（与启动同款），避免开关打开后空等下一个 `probe_times` 时刻（契约 §3.1） |
+| 任意 `SET_SYSMON_CONFIG` 成功 | 从**当前时刻**按新 `probe_times` 重排探测定时器（契约 §3.1.1 第 2 步） |
+
+一轮完成（成功或失败）都**立即推送一帧快照**并重排下一轮：「测不到」本身是要展示的事实（契约 §4 触发 5），失败不能被沉默成「还没到下一次」。关闭域时停表并清空最近一轮结果；关闭期间在飞的结果丢弃（重开后首轮探测完成前不得展示关闭前的旧值）。
+
+### 手动查询限流（双层）
+
+- **体验层**：监控页「立即查询」按钮置灰，时长取 `clock.manual_min_interval_sec`，清除信号是随后的快照（`clock.last_probe_unix_ms` 严格前进），不是 REST 200（#302）。非 admin 可见但不可点。
+- **权威层**（`dzsysmon`）：探测在飞或距上次**受理**的触发不足最小间隔时直接忽略并记日志——不排队、不叠加；**在飞优先于限流**（在飞时无论间隔多长都不该发起第二轮，日志要看到真实原因）；被拒绝的触发**不推进**限流窗口（否则拒绝本身会延长限流）；`clock` 域被配置关闭时同样忽略并记日志。
+- **拒绝没有错误通道**（与 `FLUSH_LOG` 同类：非 SET 请求无反馈）；REST 200 只表示「已写事件通道」，协议不承诺本次生效（契约 §1.1）。
+
+### 同步服务检测口径
+
+| 平台 | 实现 | 判据 |
+|---|---|---|
+| Linux | 扫 `/proc/<pid>/comm` 精确匹配 `chronyd` / `ntpd` / `systemd-timesyncd`；另读 `adjtimex` 只读模式（`modes=0`，普通用户可读） | 内核把 comm 截断到 15 字节，`systemd-timesyncd` 的**可观察值是 `systemd-timesyn`**——按这个事实匹配；`kernel_synced` 取 `STA_UNSYNC` 取反，是与守护进程无关的辅助判据 |
+| Windows | `OpenSCManagerW` + `OpenServiceW` + `QueryServiceStatusEx` 查 `W32Time` | 不解析 `w32tm` 的本地化文本；`kernel_synced` 以服务在运行作代理量（服务在跑不等于时钟准，见 ADR 0047 决策 1 的 (C)） |
+
+- **检测失败**（进程表不可读、服务管理器查询失败）降级为空列表 + `kernel_synced = null`，不抛异常、不崩溃；「读不到」不写成 `false`。
+- **每轮探测开始时执行一次**，两次探测之间不刷新（契约 §2.9）：因此**首轮探测前 `daemons` 为空数组不代表「没查到服务」**，前端在「尚未探测」态不渲染该区（#302）。
+- **`daemon_conflict` 是 `daemons[]` 的派生量**，由快照构造统一算出（与 §7 校验器同一规则），采集层只如实返回列表、不判故障；检测到 ≥2 种不同服务同时运行时另写一条日志 + 卡片提示，**不弹窗**。
+- **已知限制**：容器内看不到宿主进程，`daemons` 为空数组，此时以自测结果为准（契约 §8）。
+
+### 日志与不进历史库
+
+- **每轮探测一条**日志：有可用聚合值记 `info`、全部失败升 `warning`；字段义务 `offset_ms` / `bound_ms` / `source` / `servers_ok=<成功数>/<总数>`（契约 §2.9）。`daemon_conflict = true` 时另写一条。越限 / 升级 / 降级 / 重记 / 恢复的日志由时间判定对象产出（契约 §2.8，见「阈值越限与日志」）。
+- **不写历史库**（[ADR 0047](../adr/0047-sysmon-clock-self-probe.md) 决策 4）：探测是**事件**而非周期采样（默认一天 5 次），塞进 60 秒 min/max/avg 桶模型会让趋势几乎全是断点，且桶模型无法表达「这一轮测了几台、哪台失败」；新增标量列还要升 `kSchemaVersion` 并写迁移代码，而 `libs/sysmonstore` 只有 `CREATE TABLE IF NOT EXISTS`、**没有任何 `ALTER TABLE` 迁移路径**。事后回答「昨晚某时刻准不准」由每次探测一条日志承担。
+- **与历史库的 `clock_jump` 是两个事实**：`clock_jump` 标记回答「历史桶边界刚才有没有被跳变扭曲」（且只在 `history.enabled=true` 时运行）；时钟偏差回答「现在偏多少」。本功能不放在历史写入路径上——`history.enabled=false` 时它必须照常可用。
+- **只读不校时**：不调用任何校时接口、不做提权助手（ADR 0047 决策 2）；校时始终由 chrony / systemd-timesyncd / W32Time 负责，本功能只报告。
+
 ## 快照与可用性
 
 - `DZ_FRAME_RTN_SYSMON_SNAPSHOT`：形态 4 纯上行推送，无 `instance_id`，发送方固定 `dzsysmon`（payload `source` 显式携带来源，通用规则 §5）；dzweb 消费后更新镜像并 WS 广播 `sysmon_snapshot`，REST `GET /api/sysmon/snapshot` 读取镜像（契约 sysmon §5/§6、契约 rest、契约 webui-ws）。两个 sysmon 域均进快照域，WS 建连立即拿到当前值，供顶栏全局使用。
@@ -81,6 +151,7 @@
 - **可用性描述**（关键设计）：每个快照必须携带 `availability`——`platform_description`（Windows 必含 build 号）、`metrics`（固定键集合，每帧全覆盖；`available=false` 时 `reason` 必填）、`semantic_hints`。前端按可用性渲染，**不按 OS 名硬编码分支**；不可用一律显示「不可用」，不显示 0。
 - 当前可用性（#77）：`system`、`cpu.total`、`cpu.cores`、`cpu.load_average`、`cpu.context_switches`、`memory`、`swap`、`volumes`、`shm_dir`、`disk_io`、`network` 可用；Linux 上按宿主能力实现 `cpu.frequency`（cpufreq）与 `temperature`（hwmon），Windows 上两者不提供（默认配置关闭对应 B 组开关 → `disabled_by_config`；显式开启后采集器恒报 `unsupported`）；无交换分区/无页面文件时 `swap` 为 `unsupported`。`disk_io` 为能力粘性：单个盘读不到只是不进数组，一个盘都读不到时 Linux 报 `collect_failed`、Windows 报 `no_permission`（性能计数器需特权/未开启，不可用是常态而非异常）。`network` 同样能力粘性：单个网卡读不到只是不进数组，整域读取失败报 `collect_failed`；`hide_virtual` 只影响输出条目、不影响可用性——全部网卡都是虚拟网卡且被隐藏时为**空数组 + `available=true`**（「全部被过滤」与「采集失败」是不同事实）。采集能力不可用时用 `reason="collect_failed"`（温度无传感器用 `no_sensor`、无 cpufreq/无交换用 `unsupported`）；能力可用但本帧数值未就绪时为 `available=true`、数值 `null`；配置关闭对应指标组时为 `available=false` + `reason="disabled_by_config"`。**数值不沿用上一帧**：本帧未采到即输出 `null`/空数组（能力标记粘性），避免把旧数据当当前值展示。
 - 渲染语义分两档：内存/交换/磁盘/网络等区块按可用性显示明确空态——不可用时显示「不可用」+ 原因（`swap` 的 `unsupported` 说明为「本机无交换分区/页面文件」、`disk_io` 的 `no_permission` 说明为「磁盘性能计数器不可用（需管理员权限或性能计数器未开启）」），能力可用但本帧无数据时显示「暂无数据」；磁盘 I/O 与网络的派生字段为 `null`（首次采样/新网卡/计数器重置）时逐项显示「不可用」而不是 0；网络区块在「可用但数组为空」时显示「已隐藏全部虚拟网卡」并提供切换入口（与「暂无数据」区分）。温度与每核频率区块**仅在可用时渲染，不可用时整块不出现**（不在前端按平台名分支，只看 `availability.metrics`）。后者避免在 Windows 等平台长期占据版面显示无意义空态。温度卡片按 `chip` 分组展示，芯片名做友好映射（CPU / GPU / 无线网卡 / 主板 ACPI，未命中回退原芯片名），组内标签缺失时回退通道名（`tempN`），原始 `sensor` 标识降级到 `title` 悬停提示；芯片排序为 CPU 与 GPU 在前、主板 ACPI 类在后，**不过滤任何传感器**（主流实现均不隐藏 `acpitz`，降为排序而非隐藏）。分组与映射的唯一实现在前端共享模块 `sysmonTemperature.ts`（#126）。内存的 `used_bytes` / `used_ratio` 由前端按唯一口径重算，保证字节与百分比一致。
+- 时钟两键（#295/#298/#299，契约 sysmon §2.5 / §2.9）与其它指标键**语义不同**，实现上必须分开处理：`clock.offset` 是「最近一轮探测是否成功」，**不是能力粘性**——上一轮成功后下一轮全部失败即回到 `available=false` + `no_reference`；「尚未探测」不靠它区分（那是 `clock.last_probe_unix_ms = 0` 的域内空态），前端因此要显示「尚未探测」而不是「不可用」。`clock.sync_service` 是同步服务枚举能力，两平台基线内**恒为 `available=true`**（检测失败报空列表 + `kernel_synced = null` 是事实，不是能力不可用）。误差界过大只影响质量判定，**不改写** `clock.offset` 的可用性（「测不准」与「测不到」是不同事实）。配置关闭 `clock` 域时两键均为 `disabled_by_config`，且域为 `null`。
 - **数值格式化唯一实现**（#126）：监控页 / 历史图表 / 配置页 / 日志页 / 系统设置页此前各自实现字节数、比率等**同一单位族**的格式化，精度与单位档各写一套，改一处必然漏掉另一处（同一块 22 TiB 的卷，旧实现按 GiB 定标会渲染成 `22528.0 GiB`）。现收敛到前端共享模块 [`composables/format.ts`](../../apps/webui/frontend/src/composables/format.ts)：IEC 1024 进制 `B` / `KiB` / `MiB` / `GiB` / `TiB`（`B` 档取整、`≥KiB` 固定 1 位小数，速率 = 字节值 + `/s`）、百分比 1 位、负载与延迟 2 位、温度 1 位、IOPS 与计数取整、计数带千分位。**不采用有效数字自适应**：本场景是按列对齐的实时表格，宽度稳定优先于单值精度（定标 + 固定 1 位的先例是 btop 的 `shorten` 模式），自适应会让每秒刷新的列宽跳动。「不可用」占位由同一模块导出，各页面共用同一文案；「不可用」（单元格值缺失）与「暂无数据」（整块无数据）仍保持区分，不混用、不用 0 冒充。明确的例外：**时长**（历史视图的「天 / 小时」）属另一单位族，仍由该组件自行格式化；**顶栏徽章的整数百分比**是窄条紧凑显示的刻意取舍（状态色仍与监控页共用同一阈值模块，结论不会不一致）。
 - 饱和核判定（契约 sysmon §2.7）：单核使用率连续 `thresholds.cpu_sustain_samples` 次采样 ≥ `thresholds.cpu_sustain_used_pct / 100` 标记饱和，任一采样严格低于阈值即解除；不可用样本不改变计数；核序列变化（热插拔）重置计数。阈值/次数取当前配置，运行期修改经 `SET_SYSMON_CONFIG` 即时生效；`sampling.groups.cpu=false` 时判定暂停（监控页「配置」区可编辑）。
 - 跨平台语义差异：Windows 无原生 load average，以处理器队列长度做指数加权移动平均作为代理量（`semantic="processor_queue"`），与 Linux load average 不是同一个量；口径说明由 `availability.semantic_hints["cpu.load_average"]` 承载，前端只按该字段展示、不得同轴比较（不按 OS 名分支）。磁盘 I/O 的 `availability.semantic_hints["disk_io"]` 说明「延迟是每完成请求的平均驻留时间（含排队）、队列深度是采样时刻的在途请求数（不是区间平均）」，两平台同一口径；该提示只在 `disk_io` 能力可用时携带，前端随块展示。**语义提示的展示语言（#207 B2）**：契约只规定 `semantic_hints` 是「key → 文案」映射、未规定语言，发送方（dzsysmon）按日志风格发英文；中文界面因此由前端共享模块 [`composables/sysmonSemanticHint.ts`](../../apps/webui/frontend/src/composables/sysmonSemanticHint.ts) 按**稳定 key** 映射中文文案（当前覆盖契约定义的两个 key：`cpu.load_average` / `disk_io`），发送方原文只作为 `title` tooltip 保留可对照；未命中 key 回退发送方原文（新指标不会因前端未映射而吞掉提示），**不改协议、不加 `semantic_hints` 语言字段**。新增 `semantic_hints` key 须同时补中文映射（spec 断言映射表覆盖契约当前声明的全部 key）。
