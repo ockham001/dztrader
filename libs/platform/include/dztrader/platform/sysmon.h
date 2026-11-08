@@ -134,9 +134,10 @@ inline constexpr const char* SYSMON_THRESHOLD_CPU_SATURATED = "cpu_saturated";
 
 /// 时间判定对象（契约 sysmon §2.8「时间判定对象」；#301，ADR 0047）。
 ///
-/// 与上面四个资源类的差异只有一处：`clock_offset` 的 **error 档**产生 `NOTIFY_UI`
-/// 弹窗（warn 档与 `clock_bound` 都只写日志）——ADR 0047 对 ADR 0034 静默原则的部分修订。
-/// 两者的判定时机也不同：发生在**每次探测完成时**，不是计量 tick。
+/// 与上面四个资源类有两点差异：
+/// 1. `clock_offset` 的 **error 档**产生 `NOTIFY_UI` 弹窗（warn 档与 `clock_bound` 都只写
+///    日志）——ADR 0047 对 ADR 0034 静默原则的部分修订；
+/// 2. 判定时机在**每次探测完成时**，不是计量 tick。
 inline constexpr const char* SYSMON_THRESHOLD_CLOCK_OFFSET = "clock_offset";
 inline constexpr const char* SYSMON_THRESHOLD_CLOCK_BOUND = "clock_bound";
 

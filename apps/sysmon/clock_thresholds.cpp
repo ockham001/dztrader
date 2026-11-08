@@ -22,7 +22,8 @@ bool is_valid_ms(const std::optional<double>& millis) {
     return millis.has_value() && std::isfinite(*millis);
 }
 
-/// 跃迁在日志里的 `state=` 取值（契约 §2.8 的 `state` 词汇；英文、小写、无空格）。
+/// 跃迁在日志里的 `state=` 取值（沿用资源类 `state=entered|ongoing|recovered` 的风格；
+/// 契约 §2.8 只规定级别与内容义务、未规定取值，`escalated` / `downgraded` 是本票新增）。
 constexpr std::string_view to_state_text(ClockThresholdTransition transition) noexcept {
     switch (transition) {
         case ClockThresholdTransition::EnteredWarning:
@@ -138,8 +139,8 @@ void ClockThresholdEvaluator::evaluate_bound(const ClockThresholdInputs& inputs,
     ClockThresholdLogRecord record;
     record.key = ThresholdKey{platform::SYSMON_THRESHOLD_CLOCK_BOUND, ""};
     record.bound_ms = bound_ms;
-    record.offset_warn_ms = config.offset_warn_ms;
-    record.offset_error_ms = config.offset_error_ms;
+    // 偏差两档阈值与 `clock_bound` 无关（契约 §2.8 对该对象的「阈值」义务只有
+    // `bound_alarm_ms`），因此不填，避免下游误把偏差阈值当成质量判据。
     record.bound_alarm_ms = config.bound_alarm_ms;
     record.since_unix_sec = bound_.since_unix_sec;
     // 「测量质量」提示永远不弹窗，也不影响偏差判定（契约 §2.8 / ADR 0047）。
@@ -191,7 +192,9 @@ ClockThresholdEvaluator::Result ClockThresholdEvaluator::evaluate(
     Result result;
     if (!inputs.applicable) {
         // 配置关闭 → 静默清除（清除原因不是"指标回到阈值以下"，不写恢复日志）。
-        clear();
+        // 注意这是**两个清除入口之一**：域由开转关时调用方还须直接调用 `reset()`
+        // （关闭时通常没有探测在飞，本分支不会被触发）。
+        reset();
         return result;
     }
     // 重记间隔（秒 → 毫秒）；配置校验保证 >= 0，不在此重复钳制。

@@ -79,11 +79,19 @@ struct ClockThresholdInputs {
 
 /// 时间判定所需的配置（两个配置段各取一部分：三个时间阈值住 `clock` 段，重记间隔住
 /// `thresholds` 段；契约 §3.1 把它们分开放，判定层在此汇成一份，避免在判定里两处各读一遍）。
+///
+/// 默认值**直接从平台配置类型取值**（而不是重抄一遍数字）：契约 §3.1 的默认值只有一个
+/// 真相源 `platform::SysmonClockConfig` / `SysmonThresholdsConfig`，两处各写一份会在
+/// 「改默认阈值」时静默漂移。
 struct ClockThresholdConfig {
-    int32_t offset_warn_ms = 100;    ///< 偏差 warning 档阈值（`clock.offset_warn_ms`）
-    int32_t offset_error_ms = 1000;  ///< 偏差 error 档阈值（`clock.offset_error_ms`）
-    int32_t bound_alarm_ms = 200;    ///< 误差界质量判据（`clock.bound_alarm_ms`）
-    int32_t log_repeat_sec = 600;    ///< 持续期重记间隔（`thresholds.log_repeat_sec`；0 = 不重记）
+    /// 偏差 warning 档阈值（`clock.offset_warn_ms`）
+    int32_t offset_warn_ms = platform::SysmonClockConfig{}.offset_warn_ms;
+    /// 偏差 error 档阈值（`clock.offset_error_ms`）
+    int32_t offset_error_ms = platform::SysmonClockConfig{}.offset_error_ms;
+    /// 误差界质量判据（`clock.bound_alarm_ms`）
+    int32_t bound_alarm_ms = platform::SysmonClockConfig{}.bound_alarm_ms;
+    /// 持续期重记间隔（`thresholds.log_repeat_sec`；0 = 不重记）
+    int32_t log_repeat_sec = platform::SysmonThresholdsConfig{}.log_repeat_sec;
 
     /// 从两段当前生效配置取值（调用方须保证已经过校验：`offset_error_ms > offset_warn_ms`）。
     [[nodiscard]] static ClockThresholdConfig from(
@@ -106,10 +114,11 @@ struct ClockThresholdLogRecord {
     std::optional<double> offset_ms;
     /// 当前误差上界（毫秒）；`clock_offset` 的记录里为 `nullopt`。
     std::optional<double> bound_ms;
-    /// 当次生效的两个偏差阈值（`clock_offset` 记录的「阈值」义务含两档，契约 §2.8）。
+    /// 当次生效的两个偏差阈值——**只在 `clock_offset` 记录里填**（契约 §2.8 对该对象的
+    /// 「阈值」义务含两档）；`clock_bound` 记录里为 0（与质量判据无关）。
     int32_t offset_warn_ms = 0;
     int32_t offset_error_ms = 0;
-    int32_t bound_alarm_ms = 0;  ///< 当次生效的质量阈值（`clock_bound` 记录用）
+    int32_t bound_alarm_ms = 0;  ///< 当次生效的质量阈值——**只在 `clock_bound` 记录里填**
     int64_t active_sec = 0;      ///< 活动期已持续秒数（进入时为 0）
     int64_t since_unix_sec = 0;  ///< 本次活动期起点（墙钟 Unix 秒；进入记录里带上它）
     std::string message;         ///< 组装好的英文单行日志文本（`prose | k=v`）
@@ -150,6 +159,21 @@ public:
     [[nodiscard]] Result evaluate(const ClockThresholdInputs& inputs,
                                   const ClockThresholdConfig& config);
 
+    /**
+     * @brief 静默清除全部时间判定状态（配置关闭；清除原因不是"指标回到阈值以下"）。
+     *
+     * **两个入口，必须都接**（契约 §2.8「配置关闭静默清除」）：
+     * - 探测完成时发现域已关闭 → `evaluate(applicable=false)` 内部调用本方法；
+     * - 配置下发时把域由开转关 → 调用方**直接**调用本方法。这条路径不能只靠上一条：
+     *   关闭发生时通常没有探测在飞（探测已完成、管理员随后改配置），活动状态会一直留到
+     *   下一次探测完成——而下次探测来自「重开域时的立即首探」，届时会带着**跨关闭期**的
+     *   旧起点判一次，写出本该被清除的 `ongoing` / `recovered` 记录。
+     */
+    void reset() noexcept {
+        offset_ = OffsetState{};
+        bound_ = ActivityPeriod{};
+    }
+
 private:
     /// `clock_offset` 的状态：活动期 + 当前档位（档位只在活动期内有意义）。
     struct OffsetState {
@@ -181,12 +205,6 @@ private:
                                                              bool notify_popup,
                                                              int64_t active_sec,
                                                              double offset_ms);
-
-    /// 静默清除全部时间判定状态（配置关闭；清除原因不是"指标回到阈值以下"）。
-    void clear() noexcept {
-        offset_ = OffsetState{};
-        bound_ = ActivityPeriod{};
-    }
 
     OffsetState offset_;    ///< `clock_offset` 的活动期与档位
     ActivityPeriod bound_;  ///< `clock_bound` 的活动期

@@ -20,10 +20,11 @@
  * 因此被测的编解码/派生计算走的是与生产完全相同的路径；只有 socket 被替换成
  * `post` / `steady_timer`（后者用于慢响应场景）。
  *
- * `offset_ms` 与 `bound_ms` 的关系是实测出来的：`offset = −ahead`（服务端快 = 本地慢 = 负偏差），
- * `bound_ms = ½·RTT + root_dispersion`，而 RTT 由假传输的**同步回调**决定（恒为 0），
- * 因此 `bound_ms` 恰好等于报文里的 `root_dispersion`——`fake-dispersion-N` 因此能精确
- * 落在质量阈值的任一侧。
+ * `offset_ms` 与 `bound_ms` 的关系：`offset ≈ −ahead`（服务端快 = 本地慢 = 负偏差），
+ * `bound_ms = ½·RTT + root_dispersion`。RTT 由假传输经 `post` 投递的**异步回调**决定——
+ * 实测约几十微秒（不是精确的 0），因此 `bound_ms` 只是**近似等于** `root_dispersion`。
+ * `fake-dispersion-N` 的取值因此刻意远离阈值（如 900ms vs 200ms），不依赖那点抖动落在
+ * 阈值哪一侧。
  */
 
 #include "clock_probe.h"
@@ -93,9 +94,10 @@ inline std::vector<uint8_t> make_fake_response(const std::array<uint8_t, ntp::kP
     response[2] = 0;             // poll
     response[3] = 0;             // precision
     write_be32(response, 4, 0);  // root delay
-    // root dispersion 是 16.16 定点秒（无符号）：raw = ns × 2^16 / 10^9。
-    // 用整数运算换算，与生产编解码的 `fixed_point_nanoseconds` 同一口径。
-    write_be32(response, 8, static_cast<uint32_t>(dispersion_ns * (1LL << 16) / 1'000'000'000LL));
+    // root dispersion 是 16.16 定点秒（无符号）：raw = ns × 2^16 / 10^9，四舍五入
+    // （与生产编解码 `fixed_point_nanoseconds` 的 round_div 同向，避免 1ms 量级的截断偏差）。
+    const int64_t raw = (dispersion_ns * (1LL << 16) + 500'000'000LL) / 1'000'000'000LL;
+    write_be32(response, 8, static_cast<uint32_t>(raw));
     write_be32(response, 12, 0x4C4F434CU);  // reference id "LOCL"
     // 16..23：reference timestamp（0）
     // 24..31：origin timestamp = 请求的 transmit timestamp（回显校验）

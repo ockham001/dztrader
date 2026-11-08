@@ -1362,6 +1362,15 @@ private:
                 // （或重启进程）即可恢复历史记录。
                 enable_history_at_runtime();
             }
+            // 契约 §3.1：`clock` 域 true→false 时**静默清除**时间判定状态（#301）。
+            // 不能只依赖判定器自身的 `applicable=false` 分支：那条只在探测完成时执行，
+            // 而关闭通常发生在两轮探测之间（探测已完成、管理员随后改配置），活动状态会
+            // 一直留到下一次探测完成；下次探测又来自「重开域时的立即首探」，届时会带着
+            // **跨关闭期**的旧起点判一次，写出本该被清除的 ongoing / recovered 记录
+            // （契约 §2.8「配置关闭静默清除」禁止）。
+            if (clock_enabled_before && !clock_domain_enabled()) {
+                clock_threshold_evaluator_.reset();
+            }
             // 契约 §3.1：`clock` 域 false→true 时立即发起一轮探测（与进程启动同款），
             // 避免开关打开后空等下一个 `probe_times` 时刻。放在其余副作用之后、回推/推送
             // 之前：探测异步完成后再经 §4 触发 5 推送结果；此处不阻塞帧处理。

@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -290,6 +291,22 @@ TEST(ClockThresholdEvaluatorTest, BoundExactlyAtAlarmIsNotBreached) {
         evaluator.evaluate(bound_only(200.0, 1'000, kWallSec), make_config()).records.empty());
 }
 
+// 契约 §2.8 的**恢复侧**边界：已越限后回落到**恰好等于**阈值算恢复（`≤`）。
+// 与上面那条合起来才是「相等按表处理」的两个方向（只测进入侧等于只测了一半）。
+TEST(ClockThresholdEvaluatorTest, BoundExactlyAtAlarmRecoversFromActiveEpisode) {
+    ClockThresholdEvaluator evaluator;
+    const auto config = make_config();
+    ASSERT_EQ(evaluator.evaluate(bound_only(900.0, 0, kWallSec), config).records.size(), 1U);
+
+    // 恰好等于阈值 → 越限条件 `> bound_alarm_ms` 不再成立 → 恢复。
+    const auto recovered = evaluator.evaluate(bound_only(200.0, 1'000, kWallSec + 1), config);
+    ASSERT_EQ(recovered.records.size(), 1U);
+    EXPECT_EQ(recovered.records[0].transition, ClockThresholdTransition::Recovered)
+        << "bound_ms == bound_alarm_ms must satisfy recovery (contract §2.8: `≤`)";
+    EXPECT_EQ(recovered.records[0].level, spdlog::level::info);
+    EXPECT_FALSE(recovered.records[0].notify_popup);
+}
+
 // AC2：质量判据**不改变**偏差判定结果——两个判定对象完全独立。
 TEST(ClockThresholdEvaluatorTest, BoundBreachDoesNotAffectOffsetJudgment) {
     ClockThresholdEvaluator evaluator;
@@ -399,6 +416,57 @@ TEST(ClockThresholdEvaluatorTest, DisabledDomainIgnoresReadableValues) {
     ClockThresholdInputs disabled = probe_input(5000.0, 5000.0, 1'000, kWallSec);
     disabled.applicable = false;
     EXPECT_TRUE(evaluator.evaluate(disabled, make_config()).records.empty());
+}
+
+// `reset()` 是**第二个清除入口**：由配置下发路径显式调用（关闭时通常没有探测在飞，
+// `applicable=false` 分支因此不会被触发）。清除后重开域是全新活动期，不得带着关闭前的
+// 旧起点判出 ongoing / recovered（契约 §2.8「配置关闭静默清除」）。
+TEST(ClockThresholdEvaluatorTest, ExplicitResetClearsEpisodeWithoutProbes) {
+    ClockThresholdEvaluator evaluator;
+    const auto config = make_config();
+    // 建立 error 活动期（进入时弹窗一次）。
+    ASSERT_EQ(evaluator.evaluate(probe_input(1500.0, 5000.0, 0, kWallSec), config).records.size(),
+              2U);
+
+    // 配置路径清除：没有探测完成、没有记录、不写恢复。
+    evaluator.reset();
+
+    // 重开后首轮探测：偏差已回落 → **不**应写出跨越关闭期的恢复记录（活动期已被清除）。
+    const auto after_reopen =
+        evaluator.evaluate(probe_input(5.0, 10.0, 1'000, kWallSec + 1), config);
+    EXPECT_TRUE(after_reopen.records.empty())
+        << "reset must not leave an episode behind for the reopened domain to recover from";
+
+    // 重开后仍越限：必须是一条**新的**进入（不是接着旧的 ongoing）。
+    const auto reentered =
+        evaluator.evaluate(probe_input(1500.0, 5000.0, 2'000, kWallSec + 2), config);
+    ASSERT_EQ(reentered.records.size(), 2U);
+    EXPECT_EQ(reentered.records[0].transition, ClockThresholdTransition::EnteredError);
+    EXPECT_TRUE(reentered.records[0].notify_popup) << "a fresh episode must re-raise the popup";
+    EXPECT_EQ(reentered.records[0].active_sec, 0) << "fresh episode starts at zero";
+    EXPECT_EQ(reentered.records[0].since_unix_sec, kWallSec + 2);
+}
+
+// 非有限值（NaN / Inf）按「本轮不可判定」处理：保留活动状态，不伪造恢复
+// （与 `nullopt` 同一纪律；输入来自网络派生量，理论上不该出现但要防御）。
+TEST(ClockThresholdEvaluatorTest, NonFiniteValuesKeepActiveWithoutRecovery) {
+    ClockThresholdEvaluator evaluator;
+    const auto config = make_config();
+    ASSERT_EQ(evaluator.evaluate(probe_input(1500.0, 5000.0, 0, kWallSec), config).records.size(),
+              2U);
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    EXPECT_TRUE(
+        evaluator.evaluate(probe_input(nan, nan, 1'000, kWallSec + 1), config).records.empty());
+    EXPECT_TRUE(
+        evaluator.evaluate(probe_input(inf, inf, 2'000, kWallSec + 2), config).records.empty());
+
+    // 活动期仍在：恢复记录的持续秒数按原起点算。
+    const auto recovered =
+        evaluator.evaluate(probe_input(5.0, 10.0, 90'000, kWallSec + 90), config);
+    ASSERT_EQ(recovered.records.size(), 2U);
+    EXPECT_EQ(recovered.records[0].active_sec, 90);
 }
 
 // ===== 跨轮次活动期的完整性 =====

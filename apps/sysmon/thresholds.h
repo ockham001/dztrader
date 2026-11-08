@@ -24,7 +24,6 @@
  * 防刷屏完全由「进入/恢复各一条 + 按间隔重记」保证（ADR 0034）。
  */
 
-#include <compare>
 #include <cstdint>
 #include <map>
 #include <optional>

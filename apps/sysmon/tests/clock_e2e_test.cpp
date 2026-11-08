@@ -892,9 +892,8 @@ TEST_F(ClockE2ETest, BoundOverAlarmLogsWarningWithoutPopupAndKeepsOffsetJudgment
         << "measurement quality degradation must not pop up (contract sysmon §2.8)";
 }
 
-// AC6（反向）：判定在**每次探测完成时**发生——手动查询触发的新一轮也要参与判定；
-// 且同一活动期内不重复弹窗（契约 §2.8：error 档只在进入/升级时弹窗，不需要冷却）。
-TEST_F(ClockE2ETest, ManualRoundAlsoJudgedAndDoesNotRepeatPopupWithinEpisode) {
+// AC6（反向）：判定在**每次探测完成时**发生——手动查询触发的新一轮也要参与判定。
+TEST_F(ClockE2ETest, ManualRoundIsAlsoJudged) {
     write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
                  /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
     start_child();
@@ -930,9 +929,105 @@ TEST_F(ClockE2ETest, ManualRoundAlsoJudgedAndDoesNotRepeatPopupWithinEpisode) {
     EXPECT_EQ(probe_finished_log_lines(), 2U) << "manual round must emit its own probe log";
     EXPECT_EQ(wait_for_log("clock offset threshold recovered", 1, 2s), 1U)
         << "the manual round must be judged with the current thresholds (contract sysmon §2.8)";
-    // 同一活动期已结束 → 恢复，不弹窗；弹窗只在进入 / 升级时发生。
+    // 恢复不弹窗；弹窗只在进入 / 升级时发生。
     EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 2s).has_value())
         << "recovery must not pop up (contract sysmon §2.8)";
+}
+
+// AC1 反向 / AC6：**同一 error 活动期内**重复探测不重复弹窗（契约 §2.8：error 档只在
+// 进入 / 升级时弹窗，因此不需要冷却）。这是「不按判定对象额外限流」的前提。
+TEST_F(ClockE2ETest, SameErrorEpisodeDoesNotRepeatPopup) {
+    write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/300,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    const int64_t first_probe_ms = startup->at("clock").at("last_probe_unix_ms").get<int64_t>();
+    // 进入 error 档：一条弹窗。
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value())
+        << "startup error-tier episode must raise one popup";
+    // 进入记录只有一条（活动期起点）。
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 1, 2s), 1U);
+
+    // 同一活动期内再手动触发一轮：偏差仍越 error 线（档位不变），因此既无新进入记录、
+    // 也无新弹窗——这是「无冷却」得以成立的依据。
+    ASSERT_TRUE(send_query_clock());
+    const auto triggered = wait_for_snapshot(
+        [first_probe_ms](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > first_probe_ms;
+        },
+        10s);
+    ASSERT_TRUE(triggered.has_value()) << "manual round did not complete";
+    EXPECT_EQ(probe_finished_log_lines(), 2U) << "the manual round must actually have run";
+    // 本轮**没有**产生越限/恢复记录（档位不变的 activity 内）。注意 `clock probe finished`
+    // 只是与判定同级的另一条日志，不能证明判定路径被执行过；「手动轮被判定」的正向证据
+    // 在上面的 `ManualRoundIsAlsoJudged`（它以恢复记录为证）。
+    EXPECT_EQ(log_occurrences("clock offset threshold exceeded"), 1U)
+        << "the same error episode must not log a second entry";
+    EXPECT_EQ(log_occurrences("clock offset threshold recovered"), 0U)
+        << "the same error episode must not recover";
+    EXPECT_FALSE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 2s).has_value())
+        << "the same error episode must not pop up again (contract sysmon §2.8: no cooldown "
+           "needed)";
+}
+
+// AC5（接线）：**活动期打开时**关闭 `clock` 域必须静默清除判定状态。
+//
+// 这是判定器最容易漏的一条清除路径：关闭通常发生在两轮探测之间（探测已完成、管理员
+// 随后改配置），此时「探测完成时发现域已关闭」那条分支根本不会执行。若不清除，重开域
+// 的首探会带着**跨关闭期**的旧起点判一次，写出本该被清除的 `recovered` 记录
+// （契约 §2.8「配置关闭静默清除」明确禁止）。
+//
+// 做法：建立 error 活动期 → 关闭域（偏差回落为 0 的配置不变，但域关闭期间不探测）
+// → 重开域（立即首探）→ 断言**没有**恢复记录（旧活动期已被清除，而不是被"恢复"掉）。
+TEST_F(ClockE2ETest, DisablingActiveEpisodeClearsStateSilently) {
+    write_config({"fake-offset-1500"}, {}, /*clock_enabled=*/true, /*push_interval_sec=*/1,
+                 /*measure_interval_ms=*/1000, /*manual_min_interval_sec=*/0);
+    start_child();
+    const auto startup = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(startup.has_value()) << "startup probe did not complete";
+    // 前提：确实处于 error 活动期（进入日志 + 弹窗都在）。
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value());
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 1, 2s), 1U);
+    EXPECT_EQ(wait_for_log("clock offset threshold recovered", 0, 0s), 0U);
+
+    // 关闭域（活动期仍在）：判定状态必须被静默清除、**不写**恢复日志。
+    ASSERT_TRUE(send_set_config({{"clock", {{"enabled", false}}}}));
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
+    // 等一帧域为 null 的快照作为同步点，确认关闭已生效。
+    ASSERT_TRUE(wait_for_snapshot(
+                    [](const nlohmann::json& payload) { return payload["clock"].is_null(); }, 5s)
+                    .has_value())
+        << "clock domain must be null after clock.enabled=false";
+    EXPECT_EQ(log_occurrences("clock offset threshold recovered"), 0U)
+        << "config disable is a silent clear, not a recovery (contract sysmon §2.8)";
+
+    // 重开域：立即首探（偏差仍约 −1500ms → 越 error 线）。若旧活动期没被清除，这一轮
+    // 会判成 ongoing（无弹窗）；清除后必须是**全新**的进入（再弹一次窗）。
+    ASSERT_TRUE(send_set_config({{"clock", {{"enabled", true}}}}));
+    ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s).has_value());
+    const auto reopened = wait_for_snapshot(
+        [](const nlohmann::json& payload) {
+            return !payload["clock"].is_null() &&
+                   payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
+        },
+        10s);
+    ASSERT_TRUE(reopened.has_value()) << "re-enabling must probe immediately (contract §3.1)";
+    // 全新活动期 → 再弹一次窗（证明旧活动期确实被清掉了，而不是"接着旧的 ongoing"）。
+    EXPECT_TRUE(wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s).has_value())
+        << "re-enabling after a silent clear must start a fresh episode (and pop up again)";
+    // 进入记录累计两条（关闭前 1 + 重开后 1），且**始终没有**恢复记录。
+    EXPECT_EQ(wait_for_log("clock offset threshold exceeded", 2, 2s), 2U);
+    EXPECT_EQ(log_occurrences("clock offset threshold recovered"), 0U)
+        << "a silently cleared episode must never be reported as recovered";
 }
 
 }  // namespace
