@@ -91,22 +91,32 @@ inline std::filesystem::path sysmon_executable() {
 }
 
 /**
- * @brief 启动真实 dzsysmon 子进程（与 master 的 ChildProcess 同款启动方式）。
+ * @brief 启动指定可执行文件的子进程（与 master 的 ChildProcess 同款启动方式）。
  *
  * 启动前 `io` 会被 restart；失败通过 `ec` 返回（非抛出），由调用方决定 SKIP/FAIL。
+ * 测试辅助可执行文件（如 `dzsysmon_clock_e2e_runner` 目标产出的 `tests/dzsysmon`）与真实
+ * `dzsysmon` 走同一条路径。
  *
- * @param io 调用方 io_context（子进程句柄绑定其 executor）
- * @param ec 失败原因；成功时为空
+ * @param io  调用方 io_context（子进程句柄绑定其 executor）
+ * @param exe 可执行文件绝对路径
+ * @param ec  失败原因；成功时为空
  * @return 子进程句柄（调用方负责 stop_dzsysmon）
  */
-inline std::unique_ptr<boost::process::v2::process> spawn_dzsysmon(boost::asio::io_context& io,
-                                                                   boost::system::error_code& ec) {
+inline std::unique_ptr<boost::process::v2::process> spawn_process(boost::asio::io_context& io,
+                                                                  const std::filesystem::path& exe,
+                                                                  boost::system::error_code& ec) {
     io.restart();
     boost::process::v2::default_process_launcher launcher;
-    const auto exe = boost::filesystem::path(sysmon_executable().native());
+    const auto native = boost::filesystem::path(exe.native());
     return std::make_unique<boost::process::v2::process>(
-        launcher(io.get_executor(), ec, exe, std::vector<std::string>{},
+        launcher(io.get_executor(), ec, native, std::vector<std::string>{},
                  boost::process::v2::process_stdio{nullptr, nullptr, nullptr}));
+}
+
+/// 启动真实 dzsysmon 子进程（`spawn_process` 的薄包装）。
+inline std::unique_ptr<boost::process::v2::process> spawn_dzsysmon(boost::asio::io_context& io,
+                                                                   boost::system::error_code& ec) {
+    return spawn_process(io, sysmon_executable(), ec);
 }
 
 /// 强杀 dzsysmon 并回收句柄：e2e 只观察帧序，不测优雅退出（优雅退出由进程级用例单独覆盖）。

@@ -161,6 +161,9 @@ protected:
               {"swap_used_pct", 50.0},
               {"volume_free_pct", 10.0},
               {"log_repeat_sec", 600}}},
+            // 本用例不测时钟域：关闭它以彻底避免启动首探访问网络（#299 接线后默认配置会
+            // 带真实 NTP 服务器；e2e 不得依赖外网）。
+            {"clock", {{"enabled", false}}},
         };
         std::ofstream ofs(home_ / "configs" / "dzsysmon.json", std::ios::binary | std::ios::trunc);
         ofs << cfg.dump(2);

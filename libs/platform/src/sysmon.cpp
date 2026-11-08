@@ -8,6 +8,23 @@
 #include <string_view>
 
 namespace dztrader::platform {
+
+std::optional<SysmonProbeTimeOfDay> parse_sysmon_probe_time(std::string_view text) noexcept {
+    if (text.size() != 5 || text[2] != ':') {
+        return std::nullopt;
+    }
+    const auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    if (!digit(text[0]) || !digit(text[1]) || !digit(text[3]) || !digit(text[4])) {
+        return std::nullopt;
+    }
+    const int hour = (text[0] - '0') * 10 + (text[1] - '0');
+    const int minute = (text[3] - '0') * 10 + (text[4] - '0');
+    if (hour > 23 || minute > 59) {
+        return std::nullopt;
+    }
+    return SysmonProbeTimeOfDay{.hour = hour, .minute = minute};
+}
+
 namespace {
 
 using nlohmann::json;
@@ -826,21 +843,10 @@ std::optional<std::string> validate_config_thresholds(const json& thresholds) {
     return std::nullopt;
 }
 
-/// 单个 `probe_times` 元素是否合法 `HH:MM`（两位小时 + 两位分钟，00:00–23:59）。
-///
-/// **不收** `8:30` 这类单数字小时：契约 §3.1 明文要求「两位小时 + 两位分钟」。宽进会让
-/// 同一个时刻出现两种写法，配置差异比较（前端 diff、运维比对）随之失真。
+/// 单个 `probe_times` 元素是否合法 `HH:MM`：复用类型层的唯一解析实现，避免校验与排期
+/// 各写一套语法（契约 §3.1）。
 bool is_valid_probe_time(const std::string& text) {
-    if (text.size() != 5 || text[2] != ':') {
-        return false;
-    }
-    const auto digit = [](char c) { return c >= '0' && c <= '9'; };
-    if (!digit(text[0]) || !digit(text[1]) || !digit(text[3]) || !digit(text[4])) {
-        return false;
-    }
-    const int hour = (text[0] - '0') * 10 + (text[1] - '0');
-    const int minute = (text[3] - '0') * 10 + (text[4] - '0');
-    return hour <= 23 && minute <= 59;
+    return parse_sysmon_probe_time(text).has_value();
 }
 
 /// `clock` 段校验（契约 sysmon §3.1 `clock`；#296）。

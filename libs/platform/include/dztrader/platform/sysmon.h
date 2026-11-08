@@ -23,6 +23,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -625,6 +626,25 @@ struct SysmonThresholdsConfig {
                                                 volume_free_pct,
                                                 log_repeat_sec)
 };
+
+/// `clock.probe_times` 单个元素的解析结果（进程本地时区的一天内时刻）。
+struct SysmonProbeTimeOfDay {
+    int hour = 0;    ///< [0, 23]
+    int minute = 0;  ///< [0, 59]
+};
+
+/**
+ * @brief 解析 `HH:MM`（契约 sysmon §3.1：两位小时 + 两位分钟，`00:00`–`23:59`）。
+ *
+ * 配置校验与探测定时排期共用这一份解析：校验拒绝的写法排期也不会接受（反之亦然），
+ * 避免「配置接受、排期静默忽略」这类两处语法漂移。只接受契约写死的形态——`8:30`
+ * 这类单数字小时不收（同一时刻出现两种写法会让配置差异比较失真）。
+ *
+ * @param text 待解析文本
+ * @return 合法时返回时分；非法返回 `std::nullopt`（不抛异常）
+ */
+[[nodiscard]] std::optional<SysmonProbeTimeOfDay> parse_sysmon_probe_time(
+    std::string_view text) noexcept;
 
 /// 时钟偏差监控域的配置（契约 sysmon §3.1 `clock` 段；#296）。
 ///
