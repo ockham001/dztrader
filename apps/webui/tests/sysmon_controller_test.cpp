@@ -124,18 +124,29 @@ protected:
         return captured;
     }
 
-    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧 payload
-    std::optional<nlohmann::json> capture_inst_frame(DzFrameType type,
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧视图。
+    ///
+    /// 视图指向 reader 内部缓冲，只在下次 `next_frame()` 之前有效——调用方必须在同一作用域
+    /// 内取完所需字段（解析 payload 或读 size 后即离开）。
+    std::optional<FrameView> capture_inst_frame_view(DzFrameType type,
                                                      const std::string& instance) {
         if (!reader_) return std::nullopt;
         while (const auto* raw = reader_->next_frame()) {
             const FrameView view(raw);
             if (view.type() != type) continue;
             if (std::string(view.ext_inst_id()) != instance) continue;
-            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-            return nlohmann::json::parse(data, data + view.ext_inst_payload_size());
+            return view;
         }
         return std::nullopt;
+    }
+
+    /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧 payload
+    std::optional<nlohmann::json> capture_inst_frame(DzFrameType type,
+                                                     const std::string& instance) {
+        const auto view = capture_inst_frame_view(type, instance);
+        if (!view.has_value()) return std::nullopt;
+        const auto* data = reinterpret_cast<const char*>(view->ext_inst_payload());
+        return nlohmann::json::parse(data, data + view->ext_inst_payload_size());
     }
 
     /// 排空 reader，返回第一个匹配 type（+ instance_id）的定向帧的 payload 字节数。
@@ -143,14 +154,9 @@ protected:
     /// 不能用 `capture_inst_frame` 的 JSON 解析路径）。
     std::optional<std::size_t> capture_inst_frame_payload_size(DzFrameType type,
                                                                const std::string& instance) {
-        if (!reader_) return std::nullopt;
-        while (const auto* raw = reader_->next_frame()) {
-            const FrameView view(raw);
-            if (view.type() != type) continue;
-            if (std::string(view.ext_inst_id()) != instance) continue;
-            return view.ext_inst_payload_size();
-        }
-        return std::nullopt;
+        const auto view = capture_inst_frame_view(type, instance);
+        if (!view.has_value()) return std::nullopt;
+        return view->ext_inst_payload_size();
     }
 
     std::shared_ptr<Repository> repo_;

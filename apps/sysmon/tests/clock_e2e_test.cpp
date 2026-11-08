@@ -398,6 +398,23 @@ protected:
     /// 统计「探测完成」日志行数（每轮恰好一条；`clock probe skipped` 不计入）。
     std::size_t probe_finished_log_lines() const { return log_occurrences("clock probe finished"); }
 
+    /// 条件等待：轮询进程日志直到某段文本出现 @p expected 次（超时返回当时的次数）。
+    ///
+    /// 日志与事件通道是两条独立路径——「下一帧周期快照到达」不蕴含「QUERY 帧已被处理并
+    /// 落日志」，直接读文件会在 CI 调度延迟时误红。用例据此把日志断言写成条件等待
+    /// （与本文件头的「断言全部用条件等待 + 超时即失败」自约一致）。
+    std::size_t wait_for_log(std::string_view needle,
+                             std::size_t expected,
+                             std::chrono::milliseconds timeout) const {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        std::size_t count = log_occurrences(needle);
+        while (count < expected && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(10ms);
+            count = log_occurrences(needle);
+        }
+        return count;
+    }
+
     static void restore_env(const char* key, const std::optional<std::string>& value) {
         if (value.has_value()) {
             dztrader::env::set(key, *value);
@@ -660,7 +677,7 @@ TEST_F(ClockE2ETest, DisablingClockStopsTimerAndClearsDomain) {
     EXPECT_EQ(probe_finished_log_lines(), 3U);
 }
 
-// ===== #300 手动立即查询（契约 sysmon §1.1）=====
+// ===== #300 手动查询（契约 sysmon §1.1）=====
 
 // AC1 / AC2：手动触发后发起一轮新探测，结果走**既有快照推送路径**广播（不新增 RTN 帧、
 // 不新增镜像域、不新增 WS 消息名）——断言全部来自事件通道上的 RTN_SYSMON_SNAPSHOT。
@@ -737,7 +754,9 @@ TEST_F(ClockE2ETest, ManualTriggerRateLimitedWithinWindow) {
     EXPECT_EQ(periodic->at("clock").at("source"), "fake-ok");
     EXPECT_EQ(probe_finished_log_lines(), 2U)
         << "rate-limited manual trigger must not start a new probe round";
-    EXPECT_EQ(log_occurrences("clock probe skipped | reason=manual_rate_limited source=manual"), 1U)
+    // 日志与快照是两条独立路径：条件等待到拒绝日志出现（快照到达不蕴含日志已落盘）。
+    EXPECT_EQ(wait_for_log("clock probe skipped | reason=manual_rate_limited source=manual", 1, 2s),
+              1U)
         << "rate-limited manual trigger must be visible in the log (contract sysmon §1.1)";
 }
 
@@ -756,7 +775,9 @@ TEST_F(ClockE2ETest, ManualTriggerIgnoredWhenClockDisabled) {
         [](const nlohmann::json& payload) { return payload["clock"].is_null(); }, 5s);
     ASSERT_TRUE(periodic.has_value()) << "snapshot stream stopped while clock domain was disabled";
     EXPECT_EQ(probe_finished_log_lines(), 0U);
-    EXPECT_EQ(log_occurrences("clock probe skipped | reason=disabled_by_config source=manual"), 1U)
+    // 日志与快照是两条独立路径：条件等待到忽略日志出现。
+    EXPECT_EQ(wait_for_log("clock probe skipped | reason=disabled_by_config source=manual", 1, 2s),
+              1U)
         << "manual query must be ignored (and logged) while the clock domain is disabled";
 }
 

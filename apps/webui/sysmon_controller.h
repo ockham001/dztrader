@@ -16,12 +16,14 @@ namespace dztrader::webui {
 
 /// 系统监控 REST（契约 rest §2.8，《帧契约：系统监控》§6）。
 /// 读端点（snapshot / history / config）只要求已认证：认证在 JWT advice 层完成，
-/// handler 内**不**做角色判断；写端点（PUT config）在 handler 内校验 admin。
+/// handler 内**不**做角色判断；写端点（PUT config / POST clock/probe）在 handler 内校验 admin。
 /// - GET /api/sysmon/snapshot：读取镜像当前快照；镜像尚未就绪回 503。
 /// - GET /api/sysmon/history：只读查询历史库（《帧契约：系统监控》§6.1）；降级回 200 +
 /// available=false。
 /// - GET /api/sysmon/config：读取镜像中的当前生效配置；镜像尚未就绪回 503。
 /// - PUT /api/sysmon/config：运行期配置 merge patch（admin），直发 SET_SYSMON_CONFIG。
+/// - POST /api/sysmon/clock/probe：手动触发一次时钟探测（admin），直发 QUERY_SYSMON_CLOCK；
+/// 事件通道未就绪回 503，限流拒绝由 dzsysmon 判定（本端点无错误反馈）。
 class SysmonCtrl : public drogon::HttpController<SysmonCtrl, false>, public ControllerBase {
 public:
     SysmonCtrl(std::shared_ptr<Repository> repo,
