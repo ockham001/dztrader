@@ -73,6 +73,13 @@ endif()
 set_target_properties(dzsysmon_clock_e2e_runner PROPERTIES
     OUTPUT_NAME dzsysmon
     RUNTIME_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
+    # MSVC 下每个 exe 还会产出一个**同名前缀**的 import library（`<配置>/<target>.lib` +
+    # `.exp`），其路径由 ARCHIVE_OUTPUT_DIRECTORY 决定、**不受** RUNTIME_OUTPUT_DIRECTORY
+    # 影响。`OUTPUT_NAME dzsysmon` 与生产 target `dzsysmon` 同名 → 默认两者都落到
+    # `apps/sysmon/dzsysmon.lib`：并发链接时 `LNK1104: cannot open file
+    # 'apps\sysmon\dzsysmon.exp'`（Windows CI run 42475557497，Linux 完全看不到）。
+    # 把 import library 也送进 tests/ 即彻底分离（Linux 上这两个属性无副作用）。
+    ARCHIVE_OUTPUT_DIRECTORY ${DZ_TESTS_DIR}
 )
 
 # ============================================================

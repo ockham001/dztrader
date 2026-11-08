@@ -34,8 +34,22 @@ R5 gtest + nlohmann::json needs /wd4702 (C4702 -> /WX -> C2220)
     td_data_controller_test and reddened Windows CI (run 41809910544, ~35 min).
     This rule checks the single-definition invariant instead of each call site.
 
+R7 two exe targets with the same OUTPUT_NAME collide on the MSVC import library
+    An MSVC link of an executable also emits `import library` + `.exp` next to the
+    ARCHIVE_OUTPUT_DIRECTORY, whose path ignores RUNTIME_OUTPUT_DIRECTORY. Two
+    targets sharing OUTPUT_NAME (e.g. `dzsysmon` and the test-only
+    `dzsysmon_clock_e2e_runner` in a *different directory) therefore write the same
+    `.lib`/`.exp`; under parallel link one of them dies with
+    `LNK1104: cannot open file '<dir>/<name>.exp'` (Windows CI run 42475557497 -- the
+    Linux gate build is serialized enough to never reproduce it). Renaming the
+    product is not an option when the exe stem is semantic (instance_id / config /
+    log / snapshot `source` derive from it), so the fix is to move the archive
+    output into the tests dir: R7 requires a target whose OUTPUT_NAME equals another
+    target's name to also set ARCHIVE_OUTPUT_DIRECTORY.
+
 Usage: python3 scripts/check_msvc_hazards.py [files...]
-Default file set: tracked .h/.cpp under apps/ and libs/ plus cmake/DzTest.cmake.
+Default file set: tracked .h/.cpp under apps/ and libs/ plus cmake/DzTest.cmake
+and every tracked CMakeLists.txt (R7 needs the target graph, not single files).
 Exit 1 on any violation, 0 when clean.
 """
 
@@ -101,12 +115,17 @@ CTP_CMAKE = "apps/ctp/CMakeLists.txt"
 
 def tracked_sources():
     out = subprocess.run(
-        ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE],
+        ["git", "ls-files", "-z", "--", "apps", "libs", DZ_TEST_CMAKE, "CMakeLists.txt",
+         "*/CMakeLists.txt", "cmake"],
         capture_output=True, check=True).stdout
     files = [f for f in out.decode().split("\0") if f.endswith((".h", ".cpp"))]
     for invariant in (DZ_TEST_CMAKE, CTP_CMAKE):
         if os.path.exists(invariant):
             files.append(invariant)
+    # R7 需要 target 图（同一目录下两个 target 是否撞产物名），.h/.cpp 里看不到。
+    for cmake in out.decode().split("\0"):
+        if cmake.endswith("CMakeLists.txt") and os.path.exists(cmake):
+            files.append(cmake)
     return files
 
 
@@ -264,6 +283,55 @@ def check_c4702_exemption(path, text):
              "Windows CI with C2220 under /WX; restore the /wd4702 block in dz_add_test")]
 
 
+# R7: every target that overrides OUTPUT_NAME while another target already uses that
+# name as its own target/output name. The CMakeLists that declares both is where the
+# MSVC import-library collision is created (see the module docstring).
+SET_TARGET_PROPS_RE = re.compile(
+    r'set_target_properties\(\s*([\w-]+)\s+PROPERTIES(.*?)\n\)', re.S)
+ADD_EXE_RE = re.compile(r'add_executable\(\s*([\w-]+)')
+ADD_LIB_RE = re.compile(r'add_library\(\s*([\w-]+)')
+
+
+def check_output_name_collision(path, text):
+    """R7: identical OUTPUT_NAME across targets -> MSVC import library collision.
+
+    An MSVC exe link emits `<ARCHIVE_OUTPUT_DIRECTORY>/<OUTPUT_NAME>.lib` **and** `.exp`;
+    RUNTIME_OUTPUT_DIRECTORY does not move those. Two targets sharing OUTPUT_NAME
+    (dzsysmon vs dzsysmon_clock_e2e_runner) therefore race on the same `.exp` and one
+    dies with LNK1104 under parallel link -- invisible to the Linux gate (#302, run
+    42475557497). The only legitimate way to share the stem is to also move the
+    archive output elsewhere; that is what this rule enforces, per CMakeLists that
+    declares the sharing.
+
+    Scoped to one file: it compares the property block's OUTPUT_NAME against the
+    target names declared in the same CMakeLists. Cross-directory sharing is reported
+    where the property lives (the offender's own file), which is the file to edit.
+    """
+    if not path.endswith("CMakeLists.txt"):
+        return []
+    declared = set(ADD_EXE_RE.findall(text)) | set(ADD_LIB_RE.findall(text))
+    errors = []
+    for m in SET_TARGET_PROPS_RE.finditer(text):
+        target, props = m.group(1), m.group(2)
+        name = re.search(r'OUTPUT_NAME\s+([\w-]+)', props)
+        if not name:
+            continue
+        product = name.group(1)
+        if product not in declared or product == target:
+            continue
+        if "ARCHIVE_OUTPUT_DIRECTORY" in props:
+            continue
+        line = text[:m.start()].count("\n") + 1
+        errors.append(
+            (line,
+             "R7: target '%s' takes OUTPUT_NAME '%s' from the sibling target '%s' but does "
+             "not move its import library; on MSVC both write the same "
+             "`<build>/<dir>/%s.lib`/`.exp` and parallel link fails with LNK1104. Add "
+             "ARCHIVE_OUTPUT_DIRECTORY (e.g. ${DZ_TESTS_DIR}) to this property block"
+             % (target, product, product, product)))
+    return errors
+
+
 def check_ctp_api_dll_next_to_tests(path, text):
     """R6: a ctp *test* target that links the imported CTP API needs the DLL beside the exe.
 
@@ -305,6 +373,7 @@ def check_file(path):
     errors += check_deprecated_crt(path, text)
     errors += check_c4702_exemption(path, text)
     errors += check_ctp_api_dll_next_to_tests(path, text)
+    errors += check_output_name_collision(path, text)
     return sorted(set(errors))
 
 
