@@ -70,6 +70,7 @@ SKIP_PARTS = {
     "install",
     ".cache",
     ".worktrees",
+    ".agents",
     "third_party",
 }
 

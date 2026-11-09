@@ -15,6 +15,14 @@ DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.
                   第一条命中（附命中行前 160 字），最多 40 条，避免 digest 爆掉。
                   该小节与 `## failures` 分开，不改变原有小节与格式；`isError == true`
                   的结果不进本小节（已在 failures 里，避免同一事件记两次）。
+  只读命令豁免（#316 AC6）`sed -n` / `cat` / `grep` / `git grep` / `gh issue view` /
+                  `git show` / `contract_slice.py` 的输出是被引用的**内容**（契约 payload
+                  表、前端 TS 源码），这些命令的 `error:` 行不计入，`rc!=0` / `FAILED` /
+                  `FAIL:` 仍照常计入（管道吞掉退出码时还要靠它们补捞实红）。判定用命令
+                  文本，复合命令要求每一段都是只读/无害片段。
+  类型声明豁免（#316 AC6，与命令类型无关）`error: string | null`、`error: ok ? null : ...`
+                  这类「声明形状」来自契约/源码内容，同样不计入；只认有限形状，
+                  `error: boom` / `error: disk full` 仍是失败。
 
 用法:
   python3 scripts/retro_extract.py --latest                # 本 cwd 最新主会话
@@ -46,6 +54,7 @@ import argparse
 import collections
 import json
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -72,6 +81,36 @@ MASKED_FAILURE_RES = (
     ("FAIL:", re.compile(r"\bFAIL:")),
     ("error:", re.compile(r"^\s*error:")),  # 工具自己打印的 error 行（宿主未标 isError）
 )
+
+# 只读命令豁免（#316 AC6）：`sed -n` / `cat` / `grep` / `git grep` / `gh issue view` /
+# `git show` / `contract_slice.py` 的输出是**被引用的内容**（契约 payload 表、前端 TS
+# 源码），其中的行首 `error:` 是内容而非本次调用的失败；`rc!=0` / `FAILED` / `FAIL:` 仍
+# 照常计入（管道会吞掉退出码，实红还要靠它们补捞）。判定用命令文本：复合命令与管道要求
+# **每一段**都属于只读集合或无害管道工具（cd / echo / head / tail / wc / ls ...）。
+READ_ONLY_SEGMENT_HEADS = frozenset(
+    {
+        "cat", "grep", "rg", "head", "tail", "wc", "ls", "echo", "printf",
+        "cd", "pwd", "sort", "uniq", "cut", "stat", "true",
+    }
+)
+READ_ONLY_GIT_SUBCOMMANDS = frozenset({"grep", "show"})
+READ_ONLY_GH_SUBCOMMANDS = frozenset({"issue", "run", "pr"})
+READ_ONLY_GH_ACTIONS = frozenset({"view", "list", "list-files", "download"})
+_CONTRACT_SLICE_SCRIPT = "contract_slice.py"
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# 类型声明豁免（#316 AC6，与命令类型无关）：`error: string | null`、`error: ok ? null : ...`
+# 这类行是契约/源码里的类型声明，不是命令报错。只认三种有限形状，绝不放宽到任意
+# `error:`——`error: boom` / `error: disk full` 仍然是失败。
+_TYPE_UNION_ERROR_RE = re.compile(
+    r"^\s*error:\s*[A-Za-z_$][\w.$<>\[\]{}]*\s*\|\s*(?:null|undefined)\b"
+)
+_TYPE_KEYWORD_ERROR_RE = re.compile(
+    r"^\s*error:\s*(?:string|number|boolean|bigint|symbol|unknown|any|never|void|object|null"
+    r"|undefined|Error|Record<[^>]*>|Array<[^>]*>|ReadonlyArray<[^>]*>|Map<[^>]*>|Set<[^>]*>|"
+    r"Promise<[^>]*>)\s*(?:;|,|\)|\]|\}|//.*)?$"
+)
+_TYPE_TERNARY_ERROR_RE = re.compile(r"^\s*error:\s*[A-Za-z_$][\w.$]*\s*\?\s*[^?]*:")
 
 
 def die(msg: str) -> None:
@@ -167,21 +206,184 @@ def content_text(content: list | None) -> str:
     )
 
 
-def masked_failure_line(text: str) -> tuple[str, str] | None:
+def _split_command_segments(command: str) -> list[str]:
+    """按未加引号的控制符（`;` `&&` `||` `|` 换行 括号）切出命令段，引号内不切。"""
+    segments: list[str] = []
+    buf: list[str] = []
+    quote = ""
+    i, length = 0, len(command)
+    while i < length:
+        ch = command[i]
+        if quote:
+            buf.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < length:
+                i += 1
+                buf.append(command[i])
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < length:
+            buf.extend((ch, command[i + 1]))
+            i += 2
+            continue
+        for op in ("&&", "||"):
+            if command.startswith(op, i):
+                segments.append("".join(buf))
+                buf = []
+                i += 2
+                break
+        else:
+            if ch in ";|\n()":
+                segments.append("".join(buf))
+                buf = []
+            else:
+                buf.append(ch)
+            i += 1
+    segments.append("".join(buf))
+    return segments
+
+
+def _has_write_redirect(segment: str) -> bool:
+    """段里出现「真的写文件」重定向：`>` / `>>` 的目标不是 `&N` 或 `/dev/null`。
+
+    `2>&1`（fd 复制）与 `2>/dev/null`（丢弃输出）都不产生文件写入，属无害形态；
+    只看 `>` 之后的第一个词，避免把 `2>&1 | head` 之类误判成写文件。
+    """
+    quote = ""
+    i, length = 0, len(segment)
+    while i < length:
+        ch = segment[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch == ">":
+            if i + 1 < length and segment[i + 1] == "&":
+                i += 2  # fd 复制：2>&1 / >&2
+                continue
+            j = i + 1
+            if j < length and segment[j] == ">":
+                j += 1  # 追加：>>
+            while j < length and segment[j].isspace():
+                j += 1
+            target: list[str] = []
+            while j < length and not segment[j].isspace() and segment[j] not in ";|<>&":
+                target.append(segment[j])
+                j += 1
+            name = "".join(target)
+            if not (name.startswith("&") or name.startswith("/dev/null")):
+                return True
+            i = j
+            continue
+        i += 1
+    return False
+
+
+def _segment_is_read_only(segment: str) -> bool:
+    """单个命令段是否只读/无害：头命令在只读集合内，且没有写重定向与就地修改。"""
+    try:
+        tokens = shlex.split(segment.strip(), posix=True)
+    except ValueError:
+        tokens = segment.split()
+    while len(tokens) > 1 and _ASSIGNMENT_RE.match(tokens[0]):
+        tokens = tokens[1:]  # 去掉前置 VAR=value，只看真正的命令
+    if not tokens:
+        return True
+    head, args = tokens[0], tokens[1:]
+    if head in READ_ONLY_SEGMENT_HEADS:
+        return True
+    if head == "sed":
+        # `sed -n` 是查看；`sed -i` / 无 `-n` 可能是编辑，一律不豁免。
+        if any(arg.startswith(("--in-place", "-i")) for arg in args):
+            return False
+        return any(
+            arg == "-n" or (arg.startswith("-") and not arg.startswith("--") and "n" in arg[1:])
+            for arg in args
+        )
+    if head == "git":
+        return any(arg in READ_ONLY_GIT_SUBCOMMANDS for arg in args[:2])
+    if head == "gh":
+        return any(arg in READ_ONLY_GH_SUBCOMMANDS for arg in args[:2]) and any(
+            arg in READ_ONLY_GH_ACTIONS for arg in args
+        )
+    # `contract_slice.py` 只有作为解释器脚本（`python3 scripts/contract_slice.py ...`）
+    # 或直接执行（`./scripts/contract_slice.py ...`）时才算只读；别让 `rm x contract_slice.py`
+    # 之类因为末位参数同名被误判。
+    if Path(head).name == _CONTRACT_SLICE_SCRIPT:
+        return True
+    if head in ("python", "python3") and args:
+        return Path(args[0]).name == _CONTRACT_SLICE_SCRIPT
+    return False
+
+
+def is_read_only_command(command: str) -> bool:
+    """命令文本是否整体只读（#316 AC6）：`sed -n` / `cat` / `grep` / `git grep` /
+    `gh issue view` / `git show` / `contract_slice.py`，以及 cd / echo / head / tail
+    这类不产生「调用失败」的管道与复合命令片段。管道与 `&&` / `;` 复合命令要求
+    **每一段**都只读；任何一段是门禁 / 构建 / 写文件就整体不算只读。
+
+    空命令返回 False（无信息）：如 `job_output` 的 result 只带 job id，宁可保留原口径。
+    """
+    if not command.strip():
+        return False
+    for segment in _split_command_segments(command):
+        if not segment.strip():
+            continue
+        if _has_write_redirect(segment):
+            return False
+        if not _segment_is_read_only(segment):
+            return False
+    return True
+
+
+def _is_type_declaration_error_line(line: str) -> bool:
+    """`error:` 行是否是契约/源码里的类型声明（与命令类型无关，#316 AC6）。
+
+    只认三种有限形状：`error: string | null`、`error: string`（裸类型标注）、
+    `error: ok ? null : ...`。真正的报错行（`error: boom` / `error: disk full`）不匹配。
+    """
+    return bool(
+        _TYPE_UNION_ERROR_RE.match(line)
+        or _TYPE_KEYWORD_ERROR_RE.match(line)
+        or _TYPE_TERNARY_ERROR_RE.match(line)
+    )
+
+
+def masked_failure_line(text: str, command: str = "") -> tuple[str, str] | None:
     """在工具输出文本里找第一条失败证据，返回 (命中模式, 命中行) 或 None。
 
     只按行匹配有限模式（rc!=0 / FAILED / FAIL: / 行首 error:），不做语义判断：
     命令把非零退出码吞掉后 isError 仍为 false，这里补捞实红（#284 AC8）。
     调用方必须先用 `MASKED_FAILURE_TOOL_NAMES` 过滤工具类型——被 read/grep 出来的
     `FAILED` 文本是内容，不是本次调用的失败。
+
+    `command` 是 tool call 的命令文本（默认空 = 旧口径）：只读命令（见
+    `is_read_only_command`）的 `error:` 不计入——那是被引用的内容；`rc!=0` /
+    `FAILED` / `FAIL:` 仍照常计入。类型声明形状的 `error:` 行（见
+    `_is_type_declaration_error_line`）与命令无关，一律不计入（#316 AC6）。
     """
+    read_only = is_read_only_command(command)
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
         for label, pattern in MASKED_FAILURE_RES:
-            if pattern.search(line):
-                return label, stripped[:160].replace("\n", " ")
+            if not pattern.search(line):
+                continue
+            if label == "error:" and (read_only or _is_type_declaration_error_line(line)):
+                continue  # 内容/类型声明，不是本次调用的失败；同一行其它模式仍然生效
+            return label, stripped[:160].replace("\n", " ")
     return None
 
 
@@ -457,10 +659,11 @@ def extract(path: Path, decompose: bool = False) -> str:
                 )
             elif len(masked_failures) < MASKED_FAILURE_LIMIT:
                 # isError 为 false 但输出里有失败证据（自掩码实红）；isError 的结果
-                # 已进 failures，不重复记。只对命令类工具生效（见 MASKED_FAILURE_* 注释）。
+                # 已进 failures，不重复记。只对命令类工具生效（见 MASKED_FAILURE_* 注释），
+                # 并把命令文本传进去——只读命令的 `error:` 是被引用的内容（#316 AC6）。
                 name, command, cts = calls.get(call_id, ("?", "", ts))
                 hit = (
-                    masked_failure_line(output)
+                    masked_failure_line(output, command)
                     if name in MASKED_FAILURE_TOOL_NAMES
                     else None
                 )

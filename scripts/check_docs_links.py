@@ -61,7 +61,7 @@ SYMBOL_SCAN_ROOT_FILES = ("CMakeLists.txt", "CMakePresets.json", "conanfile.py",
 SYMBOL_SCAN_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".py", ".sh", ".ps1", ".js", ".ts",
                         ".tsx", ".mjs", ".cmake", ".json", ".yml", ".yaml", ".toml", ".txt")
 SYMBOL_SCAN_SKIP_DIRS = {"node_modules", "dist", "build", "install", ".cache", ".git",
-                         "third_party", ".worktrees"}
+                         "third_party", ".worktrees", ".agents"}
 # 源码注释契约引用检查（issue #221）的扫描范围与注释语法：C 系语言有 // 与 /* */
 # （.vue 模板区另有 <!-- -->）；apps/libs 下没有 Python/shell 目标，唯一的 hash 行注释
 # 文件是 CMakeLists.txt。

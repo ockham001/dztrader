@@ -189,7 +189,7 @@
 
 ### Worktree 与 Git 禁令
 
-- worktree 放 `.worktrees/`，`git worktree add .worktrees/<branch> -b <branch> main`
+- worktree 由 `create_worktree` 建在 **`.agents/worktrees/<branch>`**（实际约定；`.worktrees/` 是历史路径，目录若存在同样受 `.gitignore` 保护）。手动建 worktree 时沿用 `.agents/worktrees/<branch>`：`git worktree add .agents/worktrees/<branch> -b <branch> main`（#316 AC5）
 - worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2` 并从 `~/.conan2` 播种一次，见 [build-appendix](docs/agents/build-appendix.md)）
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
@@ -197,7 +197,7 @@
 - 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（pre-push 强制）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
-- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式与 docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；最近一次门禁在**当前 HEAD** 失败时拒绝推送（读 `.cache/gate/last-status`，HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
+- **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式与 docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；**按票型**拒绝「当前 HEAD 上失败的门禁」（读分命令槽 `.cache/gate/last-status-<cmd>`：代码票要 `build`+`test`、纯文档/脚本票要 `preflight`，`ledger` 永不参与放行；HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`，判定实现在 `scripts/gate_status.py`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
 - **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = pre-push hook + GitHub main ruleset + `.opencode` 权限）：
   - **免逐次确认**：把本票 commit push 到符合命名约定的 feature 分支、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
   - **仍需确认**：合并 PR 到 main（最后一道）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。
@@ -209,7 +209,7 @@
 - **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；**不要 `sleep` 轮询、不要前台空等**。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价：不看这条的票在 `sleep` 上花掉 10%–28% 墙钟（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。
 - **`job_output(wait=true)` 有宿主侧等待上限**（**上限值随宿主配置**，以 `job_output` 实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
 - **仓内搜索用 `git grep`**（只扫版本控制内的文件，天然跳过 `build/`、`install/`、`.cache/`）：`grep -rn --include=*` 全仓跑会扫到编译产物与缓存（#253 实测单次 131.8s、`find .cache` 94.2s）。要搜运行产物再显式指定 `.cache/` 路径。
-- **门禁判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，判绿看 `gate: OK` 行或 `.cache/gate/last-status`，不要只看 shell 退出码；`wait-ci.sh` 例外（退出码即 CI 结论，不接管道）。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
+- **门禁判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，判绿看 `gate: OK` 行或对应分命令槽 `.cache/gate/last-status-<cmd>`，不要只看 shell 退出码；`wait-ci.sh` 例外（退出码即 CI 结论，不接管道）。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
@@ -218,7 +218,7 @@
 
 仓库根存在 `.codegraph/` 才可用（没有索引就跳过；触达方式见本文开头）。**是否建索引由我决定，不要自行 `codegraph init`**
 
-**按节取帧契约用 `python3 scripts/contract_slice.py <stem> §N [--children]`**（`--list` 列出全部契约的编号标题；#309 AC4）。不要用 `sed -n` 按行号分页——行号在改契约后即失效，契约已 105 KB 级。
+**按节取契约用 `python3 scripts/contract_slice.py <stem> §N [--children]`**；**列单份的大纲用 `--outline <stem | docs 路径>`**（`--list` 只列**全部**契约的编号标题，**不接受 stem**）；大文档同样可按节切与列大纲（`--outline docs/agents/ticket-closeout.md`、`ticket-closeout §1`、`docs/components/dzweb.md` 都接受）。**不要用 `sed -n` 按行号分页**——行号在改契约后即失效，契约已 105 KB 级；`sed -n` 只允许用在**非契约、非大文档**的小文件上（#316 AC3）。
 
 ---
 

@@ -10,7 +10,8 @@
 #       孤儿导出（#274）/ CI 快路径分类（#289，与 ci.yml scope job 共用一份 denylist）/
 #       SYSMON 指标键集合（#309，4 处数据副本 + snapshot_builder 的 15 分支镜像）/ push 纪律
 #       （#309，push-ticket.sh 的 scope+验证标记+push 串联）/ 审查验证标记（#289，pre-push
-#       读取）/ 前端五件套。
+#       读取）/ PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
+#       门禁分槽 + 票型放行判定（#316 AC2，scripts/gate_status.py，pre-push 共用）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
@@ -197,9 +198,22 @@ check_commit_subject() {
     # 提交标题形态（#265）：`fix: #246 x` 既是 check-push-scope 要求的「含票号」，
     # 又是 GitHub 的 closing keyword 形态 —— PR 合并即提前关闭 issue，导致 §6 的
     # 关闭评论被静默丢弃（#246/#260/#243 实测）。票号应写进作用域 `fix(#246): ...`。
-    # CI 两个 workflow 与 pre-commit hook 都调用同一份脚本；这里只跑自测，保证规则
-    # 本身没坏（真实提交由各调用方按 range / message-file 校验）。
+    # #316 AC4 把同一个正则扩到 **PR 正文**（`--pr-body-file` / `--pr-body`）：上一波 3 个
+    # PR 正文写了 `Closes #N`（#313/#314/#315），#301 的关闭评论因此被 GitHub 吞掉。
+    # 正文守卫的 CI 侧是 `.github/workflows/pr-body.yml`（本脚本只跑自测，不读真实 PR）。
     "$PYTHON" scripts/check_commit_subject.py --selftest
+}
+
+check_gate_status() {
+    # 门禁分槽 + 票型放行判定（#316 AC2）：build / test / preflight / ledger 各写一份
+    # `.cache/gate/last-status-<cmd>`，`.githooks/pre-push` 调 `scripts/gate_status.py check`
+    # 按票型（ci_scope.py 的 fast/full）读对应槽位——代码票要 build+test、纯文档/脚本票要
+    # preflight，ledger 永不参与放行（旧实现所有子命令写同一个槽、hook 不看 cmd，于是
+    # `gate ledger` 必然绿能覆盖掉 build 的红）。selftest 在临时 git 仓库复现三态
+    # （ledger 绿+build 红同 HEAD → 拒绝 / 记录停在旧 HEAD → 只警告 / 纯文档票 preflight 绿
+    # → 放行），不碰工作区；gate.sh --selftest 另跑分槽写入的端到端。
+    "$PYTHON" "$ROOT/scripts/gate_status.py" --selftest || return $?
+    "$ROOT/scripts/gate.sh" --selftest
 }
 
 check_push_scope_selftest() {
@@ -372,6 +386,7 @@ run_step "vendored JSON version consistency" check_json_vendor_version
 run_step "ci-log error pattern" check_ci_log_pattern
 run_step "gtest discovery timeout (#227)" check_gtest_discovery_timeout
 run_step "commit subject rules (#265)" check_commit_subject
+run_step "gate status slots + push admission (#316)" check_gate_status
 run_step "push-scope base resolution (#265)" check_push_scope_selftest
 run_step "gate script arg parsing (#281)" check_script_args
 run_step "Windows CI budget bands (#267)" check_ci_budget

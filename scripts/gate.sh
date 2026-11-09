@@ -18,6 +18,7 @@
 #   ./scripts/gate.sh preflight [--tail N] [preflight.sh 参数...]
 #   ./scripts/gate.sh ledger [check_ledger.py 参数...]  # 台账体检（只读；spec 母票/悬空承诺/triage/拍板记录）
 #   ./scripts/gate.sh wait-ci [wait-ci.sh 参数...]   # 透传，前台阻塞，退出码真实
+#   ./scripts/gate.sh --selftest                     # 分槽写入 + 票型放行判定自测（不碰工作区）
 #
 # 行为:
 #   - 输出落 `.cache/gate/<cmd>-<时间戳>.log`（gitignored）；
@@ -25,11 +26,18 @@
 #     并**原样返回被包装命令的退出码**；
 #   - `--tail N` 由 gate.sh 自己解析，不传给被包装命令；要短输出就用它。
 #   - 门禁命令接 `| tail` / `| head` 只会丢退出码；verdict 行固定末尾 + 结果写
-#     `.cache/gate/last-status`，所以结论仍可见。判绿口径详见
+#     `.cache/gate/last-status-<cmd>`（兼容视图 `last-status`），所以结论仍可见。判绿口径详见
 #     docs/agents/ticket-closeout.md §2（唯一详述处，避免多处漂移）。
 #   - 最终 verdict 行固定打在输出**末尾**（`| tail -2` 也可见）；每次结果原子写入
-#     `.cache/gate/last-status`（cmd/rc/head/time），pre-push 对「当前 HEAD 上最近一次
-#     门禁失败」直接拦截（issue #190；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
+#     `.cache/gate/last-status-<cmd>`（分命令槽：build / test / preflight / ledger，
+#     issue #316 AC2），同时写兼容视图 `.cache/gate/last-status`（「最近一次任意门禁」）。
+#     放行判定由 `.githooks/pre-push` → `scripts/gate_status.py check` 按**票型**读槽位
+#     （票型 = `scripts/ci_scope.py` 的 fast/full 分类）：代码票要 build+test、纯文档/脚本
+#     票要 preflight；`ledger` 永不参与放行判定。旧实现所有子命令写同一个 last-status 且
+#     hook 不看 cmd，于是 `gate ledger`（必然绿）能覆盖掉 build 的红——闭环漏洞（#316 AC2）。
+#     应急逃生 `DZ_ALLOW_RED_GATE=1` 仍把拒绝降级为 WARNING（issue #190）。
+#   - `./scripts/gate.sh --selftest`：分槽写入 + 票型放行判定的三态自测（临时 git 仓库，
+#     不碰工作区；判定逻辑实现在 scripts/gate_status.py，pre-push 共用同一份）。
 #   - preflight 不取构建锁（只读检查 + 前端 lint），其前端阶段与构建里的 npm 安装
 #     可能重叠 —— 由 preflight.sh 自身的 npm 门控脚本处理。
 #   - ledger 透传给 `scripts/check_ledger.py`（需要 `gh` 登录态与网络）。它是 spec 母票
@@ -58,6 +66,63 @@ case "$CMD" in
         exit 0
         ;;
 esac
+
+# 分槽写入 + 票型放行判定的自测（#316 AC2）。两段各自独立：
+#   1) 判定三态（ledger 绿 + build 红同 HEAD → 拒绝 / 记录停在旧 HEAD → 只警告 /
+#      纯文档票 preflight 绿 → 放行）由 scripts/gate_status.py --selftest 覆盖，
+#      与 .githooks/pre-push 共用同一份判定实现；
+#   2) 分槽写入端到端：临时 git 仓库里复制 gate.sh + ccache-env.sh + 假 check_ledger.py，
+#      跑一次 `gate.sh ledger`，断言 `.cache/gate/last-status-ledger` 与兼容视图
+#      `last-status` 都落盘、内容 rc 正确——不联网、不碰真实工作区。
+if [ "$CMD" = "--selftest" ]; then
+    sel_fails=0
+    sel_py="${PYTHON:-}"
+    if [ -z "$sel_py" ]; then
+        if command -v python3 >/dev/null 2>&1; then sel_py=python3
+        elif command -v python >/dev/null 2>&1; then sel_py=python
+        fi
+    fi
+    if [ -z "$sel_py" ]; then
+        echo "selftest: no python interpreter found (python3/python)" >&2
+        exit 2
+    fi
+    "$sel_py" "$ROOT/scripts/gate_status.py" --selftest || sel_fails=$((sel_fails + 1))
+
+    sel_tmp="$(mktemp -d)"
+    mkdir -p "$sel_tmp/scripts"
+    cp "$ROOT/scripts/gate.sh" "$sel_tmp/scripts/gate.sh"
+    cp "$ROOT/scripts/ccache-env.sh" "$sel_tmp/scripts/ccache-env.sh"
+    chmod +x "$sel_tmp/scripts/gate.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$sel_tmp/scripts/check_ledger.py"
+    chmod +x "$sel_tmp/scripts/check_ledger.py"
+    (
+        cd "$sel_tmp" || exit 1
+        git init -q -b main .
+        git -c user.name=gate-selftest -c user.email=selftest@example.invalid \
+            -c commit.gpgsign=false commit -q --allow-empty -m "chore(#999): selftest baseline"
+        ./scripts/gate.sh ledger >/dev/null 2>&1
+    )
+    sel_head_rc=$?
+    for sel_slot in last-status-ledger last-status; do
+        if [ -f "$sel_tmp/.cache/gate/$sel_slot" ]; then
+            echo "selftest ok slot-written $sel_slot ($(grep -m1 '^rc=' "$sel_tmp/.cache/gate/$sel_slot"))"
+        else
+            echo "selftest FAIL slot not written: .cache/gate/$sel_slot" >&2
+            sel_fails=$((sel_fails + 1))
+        fi
+    done
+    if [ "$sel_head_rc" -ne 0 ]; then
+        echo "selftest FAIL gate.sh ledger in the temp repo exited rc=$sel_head_rc" >&2
+        sel_fails=$((sel_fails + 1))
+    fi
+    rm -rf "$sel_tmp"
+    if [ "$sel_fails" -ne 0 ]; then
+        echo "selftest FAILED: $sel_fails case(s)" >&2
+        exit 1
+    fi
+    echo "selftest: gate status slots + push admission behave as expected"
+    exit 0
+fi
 
 # wait-ci 本就静默、前台阻塞：直接透传，不接受 --tail
 if [ "$CMD" = "wait-ci" ]; then
@@ -120,13 +185,21 @@ LOG="$LOG_DIR/${CMD}-$(date +%Y%m%d-%H%M%S)-$$.log"
 # 变成推不出去的机器事实（详见 issue #190）。
 record_last_status() {
     local cmd="$1" rc="$2"
-    local head ts tmp
+    local head ts tmp legacy_tmp
     head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
     ts="$(date +%s)"
     # 唯一 tmp 名（`$$`）：preflight 可与 build 重叠，两个进程共用固定名会互相覆盖/撕裂。
-    tmp="$LOG_DIR/.last-status.$$.tmp"
-    printf 'cmd=%s\nrc=%s\nhead=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$ts" >"$tmp" &&
-        mv -f "$tmp" "$LOG_DIR/last-status"
+    # 分命令槽（#316 AC2）：build / test / preflight / ledger 各写一份，放行判定按票型读
+    # 对应槽（scripts/gate_status.py）；`last-status` 仍是「最近一次任意门禁」的兼容视图，
+    # 只有提示用途，不参与放行判定（否则 ledger 覆盖 build 红的闭环漏洞会复活）。
+    local content
+    content="$(printf 'cmd=%s\nrc=%s\nhead=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$ts")"
+    tmp="$LOG_DIR/.last-status-$cmd.$$.tmp"
+    legacy_tmp="$LOG_DIR/.last-status.$$.tmp"
+    printf '%s\n' "$content" >"$tmp" &&
+        mv -f "$tmp" "$LOG_DIR/last-status-$cmd" || return 1
+    printf '%s\n' "$content" >"$legacy_tmp" &&
+        mv -f "$legacy_tmp" "$LOG_DIR/last-status" || return 1
 }
 
 run_and_report() {

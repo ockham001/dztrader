@@ -35,11 +35,16 @@
 
 7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。**分工表（成员 / 写作用域 / 依赖 / 验收映射）必须先在 issue 评论落盘再 spawn 成员**——`.cache/handoff/` 可随时删除，不作为唯一载体；本仓以 issue 为唯一记忆。分工表与 `team_task_create` 的 `write_scopes` 登记同步维护，别只留在会话或 handoff 文档里。
 
-8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。
+8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。**只修 NON-BLOCKING 的轮次不重开验证**，见第 13 条。
 9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。**Lead 侧动作点**：verifier **无进展**（长时间既无工具调用、也无进度 interim）时主动 `send_message` 一条进度询问「**先发结论**（哪怕只发已完成部分），现在到哪一步了」，不要让审查无上限拖住关键路径——#253 两轴跑了 38.7min / 45.3min，T+26 / T+44min 一催，**1.5min 内即交付**，说明卡住多半是缺一个交付信号而不是缺时间。**不要以时长或工具调用数为触发条件**（#309 AC2 已删掉时间盒：107 个历史子会话实测首轮 median 0.42×N、超支 9%、nudge 命中率 3%，时间盒既拦不住长尾又让 verifier 提前分心）。
 10. **verifier / 实现 teammate `failed` ≠ 无产出**（#289 AC8）：`failed` 只表示该 turn 异常退出、没有报告，**不代表它没写文件**。恢复顺序：① 先查产出——`git status --porcelain`（它可能已落盘部分改动）、`team_task_list`（共享任务状态与 `write_scopes`）、其 session 日志（`~/.dsh/sessions/`，见 [retro-evidence.md](retro-evidence.md)）；② 成员仍可寻址（`list_agents` 里 `inactive` 而非名额释放）时用 `send_message` **续跑**，prompt 里写「上一步无产出/部分产出 + 先落最小骨架」——不要重派新成员（名额是稀缺资源，见第 6 条）；③ 原 prompt 重跑一次；④ 仍失败 → 改用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；⑤ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。**实现类成员的 prompt 必须带「T+15min 先落最小骨架」**（#253 recon 37–39min 才写第一行，模板见 [verifier-prompt.md](verifier-prompt.md) §4）。
 11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让验证轮 findings 又产生新 commit，上一轮 CI 作废重跑（旧守卫下第二次 push 还会被「CI 在跑」拒绝、白等一轮；#248 实测 986s；新口径见 §4）。**#252 实测（规则存在 ≠ 动作点看得见）**：23:15 建 PR 起 CI → 23:23:08 修复 commit → 23:23:30 push 被旧 run 拒绝 → 等旧 CI 1431s（到 23:47:57）→ 23:48:07 才推上去 → 新 run 31m42s → 00:20:44 才等到结果，**一次修复被放大成两个串行 CI 周期（≈56min）**，并在 00:20:28 触发用户 abort turn。因此 §4 把「最后一轮只读验证已返回且无 BLOCKING」写成 push / 建 PR 的**动作点前置条件**；只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3（模板返回后才允许进入 §4）。
 12. 并行波（同一时间多个 ticket）必须一票一 worktree（AGENTS §五）；共享工作区只留单线。
+13. **审查配比：`docs/`-only 的小票不该派满员额**（#316 AC1）。本波 #303 的 diff 是 **+74/−7（81 行，纯 `docs/`）**，按 [verifier-prompt.md](verifier-prompt.md) 的档位表是 **small = 单块单轴**，却派了 **5 个 `spawn_teammate`**，review 阶段占 **8,865s = 该票 turn 的 59%**（Lead 侧 `wait_agent` 17 次共 5,016s），结论是 **0 BLOCKING / 4 条 NON-BLOCKING**。结构性放大器：每多一个修复 commit，两个 marker 的 sha 就被打旧，`scripts/push-ticket.sh`（`--strict --expect-axis standards --expect-axis spec`，要求标记**停在 HEAD**）随即拒绝推送 → **修一次就必须再验一次**，81 行文档票被动跑成 5 个 teammate（该会话已用掉 8 个额度中的 5 个）。三条规则：
+    - **`docs/`-only 且 `git diff --stat <base>...HEAD` 总增删 < 200 行 → 至多 2 个 teammate**（Standards + Spec 各一个），**不再按文件群拆分**；large 档的拆块规则（[verifier-prompt.md](verifier-prompt.md) 档位表）只对含代码/契约/前端的改动生效。
+    - **只修 NON-BLOCKING 时由 Lead 自查，不派新 teammate**：Lead 自己跑 `git diff <fixbase>..HEAD` 逐条核对，然后**自己**执行 `python3 scripts/review_marker.py write <issue> <axis>`（标记的语义本就是「验证停在哪个 sha」，Lead 自查同样算一次验证，`push-ticket.sh` 只看标记、不看谁写的）。只有修了 **BLOCKING** 才派新 teammate（那是改结论，需要独立轴）。
+    - **写文档类交付物不派 teammate**：Lead 已有取证时自己写一次；确需分工时要求 teammate 直接 `gh issue comment` 落 issue，**不要把文件写进 `.cache/handoff` 再被 Lead 重写一遍**（第 7 条已写明 `.cache/handoff/` 不作为唯一载体；#303 的 `spec-auditor` 交 141 行清单、Lead 整份重写为 188 行，该段墙钟归零）。
+14. **NON-BLOCKING 与「修复-验证」放大链**（#316 AC1 的结构性部分）：`push-ticket.sh` 要求两个轴的 marker 停在 HEAD，所以**任何**新增 commit 都会让上一轮标记失效。因此把 NON-BLOCKING 修复合进**下一次本来就要产生的 commit**（例如 CI 红修复），或按第 13 条由 Lead 自查后重写标记；**不要**为 1–2 条措辞 finding 单独产生一个 commit + 一轮验证。
 
 ## 2. 门禁（全绿才算完）
 
@@ -49,7 +54,7 @@
 ./scripts/gate.sh preflight
 ```
 
-`gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）。给门禁命令接 `| tail` / `| head` 只会丢退出码（#75 的 wait-ci 超时、#81 的 ninja 失败曾因此被记成假绿），但 `gate.sh` 的 verdict 行固定打在输出**末尾**、结果同时原子写入 `.cache/gate/last-status`，所以**结论仍可见**：判绿看 `gate: OK` 行或 last-status，不要只看 shell 退出码（#249–#251 实测 83 次接管道、0 次假绿）。输出长度来自失败摘录 max(N,30)，与是否接管道无关——**不要**靠调小 `--tail` 默认值解决长度问题。**`wait-ci.sh` 例外**：它本就静默、退出码就是 CI 结论、没有 verdict 行兜底，别接管道。
+`gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）。给门禁命令接 `| tail` / `| head` 只会丢退出码（#75 的 wait-ci 超时、#81 的 ninja 失败曾因此被记成假绿），但 `gate.sh` 的 verdict 行固定打在输出**末尾**、结果同时原子写入分命令槽 `.cache/gate/last-status-<cmd>`（`build` / `test` / `preflight` / `ledger`，`#316 AC2`；兼容视图 `last-status` = 最近一次任意门禁），所以**结论仍可见**：判绿看 `gate: OK` 行或对应槽位，不要只看 shell 退出码（#249–#251 实测 83 次接管道、0 次假绿）。输出长度来自失败摘录 max(N,30)，与是否接管道无关——**不要**靠调小 `--tail` 默认值解决长度问题。**`wait-ci.sh` 例外**：它本就静默、退出码就是 CI 结论、没有 verdict 行兜底，别接管道。
 
 票内并行期间只跑定向作业即可（不必每轮全量，收尾仍须跑上面的全量门禁）：
 
@@ -67,7 +72,7 @@
 
 `./scripts/preflight.sh` 的**检查清单只有一个真相源：脚本自身的 `run_step` 行**（`./scripts/preflight.sh --help` 直接打印全部步骤名与数量；#289 AC7——此前 AGENTS / 本文 / development-checklist 三处手抄，`AGENTS.md` 漏了「gtest 发现超时」让 #284 终轮验证判 FAIL，白跑 229s + 作废 150s 机时）。每项检查的细节（为什么需要 / 规则 / `--selftest`）写在各检查脚本的文件头。任一项红就停，**先修红，不叠加新改动**。CI linux job 复用同一脚本的 C 段（`--c-only`）。
 
-> **门禁结果可追溯（#190）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入 `.cache/gate/last-status`。`.githooks/pre-push` 会拒绝「当前 HEAD 上最近一次门禁失败」的推送（HEAD 不符/缺失只警告；应急逃生 `DZ_ALLOW_RED_GATE=1`）。
+> **门禁结果可追溯（#190 / #316 AC2）**：`gate.sh` 的最终 `gate: OK|FAILED` 行固定打在输出**末尾**（`| tail -2` 也可见），每次结果原子写入**分命令槽** `.cache/gate/last-status-<cmd>`（`build` / `test` / `preflight` / `ledger`），并同步写兼容视图 `last-status`（= 最近一次任意门禁，只用于提示）。`.githooks/pre-push` 调 `scripts/gate_status.py check` 按**票型**放行：代码票要求 `build` 与 `test` 都停在当前 HEAD 且 rc=0，纯文档/脚本票要求 `preflight`，**`ledger` 永不参与判定**（旧实现所有子命令写同一个槽且 hook 不看 `cmd`，于是「build 红 → 跑 ledger → 放行」成立，本波 #303 push 后跑 2 次 ledger 实测覆盖掉 preflight 记录）。记录缺失/HEAD 不符只警告；当前 HEAD 上失败才拦截；应急逃生 `DZ_ALLOW_RED_GATE=1`。
 
 > preflight 是**只读**门禁：它不得改动工作区任何受版本控制的文件。新增检查若需要"注入已知错误形态"来自测，必须在临时副本上做（参照 `scripts/check_json_vendor_version.py`），否则一次 Ctrl-C / SIGKILL 就会把工作区留在改坏的状态——而审查冻结窗口恰好禁止这种改动。
 
@@ -96,7 +101,7 @@ gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）
 - **实现完成即自动推进到本节，无需等用户口令**：门禁绿后直接 push → 建 PR → 起 CI 等待；#159 曾在「实现完成」处停下，需要用户催「进行收尾，可以推送」。唯一需确认的是 §5 合并 main、打 tag、删除非本票分支（ADR 0036）。
 - **PR 开完不阻塞等 CI**：`gh pr create` 成功后即可转下一票（读契约 / 定 spec）或本票收尾准备（拟关闭评论、清理 worktree 计划），CI 结果在自然断点或波末统一用 `./scripts/wait-ci.sh --pr <n>` 收；不要把 CI 等待写成同步步骤（本波 `wait-ci` 阻塞约 3.4h）。**边界**：不阻塞只适用于同波内的下一步准备；本票**合并前必须 CI 绿**，开新波前必须已完成合并（见 §5）。
 - **`wait-ci.sh` 的退出码就是 CI 结论**：它本来就是静默输出，只打状态变化与失败链接，别接管道（理由见 §2）。feature 分支没开 PR 时 `--sha` 约 180s 就报错并提示先建 PR，不会空等到 60 分钟总超时。
-- **pre-push 还会拦截「当前 HEAD 上最近一次门禁失败」**：读 `.cache/gate/last-status`，HEAD 不符或缺失只警告；被拦时先重跑 `./scripts/gate.sh build/test`，应急 `DZ_ALLOW_RED_GATE=1`。
+- **pre-push 拦截「当前 HEAD 上失败的门禁」**（#316 AC2 起按票型判定，实现在 `scripts/gate_status.py`）：代码票读 `.cache/gate/last-status-build` 与 `-test`，纯文档/脚本票读 `-preflight`，`ledger` 不参与；槽位缺失或 HEAD 不符只警告；被拦时先重跑被点名的那条 `./scripts/gate.sh build|test|preflight`，应急 `DZ_ALLOW_RED_GATE=1`。
 - **修复性提交立刻推，不要再等旧 run（#284 AC1）**：PR run 的 `concurrency.cancel-in-progress`（`ci.yml`）会取消旧 run，新 run 覆盖全量内容；`check-push-scope.sh` 现在按 in-progress run 的 `headSha` 判定——旧 run 的 SHA 是被推 HEAD 的祖先（已被新 commit 取代）→ **放行 + supersede warning**；只有同 SHA（没有新内容可推）才 exit 3 拦截，不可本地解析的 SHA 保守拦截。**唯一仍要攒批的情形**：把同一次修复拆成多个 commit 反复推（每个 commit 都会取消并重起一个 ≈35–40 分钟的 run）——修复请合并成 **1 个 commit** 一次推（本波 #93 曾因逐条推取消 3 个 run）。`PUSH_SCOPE_ALLOW_CI_BUSY=1` 仍是逃生口，仅真故障时用。
 - 等待期间不要 `gh run watch` 全量输出、不要 `sleep` 轮询、不要反复 tail 后台日志。CI 红先用 `./scripts/ci-log.sh <run-id>` 定位：它**优先取 `last-test-log` artifact（约 200KB，秒级给出失败用例名）**，再退回失败 job 日志（Windows 可达数十 MB）；同一 run/job 已下载过会复用（`--refresh` 强制重拉，`--context N` 调上下文行数）。
 - **等 CI 用后台作业**：`wait-ci.sh --pr <n>` 以 `run_in_background` 启动，等待期做只读准备（拟关闭评论 / 清理 worktree 计划 / 读下一票契约）；需要结果时 `job_output(wait=true)`，不要前台空等（2026-10-26 #146 / #147 各阻塞 21–22 分钟）。
@@ -139,8 +144,17 @@ gh issue close <n> --reason completed          # 再关单
 治本措施同时生效：提交标题把票号写进**作用域**，即 `fix(#246): ...` 而非 `fix: #246 ...`。
 GitHub 的 closing keyword 要求关键字后紧跟空白/冒号再接 `#N`，括号形态不匹配；而
 `check-push-scope.sh` 的正则 `#<issue>([^0-9]|$)` 照样命中。该形态由
-`scripts/check_commit_subject.py` 强制（pre-commit + 两个 workflow + preflight），
+`scripts/check_commit_subject.py` 强制（pre-commit + 三个 workflow + preflight），
 **不要**用 `--no-verify` 绕过。
+
+**PR 正文与提交标题是同一个 auto-close 面**（#316 AC4）：正文里写 `Closes #N` / `Fixes #N` /
+`Resolves #N` 同样会在合并瞬间关单、让本节的关闭评论被静默丢弃（#313 `Closes #301`、
+#314 `Closes #302`、#315 `Closes #303` 三个 PR 都犯了，#301 的关闭评论因此事后补发）。
+正文守卫由 `.github/workflows/pr-body.yml` 强制（调 `scripts/check_commit_subject.py
+--pr-body-file`，与 R3 共用同一个 closing-keyword 正则）；本地可用
+`python3 scripts/check_commit_subject.py --pr-body-file <body 文件>` 预检。**两处都要避免**：
+正文写 `Refs #N`，或干脆不写票号（PR 标题已带 `（#<issue>）`，`check-push-scope.sh` 看的是
+commit subject）。
 
 关闭评论模板（交付 / 已知限制 / 提交 / CI / PR / 验证 / 审查）：
 
@@ -183,10 +197,11 @@ Refs: <contract/component/docs 路径>
 
 ## 7. 清理、交还与报告
 
-- `git worktree remove .worktrees/<branch>` + `git branch -d <branch>`；确认 `.worktrees/` 为空（含 `.cache/` 残留）。
+- `git worktree remove .agents/worktrees/<branch>` + `git branch -d <branch>`（worktree 实际产物路径见 AGENTS §五；历史路径 `.worktrees/` 若存在也要清）；确认 `.agents/worktrees/` 与 `.cache/` 无本票残留。
 - 远端分支：`git push origin --delete <branch>`（`gh pr merge --delete-branch` 已删则跳过），`git ls-remote --heads origin <branch>` 确认为空。
+- **UI / 进程实测起栈后立即停栈**：只要本票起过 dev 栈（`./scripts/run-dev.sh`，含 `--no-build`），收尾必须执行 `./scripts/run-dev.sh --stop` 并确认无遗留 dev 栈进程（`pgrep -f' dztraderd|dzweb' ` 之类）。#302 的 digest 里最长作业是 **11,992s（3.3h）** 的 `scripts/run-dev.sh --no-build`，比该票真实 CI（1,374s）大一个量级——报告里的「长作业」若不分归属就会把实测成本记成 wait 成本（#316 AC7）。
 - **共享工作区交还**：`git switch main && git pull --ff-only`；`git status` 只允许出现**已登记的并行线**产物（没有并行线时应完全干净）。不把工作区留在 feature 分支就结束会话——会直接阻塞下一条线（本波 #91→#92：共享工作区留在 feat 分支，另一会话卡 15 分钟 + 人工介入）。
-- 报告固定包含：审查轮数与结论、改动文件数、commit hash、CI run 链接与结论、PR 链接与 merge commit、preflight 结果、issue 状态、工作区/分支状态。
+- 报告固定包含：审查轮数与结论、改动文件数、commit hash、CI run 链接与结论、PR 链接与 merge commit、preflight 结果、issue 状态、工作区/分支状态；**引用长作业时指名归属（起栈 / 门禁 / CI），>1h 的作业说明它为什么长**（#316 AC7）。
 
 ## 8. 本机沙箱（DSH）环境约定
 
@@ -209,7 +224,7 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - **CI 绿就关 issue / PR 未合并就关 issue** → 下游卡住、PR 悬空与冲突返工（#91/#92）。
 - **共享工作区留在 feature 分支 / 长期不提交的文档批次占着 `git status`** → 阻塞并行会话（#91→#92；ADR 0026–0030 从 10-22 挂到 10-23）。
 - **把一次修复拆成多个 commit 反复 push** → 每个 commit 取消并重起 ≈35–40 分钟 CI（#93 取消 3 个 run；#252 在旧守卫下还串行等了两个周期 ≈56min）。
-- 门禁命令接 `| tail`、`| head` → 退出码被管道吞掉；结论本身仍可从 verdict 行 / `.cache/gate/last-status` 读到（`wait-ci.sh` 无兜底，别接）。判绿口径见本文 §2。
+- 门禁命令接 `| tail`、`| head` → 退出码被管道吞掉；结论本身仍可从 verdict 行 / 分命令槽 `.cache/gate/last-status-<cmd>` 读到（`wait-ci.sh` 无兜底，别接）。判绿口径见本文 §2；`ledger` 槽永不放行推送（#316 AC2）。
 - 用 bash `sleep` 等异步子代理 → 白等且触发重复工具提醒（#78 19 次 5028s、#81 10 次 2400s）；子代理完成会自动通知。
 - 省略 issue close → 人工追问，下游 `blocked_by` 卡住。
 - 共享工作区做并行票 → 提交父节点带上另一条线，push 时一并发布。

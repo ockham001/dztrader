@@ -60,6 +60,30 @@ class MaskedFailureLineTest(unittest.TestCase):
         # `error:` 只认行首（工具自己的报错行），散文里出现不算——否则每条 diff 都中招。
         self.assertIsNone(retro_extract.masked_failure_line("see error: in the log above\n"))
 
+    def test_read_only_command_and_type_declaration_error_lines_are_not_failures(self) -> None:
+        # #316 AC6：`sed -n` 读契约 payload 表打印的 `error: string | null` 是内容。
+        self.assertIsNone(
+            retro_extract.masked_failure_line("error: string | null\n", "sed -n '1,40p' docs/x.md")
+        )
+        # 前端 TS 表达式同理；类型声明形态与命令类型无关（空命令也不报）。
+        self.assertIsNone(retro_extract.masked_failure_line("error: ok ? null : foo\n"))
+        self.assertIsNone(
+            retro_extract.masked_failure_line(
+                "error: ok ? null : foo\n", "cat docs/frame_contracts/x.md"
+            )
+        )
+
+    def test_real_command_failure_still_reported(self) -> None:
+        # 反向：非只读命令的真报错仍然计入（不能把改善误报写成放宽全量）。
+        self.assertEqual(
+            retro_extract.masked_failure_line("error: boom\n", "./scripts/gate.sh build")[0],
+            "error:",
+        )
+        # 只读命令里 `rc=1` 仍报：管道吞掉退出码，实红只能靠 rc / FAILED 补捞。
+        self.assertEqual(
+            retro_extract.masked_failure_line("rc=1\n", "cat x")[0], "rc!=0"
+        )
+
 
 class ExtractMaskedFailuresTest(unittest.TestCase):
     """端到端：只有命令类工具的失败证据进 digest。"""
@@ -142,6 +166,25 @@ class ExtractMaskedFailuresTest(unittest.TestCase):
         digest = retro_extract.extract(self._write_session(events))
         masked = digest.split("## masked failures", 1)[1].split("\n## ", 1)[0]
         self.assertNotIn("match=rc!=0", masked)
+
+    def test_read_only_command_content_error_is_not_masked_failure(self) -> None:
+        # #316 AC6 端到端：`cat` 读契约里的 payload 表，输出含 `error: ok ? null : foo`
+        # ——命令本身成功，那行是被引用的内容，digest 的 masked 小节不能收它。
+        session = self._write_session(
+            [
+                {"type": "session", "data": {}},
+                self._call("c1", "bash", "cat docs/frame_contracts/x.md"),
+                self._result("c1", "ok: string\nnot-ok:\nerror: ok ? null : foo\n"),
+                self._call("c2", "bash", "cat docs/frame_contracts/x.md; echo rc=$?"),
+                self._result("c2", "rc=1\n"),  # 只读命令的 rc 仍要报
+            ]
+        )
+        digest = retro_extract.extract(session)
+        masked = digest.split("## masked failures", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("cat docs/frame_contracts/x.md", masked)
+        self.assertIn("match=rc!=0", masked)
+        self.assertNotIn("match=error:", masked)
+        self.assertNotIn("error: ok ? null : foo", masked)
 
 
 def _event(kind: str, time_ms: int, **data) -> dict:

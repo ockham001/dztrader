@@ -40,6 +40,7 @@
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`；**票内并行 / 构建树中间态时用 `--target`（build）/ `--test-name`（test）定向迭代，全量 build/test 等写作用域收敛后再跑**（见 [ticket-closeout](agents/ticket-closeout.md) §2）
 - [ ] `git status` 干净，每票 1–2 个提交（实现 + 审查收敛；信息中文，`fix:/feat:/refactor:/docs:/test:/chore:/perf:/style:/build:/ci:` 前缀）
 - [ ] 契约/生成物有改动时 CI 的 Freshness 步骤绿
+- [ ] **UI/进程实测起栈后立即 `--stop`**（#316 AC7）：只用了 `./scripts/run-dev.sh`（含 `--no-build`）起过 dev 栈，就别让它挂在后台跑完整条收尾路径——#302 的 digest 里最长作业是 **11,992s（3.3h）** 的 dev 栈，比该票真实 CI（1,374s）大一个量级，让「长作业」成本被误记成等待成本。报告里引用的长作业要能**指名归属**（起栈 / 门禁 / CI），>1h 的作业在交付里说明原因。
 
 > 收尾按 [agents/ticket-closeout.md](agents/ticket-closeout.md)：push 后建 PR → `./scripts/wait-ci.sh --pr <n>` **静默等 PR checks** → **合并 PR 后**再关 issue。等待只输出状态变化和失败摘要；失败用 `./scripts/ci-log.sh <run-id>` 只取错误行（优先取 200KB 的 `last-test-log` artifact）。不要 `gh run watch` 全量输出，不要 `sleep` 轮询；修复性提交**立刻推**（PR concurrency 会取消旧 run，新 run 覆盖全量），但把同一次修复拆成多个 commit 反复推会连续取消/重起 ≈35–40 分钟的 run——修复合并为 1 个 commit 一次推（`check-push-scope.sh` 只对同 SHA / 无法解析 SHA 的 in-progress run 拦截）。
 

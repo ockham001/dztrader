@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_contract_slice.py — `scripts/contract_slice.py` 的进程级覆盖（#309 AC4）
+"""test_contract_slice.py — `scripts/contract_slice.py` 的进程级覆盖（#309 AC4 / #316 AC3）
 
 为什么需要：AC4 的判据只要求 `--selftest` 绿，但只测内部函数会放过「参数接线写错 /
 退出码吞掉 / 候选塞进 stdout」这类真实故障——本票要替代的正是 `sed -n` 分页，
@@ -11,8 +11,11 @@
   - `--children` 含子节
   - 未知节号 exit 1 且候选在 **stderr**（stdout 必须为空，不能混进管道的 head）
   - 未知契约 exit 1 且给候选
-  - `--list` 列出全部契约 stem，并带编号标题
+  - `--list` 列出全部契约 stem，并带编号标题；`--list <stem>` exit 2 且指路 `--outline`
   - 代码围栏里的假标题不算节（``` 与 ~~~ 两种围栏）
+  - `--outline` 单份大纲（契约 stem / docs stem / 仓库相对路径），与 `--list` 同一形状；
+    未知目标 exit 1 给候选、与 `--list`/位置参数互斥为 exit 2（#316 AC3）
+  - docs 目标（`docs/agents/*.md`）既能 `--outline` 也能按节切
 
 真实契约取自 `docs/frame_contracts/`（只读）；边界用例在临时目录构造 mini 契约，
 经 `--contract-dir` 专用参数驱动，不碰工作区。
@@ -128,6 +131,82 @@ class RealContractTest(unittest.TestCase):
         result = run_cli("--selftest")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("selftest OK", result.stdout)
+
+
+class OutlineTest(unittest.TestCase):
+    """`--outline`（#316 AC3）：一份契约/文档的节大纲，与 `--list` 单份块同一形状。
+
+    为什么需要进程级：agent 的真实诉求是「给我 sysmon 这一份契约的节大纲」，
+    旧入口只能 `--list`（全部契约）或 `grep '^## '` 试探。这里锁住目标寻址
+    （契约 stem / docs stem / 仓库相对路径）、输出形状、以及与 `--list` 的互斥。
+    """
+
+    def test_outline_contract_stem(self) -> None:
+        result = run_cli("--outline", "sysmon")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = result.stdout.splitlines()[0]
+        self.assertTrue(first.startswith("sysmon ("), f"unexpected first line: {first!r}")
+        self.assertIn("§2.9 时钟偏差域（clock）", result.stdout)
+
+    def test_outline_docs_path(self) -> None:
+        result = run_cli("--outline", "docs/agents/ticket-closeout.md")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = result.stdout.splitlines()[0]
+        self.assertIn("docs/agents/ticket-closeout.md", first)
+        self.assertIn("§7 清理、交还与报告", result.stdout)
+
+    def test_outline_docs_stem_matches_docs_path(self) -> None:
+        path_result = run_cli("--outline", "docs/agents/ticket-closeout.md")
+        stem_result = run_cli("--outline", "ticket-closeout")
+        self.assertEqual(stem_result.returncode, 0, stem_result.stderr)
+        self.assertIn("§7 清理、交还与报告", stem_result.stdout)
+        self.assertEqual(stem_result.stdout, path_result.stdout)
+
+    def test_outline_unknown_stem_exits_1_with_candidates(self) -> None:
+        result = run_cli("--outline", "ghost")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "", "diagnostics must not pollute stdout")
+        self.assertIn("candidates=", result.stderr)
+
+    def test_list_with_stem_points_at_outline(self) -> None:
+        """`sysmon --list` 曾是最常见的误用（#316 AC3 要消灭它）：报错必须指路 `--outline`。"""
+        result = run_cli("--list", "sysmon")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("--outline", result.stderr)
+
+    def test_outline_and_list_are_mutually_exclusive(self) -> None:
+        result = run_cli("--outline", "sysmon", "--list")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("mutually exclusive", result.stderr)
+
+    def test_outline_rejects_positional_arguments(self) -> None:
+        result = run_cli("--outline", "sysmon", "§2.9")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("positional", result.stderr)
+
+    def test_outline_missing_docs_path_is_usage_error(self) -> None:
+        result = run_cli("--outline", "docs/agents/not-a-real-file.md")
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("not found", result.stderr)
+
+    def test_docs_path_target_slices_by_number(self) -> None:
+        """切片入口同样接受 docs 目标（#316 AC3 第 2 条）。"""
+        result = run_cli("docs/agents/ticket-closeout.md", "§7")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("## 7. 清理、交还与报告", result.stdout)
+
+    def test_docs_stem_target_slices_by_number(self) -> None:
+        result = run_cli("ticket-closeout", "§1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("## 1. 冻结提交与审查", result.stdout)
+
+    def test_docs_target_without_numbered_headings_exits_1(self) -> None:
+        """docs/components 里没有编号标题的文档：exit 1 + 候选提示，不是静默空切片。"""
+        result = run_cli("dzsysmon", "§1")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no numbered headings", result.stderr)
 
 
 class MiniContractTest(unittest.TestCase):
@@ -266,6 +345,97 @@ class MiniContractTest(unittest.TestCase):
         self.assertEqual(self._run("ghost", "§x").returncode, 2)
         self.assertEqual(self._run("ghost").returncode, 2)
         self.assertEqual(self._run("--list", "ghost").returncode, 2)
+
+
+class MiniDocsTargetTest(unittest.TestCase):
+    """docs 目标寻址的边界：临时目录造 `docs/agents` + `docs/components`，经 `--docs-dir`。
+
+    真实 docs/ 只用于「已知存在的文档」正向用例（只读）；歧义、无编号标题这类边界
+    必须在夹具里造，否则真实 doc 一改名用例就红。
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="dz_contract_slice_docs_")
+        self.docs_dir = Path(self.tmp.name) / "docs"
+        self.contract_dir = self.docs_dir / "frame_contracts"
+        self.contract_dir.mkdir(parents=True)
+        agents = self.docs_dir / "agents"
+        components = self.docs_dir / "components"
+        agents.mkdir(parents=True)
+        components.mkdir()
+        agents.joinpath("numbered.md").write_text(
+            "\n".join(["# 文档", "", "## 1. 起点", "", "start body", "",
+                       "### 1.1 子节", "", "sub body", "", "## 7. 收尾", "", "tail body", ""]),
+            encoding="utf-8",
+        )
+        agents.joinpath("plain.md").write_text(
+            "\n".join(["# 无编号", "", "## 标题没编号", "", "body", ""]), encoding="utf-8"
+        )
+        for directory in (agents, components):
+            directory.joinpath("twin.md").write_text("## 1. 同名的节\n\nbody\n", encoding="utf-8")
+        self.contract_dir.joinpath("sample.md").write_text(
+            "## 1. 契约节\n\ncontract body\n", encoding="utf-8"
+        )
+        # 同名 docs 文档：用来验证「契约 stem 命中优先」（#316 AC3 的解析顺序）。
+        agents.joinpath("sample.md").write_text(
+            "## 1. 文档节\n\ndocs body\n", encoding="utf-8"
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(SCRIPT),
+             "--contract-dir", str(self.contract_dir),
+             "--docs-dir", str(self.docs_dir), *args],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+
+    def test_outline_docs_stem_from_fixture(self) -> None:
+        result = self._run("--outline", "numbered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.splitlines()[0].startswith("numbered ("))
+        self.assertIn("§7 收尾", result.stdout)
+
+    def test_outline_docs_relative_path_from_fixture(self) -> None:
+        result = self._run("--outline", "docs/agents/numbered.md")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("§1 起点", result.stdout)
+
+    def test_ambiguous_docs_stem_lists_candidates(self) -> None:
+        """同名 stem 在 agents 与 components 各一份 → exit 1 并列出两份，不静默取第一个。"""
+        result = self._run("--outline", "twin")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ambiguous", result.stderr)
+        self.assertIn("docs/agents/twin.md", result.stderr)
+        self.assertIn("docs/components/twin.md", result.stderr)
+
+    def test_docs_slice_from_fixture(self) -> None:
+        result = self._run("numbered", "§1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("start body", result.stdout)
+        self.assertNotIn("sub body", result.stdout)  # 默认不含子节
+        children = self._run("numbered", "§1", "--children")
+        self.assertIn("sub body", children.stdout)
+
+    def test_docs_without_numbered_headings_exits_1(self) -> None:
+        result = self._run("plain", "§1")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("no numbered headings", result.stderr)
+
+    def test_path_target_outside_repo_exits_2(self) -> None:
+        absolute = str(Path(self.tmp.name) / "docs" / "agents" / "numbered.md")
+        result = self._run("--outline", absolute)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("repo-relative", result.stderr)
+
+    def test_contract_stem_wins_over_docs_stem(self) -> None:
+        """契约 stem 命中优先（#316 AC3 解析顺序）：sample 在契约与 docs/agents 都有同名文件。"""
+        result = self._run("--outline", "sample")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("frame_contracts/sample.md", result.stdout)
+        self.assertNotIn("docs/agents/sample.md", result.stdout)
 
 
 if __name__ == "__main__":

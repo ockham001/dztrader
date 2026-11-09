@@ -119,6 +119,10 @@ def tracked_sources():
          "*/CMakeLists.txt", "cmake"],
         capture_output=True, check=True).stdout
     tracked = [f for f in out.decode().split("\0") if f]
+    # 只扫主检出：`.agents/worktrees/`（create_worktree 的产物）与历史 `.worktrees/` 下是
+    # 同一批源码的另一份副本，扫进来只会把同一条告警重复报 N 次（#316 AC5 的 skip 集合
+    # 与另外 4 个扫描器保持一致）。
+    tracked = [f for f in tracked if not f.startswith((".agents/", ".worktrees/"))]
     files = [f for f in tracked if f.endswith((".h", ".cpp"))]
     for invariant in (DZ_TEST_CMAKE, CTP_CMAKE):
         if os.path.exists(invariant):

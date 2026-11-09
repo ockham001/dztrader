@@ -71,6 +71,7 @@ SKIP_DIR_NAMES = {
     ".cache",
     ".git",
     ".worktrees",
+    ".agents",
     "__pycache__",
 }
 HEADER_SUFFIX = ".h"
