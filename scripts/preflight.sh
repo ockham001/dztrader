@@ -198,7 +198,7 @@ check_commit_subject() {
     # 提交标题形态（#265）：`fix: #246 x` 既是 check-push-scope 要求的「含票号」，
     # 又是 GitHub 的 closing keyword 形态 —— PR 合并即提前关闭 issue，导致 §6 的
     # 关闭评论被静默丢弃（#246/#260/#243 实测）。票号应写进作用域 `fix(#246): ...`。
-    # #316 AC4 把同一个正则扩到 **PR 正文**（`--pr-body-file` / `--pr-body`）：上一波 3 个
+    # #316 AC4 把同一个正则扩到 **PR 正文**（`--pr-body-file`）：上一波 3 个
     # PR 正文写了 `Closes #N`（#313/#314/#315），#301 的关闭评论因此被 GitHub 吞掉。
     # 正文守卫的 CI 侧是 `.github/workflows/pr-body.yml`（本脚本只跑自测，不读真实 PR）。
     "$PYTHON" scripts/check_commit_subject.py --selftest
