@@ -155,12 +155,18 @@ def classify(paths) -> tuple[str, str]:
     return "fast", f"{len(files)} changed file(s), all within fast face"
 
 
-def files_from_range(rev_range: str) -> list[str]:
-    """用 `git diff --name-only -z <range>` 取改动文件（range 支持两点/三点形态）。"""
+def files_from_range(rev_range: str, cwd: str | None = None) -> list[str]:
+    """用 `git diff --name-only -z <range>` 取改动文件（range 支持两点/三点形态）。
+
+    `cwd` 供调用方在**别的仓库根**下复算（`scripts/gate_status.py` 在临时 git 仓库里
+    自测时用它；PR 分类走默认 = 当前工作目录）。同一份「改动文件列表」只在这里定义，
+    不要在调用方再写一遍 git diff 解析。
+    """
     try:
         proc = subprocess.run(
             ["git", "diff", "--name-only", "-z", rev_range],
             capture_output=True,
+            cwd=cwd,
         )
     except OSError as exc:
         raise RuntimeError(f"cannot run git: {exc}") from exc

@@ -39,7 +39,6 @@ R4 与 R3 共用同一个 `CLOSING_KEYWORD_RE`（单一真相源），逐行报�
   python3 scripts/check_commit_subject.py --message-file .git/COMMIT_EDITMSG  # hook 用
   python3 scripts/check_commit_subject.py --subject "fix(#265): x"    # 单条
   python3 scripts/check_commit_subject.py --pr-body-file body.md      # PR 正文（CI / 本地）
-  python3 scripts/check_commit_subject.py --pr-body "Closes #1"       # PR 正文（内联）
   python3 scripts/check_commit_subject.py --selftest
 
 退出码: 0=通过, 1=有违规, 2=参数/环境错误
@@ -278,15 +277,11 @@ def main(argv: list[str]) -> int:
     group.add_argument("--message-file", help="commit message file (pre-commit hook)")
     group.add_argument("--subject", help="a single subject line")
     group.add_argument("--pr-body-file", help="PR body markdown file (R4, #316 AC4)")
-    group.add_argument("--pr-body", help="PR body text inline (R4, #316 AC4)")
     group.add_argument("--selftest", action="store_true", help="run rule selftest")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest()
-
-    if args.pr_body is not None:
-        return render_pr_body(check_pr_body(args.pr_body))
 
     if args.pr_body_file:
         try:

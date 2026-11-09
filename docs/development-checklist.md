@@ -34,7 +34,7 @@
 
 ## C. 提交前（每次 push）
 
-- [ ] 本地 git hooks 已装：`git config --get core.hooksPath` 输出 `.githooks`（`setup` 自动安装）。pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式与 docs links 为工作区全仓扫描；**不能替代** `preflight`。pre-push 拦直推 main / 非快进 / 非白名单分支名；最近一次门禁在**当前 HEAD** 失败会拒绝推送（`.cache/gate/last-status`；HEAD 不符/缺失只警告，应急 `DZ_ALLOW_RED_GATE=1`）。
+- [ ] 本地 git hooks 已装：`git config --get core.hooksPath` 输出 `.githooks`（`setup` 自动安装）。pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式与 docs links 为工作区全仓扫描；**不能替代** `preflight`。pre-push 拦直推 main / 非快进 / 非白名单分支名；**门禁放行按票型读分命令槽**（代码票要 `build`+`test`、纯文档/脚本票要 `preflight`，`ledger` 永不参与；槽位缺失或 HEAD 不符只警告，当前 HEAD 上失败才拒绝，应急 `DZ_ALLOW_RED_GATE=1`。口径唯一详述处：[ticket-closeout](agents/ticket-closeout.md) §2）。
 - [ ] `./scripts/preflight.sh` 全绿（**步骤清单的唯一真相源是脚本自身的 `run_step` 行，`./scripts/preflight.sh --help` 直接打印；此处不逐项手抄，#289 AC7**——CI linux job 复用同脚本的 C 段（`--c-only`））；首次需先 `./scripts/build.sh` 生成 `node_modules`
 - [ ] `./scripts/build.sh --config release` 通过（agent 侧用 `./scripts/gate.sh build --config release`：同 build tree 串行 + ccache 环境 + 真实退出码；管道用法见 [ticket-closeout](agents/ticket-closeout.md) §2）
 - [ ] `./scripts/test.sh` 全绿（后台 fast 门禁；含冒烟 smoke）；穷举/基准按需 `--label slow` / `--label perf`（Windows `-Label`）；agent 侧 `./scripts/gate.sh test`；**票内并行 / 构建树中间态时用 `--target`（build）/ `--test-name`（test）定向迭代，全量 build/test 等写作用域收敛后再跑**（见 [ticket-closeout](agents/ticket-closeout.md) §2）

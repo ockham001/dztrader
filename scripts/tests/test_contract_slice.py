@@ -203,7 +203,13 @@ class OutlineTest(unittest.TestCase):
         self.assertIn("## 1. 冻结提交与审查", result.stdout)
 
     def test_docs_target_without_numbered_headings_exits_1(self) -> None:
-        """docs/components 里没有编号标题的文档：exit 1 + 候选提示，不是静默空切片。"""
+        """真实 docs 里没有编号标题的文档：exit 1 + 提示，不是静默空切片。
+
+        反向断言刻意留在真实文档上（不搬去夹具）：它锁的是「**当前真实 docs** 的节结构
+        形态」——`docs/components/` 多数文档没有编号标题，是数据现状而不是实现契约。
+        夹具侧的同一判定见 `MiniDocsTargetTest.test_docs_without_numbered_headings_exits_1`。
+        该文档将来加了编号标题，这个用例会红，正好提示把夹具断言改成正向用例。
+        """
         result = run_cli("dzsysmon", "§1")
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("no numbered headings", result.stderr)

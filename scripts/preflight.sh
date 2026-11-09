@@ -211,8 +211,8 @@ check_gate_status() {
     # preflight，ledger 永不参与放行（旧实现所有子命令写同一个槽、hook 不看 cmd，于是
     # `gate ledger` 必然绿能覆盖掉 build 的红）。selftest 在临时 git 仓库复现三态
     # （ledger 绿+build 红同 HEAD → 拒绝 / 记录停在旧 HEAD → 只警告 / 纯文档票 preflight 绿
-    # → 放行），不碰工作区；gate.sh --selftest 另跑分槽写入的端到端。
-    "$PYTHON" "$ROOT/scripts/gate_status.py" --selftest || return $?
+    # → 放行），不碰工作区；`gate.sh --selftest` **内部已调** `gate_status.py --selftest`
+    # 并另跑分槽写入的端到端，所以这里只调 gate.sh 这一次，不重复调用同一自测。
     "$ROOT/scripts/gate.sh" --selftest
 }
 

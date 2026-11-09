@@ -73,7 +73,8 @@ esac
 #      与 .githooks/pre-push 共用同一份判定实现；
 #   2) 分槽写入端到端：临时 git 仓库里复制 gate.sh + ccache-env.sh + 假 check_ledger.py，
 #      跑一次 `gate.sh ledger`，断言 `.cache/gate/last-status-ledger` 与兼容视图
-#      `last-status` 都落盘、内容 rc 正确——不联网、不碰真实工作区。
+#      `last-status` 都落盘，且内容为 `cmd=ledger rc=0 head=<该仓库 HEAD>`——不联网、
+#      不碰真实工作区。
 if [ "$CMD" = "--selftest" ]; then
     sel_fails=0
     sel_py="${PYTHON:-}"
@@ -103,11 +104,22 @@ if [ "$CMD" = "--selftest" ]; then
         ./scripts/gate.sh ledger >/dev/null 2>&1
     )
     sel_head_rc=$?
+    sel_tmp_head="$(git -C "$sel_tmp" rev-parse HEAD 2>/dev/null)"
     for sel_slot in last-status-ledger last-status; do
-        if [ -f "$sel_tmp/.cache/gate/$sel_slot" ]; then
-            echo "selftest ok slot-written $sel_slot ($(grep -m1 '^rc=' "$sel_tmp/.cache/gate/$sel_slot"))"
-        else
+        if [ ! -f "$sel_tmp/.cache/gate/$sel_slot" ]; then
             echo "selftest FAIL slot not written: .cache/gate/$sel_slot" >&2
+            sel_fails=$((sel_fails + 1))
+            continue
+        fi
+        # 断言内容真的来自本次 ledger 运行（cmd/rc/head 三项都对）：只判存在会让
+        # 「分槽写成了空文件」或「cmd 名写错」照样绿（code-review finding）。
+        sel_cmd="$(sed -n 's/^cmd=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
+        sel_rc="$(sed -n 's/^rc=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
+        sel_sha="$(sed -n 's/^head=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
+        if [ "$sel_cmd" = "ledger" ] && [ "$sel_rc" = "0" ] && [ "$sel_sha" = "$sel_tmp_head" ]; then
+            echo "selftest ok slot-written $sel_slot (cmd=$sel_cmd rc=$sel_rc head=${sel_sha:0:12})"
+        else
+            echo "selftest FAIL slot content $sel_slot: cmd=$sel_cmd rc=$sel_rc head=${sel_sha:-<none>} (expected ledger/0/$sel_tmp_head)" >&2
             sel_fails=$((sel_fails + 1))
         fi
     done

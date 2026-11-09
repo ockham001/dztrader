@@ -54,6 +54,10 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GH_TOKEN: ${{ github.token }}
+          # GitHub annotation 的文案（日志文本口径：英文、小写开头、无句号，AGENTS §四）。
+          GH_ERROR: >-
+            pr body contains a GitHub auto-close form; merging closes the issue before
+            the close comment can be posted (docs/agents/ticket-closeout.md section 6)
         shell: bash
         run: |
           # 规则本体在脚本里（与提交标题同一个正则）；先跑自测，防规则退化。
@@ -67,7 +71,7 @@ jobs:
               || echo "note: gh pr view failed; falling back to the (empty) event payload"
           fi
           if ! python3 scripts/check_commit_subject.py --pr-body-file "$body_file"; then
-            gh_error="PR 正文含 GitHub auto-close 形态：合并会先关 issue，让 ticket-closeout §6 的关闭评论被静默丢弃。请删掉正文里的 Closes/Fixes/Resolves #N，或先发关闭评论再合并。"
-            echo "::error title=PR body closing keyword::${gh_error}"
+            echo "::error title=PR body closing keyword::${GH_ERROR}"
+            echo "remove the closing keyword from the PR body, or post the close comment before merging" >&2
             exit 1
           fi

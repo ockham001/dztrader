@@ -34,7 +34,7 @@
 
 ## 用法
 
-  python3 scripts/gate_status.py check [--head <sha>] [--base <ref>] [--gate-dir <dir>]
+  python3 scripts/gate_status.py check [--head <sha>] [--base <ref>]
   python3 scripts/gate_status.py --selftest
 
 `check` 的默认 head = HEAD，base = origin/main（不可解析时按「票型未知」处理：只警告，
@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -128,8 +127,6 @@ def read_status(gate_dir: Path, cmd: str) -> Status | None:
         return None
 
 
-
-
 def resolve_head(requested: str | None, root: Path) -> str:
     """校验并解析 head；缺省 HEAD。浅克隆/分离头指针也照常工作。"""
     raw = requested or "HEAD"
@@ -148,21 +145,17 @@ def resolve_base(requested: str, root: Path) -> tuple[str | None, str]:
     return sha, ""
 
 
-def changed_paths(rev_range: str, root: Path) -> list[str]:
-    """三点 diff 的改动文件（在 root 下跑 git；`ci_scope.files_from_range` 依赖调用方 cwd）。"""
-    result = _git("diff", "--name-only", "-z", rev_range, cwd=root)
-    if result.returncode != 0:
-        raise EnvError(f"git diff failed for range {rev_range!r}: {result.stderr.strip()}")
-    return [entry for entry in result.stdout.split("\0") if entry]
-
-
 def classify_ticket(base_sha: str | None, head: str, root: Path) -> tuple[str, str]:
-    """票型（= 验证面）由 ci_scope.py 分类；base 不可解析时返回 ('unknown', 原因)。"""
+    """票型（= 验证面）由 ci_scope.py 分类；base 不可解析时返回 ('unknown', 原因)。
+
+    改动文件列表复用 `ci_scope.files_from_range`（加 `cwd` 指向本仓根）：同一事实只定义
+    一处，不在这里再写一遍 git diff 解析。
+    """
     if base_sha is None:
         return "unknown", "base is unknown"
     try:
-        paths = changed_paths(f"{base_sha}...{head}", root)
-    except EnvError as exc:
+        paths = ci_scope.files_from_range(f"{base_sha}...{head}", cwd=str(root))
+    except RuntimeError as exc:
         return "unknown", f"cannot compute changed paths: {exc}"
     mode, reason = ci_scope.classify(paths)
     return mode, reason
@@ -389,9 +382,13 @@ def selftest() -> int:
             parse_status("cmd=build\nrc=0\nhead=abc\ntime=1\n", "build") == Status("build", 0, "abc", "1"),
         )
         expect("parse_status rejects non-numeric rc", parse_status("rc=oops\n", "build") is None)
+        # 不带 head 的合法记录：解析必须成功且 head 为空串。写成 `or Status(...)` 兜底会
+        # 让「parse_status 恒返 None」时该断言仍绿（恒真断言，code-review 实测）。
+        missing_head = parse_status("rc=1\n", "build")
         expect(
             "parse_status tolerates missing head",
-            (parse_status("rc=1\n", "build") or Status("", 0, "", "")).head == "",
+            missing_head is not None and missing_head.head == "",
+            f"got {missing_head!r}",
         )
 
     if failures:
@@ -415,9 +412,6 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument(
         "--base", default="origin/main", help="base ref for the ticket type diff (default origin/main)"
     )
-    check_parser.add_argument(
-        "--gate-dir", type=Path, default=None, help="gate status dir override (selftest/local)"
-    )
     return parser
 
 
@@ -434,7 +428,7 @@ def main(argv: list[str]) -> int:
     except EnvError as exc:
         print(f"gate-status: error: {exc}", file=sys.stderr)
         return 2
-    gate_dir = args.gate_dir or (root / STATUS_DIR_REL)
+    gate_dir = root / STATUS_DIR_REL
     allow_red_gate = os.environ.get(ALLOW_RED_GATE_ENV, "0") == "1"
     try:
         return check(
