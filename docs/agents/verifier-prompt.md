@@ -7,7 +7,9 @@
 
 ## 按 diff 规模选档（§1 / §2 复制前先算）
 
-档位按 `git diff --stat <base>...HEAD` 的**总增删行数**判定（= insertions + deletions，不是 PR 页面 files 列表的条数）。档位决定**是否拆块**，不决定时长与调用数：
+档位按 `git diff --stat <base>...HEAD` 的**总增删行数**判定（= insertions + deletions，不是 PR 页面 files 列表的条数）。档位决定**是否拆块**，不决定时长与调用数。
+
+**`docs/`-only 的票另有一条硬上限（#316 AC1）**：`git diff --name-only <base>...HEAD` **全部**落在 `docs/` 且总增删 < 200 行时，**至多 2 个 teammate**（Standards + Spec 各一个），large 档的拆块规则**不适用**（本波 #303 就是这样：81 行纯 docs 派了 5 个 teammate、review 占该票 59% 墙钟、结论 0 BLOCKING）。
 
 | 档位（按 `git diff --stat <base>...HEAD` 总增删行数判定） | 总增删行数 | 处理方式 | 实测样本（diff 规模 → 实际耗时 / 调用数） |
 |---|---|---|---|
@@ -30,7 +32,8 @@
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`git diff` / `git show` / `git log` / `git status` / `git grep` / `gh issue view` /
-  `rg` / `grep` / `sed -n` / `ls` / `python3 scripts/contract_slice.py`（按节取契约）
+  `rg` / `grep` / `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
+  - `sed -n` **仅限非契约、非大文档的小文件**（契约与大文档用 `contract_slice.py`；AGENTS §六）
 - 允许（仅验证轮交付时）：`python3 scripts/review_marker.py write <issue> <axis>`
 
 步骤（照做即可，不要扩展）：
@@ -58,7 +61,8 @@
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /
-  `rg` / `grep` / `sed -n` / `ls` / `python3 scripts/contract_slice.py`（按节取契约）
+  `rg` / `grep` / `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
+  - `sed -n` **仅限非契约、非大文档的小文件**（契约与大文档用 `contract_slice.py`；AGENTS §六）
 - 允许（仅验证轮交付时）：`python3 scripts/review_marker.py write <issue> <axis>`
 
 步骤（照做即可，不要扩展）：
@@ -85,7 +89,8 @@
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /
-  `rg` / `grep` / `sed -n` / `ls` / `python3 scripts/contract_slice.py`（按节取契约）
+  `rg` / `grep` / `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
+  - `sed -n` **仅限非契约、非大文档的小文件**（契约与大文档用 `contract_slice.py`；AGENTS §六）
 - 允许：`python3 scripts/review_marker.py write <issue> <axis>`（交付时写标记）
 
 步骤（照做，不要扩展）：

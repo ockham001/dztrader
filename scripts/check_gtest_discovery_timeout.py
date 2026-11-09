@@ -60,7 +60,7 @@ DISCOVER_RE = "gtest_discover_tests"
 TIMEOUT_ARG_RE = "DISCOVERY_TIMEOUT"
 DEFAULT_TIMEOUT_SET_RE = r"set(DZ_GTEST_DISCOVERY_TIMEOUT"
 EXCLUDED_PARTS = {"build", "install", ".cache", ".git", "node_modules",
-                  "third_party", ".worktrees", "__pycache__"}
+                  "third_party", ".worktrees", ".agents", "__pycache__"}
 
 
 def is_cmake_file(rel: str) -> bool:

@@ -2,6 +2,10 @@
 
 # Worktrees (must be before build dirs)
 .worktrees/
+# create_worktree 的实际产物路径（AGENTS §五「Worktree 与 Git 禁令」）。此前只靠未跟踪的
+# .agents/worktrees/.gitignore 屏蔽，新克隆跑一次 create_worktree 就会把整个目录写进
+# git status（#316 AC5）。
+.agents/
 
 .run/
 

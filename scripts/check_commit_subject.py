@@ -22,15 +22,23 @@ closed_by.commit_id = dbf1ef3）、#260、#243 三票同形态；#260 的补充�
   R1 prefix          subject 必须匹配 `<type>[(scope)]!?: <描述>`，type 取仓库白名单
   R2 subject-length  subject 长度不超过 72 字符（GitHub/Git 日志可读性；warn 级不阻断）
   R3 closing-keyword subject 含 auto-close 形态（见下）→ 违规
+  R4 pr-body-closing PR 正文含 auto-close 形态（#316 AC4）→ 违规
 
 R3 的正则刻意写得比 GitHub 实际解析**更严**（不区分大小写、容忍 `fixes #1, #2` 这类
 列表），因为本检查的目标是让作者改标题，不是复刻 GitHub 的解析器；宁可多报一条让人
 加作用域，也不要漏报一次静默吞评论。
 
+R4 的由来（#316 AC4）：#301–#303 波的 5 个 PR 里 3 个正文写了 `Closes #N`
+（#313 `Closes #301`、#314 `Closes #302`、#315 `Closes #303`），#301 的关闭评论因此被
+GitHub 自动关闭吞掉、事后补发。教训写在 #301 的评论里，却没有变成检查——R3 只管**提交
+标题**，PR 正文是另一个面（`ci.yml` 里此前 `grep -c 'pull_request.body'` = 0）。
+R4 与 R3 共用同一个 `CLOSING_KEYWORD_RE`（单一真相源），逐行报行号。
+
 用法:
   python3 scripts/check_commit_subject.py --range origin/main..HEAD   # CI 用：逐 commit 校验
   python3 scripts/check_commit_subject.py --message-file .git/COMMIT_EDITMSG  # hook 用
   python3 scripts/check_commit_subject.py --subject "fix(#265): x"    # 单条
+  python3 scripts/check_commit_subject.py --pr-body-file body.md      # PR 正文（CI / 本地）
   python3 scripts/check_commit_subject.py --selftest
 
 退出码: 0=通过, 1=有违规, 2=参数/环境错误
@@ -120,6 +128,44 @@ def render(violations: list[tuple[str, str]], subject: str) -> int:
     return 0
 
 
+def check_pr_body(body: str) -> list[tuple[int, str]]:
+    """PR 正文里每一处 auto-close 形态 -> [(1-based 行号, 命中的片段)]。
+
+    R4（#316 AC4）：PR 正文与提交标题是同一个 GitHub auto-close 面。正文里一句
+    `Closes #301` 会让合并瞬间关掉 #301，§6 的「先评论后关闭」两步法就只剩
+    `! Issue ... is already closed`——评论从未发出。规则复用 `CLOSING_KEYWORD_RE`，
+    不另写一套正则（两套必然漂移）。
+    """
+    hits: list[tuple[int, str]] = []
+    for lineno, line in enumerate(body.splitlines(), start=1):
+        match = CLOSING_KEYWORD_RE.search(line)
+        if match is not None:
+            hits.append((lineno, match.group(0)))
+    return hits
+
+
+def render_pr_body(hits: list[tuple[int, str]]) -> int:
+    """逐行打印 R4 命中；有命中返回 1。"""
+    if not hits:
+        print("OK: PR body has no GitHub auto-close form")
+        return 0
+    for lineno, fragment in hits:
+        print(
+            f"commit-subject/pr-body-closing:line {lineno}: PR body contains GitHub "
+            f"auto-close form {fragment!r}; merging would close the issue before the "
+            "close comment can be posted, silently dropping it. Post the close comment "
+            "before merging, or drop the closing keyword from the PR body",
+            file=sys.stderr,
+        )
+    print(
+        f"FAIL: {len(hits)} GitHub auto-close form(s) in the PR body (line(s): "
+        + ", ".join(str(lineno) for lineno, _ in hits)
+        + ")",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def subjects_from_range(rev_range: str) -> list[tuple[str, str]]:
     """`base..head` 内的非 merge commit -> [(sha, subject), ...]。"""
     out = subprocess.run(
@@ -186,6 +232,20 @@ SELFTEST_CASES: list[tuple[str, set[str]]] = [
 ]
 
 
+PR_BODY_SELFTEST_CASES: list[tuple[str, int]] = [
+    # R4（#316 AC4）：与 R3 同一个正则，但按行号逐处报。
+    ("## 摘要\n\nCloses #301\n", 1),
+    ("body\n\nCloses #301\nCloses #302\n", 2),
+    ("no keyword here\n\nRelated to #301\n", 0),
+    ("Closes #301 before the close comment is posted\n", 1),
+    # 括号形态与全角括号不触发（与 R3 同一口径）。
+    ("fix(#301): x\n", 0),
+    ("feat: 收口（#303）\n", 0),
+    # 大小写与列表形态同样命中（正则刻意比 GitHub 更严）。
+    ("FIXES #7, #8\n", 1),
+]
+
+
 def run_selftest() -> int:
     failures = 0
     for subject, expected in SELFTEST_CASES:
@@ -194,10 +254,19 @@ def run_selftest() -> int:
             print(f"selftest FAIL {subject!r}: expected {sorted(expected) or 'none'}, "
                   f"got {sorted(got) or 'none'}", file=sys.stderr)
             failures += 1
+    for body, expected_hits in PR_BODY_SELFTEST_CASES:
+        hits = check_pr_body(body)
+        if len(hits) != expected_hits:
+            print(f"selftest FAIL pr-body {body!r}: expected {expected_hits} hit(s), "
+                  f"got {len(hits)}", file=sys.stderr)
+            failures += 1
     if failures:
         print(f"selftest FAILED: {failures} case(s)", file=sys.stderr)
         return 1
-    print(f"selftest: {len(SELFTEST_CASES)} commit-subject forms behave as expected")
+    print(
+        f"selftest: {len(SELFTEST_CASES)} commit-subject forms + "
+        f"{len(PR_BODY_SELFTEST_CASES)} PR-body forms behave as expected"
+    )
     return 0
 
 
@@ -207,11 +276,21 @@ def main(argv: list[str]) -> int:
     group.add_argument("--range", dest="rev_range", help="git rev range, e.g. origin/main..HEAD")
     group.add_argument("--message-file", help="commit message file (pre-commit hook)")
     group.add_argument("--subject", help="a single subject line")
+    group.add_argument("--pr-body-file", help="PR body markdown file (R4, #316 AC4)")
     group.add_argument("--selftest", action="store_true", help="run rule selftest")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return run_selftest()
+
+    if args.pr_body_file:
+        try:
+            with open(args.pr_body_file, encoding="utf-8", errors="replace") as fh:
+                body = fh.read()
+        except OSError as exc:
+            print(f"error: cannot read PR body file {args.pr_body_file}: {exc}", file=sys.stderr)
+            return 2
+        return render_pr_body(check_pr_body(body))
 
     if args.subject is not None:
         return render(check_subject(args.subject), args.subject)

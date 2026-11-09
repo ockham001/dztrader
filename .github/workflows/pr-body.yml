@@ -1,0 +1,77 @@
+name: PR body guard
+
+# PR 正文的 GitHub auto-close 守卫（#316 AC4）。
+#
+# 为什么需要：上一波 5 个 PR 里 3 个正文写了 `Closes #N`（#313 `Closes #301`、#314
+# `Closes #302`、#315 `Closes #303`）。GitHub 在 PR 合并瞬间按 closing keyword 关闭
+# issue，于是 ticket-closeout §6 的「先发关闭评论、再关单」两步法只剩
+# `! Issue ... is already closed`——**评论从未发出**（#301 实测，事后补发）。
+# 提交标题面早有守卫（scripts/check_commit_subject.py 的 R3，pre-commit + ci.yml +
+# docs.yml + preflight 四处调用），**PR 正文是另一个面**，此前没有任何检查
+# （`grep -c 'pull_request.body' .github/workflows/*.yml` = 0）。
+#
+# 为什么单独一个 workflow，而不是塞进 ci.yml / docs.yml 的 pull_request job：
+#   1. 两个现有 PR workflow 都有 `paths` 过滤——docs-only PR 只跑 docs.yml、代码 PR 只跑
+#      ci.yml，各放一处都会漏掉另一半；
+#   2. 本检查必须在 **`edited`** 事件上也跑：PR 正文可以在创建后被改（补关键词 / 修词），
+#      ci.yml 的默认 activity types（opened/synchronize/reopened）看不到 body 变更；
+#      而把 `edited` 加进 ci.yml 会让改一行正文重跑全量 CI（≈20–45 分钟），明显不成比例。
+#   3. 本 job 只跑一个 python 脚本（秒级、无依赖），代价可忽略。
+#
+# 规则本体在 scripts/check_commit_subject.py（与提交标题共用同一个 closing-keyword
+# 正则，单一真相源）：`--pr-body-file <path>` 命中即 exit 1（按行号逐处报）。
+# 事件负载不可用时回退 `gh pr view <n> --json body`（AC4 原文要求）。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-body:
+    name: PR body (no closing keywords)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check PR body for closing keywords (#316 AC4)
+        env:
+          # 正文经环境变量传入，不做字符串插值进 shell（正文可能含引号/反引号/$）。
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+          # GitHub annotation 的文案（日志文本口径：英文、小写开头、无句号，AGENTS §四）。
+          GH_ERROR: >-
+            pr body contains a GitHub auto-close form; merging closes the issue before
+            the close comment can be posted (docs/agents/ticket-closeout.md section 6)
+        shell: bash
+        run: |
+          # 规则本体在脚本里（与提交标题同一个正则）；先跑自测，防规则退化。
+          python3 scripts/check_commit_subject.py --selftest
+          body_file="$(mktemp)"
+          trap 'rm -f "$body_file"' EXIT
+          # 事件负载缺失（空）时才回退 gh；空正文本身是合法的，不回退也能判绿。
+          printf '%s' "${PR_BODY:-}" > "$body_file"
+          if [ ! -s "$body_file" ] && [ -n "${PR_NUMBER:-}" ]; then
+            gh pr view "$PR_NUMBER" --json body -q .body > "$body_file" \
+              || echo "note: gh pr view failed; falling back to the (empty) event payload"
+          fi
+          if ! python3 scripts/check_commit_subject.py --pr-body-file "$body_file"; then
+            echo "::error title=PR body closing keyword::${GH_ERROR}"
+            echo "remove the closing keyword from the PR body, or post the close comment before merging" >&2
+            exit 1
+          fi

@@ -7,9 +7,14 @@
 #     应急逃生：DZ_ALLOW_FORCE_PUSH=1）
 #   - 拒绝白名单前缀之外的分支名（feat/fix/docs/test/chore/ci/refactor/perf/style/build；
 #     应急逃生：DZ_ALLOW_NONSTANDARD_BRANCH=1）
-#   - 最近一次门禁**在当前 HEAD 上失败**时拒绝推送（读 gate.sh 写的 .cache/gate/last-status；
-#     缺失或 HEAD 不符只警告——「commit 后复跑门禁」是正常顺序，不误伤；
-#     应急逃生：DZ_ALLOW_RED_GATE=1）
+#   - 门禁放行判定按**票型**读分命令槽（.cache/gate/last-status-<cmd>，#316 AC2）：
+#     代码票要求 build 与 test 两份记录都停在当前 HEAD 且 rc=0；纯文档/脚本票要求
+#     preflight 一份；`ledger` 永不参与放行判定。判定实现在 scripts/gate_status.py
+#     （票型 = scripts/ci_scope.py 的 fast/full 分类，与 CI 的验证面同一份定义）。
+#     缺失/HEAD 不符只警告（「commit 后复跑门禁」是正常顺序，不误伤）；
+#     应急逃生：DZ_ALLOW_RED_GATE=1
+#     旧实现只读单一 last-status、不看 cmd，于是 `gate ledger`（关票前必跑、必然绿）能
+#     覆盖掉 build 的红（#316 AC2 的闭环漏洞；本波 #303 在 push 后跑 2 次 ledger 实测）。
 #   - 白名单分支：从分支名提取 issue 号，以被推的 local_sha / 远端分支名调用
 #     scripts/check-push-scope.sh <n> --base origin/main --head <sha> --branch <name>
 #     （scope 匹配 + CI-busy supersede 判定：旧 run 已被新 commit 取代时放行）
@@ -36,37 +41,37 @@ BLOCKED=0
 
 warn() { printf 'pre-push: %s\n' "$*" >&2; }
 
-# 最近一次门禁是否在**当前 HEAD** 上失败（gate.sh 写入 .cache/gate/last-status）。
+# 门禁放行判定（#316 AC2）：按**票型**读分命令槽 `.cache/gate/last-status-<cmd>`。
 #
-# 口径刻意保守：只有「同 HEAD + rc!=0」才拦截——那时推上去的代码确定带着已知红灯；
-# 缺失或 HEAD 不符只警告（agent 常在 commit 前跑门禁、commit 后直接推，属正常顺序）。
+# 判定实现只有一处：`scripts/gate_status.py check`（与 gate.sh --selftest 共用同一份）。
+# 票型 = `scripts/ci_scope.py` 对 `origin/main...<pushed sha>` 的 fast/full 分类，
+# 与 CI 的验证面同一份定义：
+#   - fast（docs / scripts / githooks）→ 要求 `preflight` 记录
+#   - full（C/C++ / 前端 / 构建系统 / workflow / 构建脚本）→ 要求 `build` 与 `test` 记录
+#   - `ledger` 永不参与判定：它是台账体检、关票前必跑、必然绿；旧实现所有子命令写同一个
+#     last-status 且本 hook 不看 cmd，于是「build 红 → 跑 ledger → 放行」的闭环漏洞成立
+#     （#316 AC2 的起点；本波 #303 在 push 后跑了 2 次 ledger 实测覆盖 preflight 记录）。
+# 每条要求的语义沿用 #190 的保守口径：记录缺失/格式不可读只警告；记录在**当前 HEAD**
+# 且 rc!=0 才拦截；记录来自别的 HEAD 只警告。逃生口 DZ_ALLOW_RED_GATE=1 在判定实现内。
 check_gate_status() {
-    local status_file=".cache/gate/last-status"
-    [ -f "$status_file" ] || {
-        warn "warning: no .cache/gate/last-status; run ./scripts/gate.sh build/test before push"
-        return 0
-    }
-    # 格式由 scripts/gate.sh 的 record_last_status 写入（单一写入方），此处只读解析。
-    local rc head current
-    rc="$(sed -n 's/^rc=//p' "$status_file" | head -1)"
-    head="$(sed -n 's/^head=//p' "$status_file" | head -1)"
-    current="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-    if [ -z "${rc:-}" ]; then
-        # 文件存在但格式不可读（并发写/手工损坏）：按「缺失」处理，只警告不误拦。
-        warn "warning: unreadable .cache/gate/last-status; run ./scripts/gate.sh build/test before push"
-        return 0
-    fi
-    [ "$rc" = "0" ] && return 0
-    if [ "${head:-}" = "$current" ]; then
-        if [ "${DZ_ALLOW_RED_GATE:-0}" = "1" ]; then
-            warn "WARNING: pushing with a failing gate at HEAD allowed by DZ_ALLOW_RED_GATE=1 (emergency only)"
+    local pushed_sha="$1"
+    local script="scripts/gate_status.py"
+    local py=""
+    if ! command -v python3 >/dev/null 2>&1; then
+        if command -v python >/dev/null 2>&1; then py=python
+        else
+            warn "warning: no python interpreter; gate status check skipped (run ./scripts/gate.sh build/test manually)"
             return 0
         fi
-        warn "last gate run FAILED at current HEAD '$current'; rerun ./scripts/gate.sh build/test (no pipe) before pushing (escape: DZ_ALLOW_RED_GATE=1)"
-        return 1
+    else
+        py=python3
     fi
-    warn "warning: last gate run failed at '${head:-unknown}' (current HEAD '$current'); proceeding"
-    return 0
+    if [ ! -f "$script" ]; then
+        warn "warning: $script missing; gate status check skipped (run ./scripts/gate.sh build/test manually)"
+        return 0
+    fi
+    "$py" "$script" check --head "$pushed_sha" </dev/null >&2
+    return $?
 }
 
 remote_ref=""
@@ -126,7 +131,7 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
 
     if [ "${GATE_STATUS_CHECKED:-0}" = "0" ]; then
         GATE_STATUS_CHECKED=1
-        check_gate_status || BLOCKED=1
+        check_gate_status "$local_sha" || BLOCKED=1
     fi
 
     issue="$(printf '%s' "$branch" | sed -n 's#.*issue-\([0-9][0-9]*\).*#\1#p' | head -1)"
