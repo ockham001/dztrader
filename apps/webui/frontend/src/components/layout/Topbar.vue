@@ -14,7 +14,12 @@ import {
 import { visibleItemCount } from '@/composables/topbarOverflow'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { processStateLevel, processStateText, type ProcessLevel } from '@/composables/useProcessState'
-import { resourceLevel, worstResourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
+import {
+  resourceLevel,
+  resourceLevelClass,
+  worstResourceLevel,
+  type ResourceLevel,
+} from '@/composables/useResourceLevel'
 import { useWebSocket } from '@/composables/wsClient'
 import { useProcessStore } from '@/stores/process'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -92,7 +97,6 @@ const cpuItem = computed<ResourceItem>(() => {
       level: null,
       title: 'CPU 使用率（等待 dzsysmon 快照）',
       domId: 'resCpu',
-      testId: 'topbar-resource-cpu',
     }
   }
   const ratio = sysmon.cpuUsageRatio
@@ -106,7 +110,6 @@ const cpuItem = computed<ResourceItem>(() => {
       level: null,
       title: entry?.reason ? `CPU 使用率不可用: ${entry.reason}` : 'CPU 使用率不可用',
       domId: 'resCpu',
-      testId: 'topbar-resource-cpu',
     }
   }
   // 顶栏徽章是横向窄条，刻意用整数百分比（监控页用共享模块的 1 位小数）：同一数值在两处
@@ -123,7 +126,6 @@ const cpuItem = computed<ResourceItem>(() => {
     level,
     title: `CPU 使用率 ${percent}%`,
     domId: 'resCpu',
-    testId: 'topbar-resource-cpu',
   }
 })
 
@@ -140,7 +142,6 @@ const memItem = computed<ResourceItem>(() => {
       level: null,
       title: '内存使用率（等待 dzsysmon 快照）',
       domId: 'resMem',
-      testId: 'topbar-resource-mem',
     }
   }
   const ratio = sysmon.memoryInfo?.used_ratio ?? null
@@ -153,7 +154,6 @@ const memItem = computed<ResourceItem>(() => {
       level: null,
       title: entry?.reason ? `内存使用率不可用: ${entry.reason}` : '内存使用率不可用',
       domId: 'resMem',
-      testId: 'topbar-resource-mem',
     }
   }
   // 整数百分比：与 CPU 徽章同一取舍（窄条优先，见上）
@@ -167,7 +167,6 @@ const memItem = computed<ResourceItem>(() => {
     level,
     title: `内存使用率 ${percent}%`,
     domId: 'resMem',
-    testId: 'topbar-resource-mem',
   }
 })
 
@@ -195,20 +194,12 @@ const clockItem = computed<ResourceItem | null>(() => {
     level: badge.level,
     title: badge.title,
     domId: 'resNtp',
-    testId: 'topbar-resource-ntp',
   }
 })
 
 /**
- * 各盘徽章（#75 / ADR 0048）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
- * 顺序与监控页同源（store 的固定顺序：挂载深度升序，根挂载点恒在最前）。
- * 顶栏只呈现**状态色点 + 挂载点短标签**，完整挂载点 / 使用率 / 不可用原因都在 title 里
- * ——卷数量不定，数字会让每枚徽章宽一倍（ADR 0048）。
- * 单个卷 available=false 走中性色，title 带不可用原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
- */
-/**
  * 徽章标签取挂载点的末段（`/data` → `data`、`C:\\` → `C:`、根挂载点保留 `/`）：
- * 顶栏是横向窄条，完整路径会把后面的徽章挤出可视区；完整路径保留在 title 里。
+ * 顶栏是横向窄条，完整路径会把后面的徽章挤出可视区；完整路径保留在 title 与浮层里。
  */
 function shortMountLabel(mount: string): string {
   const trimmed = mount.replace(/[\\/]+$/, '')
@@ -219,6 +210,13 @@ function shortMountLabel(mount: string): string {
   return segment || trimmed
 }
 
+/**
+ * 各盘徽章（#75 / ADR 0048）：卷集合与顺序全部由快照驱动，不硬编码盘符或数量。
+ * 顺序与监控页同源（store 的固定顺序：挂载深度升序，根挂载点恒在最前）。
+ * 顶栏只呈现**状态色点 + 挂载点短标签**，完整挂载点 / 使用率 / 不可用原因都在 title 里
+ * ——卷数量不定，数字会让每枚徽章宽一倍（ADR 0048）。
+ * 单个卷 available=false 走中性色，title 带不可用原因 —— 不得用 0 冒充（契约 sysmon §2.4）。
+ */
 const diskItems = computed<ResourceItem[]>(() => {
   if (!sysmon.snapshot) return []
   return sysmon.volumes.map((volume) => {
@@ -288,6 +286,8 @@ const measureRowRef = ref<HTMLElement | null>(null)
 const overflowOpen = ref(false)
 /** 溢出入口按钮（浮层定位基准） */
 const overflowTriggerRef = ref<HTMLElement | null>(null)
+/** 浮层本体（定位时要读它的实测宽度；它 Teleport 到 body，不能用资源组作参照） */
+const overflowPanelRef = ref<HTMLElement | null>(null)
 /** 浮层内联定位（`position: fixed`）：走 Teleport 到 body，避开 `.topbar__resource-run`
  *  的 `overflow: hidden`（在容器内绝对定位会被裁成看不到） */
 const overflowPanelStyle = ref<Record<string, string>>({})
@@ -299,14 +299,16 @@ const itemWidths = ref<number[]>([])
 const gapPx = ref(14)
 
 /**
- * 溢出入口宽度预算（含与末项之间的间距）：`▾ N` 是图标 + 计数文本，实测约 30px；
- * 取 34 作上限，宁可早折一个项也不让入口被 `overflow: hidden` 截掉（截掉就等于丢事实）。
+ * 溢出入口宽度预算：首帧入口还没渲染（量不到宽度），先用偏大估计值 34（`4 ▾` 实测约 26px），
+ * 宁可早折一项也不让入口被 `overflow: hidden` 截掉（被截掉就等于丢事实）；
+ * 入口出现后由 {@link remeasureOverflowButton} 换成实测宽度，估计值随即失效。
  */
-const OVERFLOW_BUTTON_WIDTH = 34
+const OVERFLOW_ESTIMATED_WIDTH = 34
+const overflowButtonWidth = ref(OVERFLOW_ESTIMATED_WIDTH)
 
 /** 能直接显示多少项（折叠数量的唯一判据，算法在 composables/topbarOverflow） */
 const visibleCount = computed(() =>
-  visibleItemCount(itemWidths.value, availableWidth.value, gapPx.value, OVERFLOW_BUTTON_WIDTH))
+  visibleItemCount(itemWidths.value, availableWidth.value, gapPx.value, overflowButtonWidth.value))
 
 const visibleItems = computed<ResourceItem[]>(() => resourceItems.value.slice(0, visibleCount.value))
 const foldedItems = computed<ResourceItem[]>(() => resourceItems.value.slice(visibleCount.value))
@@ -333,6 +335,19 @@ function remeasure(): void {
   const style = window.getComputedStyle(row)
   const gap = Number.parseFloat(style.columnGap)
   if (Number.isFinite(gap) && gap >= 0) gapPx.value = gap
+  remeasureOverflowButton()
+}
+
+/**
+ * 实测溢出入口宽度（它只在折叠发生时存在）：读不到时保留上一次的值 / 估计值。
+ * 只在「已经进入折叠态」时调用，避免与可见数量形成互相触发的循环——入口宽度变化不会改变
+ * 「是否需要入口」的判断结果，只会让边界更准（多折/少折一项），实测一次即稳定。
+ */
+function remeasureOverflowButton(): void {
+  const trigger = overflowTriggerRef.value
+  if (!trigger) return
+  const width = trigger.getBoundingClientRect().width
+  if (Number.isFinite(width) && width > 0) overflowButtonWidth.value = width
 }
 
 let observer: ResizeObserver | null = null
@@ -363,10 +378,24 @@ watch(isWide, () => {
   void nextTick(remeasure)
 })
 
-/** 折叠集合清空（宽度变宽 / 卷被移除）时关掉浮层：浮层不该留在一个点不开的按钮下面 */
-watch(foldedItems, (items) => {
-  if (items.length === 0) overflowOpen.value = false
-})
+/**
+ * 折叠集合清空（宽度变宽 / 卷被移除）时关掉浮层：浮层不该留在一个点不开的按钮下面。
+ * 另一方面，入口**首次出现**时要实测它的宽度（此时才量得到），替换首帧用的估计值。
+ * 用布尔量做 watch 源而不是数量：宽度实测会让可见数量再算一次，按数量监听会来回触发；
+ * 按「有无入口」监听只触发一次，收敛后不再重跑。
+ */
+watch(
+  () => foldedItems.value.length > 0,
+  (hasOverflow) => {
+    if (!hasOverflow) {
+      overflowOpen.value = false
+      overflowButtonWidth.value = OVERFLOW_ESTIMATED_WIDTH
+      return
+    }
+    void nextTick(remeasureOverflowButton)
+  },
+  { immediate: true },
+)
 
 /**
  * 浮层定位（与 `shared/DatePicker.vue` 同款：Teleport + fixed）。
@@ -379,10 +408,13 @@ function updateOverflowPanelPosition(): void {
   const trigger = overflowTriggerRef.value
   if (!trigger) return
   const rect = trigger.getBoundingClientRect()
-  const panelWidth = 200
+  // 浮层宽度以**实测**为准（浮层此刻已渲染）：`min-width` 归 CSS 所有，JS 不再持有一份
+  // 宽度常量，否则两处一旦不同步就会出现「收进来了但仍溢出」或「白收一段」。
+  const panelWidth = overflowPanelRef.value?.getBoundingClientRect().width ?? 0
   const viewportWidth = window.innerWidth
   // 右溢出：贴右边界收进来（浮层比按钮宽，默认左对齐会跑出屏幕）
-  const left = Math.min(rect.left, Math.max(8, viewportWidth - panelWidth - 8))
+  const maxLeft = viewportWidth - panelWidth - 8
+  const left = panelWidth > 0 ? Math.min(rect.left, Math.max(8, maxLeft)) : rect.left
   overflowPanelStyle.value = {
     position: 'fixed',
     left: `${left}px`,
@@ -392,7 +424,11 @@ function updateOverflowPanelPosition(): void {
 
 function toggleOverflow(): void {
   overflowOpen.value = !overflowOpen.value
-  if (overflowOpen.value) updateOverflowPanelPosition()
+  if (overflowOpen.value) {
+    // 首帧浮层还没进 DOM（宽度读不到）→ 先按按钮左缘定位，渲染完再按实测宽度校正一次
+    updateOverflowPanelPosition()
+    void nextTick(updateOverflowPanelPosition)
+  }
 }
 
 // 点击浮层之外 / 入口之外 / Escape 关闭（与 ThemeDropdown 同款交互）。
@@ -433,14 +469,14 @@ interface ResourceGauge {
 const resourceGauge = computed<ResourceGauge>(() => {
   if (!sysmon.snapshot) {
     return {
-      stateClass: 'topbar__resource--unavailable',
+      stateClass: resourceLevelClass(null),
       title: '系统资源（等待 dzsysmon 快照）',
     }
   }
   const worst = worstResourceLevel(resourceItems.value.map(item => item.level))
   // title 汇总各资源读数：沿用各徽章自身的 title 文案，避免在窄屏另造一套格式化口径
   return {
-    stateClass: worst === null ? 'topbar__resource--unavailable' : `topbar__resource--${worst}`,
+    stateClass: resourceLevelClass(worst),
     title: resourceItems.value.map(item => item.title).join(' · '),
   }
 })
@@ -482,12 +518,12 @@ interface ServiceBadge {
 }
 
 /**
- * 状态色 class 复用资源徽章的同一映射（`ResourceLevel` 词表）：未知态走中性
- * unavailable 类，不套 status 色，也不命中 layout.css 的 warn / danger 闪烁规则
- *（#199 AC「未知不闪烁」）。
+ * 服务徽章的状态色 class 复用资源徽章的同一映射：`unknown` 不是 `ResourceLevel`，
+ * 先转成 `null`（中性不可判读），走同一条 `resourceLevelClass` —— 未知态因此不套
+ * status 色，也不命中 layout.css 的 warn / danger 闪烁规则（#199 AC「未知不闪烁」）。
  */
 function serviceStateClass(level: ProcessLevel): string {
-  return level === 'unknown' ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
+  return resourceLevelClass(level === 'unknown' ? null : level)
 }
 
 /** 单个服务类别 → 聚合等级 + title（多进程取最差；title 列出各进程状态，未知时说明原因） */
@@ -636,6 +672,7 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
           <Teleport to="body">
             <div
               v-if="isWide && overflowOpen && foldedItems.length > 0"
+              ref="overflowPanelRef"
               class="topbar__overflow"
               :style="overflowPanelStyle"
               data-test="topbar-overflow-panel"
@@ -649,7 +686,7 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
               >
                 <span
                   class="topbar__overflow-dot"
-                  :class="item.level === null ? 'topbar__resource--unavailable' : `topbar__resource--${item.level}`"
+                  :class="resourceLevelClass(item.level)"
                   aria-hidden="true"
                 ></span>
                 <span class="topbar__overflow-label">{{ item.overflowLabel ?? item.label }}</span>
@@ -689,14 +726,6 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
 
 .topbar__conn-dot--error {
   background: var(--status-error-default);
-}
-
-/* 指标不可用 / 快照未到达 / 服务状态未知：中性色，不得用状态色或 0 冒充数据；
-   服务徽章只有 res-label / res-icon，中性图标与卷的状态点颜色也由本规则给出（#199 / ADR 0048） */
-.topbar__resource--unavailable .res-value,
-.topbar__resource--unavailable .res-icon,
-.topbar__resource--unavailable .res-dot {
-  color: var(--text-tertiary);
 }
 
 /* 「▾ N」是原生 button：浏览器 UA 不把页面字体继承给 button（.ds-link-btn 只重置

@@ -307,6 +307,15 @@ body {
 .topbar__resource--normal .res-dot { color: var(--status-success-default); }
 .topbar__resource--warn .res-dot { color: var(--status-alert-default); }
 .topbar__resource--danger .res-dot { color: var(--status-error-default); }
+/* 不可判读（快照未到 / 指标不可用 / 服务状态未知）：中性色，不得用状态色或 0 冒充数据。
+   必须在**本文件**而不能留在 Topbar.vue 的 scoped 块里：`.res-value` / `.res-icon` / `.res-dot`
+   由子组件 TopbarResourceBadge / 内联渲染，父组件的 scoped 规则按末选择器加父 scope 属性，
+   够不到这些节点（静默失效，测试只断言 class 也抓不到）。 */
+.topbar__resource--unavailable .res-value,
+.topbar__resource--unavailable .res-icon,
+.topbar__resource--unavailable .res-dot {
+  color: var(--text-tertiary);
+}
 /* 隐形测量行（ADR 0048）：渲染全部资源项但不可见、不占布局，只用于量每项宽度。
    绝对定位 + visibility:hidden —— 不能碰 `display:none`（那会让宽度变成 0，折叠数量必然算错），
    也不能让它参与可见布局（会在徽章之间留出空白）。 */
@@ -335,10 +344,15 @@ body {
 }
 .topbar__overflow-trigger:hover { color: var(--text-default); }
 .topbar__overflow-count { line-height: 1.2; }
+/* 浮层条目的色点：等级类挂在圆点**自身**（不是外层容器），所以不能用后代选择器，
+   必须逐档写在本元素上 */
+.topbar__overflow-dot.topbar__resource--normal { color: var(--status-success-default); }
+.topbar__overflow-dot.topbar__resource--warn { color: var(--status-alert-default); }
+.topbar__overflow-dot.topbar__resource--danger { color: var(--status-error-default); }
+.topbar__overflow-dot.topbar__resource--unavailable { color: var(--text-tertiary); }
 .topbar__overflow {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
+  /* 定位全部由组件内联给出（Teleport 到 body + fixed）：这里不写 position / top / left，
+     否则会留一份被恒覆盖的死声明 */
   min-width: 180px;
   background: var(--bg-menu);
   border: 1px solid var(--border-neutral-l1);
@@ -396,8 +410,7 @@ body {
 .topbar__resources--gauge .topbar__resource--disk,
 .topbar__resources--gauge .topbar__resource--ntp,
 .topbar__resources--gauge .topbar__resource-measure,
-.topbar__resources--gauge .topbar__overflow-trigger,
-.topbar__resources--gauge .topbar__overflow { display: none; }
+.topbar__resources--gauge .topbar__overflow-trigger { display: none; }
 .topbar__resources--gauge .topbar__gauge { display: inline-flex !important; }
 .topbar__gauge.topbar__resource--normal svg { color: var(--status-success-default); }
 .topbar__gauge.topbar__resource--warn svg { color: var(--status-alert-default); }

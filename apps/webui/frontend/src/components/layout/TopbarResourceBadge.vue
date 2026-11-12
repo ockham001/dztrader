@@ -11,7 +11,7 @@
  * 形态由 `kind` 决定（`disk` = 状态点，其余 = 标签 + 数值）：不额外设 `variant` 开关，
  * 免得「kind=disk 却给了 value」这种自相矛盾的组合出现。
  */
-import type { ResourceLevel } from '@/composables/useResourceLevel'
+import { resourceLevelClass, type ResourceLevel } from '@/composables/useResourceLevel'
 
 withDefaults(defineProps<{
   /** 资源类别：决定 `topbar__resource--<kind>` 类（窄屏 `--gauge` 隐藏规则按类名匹配，layout.css 是唯一处） */
@@ -31,17 +31,12 @@ withDefaults(defineProps<{
   /** `data-test` 标记（卷徽章 / 资源项） */
   testId?: string
 }>(), { value: '', mount: undefined, domId: undefined, testId: undefined })
-
-/** 状态色 class 由 level 派生（`null` 走中性 unavailable 类）：单一表示，避免两份状态漂移 */
-function stateClass(level: ResourceLevel | null): string {
-  return level === null ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
-}
 </script>
 
 <template>
   <span
     class="topbar__resource"
-    :class="[`topbar__resource--${kind}`, stateClass(level)]"
+    :class="[`topbar__resource--${kind}`, resourceLevelClass(level)]"
     :id="domId"
     :data-mount="mount"
     :data-level="level ?? undefined"

@@ -179,7 +179,7 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
     expect(wrapper.find('#resMem').classes()).toContain('topbar__resource--normal')
   })
 
-  it('内存徽章按 70%/90% 阈值映射警告/危险状态色', async () => {
+  it('内存徽章按 70%/90% 阈值映射警告/危险状态色（95% → danger、75% → warn）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       memory: {
         total_bytes: 100 * 1024 ** 3,
@@ -506,14 +506,30 @@ describe('Topbar 资源折叠（ADR 0048：按可用宽度自适应，服务徽�
     expect(overflowTrigger(wrapper).exists()).toBe(false)
   })
 
-  it('MD / TD / STG 服务徽章永不折叠：容器变窄/变宽都不影响其渲染', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+  it('MD / TD / STG 服务徽章永不折叠：资源组全折起来时它们仍在，且不重复渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
     const wrapper = await mountTopbar()
 
     for (const id of ['resMd', 'resTd', 'resStg']) {
       expect(wrapper.find(`#${id}`).exists()).toBe(true)
-      // 服务徽章在测量行之外（不在参与折叠的资源组里）
+      // 服务徽章在资源组行之外：测量行（隐形第二份渲染）里没有它们的副本
       expect(wrapper.findAll(`#${id}`)).toHaveLength(1)
+    }
+
+    // 压窄资源组行到 0：全部资源项折叠进「▾ N」，服务徽章必须原样还在
+    const container = wrapper.find('[data-test="topbar-resource-run"]').element as HTMLElement
+    const measureRow = wrapper.find('[data-test="topbar-resource-measure"]').element as HTMLElement
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 0 })
+    for (const child of Array.from(measureRow.children)) {
+      child.getBoundingClientRect = () => ({ width: 60, height: 20, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
+    }
+    resizeCallback?.()
+    await wrapper.vm.$nextTick()
+
+    // 资源项全部可见（宽度 0 = 未测量/极窄时算法退回「全可见」，见 topbarOverflow 边界）
+    expect(wrapper.find('#resCpu').exists()).toBe(true)
+    for (const id of ['resMd', 'resTd', 'resStg']) {
+      expect(wrapper.find(`#${id}`).exists()).toBe(true)
     }
   })
 

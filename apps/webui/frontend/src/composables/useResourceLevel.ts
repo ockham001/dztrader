@@ -49,6 +49,18 @@ export function resourceLevel(ratio: number): ResourceLevel {
 const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
 
 /**
+ * 展示等级 → CSS 修饰类（顶栏徽章的**唯一**等级类映射）。
+ *
+ * 为什么放在本模块：等级类把「等级词表」与 `layout.css` 的着色规则绑在一起，分散在
+ * 徽章组件 / 服务徽章 / 窄屏图标 / 浮层条目四处各自拼字符串，改词表（例如新增 caution 档）
+ * 就会漏改一处、静默少一个颜色。`null` = 不可判读（快照未到 / 指标不可用 / 状态未知），
+ * 走中性 `--unavailable` 类，不得用 normal 冒充「一切正常」。
+ */
+export function resourceLevelClass(level: ResourceLevel | null): string {
+  return level === null ? 'topbar__resource--unavailable' : `topbar__resource--${level}`
+}
+
+/**
  * 多读数取「最差」展示等级（danger > warn > normal），与读数顺序无关。
  * null = 不可判读（无快照 / 指标不可用 / 进程状态未知），不参与聚合：
  * 全部不可判读时返回 null，由调用方决定中性展示，不得默认 normal 冒充「一切正常」。
