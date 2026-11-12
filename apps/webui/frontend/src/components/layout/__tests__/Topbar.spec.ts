@@ -506,7 +506,7 @@ describe('Topbar 资源折叠（ADR 0048：按可用宽度自适应，服务徽�
     expect(overflowTrigger(wrapper).exists()).toBe(false)
   })
 
-  it('MD / TD / STG 服务徽章永不折叠：资源组全折起来时它们仍在，且不重复渲染', async () => {
+  it('MD / TD / STG 服务徽章永不折叠：资源项被折叠起来时它们仍在，且不重复渲染', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
     const wrapper = await mountTopbar()
 
@@ -516,20 +516,25 @@ describe('Topbar 资源折叠（ADR 0048：按可用宽度自适应，服务徽�
       expect(wrapper.findAll(`#${id}`)).toHaveLength(1)
     }
 
-    // 压窄资源组行到 0：全部资源项折叠进「▾ N」，服务徽章必须原样还在
+    // 真正进入折叠态：资源组行可用宽度 120、每项 60（+14 间距）→ 装不下 6 项，
+    // 尾部若干项收进「▾ N」（与「溢出浮层」用例同一套测量桩）
     const container = wrapper.find('[data-test="topbar-resource-run"]').element as HTMLElement
     const measureRow = wrapper.find('[data-test="topbar-resource-measure"]').element as HTMLElement
-    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 0 })
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 120 })
     for (const child of Array.from(measureRow.children)) {
       child.getBoundingClientRect = () => ({ width: 60, height: 20, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
     }
     resizeCallback?.()
     await wrapper.vm.$nextTick()
 
-    // 资源项全部可见（宽度 0 = 未测量/极窄时算法退回「全可见」，见 topbarOverflow 边界）
-    expect(wrapper.find('#resCpu').exists()).toBe(true)
+    // 折叠确实发生了（否则本用例又退化成「没进入折叠态」的恒真断言）
+    expect(overflowTrigger(wrapper).exists()).toBe(true)
+    expect(diskBadges(wrapper).length).toBeLessThan(3)
+
+    // 服务徽章不受折叠影响：仍在、仍只一份、仍带各自的 id 锚点
     for (const id of ['resMd', 'resTd', 'resStg']) {
       expect(wrapper.find(`#${id}`).exists()).toBe(true)
+      expect(wrapper.findAll(`#${id}`)).toHaveLength(1)
     }
   })
 

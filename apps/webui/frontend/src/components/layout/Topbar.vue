@@ -379,17 +379,19 @@ watch(isWide, () => {
 })
 
 /**
- * 折叠集合清空（宽度变宽 / 卷被移除）时关掉浮层：浮层不该留在一个点不开的按钮下面。
- * 另一方面，入口**首次出现**时要实测它的宽度（此时才量得到），替换首帧用的估计值。
- * 用布尔量做 watch 源而不是数量：宽度实测会让可见数量再算一次，按数量监听会来回触发；
- * 按「有无入口」监听只触发一次，收敛后不再重跑。
+ * 入口出现时实测它的宽度，替换首帧用的估计值。
+ *
+ * **不要在入口消失时把宽度重置回估计值**：那会让边界来回跳——实测 26 让预算变大 →
+ * 少折一项 → 入口消失 → 重置成 34 → 预算变小 → 又折回去，1↔0 无限循环，且每轮都会
+ * 卸载/挂载一次按钮。保留上一次实测值既能收敛，也比估计值更准；估计值只在从未折叠过
+ * （因此也从未需要入口）时有意义。
  */
 watch(
   () => foldedItems.value.length > 0,
   (hasOverflow) => {
     if (!hasOverflow) {
+      // 只关浮层：浮层不该留在一个点不开的按钮下面
       overflowOpen.value = false
-      overflowButtonWidth.value = OVERFLOW_ESTIMATED_WIDTH
       return
     }
     void nextTick(remeasureOverflowButton)
