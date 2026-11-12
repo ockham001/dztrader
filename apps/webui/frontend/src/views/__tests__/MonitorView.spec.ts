@@ -682,22 +682,22 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     vi.clearAllMocks()
   })
 
-  it('默认快照：3 个卷按使用率降序排序', async () => {
+  it('默认快照：3 个卷按固定顺序（ADR 0048）排列，根挂载点在最前', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
     expect(rows).toHaveLength(3)
-    // #122：按使用率降序（62% > 40% > 25%）
-    expect(rows[0].attributes('data-mount')).toBe('/home')
-    expect(rows[0].text()).toContain('62.0%')
-    expect(rows[1].attributes('data-mount')).toBe('/')
-    expect(rows[1].text()).toContain('40.0%')
+    // ADR 0048：挂载深度升序 → 同深度按挂载点升序（/ 深度 0；/data、/home 深度 1）
+    expect(rows[0].attributes('data-mount')).toBe('/')
+    expect(rows[0].text()).toContain('40.0%')
+    expect(rows[1].attributes('data-mount')).toBe('/data')
+    expect(rows[1].text()).toContain('25.0%')
 
-    expect(rows[2].attributes('data-mount')).toBe('/data')
-    expect(rows[2].text()).toContain('25.0%')
+    expect(rows[2].attributes('data-mount')).toBe('/home')
+    expect(rows[2].text()).toContain('62.0%')
     // #126：1 TiB 定标到 TiB 档，不再显示为 1024.0 GiB
-    expect(rows[2].text()).toContain('256.0 GiB / 1.0 TiB')
+    expect(rows[1].text()).toContain('256.0 GiB / 1.0 TiB')
 
     // 使用率均 < 70%：色标 normal（与顶栏卷徽章同源）
     expect(rows.map(row => row.attributes('data-level'))).toEqual(['normal', 'normal', 'normal'])
@@ -717,14 +717,14 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     }))
     const wrapper = await mountView()
 
-    // 使用率降序：danger(90%) > warn(70%) > low(69%)
+    // ADR 0048：固定顺序（同深度按挂载点升序 /danger → /low → /warn），与使用率无关
     const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
-    expect(rows.map(row => row.attributes('data-mount'))).toEqual(['/danger', '/warn', '/low'])
-    expect(rows.map(row => row.attributes('data-level'))).toEqual(['danger', 'warn', 'normal'])
+    expect(rows.map(row => row.attributes('data-mount'))).toEqual(['/danger', '/low', '/warn'])
+    expect(rows.map(row => row.attributes('data-level'))).toEqual(['danger', 'normal', 'warn'])
     // 着色不改变数值展示：百分比 / 已用与总量照常渲染
     expect(rows[0].find('.monitor-view__list-value').text()).toBe('90.0%')
-    expect(rows[1].find('.monitor-view__list-value').text()).toBe('70.0%')
-    expect(rows[2].find('.monitor-view__list-value').text()).toBe('69.0%')
+    expect(rows[1].find('.monitor-view__list-value').text()).toBe('69.0%')
+    expect(rows[2].find('.monitor-view__list-value').text()).toBe('70.0%')
     expect(rows[0].find('.monitor-view__list-meta').text()).toBe('90.0 GiB / 100.0 GiB')
   })
 

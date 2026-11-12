@@ -8,6 +8,7 @@ import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import {
   UNAVAILABLE_TEXT,
+  formatAge,
   formatByteRate,
   formatBytes,
   formatCount,
@@ -59,7 +60,7 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
 // 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
-// 磁盘（#75）按可用性映射渲染：卷按使用率降序排列（#122）；正文只列容量可读且
+// 磁盘（#75）按可用性映射渲染：卷按固定顺序排列（ADR 0048：挂载深度升序，根挂载点恒在最前）；正文只列容量可读且
 // 总量 > 0 的卷，其余折叠进「无容量挂载（N）」，绝不显示 0；shm_dir 展示共享内存目录占用
 //（页清理是否生效的可观测项）。
 // 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
@@ -84,7 +85,7 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // `useResourceLevel` 的定档实现与同一套等级词表），误差界越界另给「测量质量」提示且**不改变**
 // 偏差着色；展开显示每台服务器明细与同步服务检测（多服务运行给冲突提示）。三种空态（配置关闭 /
 // 尚未探测 / 全部失败）都渲染这张卡且都不显示 0；「立即查询」置灰时长取 `manual_min_interval_sec`，
-// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。**顶栏不加时钟徽章**。
+// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。顶栏另有一枚常驻 NTP 徽章（ADR 0048）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 /** 历史视图 store（#79）：与实时 store 完全独立，切换视图不影响 WS 与实时快照 */
@@ -125,16 +126,6 @@ const updatedAt = computed(() => {
 // 否则同一事实出现两个名字——Topbar 等其它文件都直接用导出名）。
 /** 配置关闭的统一文案（卷 / 指标可用性映射共用，避免两处字面量漂移） */
 const DISABLED_BY_CONFIG_TEXT = '已在配置中关闭'
-
-/** 文件年龄（秒 → 可读时长）：页文件年龄是页清理是否生效的直接信号（契约 sysmon §2.4） */
-function formatAge(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
-  const total = Math.floor(seconds)
-  if (total < 60) return `${total} 秒`
-  if (total < 3_600) return `${Math.floor(total / 60)} 分钟`
-  if (total < 86_400) return `${Math.floor(total / 3_600)} 小时`
-  return `${Math.floor(total / 86_400)} 天`
-}
 
 /** 卷的不可用原因（契约 sysmon §2.4 建议取值）：文案化，裸 reason 兜底 */
 function volumeReasonDesc(reason: string | undefined): string {
@@ -351,7 +342,7 @@ const clockProbeAge = computed(() => {
   const snapshotTs = snapshot.value?.timestamp
   if (!c || typeof snapshotTs !== 'number') return null
   const ageSec = clockProbeAgeSec(c.last_probe_unix_ms, snapshotTs)
-  // 文案复用本组件既有的 `formatAge`（同一份「多久以前」口径），不新写第二套相对时间函数
+  // 文案复用共享模块的 `formatAge`（同一份「多久以前」口径，顶栏时钟徽章共用），不新写第二套
   return ageSec === null ? null : formatAge(ageSec)
 })
 const clockServers = computed(() => clock.value?.servers ?? [])
@@ -918,7 +909,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘
         </h2>
 
-        <!-- 卷：正文只留容量可读且总量 > 0 的卷（#122），按使用率降序（store 已排好）；
+        <!-- 卷：正文只留容量可读且总量 > 0 的卷（#122），按固定顺序（ADR 0048：深度升序，store 已排好）；
              available=false 与 total_bytes=0 的挂载折叠进「无容量挂载（N）」，绝不显示 0。
              data-level 为使用率色标（与顶栏卷徽章共用 resourceLevel；色标是展示规则，不是越限判定） -->
         <div class="monitor-view__subsection" data-test="monitor-disk-volumes">
@@ -1211,7 +1202,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
            偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
            （独立于偏差着色，契约 §2.8）；展开后是每台服务器明细 + 同步服务检测。
            三种空态都渲染这张卡（配置关闭也是明确空态而不是整块消失），且都不显示 0。
-           顶栏不加徽章：本卡片只进监控页实时网格（既有「无 NTP 徽章」断言保持有效）。 -->
+           顶栏另有常驻 NTP 徽章（ADR 0048：只给状态色与偏差数字，明细仍在本卡片）。 -->
       <section class="ds-card monitor-view__card" data-test="monitor-clock">
         <div class="monitor-view__card-head">
           <h2 class="ds-card__title monitor-view__card-title">

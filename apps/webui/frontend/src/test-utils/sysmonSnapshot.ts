@@ -186,8 +186,9 @@ const DEFAULT_SWAP: SysmonSwapInfo = {
 
 /**
  * 默认卷（#75 后端形状）：/ 40%、/data 25%（承载 shm 与 db 目录）、/home 62%。
- * 顺序刻意与使用率不同（payload 顺序 /、/data、/home），用于验证前端按使用率降序重排
- * 而不是依赖发送端顺序（#122）。
+ * payload 顺序刻意是 `/`、`/data`、`/home`（升序），而使用率顺序是 `/home` > `/` > `/data`：
+ * 用于验证前端按**固定顺序**（ADR 0048：挂载深度升序 → 名称升序）渲染，既不看使用率也不依赖
+ * 发送端顺序。
  */
 const DEFAULT_VOLUMES: SysmonVolumeInfo[] = [
   { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },

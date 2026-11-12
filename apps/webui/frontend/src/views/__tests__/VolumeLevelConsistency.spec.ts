@@ -14,9 +14,14 @@ vi.mock('@/composables/wsClient', () => ({
   useWebSocket: () => ({ connectionState: { value: 'connected' } }),
 }))
 
-// #127：Topbar 经 useBreakpoint 读视口档位做行为分支（≥lg 显示卷徽章组）。
-// jsdom 无 matchMedia，用固定宽屏（1600 = xl）stub，让顶栏按宽屏形态渲染。
+// #127 / ADR 0048：Topbar 经 useBreakpoint 读视口档位做行为分支（≥lg 显示卷徽章组）。
+// jsdom 无 matchMedia / ResizeObserver，用固定宽屏（1600 = xl）+ 空观察者 stub，让顶栏按宽屏形态渲染。
+// 宽度未测量（clientWidth = 0）时折叠算法按「全部可见」处理，因此这里断言的是全量卷集合。
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe(): void {}
+    disconnect(): void {}
+  })
   vi.stubGlobal('matchMedia', (q: string) => {
     const m = q.match(/\(min-width:\s*([\d.]+)px\)/)
     return {
@@ -46,17 +51,21 @@ const GIB = 1024 ** 3
 async function mountBoth() {
   const topbar = mount(Topbar, { global: { stubs } })
   await flushPromises()
-  // #127：宽屏默认只直接渲染前 2 个卷徽章；有「其余 N 个」时先展开，才能与监控页全量卷列表比较
-  const rest = topbar.find('[data-test="topbar-disk-rest"]')
-  if (rest.exists()) await rest.trigger('click')
   const monitor = mount(MonitorView, { global: { stubs } })
   await flushPromises()
   return { topbar, monitor }
 }
 
-/** 挂载点 → 色标等级（data-level）映射，两侧用同一把尺子比较 */
+/**
+ * 挂载点 → 色标等级（data-level）映射，两侧用同一把尺子比较。
+ *
+ * 排除顶栏的**隐形测量行**（ADR 0048）：它渲染同一份卷徽章只为量宽度，挂在
+ * `[data-test="topbar-resource-measure"]` 下，不属于可见结论。
+ */
 function levelMap(wrapper: VueWrapper, selector: string): Map<string | undefined, string | undefined> {
-  return new Map(wrapper.findAll(selector).map(el => [el.attributes('data-mount'), el.attributes('data-level')]))
+  const visibleMatches = wrapper.findAll(selector)
+    .filter(el => !el.element.closest('[data-test="topbar-resource-measure"]'))
+  return new Map(visibleMatches.map(el => [el.attributes('data-mount'), el.attributes('data-level')]))
 }
 
 describe('顶栏卷徽章 / 监控页卷列表色标一致性（共用 useResourceLevel）', () => {
