@@ -18,6 +18,7 @@
  */
 import {
   UNAVAILABLE_TEXT,
+  formatCompactSignedMilliseconds,
   formatMilliseconds,
   formatSignedMilliseconds,
 } from '@/composables/format'
@@ -198,9 +199,9 @@ export const CLOCK_QUALITY_HINT = '测量质量偏弱：误差界较大，本次
 /**
  * 上次探测距当前的秒数；快照未到达 / 尚未探测（`last_probe_unix_ms = 0`）时返回 null。
  *
- * 只算**秒数**，「多久以前」的文案交给视图既有的 `formatAge`——相对时间只允许一种呈现实现
- * （`MonitorView.formatAge` 已承担页文件年龄这一「多久以前」口径，本模块不复制第二份；
- * 系统启动时长用的 `formatUptime` 是另一种形态，不做「多久以前」的换算）。
+ * 只算**秒数**，「多久以前」的文案交给 `format.formatAge`——相对时间只允许一种呈现实现
+ * （页文件年龄与上次探测时间共用同一份「多久以前」口径；系统启动时长用的 `formatUptime`
+ * 是另一种形态，不做「多久以前」的换算）。
  *
  * 负值（快照里的探测时刻晚于同一帧的 `timestamp`）钳到 0：这说明本机时钟本身可能有问题，
  * 展示成「-3 秒前」只会让人以为界面坏了；真正的信号在偏差数字上。
@@ -220,4 +221,81 @@ export function sortClockDaemons<T extends { name: string; running: boolean }>(d
     if (a.running !== b.running) return a.running ? -1 : 1
     return a.name.localeCompare(b.name)
   })
+}
+
+// ===== 顶栏 NTP 徽章（ADR 0048，契约 sysmon §2.9 的「顶栏徽章」条）=====
+
+/**
+ * 顶栏徽章的展示模型（纯数据，组件只负责渲染）：
+ * - `text`：徽章上的短文本（紧凑毫秒 / `—` / `不可用`）；
+ * - `level`：状态色等级（`null` = 中性等待态，不套色标）；
+ * - `title`：悬停完整说明。
+ */
+export interface ClockBadge {
+  text: string
+  level: ResourceLevel | null
+  title: string
+}
+
+/** 徽章标签文本（顶栏窄条用缩写，与 CPU / MEM 同层） */
+export const CLOCK_BADGE_LABEL = 'NTP'
+
+/**
+ * 顶栏 NTP 徽章的展示模型（四态一一对应契约 §2.9 的域内空态）：
+ *
+ * - `snapshotMissing`（快照尚未到达）→ `—` + 中性色 + 「等待 dzsysmon 快照」；
+ * - `disabled`（`clock = null`，该域被配置关闭）→ 返回 `null`，**整枚徽章不渲染**
+ *   （配置关闭是「这项监控被关掉了」这一运维事实，顶栏不放无信息空壳）；
+ * - `unprobed`（`last_probe_unix_ms = 0`）→ `—` + 中性色 + 「尚未探测」；
+ * - `unavailable`（探测过但本轮无可用参考源）→ `不可用` + 中性色 + 失败原因汇总；
+ * - `live` → 紧凑带符号毫秒 + 按 `|offset_ms|` 定档的状态色。
+ *
+ * 三条硬约束：
+ * 1. **不得用 0 冒充**：三种空态的文本都不是数字（`—` / `不可用`）。
+ * 2. **色标只来自 `clockOffsetLevel`**（阈值取生效配置），组件里不另写比较。
+ * 3. **误差界越界只进 title**：`bound_ms > bound_alarm_ms` 追一句「测量质量」提示，
+ *    不改变偏差着色（契约 §2.8：两个判定对象独立）。
+ *
+ * @param clock 已由 store 净化的域（`null` = 配置关闭）
+ * @param thresholds 生效配置的三个阈值（含 `bound_alarm_ms`）
+ * @param snapshotPresent 快照是否已到达（未到达时连「配置是否关闭」都不知道，只能显示等待态）
+ * @param probeAgeText 「上次探测多久以前」的现成文案（`null` = 无法表达），由调用方用
+ *        `clockProbeAgeSec` + `formatAge` 算出——本模块不复制第二份相对时间口径
+ */
+export function clockBadge(
+  clock: SysmonClockInfo | null,
+  thresholds: ClockThresholds,
+  snapshotPresent: boolean,
+  probeAgeText: string | null,
+): ClockBadge | null {
+  if (!snapshotPresent) {
+    return { text: '—', level: null, title: '时钟偏差（等待 dzsysmon 快照）' }
+  }
+  if (clock === null) return null
+  const state = clockDomainState(clock)
+  if (state === 'unprobed') {
+    return { text: '—', level: null, title: `${CLOCK_UNPROBED_TITLE}：${CLOCK_UNPROBED_DESC}` }
+  }
+
+  const ageSuffix = probeAgeText === null ? '' : `；上次探测 ${probeAgeText}前`
+  if (clock.offset_ms === null || clock.bound_ms === null) {
+    // store 已保证两键同生共死；这里仍按「无偏差读数」处理，不用 0 冒充
+    return {
+      text: UNAVAILABLE_TEXT,
+      level: null,
+      title: `时钟偏差${UNAVAILABLE_TEXT}：${clockFailureSummary(clock.servers)}${ageSuffix}`,
+    }
+  }
+
+  const level = clockOffsetLevel(clock.offset_ms, thresholds)
+  const quality = clockBoundAlarm(clock.bound_ms, thresholds) ? `；${CLOCK_QUALITY_HINT}` : ''
+  const title = `时钟偏差 ${formatSignedMilliseconds(clock.offset_ms)}`
+    + `；误差界 ${formatMilliseconds(clock.bound_ms)}`
+    + `；来源 ${clock.source}（stratum ${clock.source_stratum ?? UNAVAILABLE_TEXT}）`
+    + `${ageSuffix}${quality}`
+  return {
+    text: formatCompactSignedMilliseconds(clock.offset_ms),
+    level,
+    title,
+  }
 }

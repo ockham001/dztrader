@@ -249,6 +249,23 @@ body {
   align-items: center;
   gap: var(--spacer-12);
   overflow: hidden;
+  /* 必须自己吃掉 .topbar__left 的剩余宽度：默认 `flex: 0 1 auto` 会让它按内容撑开，
+     于是它永远「装得下」、里层的资源组行只剩零头（实测 1440px 下只剩 17px，
+     8 个徽章被一次性折完）。`min-width: 0` 是能缩到小于内容的前提。 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* 资源组行（ADR 0048）：MD / TD / STG 与分隔线之外的**剩余空间**全部给它，
+   因此它的 clientWidth 就是资源项真正可用的宽度（折叠判定的唯一输入）。
+   `min-width: 0` 是 flex 子项能被压缩/量到真实可用宽度的前提，缺了会按内容撑开。 */
+.topbar__resource-run {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-12);
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
 }
 .topbar__resource {
   display: inline-flex;
@@ -279,6 +296,99 @@ body {
 .topbar__resource--normal .res-icon { color: var(--status-success-default); }
 .topbar__resource--warn .res-icon { color: var(--status-alert-default); }
 .topbar__resource--danger .res-icon { color: var(--status-error-default); }
+/* Volume badge status dot（ADR 0048：卷徽章只给状态色点 + 挂载点短标签，不再平铺百分比） */
+.topbar__resource .res-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  background: currentColor;
+}
+.topbar__resource--normal .res-dot { color: var(--status-success-default); }
+.topbar__resource--warn .res-dot { color: var(--status-alert-default); }
+.topbar__resource--danger .res-dot { color: var(--status-error-default); }
+/* 不可判读（快照未到 / 指标不可用 / 服务状态未知）：中性色，不得用状态色或 0 冒充数据。
+   必须在**本文件**而不能留在 Topbar.vue 的 scoped 块里：`.res-value` / `.res-icon` / `.res-dot`
+   由子组件 TopbarResourceBadge / 内联渲染，父组件的 scoped 规则按末选择器加父 scope 属性，
+   够不到这些节点（静默失效，测试只断言 class 也抓不到）。 */
+.topbar__resource--unavailable .res-value,
+.topbar__resource--unavailable .res-icon,
+.topbar__resource--unavailable .res-dot {
+  color: var(--text-tertiary);
+}
+/* 隐形测量行（ADR 0048）：渲染全部资源项但不可见、不占布局，只用于量每项宽度。
+   绝对定位 + visibility:hidden —— 不能碰 `display:none`（那会让宽度变成 0，折叠数量必然算错），
+   也不能让它参与可见布局（会在徽章之间留出空白）。 */
+.topbar__resource-measure {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-12);
+  white-space: nowrap;
+  left: 0;
+  top: 0;
+}
+/* 溢出入口（▾ N）与浮层（ADR 0048）：视觉复用既有菜单 token，不新造视觉语言 */
+.topbar__overflow-trigger {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--spacer-2);
+  font-size: 9px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.topbar__overflow-trigger:hover { color: var(--text-default); }
+.topbar__overflow-count { line-height: 1.2; }
+/* 浮层条目的色点：等级类挂在圆点**自身**（不是外层容器），所以不能用后代选择器，
+   必须逐档写在本元素上 */
+.topbar__overflow-dot.topbar__resource--normal { color: var(--status-success-default); }
+.topbar__overflow-dot.topbar__resource--warn { color: var(--status-alert-default); }
+.topbar__overflow-dot.topbar__resource--danger { color: var(--status-error-default); }
+.topbar__overflow-dot.topbar__resource--unavailable { color: var(--text-tertiary); }
+.topbar__overflow {
+  /* 定位全部由组件内联给出（Teleport 到 body + fixed）：这里不写 position / top / left，
+     否则会留一份被恒覆盖的死声明 */
+  min-width: 180px;
+  background: var(--bg-menu);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  padding: var(--spacer-4);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--text-default) 16%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
+  z-index: 200;
+}
+.topbar__overflow-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  padding: 0 var(--spacer-8);
+  height: 24px;
+  white-space: nowrap;
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  color: var(--text-default);
+}
+.topbar__overflow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  background: currentColor;
+}
+.topbar__overflow-label { flex-shrink: 0; }
+.topbar__overflow-value {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
 /* Divider between service status and system resources */
 .topbar__resource-divider {
   width: 1px;
@@ -298,7 +408,9 @@ body {
 .topbar__resources--gauge .topbar__resource--cpu,
 .topbar__resources--gauge .topbar__resource--mem,
 .topbar__resources--gauge .topbar__resource--disk,
-.topbar__resources--gauge .topbar__resource--ntp { display: none; }
+.topbar__resources--gauge .topbar__resource--ntp,
+.topbar__resources--gauge .topbar__resource-measure,
+.topbar__resources--gauge .topbar__overflow-trigger { display: none; }
 .topbar__resources--gauge .topbar__gauge { display: inline-flex !important; }
 .topbar__gauge.topbar__resource--normal svg { color: var(--status-success-default); }
 .topbar__gauge.topbar__resource--warn svg { color: var(--status-alert-default); }

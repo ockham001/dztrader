@@ -5,7 +5,14 @@ import Topbar from '../Topbar.vue'
 import { sysmonApi } from '@/api/sysmon'
 import { useProcessStore } from '@/stores/process'
 import { useSysmonStore } from '@/stores/sysmon'
-import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
+import { visibleItemCount } from '@/composables/topbarOverflow'
+import {
+  SYSMON_CLOCK_ALL_FAILED,
+  SYSMON_CLOCK_LIVE,
+  SYSMON_CLOCK_UNPROBED,
+  makeSysmonConfig,
+  makeSysmonSnapshot,
+} from '@/test-utils/sysmonSnapshot'
 import type { ProcessState } from '@/types/api'
 
 vi.mock('@/api/sysmon', () => ({
@@ -16,14 +23,24 @@ vi.mock('@/composables/wsClient', () => ({
   useWebSocket: () => ({ connectionState: { value: 'connected' } }),
 }))
 
-// #127：Topbar 经 useBreakpoint 读视口档位做行为分支（≥lg 宽屏 / <lg 窄屏）。
-// jsdom 无 matchMedia，用 AppShell.spec 同款可编程 stub；默认 1600（xl）让既有宽屏断言保持。
+// #127 / ADR 0048：Topbar 经 useBreakpoint 读视口档位做窄屏收敛分支（≥lg 宽度自适应 / <lg 单图标）。
+// jsdom 无 matchMedia，用 AppShell.spec 同款可编程 stub；默认 1600（xl）走宽屏。
 let mockWidth = 1600
 const listeners = new Set<() => void>()
+
+// ADR 0048：折叠要读容器实测宽度 —— jsdom 无布局（clientWidth 恒 0），因此用可手动触发的
+// ResizeObserver 桩 + 在用例里给容器 / 测量行打假尺寸，才能驱动「放不下 → 折叠」的分支。
+let resizeCallback: (() => void) | null = null
 
 beforeEach(() => {
   mockWidth = 1600
   listeners.clear()
+  resizeCallback = null
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resizeCallback = callback }
+    observe(): void {}
+    disconnect(): void {}
+  })
   vi.stubGlobal('matchMedia', (q: string) => ({
     media: q,
     get matches(): boolean {
@@ -37,6 +54,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  // 溢出浮层 Teleport 到 body：wrapper.unmount() 不会带走它，用例之间必须手动清理
+  document.body.querySelectorAll('[data-test="topbar-overflow-panel"]').forEach(el => el.remove())
 })
 
 function setWidth(w: number): void {
@@ -65,12 +84,30 @@ function memBadgeText(wrapper: TopbarWrapper): string {
   return wrapper.find('#resMem .res-value').text()
 }
 
+function ntpBadge(wrapper: TopbarWrapper) {
+  return wrapper.find('#resNtp')
+}
+
+function ntpBadgeText(wrapper: TopbarWrapper): string {
+  return wrapper.find('#resNtp .res-value').text()
+}
+
 function diskBadges(wrapper: TopbarWrapper) {
   return wrapper.findAll('[data-test="topbar-disk-badge"]')
 }
 
-function restBadge(wrapper: TopbarWrapper) {
-  return wrapper.find('[data-test="topbar-disk-rest"]')
+function overflowTrigger(wrapper: TopbarWrapper) {
+  return wrapper.find('[data-test="topbar-overflow-trigger"]')
+}
+
+/**
+ * 溢出浮层**不在组件子树里**：它 Teleport 到 body（资源组行有 `overflow: hidden`，
+ * 容器内绝对定位会被裁掉）。因此必须到 document.body 里找，`wrapper.find` 找不到。
+ */
+function overflowPanel() {
+  const element = document.body.querySelector('[data-test="topbar-overflow-panel"]')
+  if (!element) return null
+  return { element, findAll: (selector: string) => Array.from(element.querySelectorAll(selector)) }
 }
 
 function resourceGauge(wrapper: TopbarWrapper) {
@@ -83,17 +120,17 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
     vi.clearAllMocks()
   })
 
-  it('删除写死的 NTP / 磁盘假徽章；内存徽章改由实时快照驱动，不残留假数字', async () => {
+  it('写死的假徽章全部移除：不得残留 CPU / 内存 / 磁盘 / NTP 的假数字', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
     const wrapper = await mountTopbar()
 
-    expect(wrapper.find('#resNtp').exists()).toBe(false)
     expect(wrapper.find('#resDisk0').exists()).toBe(false)
     expect(wrapper.find('#resDisk1').exists()).toBe(false)
-    // 内存徽章存在，但快照未到达 → 等待态，不得显示假百分比（#74）
-    expect(wrapper.find('#resMem').exists()).toBe(true)
+    // CPU / 内存徽章存在，但快照未到达 → 等待态，不得显示假百分比（#74）
+    expect(wrapper.find('#resCpu').exists()).toBe(true)
+    expect(cpuBadgeText(wrapper)).toBe('—')
     expect(memBadgeText(wrapper)).toBe('—')
-    for (const fake of ['NTP', '+12ms', '76%', '93%', '45%']) {
+    for (const fake of ['+12ms', '76%', '93%', '45%']) {
       expect(wrapper.text()).not.toContain(fake)
     }
   })
@@ -119,20 +156,14 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
   it('CPU 徽章按阈值映射警告/危险状态色', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.75 }))
     const wrapper = await mountTopbar()
-    expect(cpuBadgeText(wrapper)).toBe('75%')
-    expect(wrapper.find('#resCpu').classes()).toContain('topbar__resource--warn')
 
-    const store = useSysmonStore()
-    store.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.95 }))
-    await wrapper.vm.$nextTick()
-    expect(cpuBadgeText(wrapper)).toBe('95%')
-    expect(wrapper.find('#resCpu').classes()).toContain('topbar__resource--danger')
+    expect(wrapper.find('#resCpu').classes()).toContain('topbar__resource--warn')
+    expect(wrapper.find('#resCpu').attributes('title')).toBe('CPU 使用率 75%')
   })
 
   it('CPU 不可用（可用性映射 false / 数值 null）时显示「不可用」', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      cpuUsageRatio: null,
-      metrics: { 'cpu.total': { available: false, reason: 'unsupported' } },
+      metrics: { 'cpu.total': { available: false, reason: 'collect_failed' } },
     }))
     const wrapper = await mountTopbar()
 
@@ -146,36 +177,21 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
 
     expect(memBadgeText(wrapper)).toBe('50%')
     expect(wrapper.find('#resMem').classes()).toContain('topbar__resource--normal')
-    expect(wrapper.find('#resMem').attributes('title')).toBe('内存使用率 50%')
   })
 
-  it('内存徽章按 70%/90% 阈值映射警告/危险状态色', async () => {
-    const GIB = 1024 ** 3
+  it('内存徽章按 70%/90% 阈值映射危险状态色（95% → danger）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       memory: {
-        total_bytes: 100 * GIB,
-        available_bytes: 25 * GIB,
-        used_bytes: 75 * GIB,
-        used_ratio: 0.75,
-        cached_bytes: null,
-        buffers_bytes: null,
-      },
-    }))
-    const wrapper = await mountTopbar()
-    expect(memBadgeText(wrapper)).toBe('75%')
-    expect(wrapper.find('#resMem').classes()).toContain('topbar__resource--warn')
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot({
-      memory: {
-        total_bytes: 100 * GIB,
-        available_bytes: 5 * GIB,
-        used_bytes: 95 * GIB,
+        total_bytes: 100 * 1024 ** 3,
+        available_bytes: 5 * 1024 ** 3,
+        used_bytes: 95 * 1024 ** 3,
         used_ratio: 0.95,
         cached_bytes: null,
         buffers_bytes: null,
       },
     }))
-    await wrapper.vm.$nextTick()
+    const wrapper = await mountTopbar()
+
     expect(memBadgeText(wrapper)).toBe('95%')
     expect(wrapper.find('#resMem').classes()).toContain('topbar__resource--danger')
     expect(wrapper.find('#resMem').attributes('title')).toBe('内存使用率 95%')
@@ -214,7 +230,128 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
   })
 })
 
-describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
+describe('Topbar NTP 徽章（ADR 0048 / 契约 sysmon §2.9 顶栏徽章条）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('位于 CPU / 内存之后、卷徽章之前', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    const items = wrapper.findAll('#resCpu, #resMem, #resNtp, [data-test="topbar-disk-badge"]')
+    expect(items.map(item => item.attributes('id') ?? item.attributes('data-mount')))
+      .toEqual(['resCpu', 'resMem', 'resNtp', '/', '/data', '/home'])
+  })
+
+  it('正常态：显示紧凑带符号毫秒，title 含精确偏差 / 误差界 / 来源 / 上次探测', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    // 12.5 ms → `+13ms`（Math.round 到最近整毫秒；精确值在 title 里）
+    expect(ntpBadgeText(wrapper)).toBe('+13ms')
+    const title = ntpBadge(wrapper).attributes('title') ?? ''
+    expect(title).toContain('+12.5 ms')
+    expect(title).toContain('18.3 ms')
+    expect(title).toContain('ntp.aliyun.com')
+    expect(title).toContain('上次探测 30 秒前')
+    // 误差界 18.3 < 200：不带质量提示
+    expect(title).not.toContain('测量质量')
+  })
+
+  it('偏差按配置阈值定档：100ms warn / 1000ms danger；负偏差按绝对值', async () => {
+    const cases = [
+      { offsetMs: 90, expected: 'topbar__resource--normal' },
+      { offsetMs: 100, expected: 'topbar__resource--warn' },
+      { offsetMs: -350.4, expected: 'topbar__resource--warn' },
+      { offsetMs: 1000, expected: 'topbar__resource--danger' },
+    ] as const
+    for (const { offsetMs, expected } of cases) {
+      // 每轮重建 pinia：store 有 `loaded` 短路，复用实例会让后续轮次看不到新快照
+      setActivePinia(createPinia())
+      vi.clearAllMocks()
+      vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+        clock: { ...SYSMON_CLOCK_LIVE, offset_ms: offsetMs },
+      }))
+      const wrapper = await mountTopbar()
+      expect(ntpBadge(wrapper).classes()).toContain(expected)
+      if (offsetMs < 0) expect(ntpBadgeText(wrapper)).toBe('-350ms')
+      wrapper.unmount()
+    }
+  })
+
+  it('阈值取生效配置（不是写死的 100 / 1000）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    // 配置镜像未到达时按契约默认值 100 / 1000：12.5 ms 落在 normal
+    expect(wrapper.find('#resNtp').classes()).toContain('topbar__resource--normal')
+
+    // 放宽到 warn=200 后同一读数仍是 normal，收紧到 warn=10 后变 warn
+    const sysmon = useSysmonStore()
+    sysmon.applyConfig(makeSysmonConfig({ clock: { offset_warn_ms: 10 } }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('#resNtp').classes()).toContain('topbar__resource--warn')
+  })
+
+  it('误差界越界只在 title 提示「测量质量」，不改变偏差着色（契约 §2.8）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: 20, bound_ms: 400 },
+    }))
+    const wrapper = await mountTopbar()
+
+    expect(wrapper.find('#resNtp').classes()).toContain('topbar__resource--normal')
+    expect(ntpBadge(wrapper).attributes('title')).toContain('测量质量')
+  })
+
+  it('尚未探测：显示 `—`（中性等待态），不得用 0 冒称', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_UNPROBED }))
+    const wrapper = await mountTopbar()
+
+    expect(ntpBadgeText(wrapper)).toBe('—')
+    expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
+    expect(ntpBadge(wrapper).attributes('title')).toContain('尚未探测')
+  })
+
+  it('本轮全部失败：显示「不可用」+ 失败原因汇总，不得用 0 或上一轮结果冒称', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }))
+    const wrapper = await mountTopbar()
+
+    expect(ntpBadgeText(wrapper)).toBe('不可用')
+    expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
+    const title = ntpBadge(wrapper).attributes('title') ?? ''
+    expect(title).toContain('超时未响应')
+    expect(title).toContain('无法解析或连接失败')
+  })
+
+  it('配置关闭（clock = null）：整枚徽章不渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: null }))
+    const wrapper = await mountTopbar()
+
+    expect(ntpBadge(wrapper).exists()).toBe(false)
+  })
+
+  it('快照未到达：显示 `—` 等待态（不渲染「尚未探测」文案）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountTopbar()
+
+    expect(ntpBadgeText(wrapper)).toBe('—')
+    expect(ntpBadge(wrapper).attributes('title')).toContain('等待')
+  })
+
+  it('WS 推送后随快照刷新', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_UNPROBED }))
+    const wrapper = await mountTopbar()
+    expect(ntpBadgeText(wrapper)).toBe('—')
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    await wrapper.vm.$nextTick()
+    expect(ntpBadgeText(wrapper)).toBe('+13ms')
+  })
+})
+
+describe('Topbar 各盘徽章（#75：由快照卷集合驱动，ADR 0048 固定顺序 + 状态点）', () => {
   const GIB = 1024 ** 3
 
   beforeEach(() => {
@@ -222,34 +359,27 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     vi.clearAllMocks()
   })
 
-  it('默认快照：按卷集合渲染徽章，顺序为使用率降序（#122，不依赖发送端顺序）', async () => {
+  it('默认快照：卷按固定顺序（深度升序 → 名称升序）渲染，徽章只给状态点不给百分比', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
 
     const wrapper = await mountTopbar()
 
-    // #127：宽屏默认只直接显示前 2 个卷，第 3 个折叠进「其余 1 个」；展开后校验完整顺序
-    expect(diskBadges(wrapper)).toHaveLength(2)
-    expect(restBadge(wrapper).text()).toContain('其余 1 个')
-    await restBadge(wrapper).trigger('click')
-
     const badges = diskBadges(wrapper)
-    expect(badges).toHaveLength(3)
-    // #122：按使用率降序（62% > 40% > 25%）
-    expect(badges[0].attributes('data-mount')).toBe('/home')
-    expect(badges[0].find('.res-value').text()).toBe('62%')
-    // 色标 data-level 与监控页卷列表同源（<70% → normal）
-    expect(badges[0].attributes('data-level')).toBe('normal')
-
-    expect(badges[1].attributes('data-mount')).toBe('/')
-    expect(badges[1].find('.res-value').text()).toBe('40%')
-    expect(badges[1].attributes('data-level')).toBe('normal')
-
-    expect(badges[2].attributes('data-mount')).toBe('/data')
-    // 标签取挂载点末段（顶栏窄条 overflow:hidden），完整路径在 data-mount / title 里
-    expect(badges[2].find('.res-label').text()).toBe('data')
-    expect(badges[2].find('.res-value').text()).toBe('25%')
-    expect(badges[2].attributes('data-level')).toBe('normal')
-    expect(badges[2].attributes('title')).toBe('/data 使用率 25%')
+    // ADR 0048：/ 深度 0 在最前，/data、/home 同深度按名称升序
+    expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['/', '/data', '/home'])
+    for (const badge of badges) {
+      // 卷徽章不再平铺百分比（ADR 0048）：没有 .res-value，只有状态点 + 短标签
+      expect(badge.find('.res-value').exists()).toBe(false)
+      expect(badge.find('.res-dot').exists()).toBe(true)
+      expect(badge.attributes('data-level')).toBe('normal')
+    }
+    // 完整挂载点与使用率在 title 里
+    expect(badges[0].attributes('title')).toBe('/ 使用率 40%')
+    expect(badges[1].attributes('title')).toBe('/data 使用率 25%')
+    // 标签取挂载点末段（root 保留 `/`），完整路径在 data-mount / title 里
+    expect(badges[0].find('.res-label').text()).toBe('/')
+    expect(badges[1].find('.res-label').text()).toBe('data')
+    expect(badges[2].find('.res-label').text()).toBe('home')
   })
 
   it('卷徽章阈值边界：恰好 70% → warn、恰好 90% → danger（与监控页共用资源等级）', async () => {
@@ -262,9 +392,7 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     const wrapper = await mountTopbar()
 
     const badges = diskBadges(wrapper)
-    // 上限内（2 卷）不折叠
-    expect(restBadge(wrapper).exists()).toBe(false)
-    // 使用率降序：danger(90%) 在前
+    // ADR 0048 固定顺序：同深度按名称升序 → /danger 在 /warn 之前（与使用率无关）
     expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['/danger', '/warn'])
     expect(badges[0].attributes('data-level')).toBe('danger')
     expect(badges[0].classes()).toContain('topbar__resource--danger')
@@ -272,7 +400,7 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
     expect(badges[1].classes()).toContain('topbar__resource--warn')
   })
 
-  it('不硬编码盘符或数量：卷集合随快照变化（Windows 盘符同样按数据渲染）', async () => {
+  it('不硬编码盘符或数量：Windows 盘符同样按固定顺序渲染（C: 在 D: 之前）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
         { mount: 'C:', available: true, total_bytes: 500 * GIB, used_bytes: 250 * GIB, used_ratio: 0.5 },
@@ -283,16 +411,17 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(2)
-    expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['D:', 'C:'])
-    expect(badges[0].find('.res-value').text()).toBe('80%')
-    expect(badges[0].classes()).toContain('topbar__resource--warn')
-    expect(badges[0].attributes('data-level')).toBe('warn')
-    expect(badges[1].find('.res-value').text()).toBe('50%')
-    expect(badges[1].classes()).toContain('topbar__resource--normal')
-    expect(badges[1].attributes('data-level')).toBe('normal')
+    // 两个盘符根同深度 → 按名称升序：系统盘 C: 天然最前（不是「角色」判定，ADR 0048）
+    expect(badges.map(badge => badge.attributes('data-mount'))).toEqual(['C:', 'D:'])
+    expect(badges[0].classes()).toContain('topbar__resource--normal')
+    expect(badges[0].attributes('data-level')).toBe('normal')
+    expect(badges[0].attributes('title')).toBe('C: 使用率 50%')
+    expect(badges[1].classes()).toContain('topbar__resource--warn')
+    expect(badges[1].attributes('data-level')).toBe('warn')
+    expect(badges[1].attributes('title')).toBe('D: 使用率 80%')
   })
 
-  it('单卷不可用：徽章显示「不可用」+ 原因，不得用 0 冒充', async () => {
+  it('单卷不可用：徽章走中性色，title 写不可用原因，不得用 0 冒充', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
         { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
@@ -303,7 +432,6 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(2)
-    expect(badges[1].find('.res-value').text()).toBe('不可用')
     expect(badges[1].classes()).toContain('topbar__resource--unavailable')
     // 不可用卷不套状态色标：没有 data-level，不得用 0/normal 冒充
     expect(badges[1].attributes('data-level')).toBeUndefined()
@@ -326,9 +454,7 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
   it('WS 推送刷新盘徽章（不重新 REST 拉取）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountTopbar()
-    // 默认 3 卷 → 宽屏收敛为 2 个 + 「其余 1 个」（#127）
-    expect(diskBadges(wrapper)).toHaveLength(2)
-    expect(restBadge(wrapper).exists()).toBe(true)
+    expect(diskBadges(wrapper)).toHaveLength(3)
 
     useSysmonStore().applySnapshot(makeSysmonSnapshot({
       volumes: [
@@ -339,16 +465,14 @@ describe('Topbar 各盘徽章（#75：由快照卷集合驱动）', () => {
 
     const badges = diskBadges(wrapper)
     expect(badges).toHaveLength(1)
-    expect(restBadge(wrapper).exists()).toBe(false)
     expect(badges[0].attributes('data-mount')).toBe('/only')
-    expect(badges[0].find('.res-value').text()).toBe('90%')
     expect(badges[0].classes()).toContain('topbar__resource--danger')
     expect(badges[0].attributes('data-level')).toBe('danger')
     expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
   })
 })
 
-describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图标）', () => {
+describe('Topbar 资源折叠（ADR 0048：按可用宽度自适应，服务徽章永不折叠）', () => {
   const GIB = 1024 ** 3
 
   beforeEach(() => {
@@ -356,49 +480,136 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
     vi.clearAllMocks()
   })
 
-  it('3 卷 → 2 个卷徽章 + 「其余 1 个」；点击展开 3 个，再点收起', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    const wrapper = await mountTopbar()
-
-    expect(diskBadges(wrapper)).toHaveLength(2)
-    expect(restBadge(wrapper).text()).toBe('其余 1 个')
-    // 折叠控件用原生 button（可访问性：键盘 Enter/Space 原生支持，不靠 span role=button + 手写键盘处理）
-    expect(restBadge(wrapper).element.tagName).toBe('BUTTON')
-    expect(restBadge(wrapper).attributes('type')).toBe('button')
-    expect(restBadge(wrapper).attributes('aria-expanded')).toBe('false')
-
-    await restBadge(wrapper).trigger('click')
-    expect(diskBadges(wrapper)).toHaveLength(3)
-    expect(restBadge(wrapper).attributes('aria-expanded')).toBe('true')
-    expect(restBadge(wrapper).text()).toBe('收起')
-    // 展开后仍按使用率降序（前 2 个不变，/data 补在末尾）
-    expect(diskBadges(wrapper).map(badge => badge.attributes('data-mount'))).toEqual(['/home', '/', '/data'])
-
-    await restBadge(wrapper).trigger('click')
-    expect(diskBadges(wrapper)).toHaveLength(2)
-    expect(restBadge(wrapper).text()).toBe('其余 1 个')
+  it('折叠算法：放得下就全部显示，放不下从尾部收起并预留溢出入口宽度', () => {
+    // 纯函数单测（组件里的实测宽度在 jsdom 里恒为 0，无法驱动折叠分支）
+    expect(visibleItemCount([60, 60, 60], 300, 14, 34)).toBe(3)
+    // 60*4 + 14*3 = 282 ≤ 300：4 项仍全部可见（不预留溢出入口）
+    expect(visibleItemCount([60, 60, 60, 60], 300, 14, 34)).toBe(4)
+    // 60*5 + 14*4 = 356 > 300 → 预算 300-34-14 = 252：第 4 项后累计 282 > 252，只显示 3 项
+    expect(visibleItemCount([60, 60, 60, 60, 60], 300, 14, 34)).toBe(3)
+    // 连一项都放不下（预算 240-34-14 = 192 < 200 的第一项）
+    expect(visibleItemCount([200, 200], 240, 14, 34)).toBe(0)
+    // 未测量（0）时按「全部可见」——测试环境不会把徽章全折掉
+    expect(visibleItemCount([60, 60], 0, 14, 34)).toBe(2)
+    expect(visibleItemCount([], 300, 14, 34)).toBe(0)
   })
 
-  it('「其余 N 个」title 列出被折叠卷的挂载点与使用率 / 不可用原因', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      volumes: [
-        { mount: '/home', available: true, total_bytes: 100 * GIB, used_bytes: 62 * GIB, used_ratio: 0.62 },
-        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 40 * GIB, used_ratio: 0.4 },
-        { mount: '/data', available: true, total_bytes: 100 * GIB, used_bytes: 25 * GIB, used_ratio: 0.25 },
-        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
-      ],
-    }))
+  it('未测量宽度（jsdom）时全部资源项直接显示，且无溢出入口', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
     const wrapper = await mountTopbar()
 
-    expect(diskBadges(wrapper)).toHaveLength(2)
-    expect(restBadge(wrapper).text()).toBe('其余 2 个')
-    // 「其余 N 个」代表整组卷而非某一卷：不得带 data-mount / data-level 污染按卷比较的映射表
-    expect(restBadge(wrapper).attributes('data-mount')).toBeUndefined()
-    expect(restBadge(wrapper).attributes('data-level')).toBeUndefined()
-    const title = restBadge(wrapper).attributes('title') ?? ''
-    expect(title).toContain('/data 使用率 25%')
-    // 不可用卷排末尾落进「其余」，title 如实写不可用原因（不得用 0 冒充）
-    expect(title).toContain('/backup 卷不可用: no_permission')
+    // 默认快照：CPU / MEM / NTP + 3 卷 = 6 项全部可见
+    expect(wrapper.find('#resCpu').exists()).toBe(true)
+    expect(wrapper.find('#resMem').exists()).toBe(true)
+    expect(ntpBadge(wrapper).exists()).toBe(true)
+    expect(diskBadges(wrapper)).toHaveLength(3)
+    expect(overflowTrigger(wrapper).exists()).toBe(false)
+  })
+
+  it('MD / TD / STG 服务徽章永不折叠：资源项被折叠起来时它们仍在，且不重复渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    for (const id of ['resMd', 'resTd', 'resStg']) {
+      expect(wrapper.find(`#${id}`).exists()).toBe(true)
+      // 服务徽章在资源组行之外：测量行（隐形第二份渲染）里没有它们的副本
+      expect(wrapper.findAll(`#${id}`)).toHaveLength(1)
+    }
+
+    // 真正进入折叠态：资源组行可用宽度 120、每项 60（+14 间距）→ 装不下 6 项，
+    // 尾部若干项收进「▾ N」（与「溢出浮层」用例同一套测量桩）
+    const container = wrapper.find('[data-test="topbar-resource-run"]').element as HTMLElement
+    const measureRow = wrapper.find('[data-test="topbar-resource-measure"]').element as HTMLElement
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 120 })
+    for (const child of Array.from(measureRow.children)) {
+      child.getBoundingClientRect = () => ({ width: 60, height: 20, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
+    }
+    resizeCallback?.()
+    await wrapper.vm.$nextTick()
+
+    // 折叠确实发生了（否则本用例又退化成「没进入折叠态」的恒真断言）
+    expect(overflowTrigger(wrapper).exists()).toBe(true)
+    expect(diskBadges(wrapper).length).toBeLessThan(3)
+
+    // 服务徽章不受折叠影响：仍在、仍只一份、仍带各自的 id 锚点
+    for (const id of ['resMd', 'resTd', 'resStg']) {
+      expect(wrapper.find(`#${id}`).exists()).toBe(true)
+      expect(wrapper.findAll(`#${id}`)).toHaveLength(1)
+    }
+  })
+
+  it('隐形测量行渲染全部资源项、不进可访问性树', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    const measure = wrapper.find('[data-test="topbar-resource-measure"]')
+    expect(measure.exists()).toBe(true)
+    expect(measure.attributes('aria-hidden')).toBe('true')
+    // CPU / MEM / NTP + 3 卷 = 6 项（与可见项同集合）
+    expect(measure.findAll('.topbar__resource')).toHaveLength(6)
+  })
+
+  it('溢出浮层：宽度不足时收起尾部项，点击入口打开浮层逐条列出，再点收起', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    // jsdom 没有布局：ResizeObserver 是可手动触发的桩，给资源组行 / 测量行打上假尺寸
+    const container = wrapper.find('[data-test="topbar-resource-run"]').element as HTMLElement
+    const measureRow = wrapper.find('[data-test="topbar-resource-measure"]').element as HTMLElement
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 300 })
+    for (const child of Array.from(measureRow.children)) {
+      child.getBoundingClientRect = () => ({ width: 60, height: 20, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
+    }
+    resizeCallback?.()
+    await wrapper.vm.$nextTick()
+
+    // 6 项各 60px + 间距 14 → 预算 300-34-14 = 252：第 4 项后累计 282 > 252 → 只显示前 3 项
+    // （CPU / MEM / NTP 直显，3 个卷徽章全部收进浮层）
+    expect(diskBadges(wrapper)).toHaveLength(0)
+    expect(overflowTrigger(wrapper).exists()).toBe(true)
+    expect(overflowTrigger(wrapper).attributes('aria-expanded')).toBe('false')
+    expect(overflowTrigger(wrapper).text()).toContain('3')
+
+    await overflowTrigger(wrapper).trigger('click')
+    expect(overflowPanel()).not.toBeNull()
+    expect(overflowTrigger(wrapper).attributes('aria-expanded')).toBe('true')
+    // 浮层逐条列出被收起的 3 个卷，条目带标题与状态色点
+    const rows = overflowPanel()!.findAll('.topbar__overflow-item')
+    expect(rows).toHaveLength(3)
+    // 浮层显示完整挂载点（徽章的短标签只是窄条妥协）
+    expect(rows.map(row => row.querySelector('.topbar__overflow-label')?.textContent)).toEqual(['/', '/data', '/home'])
+    // 浮层补上读数：徽章本身只有状态点，浮层是「点开看细节」入口
+    expect(rows.map(row => row.querySelector('.topbar__overflow-value')?.textContent))
+      .toEqual(['40%', '25%', '62%'])
+    expect(rows[0].getAttribute('title')).toBe('/ 使用率 40%')
+
+    await overflowTrigger(wrapper).trigger('click')
+    expect(overflowPanel()).toBeNull()
+  })
+
+  it('宽度恢复后折叠项全部回到直显，浮层随之关闭', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+
+    const container = wrapper.find('[data-test="topbar-resource-run"]').element as HTMLElement
+    const measureRow = wrapper.find('[data-test="topbar-resource-measure"]').element as HTMLElement
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 300 })
+    for (const child of Array.from(measureRow.children)) {
+      child.getBoundingClientRect = () => ({ width: 60, height: 20, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) })
+    }
+    resizeCallback?.()
+    await wrapper.vm.$nextTick()
+    await overflowTrigger(wrapper).trigger('click')
+    expect(overflowPanel()).not.toBeNull()
+
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 1000 })
+    resizeCallback?.()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+
+    expect(overflowTrigger(wrapper).exists()).toBe(false)
+    expect(overflowPanel()).toBeNull()
+    expect(diskBadges(wrapper)).toHaveLength(3)
   })
 
   it('宽屏（≥lg）：不渲染状态图标，也不加折叠模式类', async () => {
@@ -407,10 +618,9 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
 
     expect(resourceGauge(wrapper).exists()).toBe(false)
     expect(wrapper.find('#topbarResources').classes()).not.toContain('topbar__resources--gauge')
-    // 宽屏徽章组保持：CPU / 内存仍在，卷按上限收敛
     expect(wrapper.find('#resCpu').exists()).toBe(true)
     expect(wrapper.find('#resMem').exists()).toBe(true)
-    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(diskBadges(wrapper)).toHaveLength(3)
   })
 
   it('窄屏（<lg）：容器加 --gauge 类并渲染单个状态图标，状态色取最差等级', async () => {
@@ -423,15 +633,27 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
     expect(gauge.exists()).toBe(true)
     // 既有 CSS 的状态色 / 闪烁按 `.topbar__gauge ... svg` 选择器书写，因此必须是内联 svg
     expect(gauge.find('svg').exists()).toBe(true)
-    // CPU 95% 为 CPU / 内存 / 卷中的最差等级
+    // CPU 95% 为 CPU / 内存 / 时钟 / 卷中的最差等级
     expect(gauge.classes()).toContain('topbar__resource--danger')
     // title 汇总各资源读数
     const title = gauge.attributes('title') ?? ''
     expect(title).toContain('CPU 使用率 95%')
     expect(title).toContain('内存使用率 50%')
-    expect(title).toContain('/home 使用率 62%')
-    // 窄屏不渲染「其余 N 个」点击控件（它只属于宽屏的折叠/展开）
-    expect(restBadge(wrapper).exists()).toBe(false)
+    expect(title).toContain('/ 使用率 40%')
+    // 窄屏不渲染溢出入口（它只属于宽屏的折叠）
+    expect(overflowTrigger(wrapper).exists()).toBe(false)
+  })
+
+  it('窄屏状态图标：NTP 偏差 danger 参与「取最差」，时钟问题不被折叠掉', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      cpuUsageRatio: 0.2,
+      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: 1500 },
+    }))
+    setWidth(800)
+    const wrapper = await mountTopbar()
+
+    expect(resourceGauge(wrapper).classes()).toContain('topbar__resource--danger')
+    expect(resourceGauge(wrapper).attributes('title')).toContain('时钟偏差')
   })
 
   it('窄屏状态图标：任一卷达到 warn 阈值即为 warn（与监控页共用 resourceLevel）', async () => {
@@ -472,7 +694,7 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountTopbar()
     expect(resourceGauge(wrapper).exists()).toBe(false)
-    expect(diskBadges(wrapper)).toHaveLength(2)
+    expect(diskBadges(wrapper)).toHaveLength(3)
 
     setWidth(800)  // xl → md（窄屏）
     await wrapper.vm.$nextTick()
@@ -483,23 +705,7 @@ describe('Topbar 顶栏密度（#127：≥lg 卷徽章收敛 / <lg 单状态图�
     await wrapper.vm.$nextTick()
     expect(wrapper.find('#topbarResources').classes()).not.toContain('topbar__resources--gauge')
     expect(resourceGauge(wrapper).exists()).toBe(false)
-    expect(diskBadges(wrapper)).toHaveLength(2)
-  })
-
-  it('展开态跨断点复位：宽屏展开全部 → 窄屏 → 回宽屏，恢复「前 2 + 其余 N 个」默认密度', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    const wrapper = await mountTopbar()
-    await restBadge(wrapper).trigger('click')
     expect(diskBadges(wrapper)).toHaveLength(3)
-
-    setWidth(800)  // → 窄屏
-    await wrapper.vm.$nextTick()
-    setWidth(1200)  // → 宽屏
-    await wrapper.vm.$nextTick()
-
-    // 展开态不跨断点保留：回到宽屏是默认密度（AC「不持久化」）
-    expect(diskBadges(wrapper)).toHaveLength(2)
-    expect(restBadge(wrapper).text()).toBe('其余 1 个')
   })
 })
 

@@ -12,8 +12,8 @@
  *
  * 时长（秒 → 可读时长）于 #142 迁入本模块：sparkline 的「实际覆盖时长」与历史视图的
  * 「实际覆盖最近 X」是同一个换算，两处各写一份必然在改口径时漂移。
- * 例外：`MonitorView.formatAge` 的「文件年龄」是向下取整的整档口径（多久以前），与覆盖时长的
- * 展示精度不同，不共用本函数。
+ * 「多久以前」口径由 {@link formatAge} 承担（页文件年龄与顶栏时钟的上次探测时间共用），
+ * 与覆盖时长不是同一件事（前者向下取整到整档，后者带小数）。
  *
  * 单位与精度（写在契约外的展示约定，改这里就是改全部页面）：
  * - 字节：IEC 1024 进制 `B` / `KiB` / `MiB` / `GiB` / `TiB`；`B` 档取整、其余档固定 1 位小数。
@@ -132,6 +132,40 @@ export function formatSignedMilliseconds(milliseconds: number | null | undefined
   if (!isFiniteNumber(milliseconds)) return UNAVAILABLE_TEXT
   const text = formatMilliseconds(milliseconds)
   return milliseconds > 0 ? `+${text}` : text
+}
+
+/**
+ * **紧凑**带符号毫秒量（顶栏 NTP 徽章，ADR 0048）：取整 + 无空格单位（`+12ms` / `-3ms` / `0ms`）。
+ *
+ * 与 {@link formatSignedMilliseconds} 的取舍**刻意不同**：顶栏是 32px 常驻窄条，`+12.3 ms`
+ * 比 CPU 徽章宽一倍多，而偏差判据是 100ms / 1000ms 档（整数分辨率足够）；1 位小数的精确值
+ * 仍在徽章的悬停 title 里（那里用 `formatSignedMilliseconds`，不丢精度）。这与「顶栏整数百分比」
+ * 是同一类取舍（见本文件头「明确的例外」与组件文档）。取整用 `Math.round`，四舍五入到最近整毫秒。
+ */
+export function formatCompactSignedMilliseconds(milliseconds: number | null | undefined): string {
+  if (!isFiniteNumber(milliseconds)) return UNAVAILABLE_TEXT
+  const rounded = Math.round(milliseconds)
+  // 恰好 -0.4 取整后是 0，「负数但显示 0」是误导，符号只跟取整后的值走
+  const text = `${Math.abs(rounded)}ms`
+  if (rounded > 0) return `+${text}`
+  if (rounded < 0) return `-${text}`
+  return text
+}
+
+/**
+ * 「多久以前」口径（秒 → 整档时长）：`30 秒` / `8 分钟` / `2 小时` / `1 天`。
+ *
+ * 向下取整的整档口径，**不给小数**：它回答的是「大致多久之前」，不是精确时长；四舍五入会
+ * 把 14 分 59 秒说成「15 分钟」（与 {@link formatDuration} 的分钟向下取整同一理由）。
+ * 由监控页（页文件年龄）与顶栏（时钟上次探测时间）共用，**不得**在视图里各写一份。
+ */
+export function formatAge(seconds: number | null | undefined): string {
+  if (!isFiniteNumber(seconds) || seconds < 0) return UNAVAILABLE_TEXT
+  const total = Math.floor(seconds)
+  if (total < 60) return `${total} 秒`
+  if (total < 3_600) return `${Math.floor(total / 60)} 分钟`
+  if (total < 86_400) return `${Math.floor(total / 3_600)} 小时`
+  return `${Math.floor(total / 86_400)} 天`
 }
 
 /** 温度：固定 1 位 + `°C`（`45.5 °C`）；调用方只在该指标可用时传入有效值 */

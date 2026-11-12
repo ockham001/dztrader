@@ -524,17 +524,18 @@ describe('useSysmonStore 卷 / 共享内存目录 computed（#75，可用性驱�
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot())
 
-    // #122：按使用率降序、同值按挂载点升序，不依赖发送端顺序（payload 顺序为 /、/data、/home）
-    expect(store.volumes.map(volume => volume.mount)).toEqual(['/home', '/', '/data'])
+    // ADR 0048：固定顺序（挂载深度升序 → 同深度按挂载点升序），根挂载点恒在最前；
+    // 与 payload 顺序（/、/data、/home）和使用率全部无关
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/', '/data', '/home'])
     expect(store.volumes[0]).toEqual({
-      mount: '/home',
+      mount: '/',
       available: true,
-      total_bytes: 50 * GIB,
-      used_bytes: 31 * GIB,
-      used_ratio: 0.62,
+      total_bytes: 100 * GIB,
+      used_bytes: 40 * GIB,
+      used_ratio: 0.4,
     })
-    expect(store.volumes[1].used_ratio).toBe(0.4)
-    expect(store.volumes[2].used_ratio).toBe(0.25)
+    expect(store.volumes[1].used_ratio).toBe(0.25)
+    expect(store.volumes[2].used_ratio).toBe(0.62)
 
     expect(store.shmDirInfo).toEqual({
       path: '/srv/dztrader/shm',
@@ -600,7 +601,7 @@ describe('useSysmonStore 卷 / 共享内存目录 computed（#75，可用性驱�
       ],
     }))
 
-    // #122：按使用率降序 —— / 钳制后为 100%，排在 10% 的 /data 之前
+    // ADR 0048 固定顺序：/ 深度 0 在最前（与它钳制后的 100% 无关）
     expect(store.volumes.map(volume => volume.mount)).toEqual(['/', '/data'])
     const root = store.volumes[0]
     expect(root.used_bytes).toBe(100 * GIB)
@@ -650,19 +651,48 @@ describe('useSysmonStore 卷 / 共享内存目录 computed（#75，可用性驱�
     ])
   })
 
-  it('#122 排序：按使用率降序、同值按挂载点升序，不依赖发送端顺序', () => {
+  it('ADR 0048 排序：挂载深度升序 → 同深度按挂载点升序，与使用率 / 可读性无关', () => {
     const store = useSysmonStore()
     store.applySnapshot(makeSysmonSnapshot({
       volumes: [
-        { mount: '/b-tie', available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
-        { mount: '/low', available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
-        { mount: '/a-tie', available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
+        // 使用率刻意与目标顺序相反：固定顺序不看使用率
+        { mount: '/b-tie', available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
+        { mount: '/low', available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
+        { mount: '/a-tie', available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
         { mount: '/high', available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
       ],
     }))
 
-    // 排序只看使用率与挂载点
-    expect(store.volumes.map(volume => volume.mount)).toEqual(['/high', '/a-tie', '/b-tie', '/low'])
+    // 同深度（都是 1 段）→ 按挂载点字符串升序
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/a-tie', '/b-tie', '/high', '/low'])
+  })
+
+  it('ADR 0048 排序：根挂载点恒在最前，不可读卷按同一规则参与（不排末尾）', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/home', available: true, total_bytes: 100 * GIB, used_bytes: 10 * GIB, used_ratio: 0.1 },
+        { mount: '/', available: true, total_bytes: 100 * GIB, used_bytes: 90 * GIB, used_ratio: 0.9 },
+        { mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' },
+        { mount: '/data', available: true, total_bytes: 100 * GIB, used_bytes: 50 * GIB, used_ratio: 0.5 },
+      ],
+    }))
+
+    // 深度 1 的三个卷按名称升序：/backup（不可读，仍参与排序）/ /data / /home
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['/', '/backup', '/data', '/home'])
+  })
+
+  it('ADR 0048 排序：Windows 盘符根（C: 与 D:）深度 0、盘符下路径更深', () => {
+    const store = useSysmonStore()
+    store.applySnapshot(makeSysmonSnapshot({
+      volumes: [
+        { mount: 'D:', available: true, total_bytes: 100 * GIB, used_bytes: 80 * GIB, used_ratio: 0.8 },
+        { mount: 'C:', available: true, total_bytes: 100 * GIB, used_bytes: 20 * GIB, used_ratio: 0.2 },
+      ],
+    }))
+
+    // 两个盘符根同深度 → 按名称升序：C: 在 D: 之前（系统盘天然最前，与「角色」无关）
+    expect(store.volumes.map(volume => volume.mount)).toEqual(['C:', 'D:'])
   })
 
   it('#122 无容量挂载分池：容量不可读与 total=0 的卷单列，正文列表只剩可读容量的卷', () => {

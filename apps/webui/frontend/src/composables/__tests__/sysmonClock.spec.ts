@@ -4,6 +4,8 @@ import {
   CLOCK_DEFAULT_MANUAL_MIN_INTERVAL_SEC,
   CLOCK_DEFAULT_OFFSET_ERROR_MS,
   CLOCK_DEFAULT_OFFSET_WARN_MS,
+  CLOCK_BADGE_LABEL,
+  clockBadge,
   clockBoundAlarm,
   clockDomainState,
   clockFailureSummary,
@@ -191,9 +193,9 @@ describe('clockProbeAgeSec：上次探测距今的秒数', () => {
     expect(clockProbeAgeSec(nowMs, nowMs)).toBe(0)
   })
 
-  it('本模块只算秒数：「多久以前」的文案复用视图既有 formatAge（不复制第二份实现）', () => {
-    // 这里锁住「只算秒」，文案口径由 MonitorView 的 `formatAge` 承担（视图侧断言见
-    // MonitorClockCard.spec.ts 的「显示带符号偏差…上次探测相对时间」用例）。
+  it('本模块只算秒数：「多久以前」的文案复用共享模块 formatAge（不复制第二份实现）', () => {
+    // 这里锁住「只算秒」，文案口径由 `composables/format.formatAge` 承担（顶栏 NTP 徽章与
+    // 监控页时间卡片共用同一份实现）。
     expect(clockProbeAgeSec(nowMs - 31_000, nowMs)).toBe(31)
     expect(clockProbeAgeSec(nowMs - 60_000, nowMs)).toBe(60)
     expect(clockProbeAgeSec(nowMs - 90_000, nowMs)).toBe(90)
@@ -218,5 +220,73 @@ describe('sortClockDaemons：同步服务列表展示序', () => {
     const sorted = sortClockDaemons(input)
     expect(input.map(daemon => daemon.name)).toEqual(['b', 'a'])
     expect(sorted.map(daemon => daemon.name)).toEqual(['a', 'b'])
+  })
+})
+
+
+describe('clockBadge：顶栏 NTP 徽章展示模型（ADR 0048 / 契约 §2.9 顶栏徽章条）', () => {
+  const THRESHOLDS = resolveClockThresholds(null)  // 契约默认 100 / 1000 / 200
+
+  it('快照未到达 → `—` + 中性等级 + 等待说明（不看域，因为此时连「是否关闭」都不知道）', () => {
+    for (const clock of [null, SYSMON_CLOCK_LIVE, SYSMON_CLOCK_UNPROBED]) {
+      const badge = clockBadge(clock, THRESHOLDS, false, null)
+      expect(badge).toEqual({ text: '—', level: null, title: '时钟偏差（等待 dzsysmon 快照）' })
+    }
+  })
+
+  it('配置关闭（clock = null）→ 返回 null，整枚徽章不渲染', () => {
+    expect(clockBadge(null, THRESHOLDS, true, null)).toBeNull()
+  })
+
+  it('尚未探测 → `—` + 中性等级，title 带「尚未探测」说明（不得用 0 冒充）', () => {
+    expect(clockBadge(SYSMON_CLOCK_UNPROBED, THRESHOLDS, true, null)).toEqual({
+      text: '—',
+      level: null,
+      title: '尚未探测：dzsysmon 尚未完成首轮 NTP 探测（进程启动后会立即探测一次）',
+    })
+  })
+
+  it('全部失败 → 「不可用」+ 中性等级 + 失败原因汇总 + 上次探测时间', () => {
+    const badge = clockBadge(SYSMON_CLOCK_ALL_FAILED, THRESHOLDS, true, '30 秒')
+    expect(badge?.text).toBe('不可用')
+    expect(badge?.level).toBeNull()
+    expect(badge?.title).toContain('超时未响应')
+    expect(badge?.title).toContain('上次探测 30 秒前')
+    expect(badge?.text).not.toContain('0')
+  })
+
+  it('正常态 → 紧凑带符号毫秒 + 按 |offset| 定档 + 完整 title', () => {
+    const badge = clockBadge(SYSMON_CLOCK_LIVE, THRESHOLDS, true, '30 秒')
+    expect(badge?.text).toBe('+13ms')
+    expect(badge?.level).toBe('normal')
+    expect(badge?.title).toContain('+12.5 ms')
+    expect(badge?.title).toContain('误差界 18.3 ms')
+    expect(badge?.title).toContain('ntp.aliyun.com')
+    expect(badge?.title).toContain('stratum 2')
+    expect(badge?.title).toContain('上次探测 30 秒前')
+    expect(badge?.title).not.toContain('测量质量')
+  })
+
+  it('阈值由调用方传入（配置驱动）：同一读数在不同阈值下档位不同', () => {
+    const live = { ...SYSMON_CLOCK_LIVE, offset_ms: 150 }
+    expect(clockBadge(live, { warn_ms: 200, error_ms: 1000, bound_alarm_ms: 400 }, true, null)?.level).toBe('normal')
+    expect(clockBadge(live, { warn_ms: 100, error_ms: 1000, bound_alarm_ms: 400 }, true, null)?.level).toBe('warn')
+    expect(clockBadge(live, { warn_ms: 100, error_ms: 150, bound_alarm_ms: 400 }, true, null)?.level).toBe('danger')
+  })
+
+  it('负偏差按绝对值定档，文本保留负号（方向是语义的一部分）', () => {
+    const badge = clockBadge({ ...SYSMON_CLOCK_LIVE, offset_ms: -1200 }, THRESHOLDS, true, null)
+    expect(badge?.level).toBe('danger')
+    expect(badge?.text).toBe('-1200ms')
+  })
+
+  it('误差界越界只进 title 的「测量质量」提示，不改变偏差着色（契约 §2.8）', () => {
+    const badge = clockBadge({ ...SYSMON_CLOCK_LIVE, offset_ms: 20, bound_ms: 500 }, THRESHOLDS, true, null)
+    expect(badge?.level).toBe('normal')
+    expect(badge?.title).toContain('测量质量')
+  })
+
+  it('徽章标签是 NTP（与 CPU / MEM 同层缩写）', () => {
+    expect(CLOCK_BADGE_LABEL).toBe('NTP')
   })
 })

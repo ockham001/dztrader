@@ -423,8 +423,8 @@ describe('时间卡片 · 不越界到顶栏', () => {
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="monitor-clock"]').exists()).toBe(true)
-    // 顶栏的 NTP 徽章已删除且不得回归（Topbar.spec.ts 的假数字断言保持有效、本票不改它）：
-    // 卡片只在监控页实时网格内，本视图可见文本里不含任何 NTP 文案。
+    // 顶栏的常驻 NTP 徽章属 Topbar.spec.ts 的覆盖范围（ADR 0048）：本用例只锁
+    // 「卡片不越界到顶栏」——监控页视图自己的可见文本里不含 NTP 文案，两处互不吃掉对方。
     expect(wrapper.text()).not.toContain('NTP')
   })
 

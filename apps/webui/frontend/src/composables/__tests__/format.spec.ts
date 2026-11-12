@@ -10,6 +10,8 @@ import {
   formatFrequency,
   formatIops,
   formatLatency,
+  formatAge,
+  formatCompactSignedMilliseconds,
   formatMilliseconds,
   formatNumberAuto,
   formatPercent,
@@ -147,6 +149,38 @@ describe('formatMilliseconds / formatSignedMilliseconds：时钟偏差与误差�
     expect(formatSignedMilliseconds(0)).toBe('0.0 ms')
     expect(formatSignedMilliseconds(null)).toBe(UNAVAILABLE_TEXT)
     expect(formatSignedMilliseconds(Number.NEGATIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
+  })
+
+  it('紧凑带符号毫秒（顶栏 NTP 徽章，ADR 0048）：取整 + 无空格单位，符号跟取整后的值走', () => {
+    expect(formatCompactSignedMilliseconds(12.34)).toBe('+12ms')
+    expect(formatCompactSignedMilliseconds(12.5)).toBe('+13ms')  // Math.round（.5 向上）
+    expect(formatCompactSignedMilliseconds(-12.6)).toBe('-13ms')
+    expect(formatCompactSignedMilliseconds(0)).toBe('0ms')
+    // 恰好 ±0.4 取整后是 0：不得显示成「-0ms」这种负零
+    expect(formatCompactSignedMilliseconds(-0.4)).toBe('0ms')
+    expect(formatCompactSignedMilliseconds(0.4)).toBe('0ms')
+    expect(formatCompactSignedMilliseconds(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatCompactSignedMilliseconds(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatAge：「多久以前」口径（页文件年龄 / 时钟上次探测共用）', () => {
+  it('整档向下取整：<60 秒按秒、<1 小时按分钟、<1 天按小时、其余按天', () => {
+    expect(formatAge(0)).toBe('0 秒')
+    expect(formatAge(30)).toBe('30 秒')
+    expect(formatAge(59.9)).toBe('59 秒')
+    expect(formatAge(60)).toBe('1 分钟')
+    expect(formatAge(899)).toBe('14 分钟')  // 14 分 59 秒不得说成 15 分钟
+    expect(formatAge(3_600)).toBe('1 小时')
+    expect(formatAge(86_399)).toBe('23 小时')
+    expect(formatAge(86_400)).toBe('1 天')
+    expect(formatAge(90_000)).toBe('1 天')
+  })
+
+  it('非法值返回不可用占位（负时长没有意义）', () => {
+    expect(formatAge(-1)).toBe(UNAVAILABLE_TEXT)
+    expect(formatAge(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatAge(Number.NaN)).toBe(UNAVAILABLE_TEXT)
   })
 })
 

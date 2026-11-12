@@ -53,13 +53,36 @@ function toNonNegativeNumber(value: unknown): number | null {
 }
 
 /**
- * 卷是否「容量可读且总量 > 0」（#122）：唯一分类口径，正文卷列表与无容量挂载组、
- * 以及 `volumes` 的排序都经由它判断，避免三处各自重推 `used_ratio === null`
- * 而在改动时漂移。`used_ratio = null` 恰好覆盖两种事实：`available=false`（读不到）
- * 与 `total_bytes = 0`（总量为 0 的合法事实）。
+ * 卷是否「容量可读且总量 > 0」（#122）：唯一分类口径，正文卷列表与无容量挂载组都经由它判断，
+ * 避免两处各自重推 `used_ratio === null` 而在改动时漂移。`used_ratio = null` 恰好覆盖两种事实：
+ * `available=false`（读不到）与 `total_bytes = 0`（总量为 0 的合法事实）。排序**不再**用它
+ * （ADR 0048：展示序是固定顺序，与可读性无关）。
  */
 function hasReadableCapacity(volume: SysmonVolumeInfo): boolean {
   return volume.used_ratio !== null
+}
+
+/**
+ * 卷的展示序（ADR 0048，取代 #122 的使用率降序）：**固定顺序** —— 挂载点层级深度升序，
+ * 同深度按挂载点字符串升序。根挂载点（`/`、`C:\`）深度为 0，因此系统盘恒在最前。
+ *
+ * 为什么不用使用率：每 5 秒推送一次就重排一次，同一块盘会在徽章之间来回换位，扫读时
+ * 位置不稳定；`df` / Explorer / Netdata / Zabbix / bottom 全部按固定顺序排，没有一家按
+ * 使用率或「角色」（ADR 0048 记录了否掉 `volumes[].role` 的理由：跨平台无法可靠判定）。
+ * 顺序因此与 `used_ratio`、可读性**完全无关**：不可读卷也按同一规则参与排序。
+ */
+function volumeDepth(mount: string): number {
+  // 统一分隔符并去掉尾部分隔符：`/` → ``、`C:\` → `C:`
+  const normalized = mount.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!normalized) return 0
+  // 盘符根（`C:`）深度 0；盘符下的路径先剥掉盘符前缀再数层级（`C:\Users` → 1）
+  const driveMatch = /^([A-Za-z]):(.*)$/.exec(normalized)
+  if (driveMatch) {
+    const rest = driveMatch[2]
+    return rest ? rest.split('/').filter(Boolean).length : 0
+  }
+  // POSIX 路径：开头的 `/` 不是层级，之后每段 +1（`/home` → 1）
+  return normalized.split('/').filter(Boolean).length
 }
 
 /**
@@ -326,8 +349,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
    * 净化规则：mount 为空串剔除；`used_bytes` 钳制到 `[0, total]`；`used_ratio` 按
    * `used_bytes / total_bytes` 重算（不信任 payload 派生值，保证字节与百分比一致），
    * `total_bytes = 0`（异常/特殊卷）时为 null。
-   * 排序（#122）：按 `used_ratio` 降序、同值按挂载点升序，不依赖发送端顺序；比率为 null
-   * （容量读不到 / total=0）的一律排在末尾并按挂载点升序。顶栏徽章因此与页内同序。
+   * 排序（ADR 0048）：**固定顺序** —— 挂载深度升序、同深度按挂载点升序（根挂载点恒在最前），
+   * 与使用率 / 可读性无关。顶栏徽章与监控页正文因此同序，且任意两帧之间不换位。
    */
   const volumes = computed<SysmonVolumeInfo[]>(() => {
     const s = snapshot.value
@@ -373,14 +396,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
       })
     }
     return result.sort((a, b) => {
-      const aReadable = hasReadableCapacity(a)
-      const bReadable = hasReadableCapacity(b)
-      // 容量不可读 / 总量为 0 的一律排在末尾，与正文卷列表的折叠口径一致
-      if (aReadable !== bReadable) return aReadable ? -1 : 1
-      // 同组内：可读的按使用率降序，不可读的（同组）按挂载点升序
-      const aRatio = a.used_ratio
-      const bRatio = b.used_ratio
-      if (aRatio !== null && bRatio !== null && aRatio !== bRatio) return bRatio - aRatio
+      const depthDelta = volumeDepth(a.mount) - volumeDepth(b.mount)
+      if (depthDelta !== 0) return depthDelta
       return a.mount.localeCompare(b.mount)
     })
   })
