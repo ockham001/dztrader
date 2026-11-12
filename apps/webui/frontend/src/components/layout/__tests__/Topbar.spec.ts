@@ -179,7 +179,7 @@ describe('Topbar 资源徽章（契约 sysmon 实时快照）', () => {
     expect(wrapper.find('#resMem').classes()).toContain('topbar__resource--normal')
   })
 
-  it('内存徽章按 70%/90% 阈值映射警告/危险状态色（95% → danger、75% → warn）', async () => {
+  it('内存徽章按 70%/90% 阈值映射危险状态色（95% → danger）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       memory: {
         total_bytes: 100 * 1024 ** 3,

@@ -28,7 +28,7 @@ withDefaults(defineProps<{
   domId?: string
   /** 卷挂载点（`disk` 形态专用；同时写进 `data-mount` 供跨组件断言） */
   mount?: string
-  /** `data-test` 标记（卷徽章 / 资源项） */
+  /** `data-test` 标记（卷徽章） */
   testId?: string
 }>(), { value: '', mount: undefined, domId: undefined, testId: undefined })
 </script>

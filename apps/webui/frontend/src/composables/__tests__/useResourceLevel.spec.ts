@@ -3,6 +3,7 @@ import {
   RESOURCE_DANGER_RATIO,
   RESOURCE_WARN_RATIO,
   resourceLevel,
+  resourceLevelClass,
   thresholdLevel,
   worstResourceLevel,
 } from '../useResourceLevel'
@@ -67,5 +68,17 @@ describe('worstResourceLevel 多读数取最差等级', () => {
   it('空集合 / 全部 null → null（调用方决定中性展示，不得默认 normal）', () => {
     expect(worstResourceLevel([])).toBeNull()
     expect(worstResourceLevel([null, null])).toBeNull()
+  })
+})
+
+describe('resourceLevelClass 等级 → CSS 修饰类（顶栏徽章的唯一映射）', () => {
+  it('三档各自映射到 layout.css 的修饰类', () => {
+    expect(resourceLevelClass('normal')).toBe('topbar__resource--normal')
+    expect(resourceLevelClass('warn')).toBe('topbar__resource--warn')
+    expect(resourceLevelClass('danger')).toBe('topbar__resource--danger')
+  })
+
+  it('null（不可判读）走中性 unavailable 类，不得落到 normal', () => {
+    expect(resourceLevelClass(null)).toBe('topbar__resource--unavailable')
   })
 })

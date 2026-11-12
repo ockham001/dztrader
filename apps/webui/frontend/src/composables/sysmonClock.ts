@@ -213,7 +213,7 @@ export function clockProbeAgeSec(lastProbeUnixMs: number, nowUnixMs: number): nu
 }
 
 /**
- * 同步服务列表的展示序（`running` 优先，再按名称升序）：先看「谁在管」，再看看到齐了哪些。
+ * 同步服务列表的展示序（`running` 优先，再按名称升序）：先看「谁在管」，再看到齐了哪些。
  * 不按 payload 顺序——发送端各平台的枚举顺序不同（Linux 进程表扫描 / Windows 单条查询）。
  */
 export function sortClockDaemons<T extends { name: string; running: boolean }>(daemons: readonly T[]): T[] {
