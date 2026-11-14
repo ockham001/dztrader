@@ -427,9 +427,23 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // ≥xl（1280）：三列
     expect(mediaBlock('@media (min-width: 1280px)'))
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
-    // <md（767.98）：单列
+    // <md（767.98）：单列；必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
+    // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
     expect(mediaBlock('@media (max-width: 767.98px)'))
-      .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*1fr/)
+      .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  })
+
+  it('CPU 内网格列数与面板数一致：显式列数，不用 auto-fit（#321）', () => {
+    // auto-fit 会被第 4 个跨列面板（grid-column: 1/-1）废掉空轨折叠，列数随宽度无限增长
+    const cpuStart = source.indexOf('.monitor-view__cpu {')
+    expect(cpuStart, '缺少 .monitor-view__cpu 基础规则').toBeGreaterThanOrEqual(0)
+    const cpuOpen = source.indexOf('{', cpuStart)
+    const cpuClose = source.indexOf('}', cpuOpen)
+    const cpuBase = source.slice(cpuOpen, cpuClose)
+    expect(cpuBase).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    expect(cpuBase).not.toContain('auto-fit')
+    // ≥xl 三列（与页面网格同口径）
+    expect(source).toMatch(/@media \(min-width: 1280px\) \{\s*\.monitor-view__cpu\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
   })
 
   it('不使用容器查询（既有白名单门禁只扫 @media，引入 @container 会绕过防野断点检查）', () => {

@@ -923,7 +923,9 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               :data-mount="volume.mount"
               :data-level="volumeLevel(volume)"
             >
-              <span class="monitor-view__list-label">{{ volume.mount }}</span>
+              <!-- 挂载点是本行唯一无法从别处恢复的信息：窄列下允许换行显示全路径，
+                   并用 title 兜底（768 双列下曾把 /mnt/nas/* 三条截成同一前缀且全页无处可查，#321）。 -->
+              <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
               <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
               <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
             </li>
@@ -951,7 +953,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 data-test="monitor-disk-zero-volume"
                 :data-mount="volume.mount"
               >
-                <span class="monitor-view__list-label">{{ volume.mount }}</span>
+                <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
                 <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
                 <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE_TEXT }}</span>
                 <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
@@ -1671,10 +1673,21 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 }
 
 /* ---- CPU 区块（#72）：总量 / 负载 / 速率面板 + 每核网格 ---- */
+/* 显式列数而不是 auto-fit：第 4 个面板带 `grid-column: 1 / -1`，而 auto-fit 只有在
+   没有任何子项跨越隐式轨道时才折叠空轨——跨列项让折叠永不触发，于是列数随容器宽度
+   无限增长（实测 1440 五轨 / 1920 七轨 / 2560 九轨，首行右侧分别空出 457 / 927 / 1508px）。
+   列数与页面网格同一口径：基础两列、≥xl 三列（#321）。 */
 .monitor-view__cpu {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacer-16) var(--spacer-24);
+}
+
+/* 必须排在基础规则之后：同特异性下只按出现顺序取胜，与是否在 @media 内无关。 */
+@media (min-width: 1280px) {
+  .monitor-view__cpu {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .monitor-view__cpu-panel {
@@ -1875,11 +1888,24 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   white-space: nowrap;
 }
 
+/* 挂载点例外：它是本行唯一不可从别处恢复的信息，窄列下宁可换行也不省略（#321）。
+   其余 list-label（"可用" / "缓存" / "使用率" 等固定短词）保持单行省略。 */
+.monitor-view__list-label--mount {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .monitor-view__list-value {
   color: var(--text-default);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   font-variant-numeric: tabular-nums;
+  /* 长路径（如共享内存目录）没有断行点，会撑破 flex 行并把整页撑出横向滚动条：
+     `overflow-wrap: anywhere` 同时收窄 min-content（`break-word` 不会），
+     因此它是「窄屏不溢出」的必要条件，不是可选的美化（#321）。 */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .monitor-view__list-meta {
@@ -1896,7 +1922,9 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   }
 
   .monitor-view__grid {
-    grid-template-columns: 1fr;
+    /* 用 minmax(0, 1fr) 而非裸 1fr：裸 1fr 的最小轨道是 auto，列会被卡片内最长
+       不可断行内容（长路径）顶宽，任何未来的长 token 都会复现横向溢出（#321）。 */
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .monitor-view__card--wide {
@@ -1908,7 +1936,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   }
 
   .monitor-view__cpu {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .monitor-view__cpu-panel--wide {
