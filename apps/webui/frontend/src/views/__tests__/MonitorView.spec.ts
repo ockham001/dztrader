@@ -707,6 +707,24 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     expect(wrapper.find('[data-test="monitor-disk-zero-volumes"]').exists()).toBe(false)
   })
 
+  it('#321 卷行挂载点带 title 且允许换行：窄列下信息不丢失', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/mnt/nas/shared', available: true, total_bytes: 100 * GIB, used_bytes: 30 * GIB, used_ratio: 0.3 },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const row = wrapper.find('[data-test="monitor-disk-volume"]')
+    expect(row.exists()).toBe(true)
+    const label = row.find('.monitor-view__list-label--mount')
+    // 完整挂载点必须能从 title 读回（768 双列下曾被截成同一前缀且全页无处可查）
+    expect(label.attributes('title')).toBe('/mnt/nas/shared')
+    expect(label.text()).toBe('/mnt/nas/shared')
+    // 文本内容不变：title 是兜底，不是替代
+    expect(row.find('.monitor-view__list-label').text()).toBe('/mnt/nas/shared')
+  })
+
   it('卷使用率色标：0.69 → normal、0.70 → warn、0.90 → danger（边界含，百分比文本照常）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
