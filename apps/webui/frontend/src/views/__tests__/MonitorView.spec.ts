@@ -1370,10 +1370,10 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     const tab = wrapper.find('[data-test="monitor-tab-config"]')
     expect(tab.exists()).toBe(true)
     expect(tab.text()).toBe('配置')
-    expect(tab.attributes('aria-selected')).toBe('false')
+    expect(tab.attributes('aria-pressed')).toBe('false')
 
     await tab.trigger('click')
-    expect(tab.attributes('aria-selected')).toBe('true')
+    expect(tab.attributes('aria-pressed')).toBe('true')
     expect(wrapper.find('[data-test="sysmon-config-tab"]').exists()).toBe(true)
     // 切换只换渲染来源：实时网格不再渲染（store 未卸载，镜像与 WS 连接保持）
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
@@ -1382,6 +1382,33 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     await wrapper.find('[data-test="monitor-tab-realtime"]').trigger('click')
     expect(wrapper.find('[data-test="sysmon-config-tab"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(true)
+  })
+
+  it('视图切换是分段按钮组而非 ARIA tabs（#323）：无 role=tablist/tab、无 aria-controls，选中态用 aria-pressed', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    // 声明 tabs 语义却不提供 tabpanel / aria-controls / 方向键 / roving tabindex，
+    // 比不做更糟（读屏按 tabs 报语义、键盘按按钮走）。退回普通按钮组。
+    expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
+    expect(wrapper.find('[role="tab"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-controls]').exists()).toBe(false)
+    expect(wrapper.find('[aria-selected]').exists()).toBe(false)
+
+    const switchEl = wrapper.find('[data-test="monitor-view-switch"]')
+    expect(switchEl.element.tagName).toBe('DIV')
+    // 三个按钮都在 Tab 序里（普通按钮组语义）且都带 aria-pressed（切换按钮的推荐形态）
+    for (const mode of ['realtime', 'history', 'config']) {
+      const btn = wrapper.find(`[data-test="monitor-tab-${mode}"]`)
+      expect(btn.element.tagName).toBe('BUTTON')
+      expect(btn.attributes('type')).toBe('button')
+      expect(btn.attributes('aria-pressed')).toBe(mode === 'realtime' ? 'true' : 'false')
+      expect(btn.attributes('tabindex')).toBeUndefined()
+    }
+
+    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
+    expect(wrapper.find('[data-test="monitor-tab-realtime"]').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
   })
 
   it('init 经 GET /api/sysmon/config 补拉配置镜像：配置 tab 直接展示生效值', async () => {

@@ -263,7 +263,7 @@ describe('MonitorView 跳转历史（#127：点击 sparkline / 数值预选指�
     await flushPromises()
 
     expect(wrapper.find('[data-test="sysmon-history"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
     // 预选生效：store 指标键切到内存使用率，历史视图据此查询
     expect(history.metricKey).toBe('memory.used_ratio')
     const calls = vi.mocked(sysmonApi.getHistory).mock.calls

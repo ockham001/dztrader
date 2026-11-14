@@ -225,7 +225,7 @@ describe('MonitorView 实时 / 历史视图切换（不影响 WS 与实时数据
     const wrapper = await mountView()
     await openHistory(wrapper)
     expect(wrapper.text()).not.toContain('实时快照')
-    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
   })
 
   it('历史 store 与实时 store 互不影响（实时推送不改变历史结果，反之亦然）', async () => {
