@@ -172,11 +172,11 @@ const chartOption = computed(() => {
       trigger: 'axis',
       // 悬停显示精确值与时间（验收标准）：tooltip 头为完整时刻，各系列为格式化后的数值
       formatter: (params: unknown) => {
-        const items = Array.isArray(params) ? params : [params]
-        const first = items[0] as { axisValue?: number } | undefined
+        const items = (Array.isArray(params) ? params : [params]) as ChartTooltipParam[]
+        const first = items[0]
         if (!first || typeof first.axisValue !== 'number') return ''
         const lines = [`<strong>${formatFullTime(first.axisValue / 1000)}</strong>`]
-        for (const item of items as ChartTooltipParam[]) {
+        for (const item of items) {
           const value = tooltipNumericValue(item.value)
           lines.push(`${item.marker ?? ''}${item.seriesName ?? ''}: ${formatValue(value)}`)
         }
@@ -184,9 +184,11 @@ const chartOption = computed(() => {
       },
     },
     legend: { data: ['最大', '平均', '最小'], bottom: 0, textStyle: { fontSize: 10 } },
-    // top 用固定 28px 而不是百分比：containLabel 只补偿刻度标签、**不含轴名**，
-    // 而轴名中心恒落在 `gridTop - 20px`（= top - nameGap(15) - 文本半高(5)）。
-    // 原值 '6%'（320px 高图 → 19.2px）把轴名中心压到 -0.8px，标题上半截被画布裁掉。
+    // top 用固定 28px 而不是百分比：containLabel 只补偿刻度标签、**不含轴名**；
+    // 轴名中心约在 `gridTop - (nameGap + 文本半高)` = 28 - (15 + 5) = 8px。
+    // 原值 '6%'（320px 高图 → 19.2px）把中心压到 -0.8px，标题上半截被画布裁掉。
+    // 注意这两个数来自 ECharts 默认 nameGap=15 与本文件的 nameTextStyle.fontSize=10；
+    // 改其中任一个都要重算 28（余量只有约 3px）。
     grid: { left: '3%', right: '4%', bottom: '12%', top: 28, containLabel: true },
     xAxis: {
       type: 'value',

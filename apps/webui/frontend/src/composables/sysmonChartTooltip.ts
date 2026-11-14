@@ -12,11 +12,13 @@
  * 全部渲染成「不可用」，而同一时刻曲线本身画得出来。
  */
 
-/** tooltip 回调里单条 series 的最小形状（ECharts 传对象，字段可能缺失） */
+/** tooltip formatter 回调里单条参数的最小形状（ECharts 传对象，字段可能缺失） */
 export interface ChartTooltipParam {
   seriesName?: string
   value?: unknown
   marker?: string
+  /** 轴触发时该点的 x 值（毫秒时间戳）；用于 tooltip 头部的完整时刻 */
+  axisValue?: unknown
 }
 
 /**
@@ -27,7 +29,8 @@ export interface ChartTooltipParam {
  * - `[x, y]` / `[x, y, …]` —— 取索引 1 作为 y 值（ECharts 二维点约定）；
  * - 其余（`undefined` / `null` / 字符串 / 对象）—— 不可用。
  *
- * 返回 `null` 表示「不可用」，与真实读数 0 严格区分（契约 sysmon §6.1：不得用 0 冒充不可用）。
+ * 返回 `null` 表示「不可用」，与真实读数 0 严格区分
+ * （《帧契约：系统监控》§6.1：不得用 0 冒充不可用）。
  */
 export function tooltipNumericValue(value: unknown): number | null {
   const candidate = Array.isArray(value) ? value[1] : value
