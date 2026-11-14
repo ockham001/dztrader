@@ -1363,7 +1363,7 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     localStorage.setItem('jwt_token', 'test-token')
   })
 
-  it('顶部新增第三个 tab「配置」：默认实时，切到配置后仅渲染配置视图', async () => {
+  it('顶部新增第三个 tab「配置」：默认实时，切到配置后只显示配置视图', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
@@ -1374,13 +1374,16 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
 
     await tab.trigger('click')
     expect(tab.attributes('aria-selected')).toBe('true')
-    expect(wrapper.find('[data-test="sysmon-config-tab"]').exists()).toBe(true)
+    // 配置 tab 用 v-show 常驻（#322：卸载即丢草稿），可见性落在根元素的 display 上。
+    // 不用 isVisible()：它在本版 test-utils + jsdom 下对 v-show 的 display:none 判错（实测返回 true）。
+    const configPanel = () => wrapper.find('[data-test="sysmon-config-tab"]').element as HTMLElement
+    expect(configPanel().style.display).toBe('')
     // 切换只换渲染来源：实时网格不再渲染（store 未卸载，镜像与 WS 连接保持）
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
 
-    // 切回实时恢复正常渲染
+    // 切回实时恢复正常渲染：元素仍在 DOM 里，但被 display:none 隐藏
     await wrapper.find('[data-test="monitor-tab-realtime"]').trigger('click')
-    expect(wrapper.find('[data-test="sysmon-config-tab"]').exists()).toBe(false)
+    expect(configPanel().style.display).toBe('none')
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(true)
   })
 
@@ -1436,5 +1439,103 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
 
     expect(wrapper.find('[data-test="sysmon-config-readonly"]').text()).toContain('仅管理员可修改')
     expect(wrapper.find('[data-test="sysmon-config-save"]').exists()).toBe(false)
+  })
+})
+
+// #322：配置草稿不再随视图切换丢弃（v-show 常驻），但离开路由仍会丢——由路由离开守卫拦一次。
+// 守卫必须在 <router-view> 渲染的组件里才生效，因此这一组用例挂真实 router（memory history），
+// 而不是复用上面直接 mount(MonitorView) 的 mountView()。
+describe('MonitorView 配置草稿守卫（#322）', () => {
+  const RouteHost = { template: '<router-view />' }
+
+  async function mountWithRouter() {
+    const { createRouter, createMemoryHistory } = await import('vue-router')
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/monitor', name: 'monitor', component: MonitorView },
+        { path: '/logs', name: 'logs', component: { template: '<div data-test="logs-page" />' } },
+      ],
+    })
+    await router.push('/monitor')
+    await router.isReady()
+    const wrapper = mount(RouteHost, { global: { plugins: [router], stubs } })
+    await flushPromises()
+    setRole('admin')
+    useSysmonStore().applyConfig(makeSysmonConfig())
+    await flushPromises()
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+    return { wrapper, router }
+  }
+
+  it('改了配置后切视图再切回：草稿仍在（v-show 常驻，不重挂载）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper } = await mountWithRouter()
+
+    const input = wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]')
+    expect(input.exists()).toBe(true)
+    await input.setValue('2000')
+    expect((input.element as HTMLInputElement).value).toBe('2000')
+
+    await wrapper.find('[data-test="monitor-tab-realtime"]').trigger('click')
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+
+    const after = wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]')
+    expect((after.element as HTMLInputElement).value).toBe('2000')
+  })
+
+  it('有未保存改动时离开路由：弹确认框；选「留下」留在本页且草稿不变', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper, router } = await mountWithRouter()
+
+    await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('2000')
+    await flushPromises()
+
+    // 不 await：守卫挂起导航，等用户在对话框里选择后才 resolve
+    void router.push('/logs')
+    await flushPromises()
+
+    expect(wrapper.find('.ds-dialog__title').text()).toBe('有未保存的改动')
+    const cancel = wrapper.find('[data-test="monitor-leave-cancel"]')
+    expect(cancel.exists()).toBe(true)
+    await cancel.trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/monitor')
+    expect(wrapper.find('.ds-dialog').exists()).toBe(false)
+    const input = wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]')
+    expect((input.element as HTMLInputElement).value).toBe('2000')
+  })
+
+  it('有未保存改动时离开路由：选「离开」正常导航', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper, router } = await mountWithRouter()
+
+    await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('2000')
+    await flushPromises()
+
+    void router.push('/logs')
+    await flushPromises()
+
+    await wrapper.find('[data-test="monitor-leave-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/logs')
+    expect(wrapper.find('[data-test="logs-page"]').exists()).toBe(true)
+  })
+
+  it('无未保存改动时离开路由：不弹确认框，直接导航', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper, router } = await mountWithRouter()
+
+    await router.push('/logs')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/logs')
+    expect(wrapper.find('.ds-dialog').exists()).toBe(false)
   })
 })

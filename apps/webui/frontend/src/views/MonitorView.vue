@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import Icon from '@/components/shared/Icon.vue'
+import Modal from '@/components/shared/Modal.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
@@ -112,6 +114,39 @@ function openHistory(metricKey: string): void {
   history.preselect(metricKey)
   viewMode.value = 'history'
 }
+
+// ---- 配置草稿守卫（#322）----
+// 配置 tab 用 v-show 常驻（切视图不再卸载，草稿因此不丢）；但它仍会随页面卸载而丢失，
+// 而离开路由是日常最易误触的丢失路径（侧栏就在旁边），所以离开时按 `dirty` 拦一次。
+// 判定口径完全复用组件内的 `dirty`（不新写第二套 diff）；不拦刷新/关页（beforeunload）。
+const configTabRef = ref<InstanceType<typeof SysmonConfigTab> | null>(null)
+const configDirty = computed(() => configTabRef.value?.dirty === true)
+const leaveConfirmOpen = ref(false)
+/** 挂起的路由离开回调：确认后调用 `next()`，取消时 `next(false)` */
+let pendingLeaveNext: ((ok?: boolean) => void) | null = null
+
+function cancelLeave(): void {
+  leaveConfirmOpen.value = false
+  pendingLeaveNext?.(false)
+  pendingLeaveNext = null
+}
+
+function confirmLeave(): void {
+  leaveConfirmOpen.value = false
+  const next = pendingLeaveNext
+  pendingLeaveNext = null
+  next?.()
+}
+
+// 守卫必须注册在 setup 同步阶段（路由离开时才注册会漏掉本次导航）
+onBeforeRouteLeave((_to, _from, next) => {
+  if (!configDirty.value) {
+    next()
+    return
+  }
+  pendingLeaveNext = next
+  leaveConfirmOpen.value = true
+})
 
 const snapshot = computed(() => sysmon.snapshot)
 const system = computed(() => snapshot.value?.system ?? null)
@@ -512,11 +547,15 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
       <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
 
-    <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响） -->
+    <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
+         历史 tab **保持 v-if**：它的 onMounted 会发一次 history REST 查询，store 无缓存无去重，
+         常驻会改变加载时机（#322 有意保留这一处不对称）。 -->
     <SysmonHistoryTab v-if="viewMode === 'history'" />
 
-    <!-- 配置视图（#81）：展示生效配置（所有认证用户）+ 编辑入口（仅 admin） -->
-    <SysmonConfigTab v-if="viewMode === 'config'" />
+    <!-- 配置视图（#81）：展示生效配置（所有认证用户）+ 编辑入口（仅 admin）。
+         用 v-show 而不是 v-if：草稿是组件本地 reactive，卸载即丢（#322）；本组件无 onMounted、
+         无网络请求、无定时器，常驻代价仅是多一份表单 DOM 与一个 watch。 -->
+    <SysmonConfigTab ref="configTabRef" v-show="viewMode === 'config'" />
 
     <!-- 实时视图（默认）：快照尚未到达时整页空态（不得显示 0 或假数字） -->
     <div
@@ -1350,6 +1389,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
     </div>
+
+    <!-- 离开前的草稿确认（#322）：只在有未保存改动时出现；两个分支都是显式动作，
+         遮罩点击与 Esc 等同「留下」（不丢草稿）。 -->
+    <Modal :open="leaveConfirmOpen" title="有未保存的改动" @close="cancelLeave">
+      <p class="monitor-view__leave-text">
+        配置项有未保存的修改，离开本页后这些改动会丢失。
+      </p>
+      <template #footer>
+        <button class="ds-btn ds-btn--secondary" type="button" data-test="monitor-leave-cancel" @click="cancelLeave">留下</button>
+        <button class="ds-btn ds-btn--primary" type="button" data-test="monitor-leave-confirm" @click="confirmLeave">离开</button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -1383,6 +1434,14 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   color: var(--text-tertiary);
+}
+
+/* 离开确认对话框正文（#322）：与其它对话框正文同档字号，不引入新范式 */
+.monitor-view__leave-text {
+  margin: 0;
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  color: var(--text-secondary);
 }
 
 .monitor-view__waiting {
