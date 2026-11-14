@@ -6,6 +6,7 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent, MarkAreaComponent, MarkLineComponent } from 'echarts/components'
 import { formatBytes, formatCount, formatNumberAuto, formatPercent } from '@/composables/format'
+import { tooltipNumericValue, type ChartTooltipParam } from '@/composables/sysmonChartTooltip'
 import type { SysmonHistoryMetricFormat } from '@/stores/sysmonHistory'
 import type { SysmonHistoryGap, SysmonHistoryMark, SysmonHistoryPoint } from '@/types/api'
 
@@ -159,7 +160,8 @@ const markLines = computed(() => {
 /**
  * 图表配置。
  * - x 轴用 `value` 型时间轴（毫秒），轴标签格式化为墙钟时刻；
- * - min / max 构成上下包络（面积填充），avg 画中线；last 不画（与 avg 重叠，图更干净）；
+ * - max / avg / min 三条线构成包络（上下界 + 中线）；last 不画（与 avg 重叠，图更干净）；
+ *   是否给上下界之间加半透明填充是视觉决策，见 #329，此处**没有** `areaStyle`（勿按旧注释脑补）；
  * - 缺口与标记分别用 markArea / markLine 叠加，不改动数据系列本身。
  */
 const chartOption = computed(() => {
@@ -170,19 +172,24 @@ const chartOption = computed(() => {
       trigger: 'axis',
       // 悬停显示精确值与时间（验收标准）：tooltip 头为完整时刻，各系列为格式化后的数值
       formatter: (params: unknown) => {
-        const items = Array.isArray(params) ? params : [params]
-        const first = items[0] as { axisValue?: number } | undefined
+        const items = (Array.isArray(params) ? params : [params]) as ChartTooltipParam[]
+        const first = items[0]
         if (!first || typeof first.axisValue !== 'number') return ''
         const lines = [`<strong>${formatFullTime(first.axisValue / 1000)}</strong>`]
-        for (const item of items as { seriesName?: string; value?: unknown; marker?: string }[]) {
-          const value = typeof item.value === 'number' ? item.value : null
+        for (const item of items) {
+          const value = tooltipNumericValue(item.value)
           lines.push(`${item.marker ?? ''}${item.seriesName ?? ''}: ${formatValue(value)}`)
         }
         return lines.join('<br/>')
       },
     },
     legend: { data: ['最大', '平均', '最小'], bottom: 0, textStyle: { fontSize: 10 } },
-    grid: { left: '3%', right: '4%', bottom: '12%', top: '6%', containLabel: true },
+    // top 用固定 28px 而不是百分比：containLabel 只补偿刻度标签、**不含轴名**；
+    // 轴名中心约在 `gridTop - (nameGap + 文本半高)` = 28 - (15 + 5) = 8px。
+    // 原值 '6%'（320px 高图 → 19.2px）把中心压到 -0.8px，标题上半截被画布裁掉。
+    // 注意这两个数来自 ECharts 默认 nameGap=15 与本文件的 nameTextStyle.fontSize=10；
+    // 改其中任一个都要重算 28（余量只有约 3px）。
+    grid: { left: '3%', right: '4%', bottom: '12%', top: 28, containLabel: true },
     xAxis: {
       type: 'value',
       min: times.length > 0 ? times[0] : undefined,
