@@ -401,49 +401,70 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   const testDir = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(testDir, '..', 'MonitorView.vue'), 'utf8')
 
-  /** 取某个 @media 块的内容（媒体块外层 `}` 顶格，内层规则缩进，故用 `\n}` 定位块尾） */
-  function mediaBlock(header: string): string {
-    const start = source.indexOf(header)
-    expect(start, `缺少媒体查询：${header}`).toBeGreaterThanOrEqual(0)
-    const open = source.indexOf('{', start)
-    const close = source.indexOf('\n}', open)
-    expect(close).toBeGreaterThan(open)
-    return source.slice(open, close)
-  }
-
-  /** 取第一条 `.monitor-view__grid` 规则的内容（基础规则在样式中先出现，即 md–xl 档） */
-  function baseGridRule(): string {
-    const start = source.indexOf('.monitor-view__grid')
-    expect(start, '缺少 .monitor-view__grid 基础规则').toBeGreaterThanOrEqual(0)
+  /** 取某选择器的**基础**规则内容（样式表内首次出现即基础档；容忍选择器与 `{` 间距） */
+  function ruleBody(selector: string): string {
+    const start = source.indexOf(selector)
+    expect(start, `缺少 ${selector} 基础规则`).toBeGreaterThanOrEqual(0)
     const open = source.indexOf('{', start)
     const close = source.indexOf('}', open)
     expect(close).toBeGreaterThan(open)
     return source.slice(open, close)
   }
 
+  /**
+   * 在同一位宽档的**全部**媒体块里找包含指定选择器的那个，返回其内容。
+   * 不能只取该档第一个媒体块：1280 档有两个（页面网格与 CPU 网格），取第一个会拿错。
+   * 按选择器定位也避免「块内加注释 / 调整规则顺序」导致断言假红。
+   */
+  function mediaRuleBody(header: string, selector: string): string {
+    let from = 0
+    for (;;) {
+      const start = source.indexOf(header, from)
+      if (start < 0) {
+        expect(false, `媒体块 ${header} 内找不到 ${selector}`).toBe(true)
+        return ''
+      }
+      const open = source.indexOf('{', start)
+      const close = source.indexOf('\n}', open)
+      expect(close).toBeGreaterThan(open)
+      const body = source.slice(open, close)
+      if (body.includes(selector)) return body
+      from = close
+    }
+  }
+
   it('监控页列数：<md 单列、md–xl 双列、≥xl 三列', () => {
     // 基础规则（md–xl）：双列（只认基础块本身，避免别处残留的 2 列让断言假绿）
-    expect(baseGridRule()).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    expect(ruleBody('.monitor-view__grid')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
     // ≥xl（1280）：三列
-    expect(mediaBlock('@media (min-width: 1280px)'))
+    expect(mediaRuleBody('@media (min-width: 1280px)', '.monitor-view__grid'))
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
     // <md（767.98）：单列；必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
-    expect(mediaBlock('@media (max-width: 767.98px)'))
+    expect(mediaRuleBody('@media (max-width: 767.98px)', '.monitor-view__grid'))
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
   })
 
   it('CPU 内网格列数与面板数一致：显式列数，不用 auto-fit（#321）', () => {
     // auto-fit 会被第 4 个跨列面板（grid-column: 1/-1）废掉空轨折叠，列数随宽度无限增长
-    const cpuStart = source.indexOf('.monitor-view__cpu {')
-    expect(cpuStart, '缺少 .monitor-view__cpu 基础规则').toBeGreaterThanOrEqual(0)
-    const cpuOpen = source.indexOf('{', cpuStart)
-    const cpuClose = source.indexOf('}', cpuOpen)
-    const cpuBase = source.slice(cpuOpen, cpuClose)
+    const cpuBase = ruleBody('.monitor-view__cpu')
     expect(cpuBase).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
     expect(cpuBase).not.toContain('auto-fit')
-    // ≥xl 三列（与页面网格同口径）
-    expect(source).toMatch(/@media \(min-width: 1280px\) \{\s*\.monitor-view__cpu\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
+    // ≥xl 三列（与页面网格同口径）；不加 4 列档（页面主网格到 2560 也不增列）
+    expect(mediaRuleBody('@media (min-width: 1280px)', '.monitor-view__cpu'))
+      .toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
+    expect(source).not.toMatch(/\.monitor-view__cpu[^{]*\{[^}]*repeat\(4,/)
+  })
+
+  it('长 token 只在这一处开断行，其它 list-value 不被拦腰折断（#321）', () => {
+    // 共享内存目录路径可任意长度，需要 anywhere（它同时收窄 min-content）
+    expect(ruleBody('.monitor-view__list-value--wrap')).toContain('overflow-wrap: anywhere')
+    // 基础类不得开断行：那会把百分比 / 容量在极窄列里折成两行（实测 320 下 68.8% 被折断）
+    expect(ruleBody('.monitor-view__list-value')).not.toContain('overflow-wrap')
+    // 挂载点允许换行（窄列下显示全路径，不只靠 title）
+    const mount = ruleBody('.monitor-view__list-label--mount')
+    expect(mount).toContain('white-space: normal')
+    expect(mount).toContain('overflow-wrap: anywhere')
   })
 
   it('不使用容器查询（既有白名单门禁只扫 @media，引入 @container 会绕过防野断点检查）', () => {
