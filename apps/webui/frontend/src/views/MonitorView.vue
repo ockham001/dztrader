@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave, type NavigationGuardNext, type Router } from 'vue-router'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
@@ -123,7 +123,7 @@ const configTabRef = ref<InstanceType<typeof SysmonConfigTab> | null>(null)
 const configDirty = computed(() => configTabRef.value?.dirty === true)
 const leaveConfirmOpen = ref(false)
 /** 挂起的路由离开回调：确认后调用 `next()`，取消时 `next(false)` */
-let pendingLeaveNext: ((ok?: boolean) => void) | null = null
+let pendingLeaveNext: NavigationGuardNext | null = null
 
 function cancelLeave(): void {
   leaveConfirmOpen.value = false
@@ -138,15 +138,24 @@ function confirmLeave(): void {
   next?.()
 }
 
-// 守卫必须注册在 setup 同步阶段（路由离开时才注册会漏掉本次导航）
-onBeforeRouteLeave((_to, _from, next) => {
-  if (!configDirty.value) {
-    next()
-    return
-  }
-  pendingLeaveNext = next
-  leaveConfirmOpen.value = true
-})
+// 守卫必须注册在 setup 同步阶段（路由离开时才注册会漏掉本次导航）。
+// 只在真的挂了 router 时注册：`onBeforeRouteLeave` 依赖 `<router-view>` provide 的路由记录，
+// 直接 mount 本组件的单元测试没有路由上下文（不判断会在每个用例上打一条 vue-router 警告）。
+// 取 router 用 appContext 而不是 useRouter()：后者在没有 router 时本身就会 warn。
+const router = getCurrentInstance()?.appContext.config.globalProperties.$router as Router | undefined
+if (router) {
+  onBeforeRouteLeave((to, _from, next) => {
+    // 会话结束类导航直接放行：登出路径是「先清 token 再 push('/login')」
+    // （`Sidebar.vue` logout），此时本页已在 AppShell 里且会话已失效，
+    // 再拦下来会让用户停在已登出的私有页上（选「留下」也没有任何意义）。
+    if (to.name === 'login' || !configDirty.value) {
+      next()
+      return
+    }
+    pendingLeaveNext = next
+    leaveConfirmOpen.value = true
+  })
+}
 
 const snapshot = computed(() => sysmon.snapshot)
 const system = computed(() => snapshot.value?.system ?? null)

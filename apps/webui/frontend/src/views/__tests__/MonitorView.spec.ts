@@ -1374,9 +1374,10 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
 
     await tab.trigger('click')
     expect(tab.attributes('aria-selected')).toBe('true')
-    // 配置 tab 用 v-show 常驻（#322：卸载即丢草稿），可见性落在根元素的 display 上。
-    // 不用 isVisible()：它在本版 test-utils + jsdom 下对 v-show 的 display:none 判错（实测返回 true）。
+    // 配置 tab 用 v-show 常驻（#322：卸载即丢草稿），显隐由根元素的内联 display 表达。
+    // 因此直接断内联样式，不用测试辅助的可见性判断（同 TradingDataView.spec.ts 的做法）。
     const configPanel = () => wrapper.find('[data-test="sysmon-config-tab"]').element as HTMLElement
+    expect(wrapper.find('[data-test="sysmon-config-tab"]').exists(), '找不到配置面板').toBe(true)
     expect(configPanel().style.display).toBe('')
     // 切换只换渲染来源：实时网格不再渲染（store 未卸载，镜像与 WS 连接保持）
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
@@ -1448,6 +1449,14 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
 describe('MonitorView 配置草稿守卫（#322）', () => {
   const RouteHost = { template: '<router-view />' }
 
+  // 与其余 describe 同款隔离：本组用例共享 router / store，不能依赖上一个 describe 的残留
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+    localStorage.setItem('jwt_token', 'test-token')
+  })
+
   async function mountWithRouter() {
     const { createRouter, createMemoryHistory } = await import('vue-router')
     const router = createRouter({
@@ -1455,6 +1464,8 @@ describe('MonitorView 配置草稿守卫（#322）', () => {
       routes: [
         { path: '/monitor', name: 'monitor', component: MonitorView },
         { path: '/logs', name: 'logs', component: { template: '<div data-test="logs-page" />' } },
+        // 登出目标：守卫对会话结束类导航放行（见「登出导航直接放行」用例）
+        { path: '/login', name: 'login', component: { template: '<div data-test="login-page" />' } },
       ],
     })
     await router.push('/monitor')
@@ -1525,6 +1536,63 @@ describe('MonitorView 配置草稿守卫（#322）', () => {
 
     expect(router.currentRoute.value.path).toBe('/logs')
     expect(wrapper.find('[data-test="logs-page"]').exists()).toBe(true)
+  })
+
+  it('确认框被关闭（X / Esc）等同「留下」：不导航且草稿不变', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper, router } = await mountWithRouter()
+
+    await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('2000')
+    await flushPromises()
+
+    void router.push('/logs')
+    await flushPromises()
+    expect(wrapper.find('.ds-dialog').exists()).toBe(true)
+
+    // Modal 的 @close 走 cancelLeave：遮罩点击 / Esc / header 关闭按钮都是「留下」
+    await wrapper.find('.ds-dialog__close').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/monitor')
+    expect(wrapper.find('.ds-dialog').exists()).toBe(false)
+    const input = wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]')
+    expect((input.element as HTMLInputElement).value).toBe('2000')
+  })
+
+  it('草稿被生效镜像回退（dirty 变回 false）后离开：不再弹框', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper, router } = await mountWithRouter()
+
+    await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('2000')
+    await flushPromises()
+    // WS sysmon_config 回推（校验失败时发送方回推旧值）：表单随镜像回退，dirty 归零
+    useSysmonStore().applyConfig(makeSysmonConfig())
+    await flushPromises()
+
+    await router.push('/logs')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/logs')
+    expect(wrapper.find('.ds-dialog').exists()).toBe(false)
+  })
+
+  it('登出导航直接放行：会话已清除，不拦也不弹框', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const { wrapper, router } = await mountWithRouter()
+
+    await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('2000')
+    await flushPromises()
+
+    // Sidebar 的登出是「先 auth.logout() 再 push('/login')」：此时本页已在 AppShell 里
+    // 且会话已失效，再拦下来会把用户停在已登出的私有页上（选「留下」毫无意义）。
+    void router.push('/login')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('login')
+    expect(wrapper.find('.ds-dialog').exists()).toBe(false)
   })
 
   it('无未保存改动时离开路由：不弹确认框，直接导航', async () => {
