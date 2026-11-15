@@ -2101,15 +2101,19 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 
 @media (max-width: 767.98px) {
   .monitor-view {
+    /* 窄屏真正的滚动容器是 document：dashboard.css 在 ≤1024 把 app-shell / workspace 高度释放给
+       文档滚动（全局 topbar 因此能基于视口 sticky）。而 .monitor-view 的 overflow:auto 会成为最近的
+       scrollport，把视图切换行的 sticky 困在它内部（实测：页面滚动时该行直接跟着消失）。
+       放开窄屏 overflow 让 sticky 相对视口生效；横向溢出由页面内容自身约束（#321 已验证无溢出）。 */
+    overflow: visible;
     padding: var(--spacer-24) var(--spacer-16);
   }
 
   /* 窄屏只钉住视图切换那一行（#328）：不钉整块 header（390×844 上会吃掉 90–110px 视口）。
-     display:contents 把 topbar 盒去掉，视图切换行成为滚动容器 .monitor-view 的直接子级，
-     sticky 才能跨越整个内容区生效；整行背景 + z-index 防止下方卡片从行下透出。
-     top 取负的滚动容器 padding-top：sticky 的约束矩形从内容盒顶起算，直接写 0 会让行停在
-     「容器顶 + padding-top」处，滚动时上方露出 28px 卡片条带（headless Chrome 实测
-     elementFromPoint 命中卡片）。这里抵掉同一 token，行才真正贴住容器顶。 */
+     display:contents 把 topbar 盒去掉，视图切换行成为滚动容器的直接子级，sticky 才能跨越整个
+     内容区生效；整行背景 + z-index 防止下方卡片从行下透出。
+     top 取全局 `.topbar` 的固定高度 32px（assets/css/layout.css）：行贴在全局顶栏下方，
+     内容不从缝隙透出（实测 390×844 滚动 1000px 时行 top=32、其上方 2px 处命中全局顶栏）。 */
   .monitor-view__topbar {
     display: contents;
   }
@@ -2120,7 +2124,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 
   .monitor-view__view-switch {
     position: sticky;
-    top: calc(-1 * var(--spacer-24));
+    top: 32px;
     z-index: 2;
     display: flex;
     width: 100%;
