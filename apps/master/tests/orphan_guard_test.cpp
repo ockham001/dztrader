@@ -3,6 +3,7 @@
  * @brief OrphanGuard 集成测试（SQLite + file_lock + 真实子进程）。
  */
 
+#include "io_context_wait.h"
 #include "orphan_guard.h"
 #include "test_temp_dir.h"
 
@@ -16,7 +17,6 @@
 #include <boost/process/v2/process.hpp>
 #include <boost/process/v2/stdio.hpp>
 #include <gtest/gtest.h>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -266,8 +266,9 @@ TEST_F(OrphanGuardTest, StartupTerminatesLiveOrphan) {
         exited = true;
         exit_code = code;
     });
-    ioc.run_for(std::chrono::seconds(5));
-    EXPECT_TRUE(exited) << "live orphan was not terminated";
+    // 等孤儿进程被终止; 超时只是上限（事件到达即早退）
+    EXPECT_TRUE(dztrader::test::run_io_until(ioc, [&] { return exited; }))
+        << "live orphan was not terminated";
     EXPECT_NE(exit_code, 0) << "orphan should be force-killed";
 
     // 分支证据: 走的是 exe 匹配后的终止路径
@@ -287,8 +288,8 @@ TEST_F(OrphanGuardTest, StartupSkipsDeadPid) {
     const auto pid = child.id();
     bool exited = false;
     child.async_wait([&](boost::system::error_code, int) { exited = true; });
-    ioc.run_for(std::chrono::seconds(5));
-    ASSERT_TRUE(exited);
+    // 等短命 worker 自然退出; 超时只是上限
+    ASSERT_TRUE(dztrader::test::run_io_until(ioc, [&] { return exited; }));
 
     const std::string name = "orphan_dead_" + unique_tag();
     {

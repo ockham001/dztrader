@@ -1,3 +1,4 @@
+#include "io_context_wait.h"
 #include "test_util.h"
 
 #include "shm_manager.h"
@@ -1002,13 +1003,14 @@ TEST_F(ProcessControlFrameTest, StartUnregisteredGatewayDynamicallyRegistersAndS
         EXPECT_TRUE(j["md"].contains(gw_name_));
     }
 
-    // 清理: 帧驱动 Stop + 跑 io_context 让 force-kill 定时器触发 (worker 不读事件通道)
+    // 清理: 帧驱动 Stop + 驱动 io_context 直到 force-kill 定时器把子进程收干净
+    // (worker 不读事件通道, 不会自行退出; 超时只是上限)
     write_process_control_frame(writer, platform::ProcessAction::Stop, gw_name_);
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
     }
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
+    (void)dztrader::test::run_io_until(
+        ioc_, [&] { return supervisor_->children().empty(); }, std::chrono::milliseconds(15000));
     std::filesystem::remove(gw_exe);
 }
 
@@ -1060,13 +1062,14 @@ TEST_F(ProcessControlFrameTest,
     ASSERT_NE(entry, nullptr);
     EXPECT_EQ(entry->display_name, "新网关");
 
-    // 清理: 帧驱动 Stop + 跑 io_context 让 force-kill 定时器触发
+    // 清理: 帧驱动 Stop + 驱动 io_context 直到 force-kill 定时器把子进程收干净
+    // （超时只是上限）
     write_process_control_frame(writer, platform::ProcessAction::Stop, gw_name_);
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
     }
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
+    (void)dztrader::test::run_io_until(
+        ioc_, [&] { return supervisor_->children().empty(); }, std::chrono::milliseconds(15000));
     std::filesystem::remove(gw_exe);
 }
 
@@ -1146,14 +1149,14 @@ TEST_F(ProcessControlFrameTest, StartRunningPushesStartSucceeded) {
         EXPECT_EQ(status["state"], "Running");         // 子进程仍在运行 (未重复 spawn)
     }
 
-    // 清理: 帧驱动 Stop + 跑 io_context 让 force-kill 定时器 (3s) 触发, 终止 worker 进程
-    // (worker 不读事件通道, 不会自行退出; orphan_guard_ 未 startup 不跟踪子进程)
+    // 清理: 帧驱动 Stop + 驱动 io_context 直到 force-kill 定时器 (3s) 把 worker 收干净
+    // (worker 不读事件通道, 不会自行退出; orphan_guard_ 未 startup 不跟踪子进程; 超时只是上限)
     write_process_control_frame(writer, platform::ProcessAction::Stop, "stg_worker");
     for (int i = 0; i < 10; ++i) {
         shm_mgr_->drain_event_channel();
     }
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));  // single_stop_timeout_sec_=3, 超时强制 terminate
+    (void)dztrader::test::run_io_until(
+        ioc_, [&] { return supervisor_->children().empty(); }, std::chrono::milliseconds(15000));
 }
 
 // ---- 帧 DZ_FRAME_REQUEST_MD_READER_REGISTER/DZ_FRAME_REQUEST_MD_READER_UNREGISTER:
@@ -1675,10 +1678,11 @@ TEST_F(ProcessControlFrameTest, PageSizeChangeRejectedWithRunningBoundStrategy) 
     }
     EXPECT_TRUE(rejected) << "page_size change must be rejected with running bound strategy";
 
-    // 清理: 停止策略 (页大小校验走 Stopped 状态, 此处策略仍在运行, 直接强停)
+    // 清理: 停止策略 (页大小校验走 Stopped 状态, 此处策略仍在运行, 直接强停)。
+    // 驱动 io_context 直到子进程收干净（超时只是上限）
     supervisor.shutdown();
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
+    (void)dztrader::test::run_io_until(
+        ioc_, [&] { return supervisor.children().empty(); }, std::chrono::milliseconds(15000));
 }
 
 // page_size 变更正向路径 (契约 4.8): 无运行中绑定策略时允许重置,
