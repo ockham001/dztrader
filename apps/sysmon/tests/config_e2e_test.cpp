@@ -852,7 +852,10 @@ TEST_F(ConfigE2ETest, InvalidClockPatchRejectedAndRolledBack) {
         ASSERT_TRUE(send_set_config(item.patch)) << item.label;
 
         // 四件套之一：error 级通知 + popup，且能归因到本次配置失败。
-        const auto notify = wait_for_frame(DZ_FRAME_NOTIFY_UI, 5s);
+        //
+        // 等待预算取 15s：预算只是**上限**（条件等待命中即早退，正常路径不增加墙钟），
+        // 而 CI / 与构建并行的机器上帧推送可能被调度延迟数秒（#335 的 flaky 取证）。
+        const auto notify = wait_for_frame(DZ_FRAME_NOTIFY_UI, 15s);
         ASSERT_TRUE(notify.has_value()) << "rejected SET must notify the ui: " << item.label;
         EXPECT_EQ(notify->value("level", std::string()), "error") << item.label;
         EXPECT_TRUE(notify->value("popup", false)) << item.label;
@@ -864,22 +867,28 @@ TEST_F(ConfigE2ETest, InvalidClockPatchRejectedAndRolledBack) {
         // 也不是契约默认时刻）。夹具默认关闭 clock 域（`clock.enabled=false`）——#299 起
         // 启用即启动首探，关闭它是本文件不测探测的用例避免访问网络的方式；探测本身由
         // `clock_e2e_test` 用注入替身覆盖。
-        const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+        const auto config = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 15s);
         ASSERT_TRUE(config.has_value()) << item.label;
         EXPECT_TRUE((*config)["clock"]["probe_times"].empty()) << item.label;
         EXPECT_EQ((*config)["clock"]["offset_warn_ms"], 100) << item.label;
         EXPECT_EQ((*config)["clock"]["offset_error_ms"], 1000) << item.label;
-        // 失败路径不推快照（契约 §4 触发 4 明确「成功后」）。
-        EXPECT_FALSE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 2s).has_value())
-            << "a rejected SET must not trigger an immediate snapshot push: " << item.label;
+        // 失败路径不推快照（契约 §4 触发 4 明确「成功后」）。这是**负向**断言，窗口本身
+        // 是语义的一部分（只能靠等待观察「什么都没发生」），故保持 2s；若命中则打印载荷，
+        // 便于区分「真推了快照」与「无关的迟到快照被误判」（#335 的取证要求）。
+        const auto unexpected_snapshot = wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 2s);
+        EXPECT_FALSE(unexpected_snapshot.has_value())
+            << "a rejected SET must not trigger an immediate snapshot push: " << item.label
+            << " snapshot="
+            << (unexpected_snapshot ? unexpected_snapshot->dump() : std::string("null"));
         pending_.clear();
     }
 
     // 合法 patch 仍然生效（证明上面的拒绝来自校验，不是整段不可写）。
     ASSERT_TRUE(send_set_config({{"clock", {{"probe_times", {"06:15", "22:45"}}}}}));
-    const auto applied = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 5s);
+    const auto applied = wait_for_frame(DZ_FRAME_RTN_SYSMON_CONFIG, 15s);
     ASSERT_TRUE(applied.has_value());
-    EXPECT_EQ((*applied)["clock"]["probe_times"], (nlohmann::json::array({"06:15", "22:45"})));
+    EXPECT_EQ((*applied)["clock"]["probe_times"], (nlohmann::json::array({"06:15", "22:45"})))
+        << applied->dump();
 }
 
 }  // namespace

@@ -4,6 +4,7 @@
  */
 
 #include "child_process.h"
+#include "io_context_wait.h"
 #include "test_temp_dir.h"
 
 #include <dztrader/core/this_process.h>
@@ -11,7 +12,6 @@
 
 #include <gtest/gtest.h>
 #include <boost/asio/io_context.hpp>
-#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -94,10 +94,8 @@ TEST_F(ChildProcessTest, StartAndExit) {
         exit_code = code;
     });
 
-    // 运行 io_context 处理异步事件
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
-    EXPECT_TRUE(exited);
+    // 等退出回调; 超时只是上限（事件到达即早退），不用固定墙钟时长当同步手段
+    EXPECT_TRUE(dztrader::test::run_io_until(ioc_, [&] { return exited; }));
     EXPECT_EQ(exit_code, 0);  // 正常退出
     EXPECT_EQ(child->state(), ChildState::Stopped);
 }
@@ -118,10 +116,8 @@ TEST_F(ChildProcessTest, Terminate) {
     child->terminate();
     EXPECT_EQ(child->state(), ChildState::Stopping);
 
-    // 重启 io_context（可能被之前的 run_for 停止）
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(2));
-    EXPECT_TRUE(exited);
+    // 等 SIGTERM 后的退出回调; 超时只是上限
+    EXPECT_TRUE(dztrader::test::run_io_until(ioc_, [&] { return exited; }));
     EXPECT_EQ(child->state(), ChildState::Stopped);
 }
 
@@ -162,11 +158,20 @@ TEST_F(ChildProcessTest, SharedPtrKeepsAlive) {
         child->cancel();
         // 管道读的挂起操作因 close 而完成; 执行掉这些 handler 后,
         // 仅剩 async_wait 可能持有 self。
-        std::size_t drained = ioc_.poll();
-        for (int i = 0; i < 100 && drained < 2; ++i) {
-            drained += ioc_.poll();
+        //
+        // 注意 handler 数**不是常量 2**：poll() 统计的是所有被执行的 handler，其中包含
+        // asio 复合操作（async_read_until）的内部 handler——数量随完成路径变化（高负载
+        // 下实测为 3，本用例曾因此翻红）。所以排空到 io_context 静默为止，只断言**至少
+        // 2 个 handler 被执行**（两根管道各一个；复合操作可能再多一个内部 handler）。
+        std::size_t drained = 0;
+        for (int i = 0; i < 100; ++i) {
+            const std::size_t handlers = ioc_.poll();
+            if (handlers == 0) {
+                break;
+            }
+            drained += handlers;
         }
-        ASSERT_EQ(drained, 2u);
+        ASSERT_GE(drained, 2u) << "cancel should drain both pending pipe reads";
 
         child->async_wait([&](boost::system::error_code, int) {
             exited = true;
@@ -187,10 +192,8 @@ TEST_F(ChildProcessTest, SharedPtrKeepsAlive) {
         keep->terminate();
     }
 
-    // 运行 io_context 让子进程退出和回调触发，回调返回后引用释放
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(2));
-    EXPECT_TRUE(exited);
+    // 等子进程退出、回调触发（回调返回后引用释放）
+    EXPECT_TRUE(dztrader::test::run_io_until(ioc_, [&] { return exited; }));
     EXPECT_TRUE(weak_child.expired());
 }
 
@@ -210,18 +213,29 @@ TEST_F(ChildProcessTest, CancelClosesPipes) {
     ASSERT_TRUE(child->start(ec));
     ASSERT_EQ(child->state(), ChildState::Running);
 
-    // 先排空取消前已就绪的输出 handler（子进程尚未输出时为 0）
-    ioc_.poll();
+    // 先排空取消前已就绪的输出 handler（子进程尚未输出时为 0）；封顶避免 handler
+    // 持续就绪时挂死。
+    for (int i = 0; i < 100; ++i) {
+        if (ioc_.poll() == 0) {
+            break;
+        }
+    }
 
     child->cancel();
 
     // cancel 关闭两个管道: 挂起的 stdout/stderr 读操作以 operation_aborted
-    // 完成（唯一的公开可观察面是这些 handler 被投递执行）。
-    std::size_t drained = ioc_.poll();
-    for (int i = 0; i < 100 && drained < 2; ++i) {
-        drained += ioc_.poll();
+    // 完成（唯一的公开可观察面是这些 handler 被投递执行）。handler 数不是常量 2
+    // （poll 计入 asio 复合操作的内部 handler，见 SharedPtrKeepsAlive 的说明），
+    // 排空到静默为止，只断言至少 2 个 handler 被执行（两根管道各一个）。
+    std::size_t drained = 0;
+    for (int i = 0; i < 100; ++i) {
+        const std::size_t handlers = ioc_.poll();
+        if (handlers == 0) {
+            break;
+        }
+        drained += handlers;
     }
-    EXPECT_EQ(drained, 2u) << "cancel should complete both pending pipe reads";
+    EXPECT_GE(drained, 2u) << "cancel should complete both pending pipe reads";
 
     // cancel 只关管道, 不改变进程状态（同 terminate 的 stopping 区分）
     EXPECT_EQ(child->state(), ChildState::Running);
@@ -232,9 +246,7 @@ TEST_F(ChildProcessTest, CancelClosesPipes) {
     child->terminate();
     EXPECT_EQ(child->state(), ChildState::Stopping);
 
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(2));
-    EXPECT_TRUE(exited);
+    EXPECT_TRUE(dztrader::test::run_io_until(ioc_, [&] { return exited; }));
     EXPECT_EQ(child->state(), ChildState::Stopped);
 }
 
@@ -254,14 +266,6 @@ TEST_F(ChildProcessTest, ForwardsStdoutStderrAndExitCode) {
         exit_code = code;
     });
 
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
-
-    ASSERT_TRUE(exited);
-    EXPECT_EQ(exit_code, 7);  // 非零退出码原样透传
-    EXPECT_EQ(child->state(), ChildState::Stopped);
-
-    const std::string logs = read_suite_log();
     const std::string entry_name = worker_exe_.filename().string();
     const std::string pid_str = std::to_string(pid);
     // escape_for_kv 转义: 双引号转 \" , 反斜杠转双反斜杠
@@ -271,6 +275,22 @@ TEST_F(ChildProcessTest, ForwardsStdoutStderrAndExitCode) {
     const std::string expected_stderr =
         "forwarded child stderr | child_pid=" + pid_str + " child_entry=" + entry_name +
         " child_msg=\"worker stderr | name=fwd_test note=\\\"a\\\\b\\\"c\\\"\"";
+
+    // 等退出回调 **且** 两根管道的转发日志都落盘。超时只是上限；只等 exited 就停会漏掉
+    // 与退出回调同批投递的管道读 handler（两者顺序不确定），让日志断言在高负载下假红。
+    ASSERT_TRUE(dztrader::test::run_io_until(ioc_, [&] {
+        if (!exited) {
+            return false;
+        }
+        const std::string current = read_suite_log();
+        return current.find(expected_stdout) != std::string::npos &&
+               current.find(expected_stderr) != std::string::npos;
+    }));
+
+    EXPECT_EQ(exit_code, 7);  // 非零退出码原样透传
+    EXPECT_EQ(child->state(), ChildState::Stopped);
+
+    const std::string logs = read_suite_log();
     EXPECT_NE(logs.find(expected_stdout), std::string::npos) << logs;
     EXPECT_NE(logs.find(expected_stderr), std::string::npos) << logs;
 }
