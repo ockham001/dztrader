@@ -1900,9 +1900,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   min-width: 0;
 }
 
-/* 只给可能含任意长度 token 的值开断行（共享内存目录路径）：`overflow-wrap: anywhere`
-   同时收窄 min-content（`break-word` 不会），窄屏才不会被长路径撑出横向滚动条（#321）。
-   不收进基础类：那会让百分比、容量等数字在极窄列里被拦腰折断。 */
+/* 只给可能含任意长度 token 的值（共享内存目录路径）开断行：anywhere 同时收窄 min-content；
+   不收进基础类，否则百分比 / 容量会在极窄列里被拦腰折断（#321）。 */
 .monitor-view__list-value--wrap {
   overflow-wrap: anywhere;
 }
@@ -1920,8 +1919,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     padding: var(--spacer-24) var(--spacer-16);
   }
 
+  /* 裸 1fr 的最小轨道是 auto，会被卡片内最长不可断行内容顶宽（#321）。 */
   .monitor-view__grid {
-    /* 裸 1fr 的最小轨道是 auto，会被卡片内最长不可断行内容顶宽（#321）。 */
     grid-template-columns: minmax(0, 1fr);
   }
 

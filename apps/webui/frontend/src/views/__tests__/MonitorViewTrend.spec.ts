@@ -401,11 +401,17 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   const testDir = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(testDir, '..', 'MonitorView.vue'), 'utf8')
 
-  /** 取某选择器的**基础**规则内容（样式表内首次出现即基础档；容忍选择器与 `{` 间距） */
+  /**
+   * 取某选择器的**基础**规则内容（样式表内首次以「行首选择器 + {」出现的那个）。
+   * 必须锚定行首：`indexOf(selector)` 会命中复合选择器里的子串——
+   * 例如 `.monitor-view__list-value` 首次出现在 `[data-level='normal'] .monitor-view__list-value,`
+   * 这类色标规则里，断言的会是一条完全无关的规则（且恒真）。
+   */
   function ruleBody(selector: string): string {
-    const start = source.indexOf(selector)
-    expect(start, `缺少 ${selector} 基础规则`).toBeGreaterThanOrEqual(0)
-    const open = source.indexOf('{', start)
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = new RegExp(`^${escaped}\\s*\\{`, 'm').exec(source)
+    expect(match, `缺少 ${selector} 基础规则`).not.toBeNull()
+    const open = (match as RegExpExecArray).index + (match as RegExpExecArray)[0].length - 1
     const close = source.indexOf('}', open)
     expect(close).toBeGreaterThan(open)
     return source.slice(open, close)

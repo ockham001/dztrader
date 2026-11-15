@@ -839,6 +839,10 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="monitor-shm-path"]').text()).toBe('/srv/dztrader/shm')
+    // #321：长 token 的断行只开在这一个值上（其余 list-value 保持不断行，数字才不会被拦腰折断）
+    const wrapped = wrapper.findAll('.monitor-view__list-value--wrap')
+    expect(wrapped).toHaveLength(1)
+    expect(wrapped[0].attributes('data-test')).toBe('monitor-shm-path')
     expect(wrapper.find('[data-test="monitor-shm-total"]').text()).toBe('720.0 MiB')
     expect(wrapper.find('[data-test="monitor-shm-page-files"]').text()).toBe('12')
     expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').text()).toBe('8 分钟')
