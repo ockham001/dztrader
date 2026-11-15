@@ -926,7 +926,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               :data-mount="volume.mount"
               :data-level="volumeLevel(volume)"
             >
-              <span class="monitor-view__list-label">{{ volume.mount }}</span>
+              <!-- 窄列下允许换行显示全路径 + title 兜底：768 双列下曾把 /mnt/nas/* 截成同一前缀且全页无处可查（#321）。 -->
+              <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
               <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
               <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
             </li>
@@ -954,7 +955,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 data-test="monitor-disk-zero-volume"
                 :data-mount="volume.mount"
               >
-                <span class="monitor-view__list-label">{{ volume.mount }}</span>
+                <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
                 <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
                 <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE_TEXT }}</span>
                 <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
@@ -972,7 +973,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
             <dl class="monitor-view__list">
               <div class="monitor-view__list-row">
                 <dt class="monitor-view__list-label">路径</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-path">{{ shmDir.path }}</dd>
+                <dd class="monitor-view__list-value monitor-view__list-value--wrap" data-test="monitor-shm-path">{{ shmDir.path }}</dd>
               </div>
               <div class="monitor-view__list-row">
                 <dt class="monitor-view__list-label">占用</dt>
@@ -1674,10 +1675,19 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 }
 
 /* ---- CPU 区块（#72）：总量 / 负载 / 速率面板 + 每核网格 ---- */
+/* 显式列数而不是 auto-fit：第 4 个面板 `grid-column: 1 / -1` 占满全部轨道，空轨折叠因此
+   永不触发，列数随容器宽度无限增长（#321）。列数与页面网格同一口径：两列 / ≥xl 三列。 */
 .monitor-view__cpu {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacer-16) var(--spacer-24);
+}
+
+/* 同特异性下按出现顺序取胜，故必须排在基础规则之后。 */
+@media (min-width: 1280px) {
+  .monitor-view__cpu {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .monitor-view__cpu-panel {
@@ -1878,11 +1888,25 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   white-space: nowrap;
 }
 
+/* 挂载点例外：窄列下宁可换行也不省略，它是本行唯一不可从别处恢复的信息（#321）。 */
+.monitor-view__list-label--mount {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .monitor-view__list-value {
   color: var(--text-default);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   font-variant-numeric: tabular-nums;
+  min-width: 0;
+}
+
+/* 只给可能含任意长度 token 的值（共享内存目录路径）开断行：anywhere 同时收窄 min-content；
+   不收进基础类，否则百分比 / 容量会在极窄列里被拦腰折断（#321）。 */
+.monitor-view__list-value--wrap {
+  overflow-wrap: anywhere;
 }
 
 .monitor-view__list-meta {
@@ -1898,8 +1922,9 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     padding: var(--spacer-24) var(--spacer-16);
   }
 
+  /* 裸 1fr 的最小轨道是 auto，会被卡片内最长不可断行内容顶宽（#321）。 */
   .monitor-view__grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .monitor-view__card--wide {
@@ -1911,7 +1936,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   }
 
   .monitor-view__cpu {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .monitor-view__cpu-panel--wide {

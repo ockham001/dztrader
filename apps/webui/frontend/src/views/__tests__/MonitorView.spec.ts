@@ -707,6 +707,24 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     expect(wrapper.find('[data-test="monitor-disk-zero-volumes"]').exists()).toBe(false)
   })
 
+  it('#321 卷行挂载点带 title 并保留基础类：窄列下信息不丢失', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/mnt/nas/shared', available: true, total_bytes: 100 * GIB, used_bytes: 30 * GIB, used_ratio: 0.3 },
+      ],
+    }))
+    const wrapper = await mountView()
+
+    const row = wrapper.find('[data-test="monitor-disk-volume"]')
+    expect(row.exists()).toBe(true)
+    const label = row.find('.monitor-view__list-label--mount')
+    // 完整挂载点必须能从 title 读回（768 双列下曾被截成同一前缀且全页无处可查）
+    expect(label.attributes('title')).toBe('/mnt/nas/shared')
+    // 正文仍是完整路径（title 是兜底，不是替代）；修饰类是在基础类之上叠加，不替换
+    expect(label.text()).toBe('/mnt/nas/shared')
+    expect(label.classes()).toContain('monitor-view__list-label')
+  })
+
   it('卷使用率色标：0.69 → normal、0.70 → warn、0.90 → danger（边界含，百分比文本照常）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
@@ -776,6 +794,10 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     expect(items[0].find('[data-test="monitor-disk-zero-reason"]').text()).toBe('无访问权限')
     expect(items[1].find('[data-test="monitor-disk-zero-reason"]').text()).toBe('总容量为 0')
 
+    // #321：折叠组里的卷行同样要能读到完整挂载点（AC 说的是「每个卷行」，不只正文那批）
+    expect(items.map(item => item.find('.monitor-view__list-label--mount').attributes('title')))
+      .toEqual(['/backup', '/run/user/1000/cliprdr-abc'])
+
     const group = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
     // 展开后按钮语义同步
     expect(group.find('[data-test="monitor-disk-zero-toggle"]').attributes('aria-expanded')).toBe('true')
@@ -817,6 +839,10 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="monitor-shm-path"]').text()).toBe('/srv/dztrader/shm')
+    // #321：长 token 的断行只开在这一个值上（其余 list-value 保持不断行，数字才不会被拦腰折断）
+    const wrapped = wrapper.findAll('.monitor-view__list-value--wrap')
+    expect(wrapped).toHaveLength(1)
+    expect(wrapped[0].attributes('data-test')).toBe('monitor-shm-path')
     expect(wrapper.find('[data-test="monitor-shm-total"]').text()).toBe('720.0 MiB')
     expect(wrapper.find('[data-test="monitor-shm-page-files"]').text()).toBe('12')
     expect(wrapper.find('[data-test="monitor-shm-oldest-age"]').text()).toBe('8 分钟')
