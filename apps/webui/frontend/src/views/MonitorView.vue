@@ -83,7 +83,8 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // 折叠状态不持久化；可用性空态不进折叠。列数 <md 单列、md–xl 双列、≥xl 三列（沿用既有断点，
 // 不使用容器查询），图表用容器自适应重排。
 // 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
-// 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间；偏差按配置阈值着色（与资源类共用
+// 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向说明（#326：正 = 本地快于
+// 参考源，触屏与键盘用户看不到注释）；偏差按配置阈值着色（与资源类共用
 // `useResourceLevel` 的定档实现与同一套等级词表），误差界越界另给「测量质量」提示且**不改变**
 // 偏差着色；展开显示每台服务器明细与同步服务检测（多服务运行给冲突提示）。三种空态（配置关闭 /
 // 尚未探测 / 全部失败）都渲染这张卡且都不显示 0；「立即查询」置灰时长取 `manual_min_interval_sec`，
@@ -1259,8 +1260,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
 
-      <!-- 时间（#302，契约 sysmon §2.9）：偏差主数值 + 误差界/来源/stratum/上次探测相对时间；
-           偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
+      <!-- 时间（#302，契约 sysmon §2.9）：偏差主数值 + 方向说明 + 误差界/来源/stratum/上次探测
+           相对时间；偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
            （独立于偏差着色，契约 §2.8）；展开后是每台服务器明细 + 同步服务检测。
            三种空态都渲染这张卡（配置关闭也是明确空态而不是整块消失），且都不显示 0。
            顶栏另有常驻 NTP 徽章（ADR 0048：只给状态色与偏差数字，明细仍在本卡片）。 -->
@@ -1298,11 +1299,14 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               @click="clockDetailOpen = !clockDetailOpen"
             >{{ clockDetailOpen ? '收起' : '展开明细' }}</button>
           </div>
-          <!-- 有可用参考源：副信息 = 误差界 / 来源服务器 / stratum / 上次探测相对时间 -->
+          <!-- 有可用参考源：副信息 = 误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向
+               （#326：偏差是有符号量，界面必须给出「正 = 本地快于参考源」的方向说明，不能只靠
+              hover / 注释——触屏与键盘用户看不到注释） -->
           <p v-if="clockState === 'live'" class="monitor-view__meta" data-test="monitor-clock-summary">
             误差界 {{ formatMilliseconds(clock.bound_ms) }}
             · 来源 {{ clock.source }}（stratum {{ clock.source_stratum ?? UNAVAILABLE_TEXT }}）
             <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
+            · 正 = 本地快于参考源
           </p>
           <!-- 探测全部失败：偏差不可用，给出逐台原因（不得显示 0 或上一轮结果，契约 §2.9）；
                此时没有「来源 / stratum」可写，只报事实与原因，不留空标签。 -->
@@ -1900,6 +1904,15 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 .monitor-view__clock-probe {
   display: inline-flex;
   align-items: center;
+}
+
+/* 冷却期按钮宽度稳定（#326）：文案在「立即查询」与「N 秒后可再次查询」之间切换，
+   原实测宽度 87.1px → 138.5px，按钮自身左缘左移（卡片头是 space-between，标题位置不动）。
+   按最长文案预留宽度：`manual_min_interval_sec` 上限 3600 → 最长「3600 秒后可再次查询」，
+   实测 151.7px；留 ~6px 余量吸收跨平台字体回退 / DPR 取整后取 158px，内容居中
+   （正常态只是左右留白，不再有位移）。 */
+.monitor-view__clock-probe .ds-btn {
+  min-width: 158px;
 }
 
 /* 时钟卡片明细区（#302）：与主数值之间留白，复用面板标题 / 列表 / io-metrics 既有范式 */
