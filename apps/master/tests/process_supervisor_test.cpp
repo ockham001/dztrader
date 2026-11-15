@@ -3,6 +3,7 @@
  * @brief ProcessSupervisor 集成测试。
  */
 
+#include "io_context_wait.h"
 #include "process_supervisor.h"
 #include "test_temp_dir.h"
 
@@ -174,15 +175,11 @@ protected:
         });
     }
 
-    /// 条件等待: 驱动 io_context 直到 pred 成立或超时 (替代固定 sleep)。
+    /// 条件等待: 驱动 io_context 直到 pred 成立或超时（#335 收敛到共享实现，
+    /// 语义与 `dztrader::test::run_io_until` 相同；保留本方法名以免改动全部调用点）。
     template <typename Pred>
     bool wait_for_io(std::chrono::milliseconds timeout, Pred pred) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!pred() && std::chrono::steady_clock::now() < deadline) {
-            ioc_.restart();
-            ioc_.run_for(std::chrono::milliseconds(20));
-        }
-        return pred();
+        return dztrader::test::run_io_until(ioc_, pred, timeout);
     }
 
     std::filesystem::path tmp_dir_;
@@ -226,10 +223,9 @@ TEST_F(ProcessSupervisorTest, StopProcessRejectedDuringShutdown) {
     supervisor.stop_process("longrun");
     EXPECT_TRUE(drain_process_frames(reader).empty());
 
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
-
-    EXPECT_EQ(supervisor.children().size(), 0u);
+    // 等关闭批次完成; 超时只是上限（事件到达即早退）
+    EXPECT_TRUE(wait_for_io(std::chrono::milliseconds(15000),
+                            [&] { return supervisor.children().empty(); }));
 
     orphan_guard_.cleanup();
 }
@@ -324,9 +320,9 @@ TEST_F(ProcessSupervisorTest, RestartAfterCrashSpawnsNewChild) {
     EXPECT_NE(running_pids[0], running_pids[1]);
 
     supervisor.shutdown();
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(3));
-    EXPECT_EQ(supervisor.children().size(), 0u);
+    // 等关闭批次完成（超时只是上限）
+    EXPECT_TRUE(wait_for_io(std::chrono::milliseconds(10000),
+                            [&] { return supervisor.children().empty(); }));
 
     orphan_guard_.cleanup();
 }
@@ -382,9 +378,9 @@ TEST_F(ProcessSupervisorTest, InternalProcessRestartReceivesRecoverArg) {
     EXPECT_NE(spawn_args[1].find("--recover"), std::string::npos);
 
     supervisor.shutdown();
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(3));
-    EXPECT_EQ(supervisor.children().size(), 0u);
+    // 等关闭批次完成（超时只是上限）
+    EXPECT_TRUE(wait_for_io(std::chrono::milliseconds(10000),
+                            [&] { return supervisor.children().empty(); }));
 
     orphan_guard_.cleanup();
 }
@@ -671,10 +667,10 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllChildrenSequentially) {
     EXPECT_TRUE(supervisor.is_shutting_down());
 
     // worker 不读事件通道 -> SHUTDOWN 无效, 依赖批超时强制终止
-    // (single_stop_timeout_sec 默认 3s), 全部退出后 children 清空
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(10));
-    EXPECT_EQ(supervisor.children().size(), 0u);
+    // (single_stop_timeout_sec 默认 3s), 全部退出后 children 清空。
+    // 条件等待: 批超时本身仍是 3s, 预算只给负载留余量（超时是上限不是同步手段）
+    EXPECT_TRUE(wait_for_io(std::chrono::milliseconds(20000),
+                            [&] { return supervisor.children().empty(); }));
 
     orphan_guard_.cleanup();
 }
@@ -703,10 +699,10 @@ TEST_F(ProcessSupervisorTest, ShutdownStopsAllCategoriesSequentially) {
     supervisor.shutdown();
     EXPECT_TRUE(supervisor.is_shutting_down());
 
-    // worker 不读事件通道 -> SHUTDOWN 无效, 依赖各批超时强制终止
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(15));
-    EXPECT_EQ(supervisor.children().size(), 0u);
+    // worker 不读事件通道 -> SHUTDOWN 无效, 依赖各批超时强制终止。
+    // 每批 1s, 5 批最坏 5s; 条件等待的预算留足负载余量（超时只是上限）
+    EXPECT_TRUE(wait_for_io(std::chrono::milliseconds(20000),
+                            [&] { return supervisor.children().empty(); }));
 
     orphan_guard_.cleanup();
 }
@@ -726,20 +722,20 @@ TEST_F(ProcessSupervisorTest, MdExitBroadcastsNotifyStopped) {
     shm::Reader reader = shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(),
                                              "notify_stopped_probe");
 
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(3));
-
+    // 等子进程退出后 master 代发的 NOTIFY_MD_STOPPED; 超时只是上限
     bool saw_stopped = false;
-    for (int i = 0; i < 64; ++i) {
-        const auto* frame = reader.next_frame();
-        if (!frame) break;
-        shm::FrameView view(frame);
-        if (view.type() == DZ_FRAME_NOTIFY_MD_STOPPED &&
-            std::string_view(view.ext_inst_id()) == "dzmd_ctp") {
-            saw_stopped = true;
+    EXPECT_TRUE(wait_for_io(std::chrono::milliseconds(10000), [&] {
+        for (int i = 0; i < 64; ++i) {
+            const auto* frame = reader.next_frame();
+            if (!frame) break;
+            shm::FrameView view(frame);
+            if (view.type() == DZ_FRAME_NOTIFY_MD_STOPPED &&
+                std::string_view(view.ext_inst_id()) == "dzmd_ctp") {
+                saw_stopped = true;
+            }
         }
-    }
-    EXPECT_TRUE(saw_stopped);
+        return saw_stopped;
+    }));
 
     orphan_guard_.cleanup();
 }
@@ -818,8 +814,8 @@ TEST_F(ProcessSupervisorTest, OnMdChannelReadyStartsPendingStrategies) {
 
     // 清理
     supervisor.shutdown();
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
+    (void)wait_for_io(std::chrono::milliseconds(15000),
+                      [&] { return supervisor.children().empty(); });
     orphan_guard_.cleanup();
 }
 
@@ -857,8 +853,8 @@ TEST_F(ProcessSupervisorTest, StrategyReaderPreRegisteredOnMdChannel) {
 
     // 清理
     supervisor.shutdown();
-    ioc_.restart();
-    ioc_.run_for(std::chrono::seconds(5));
+    (void)wait_for_io(std::chrono::milliseconds(15000),
+                      [&] { return supervisor.children().empty(); });
     orphan_guard_.cleanup();
 }
 

@@ -101,6 +101,7 @@
 | `apps/webui/tests/sysmon_snapshot_fixture.h` | 契约合法的最小 SYSMON 快照的唯一实现（`SysmonSnapshotSeed` + `sysmon_snapshot_fixture()`，`nlohmann::json`）：形状（`availability.metrics` 全 15 键 + `clock` 域快照空态（见《帧契约：系统监控》§2.9）+ 各域 null 占位）固定在本头，两处调用点只给「本例关心的数值」（CPU 总量 / 型号 / 核数），#309 AC5 抽取（原先两份内联副本已实质漂移：controller 那份缺 `core_frequencies` 与根级 `temperature`，过不了 `validate`；#295 finding 5 的键数漂移同源） |
 | `apps/sysmon/tests/sysmon_e2e_support.h` | dzsysmon 进程级 e2e 的共享机械约定：`e2e_strict`（`DZ_SYSMON_E2E_STRICT=1` 时前置不满足从 SKIP 升为 FAIL）、`event_semaphore_busy` / `remove_semaphore`（机器全局事件通道占用检测与清理）、`sysmon_executable` / `spawn_dzsysmon` / `stop_dzsysmon`（真实子进程启停）；不含 gtest，SKIP/FAIL 由调用方决定 |
 | `libs/strategy_api/src/db/tests/mysql_test_env.h` | 仅 `DZ_WITH_MYSQL` 编译的 MySQL 用例辅助：`configured` 判定 `DZ_TEST_MYSQL_HOST` 是否配置、`server` / `unique_database_name`（`dz_test_<pid>_<rand>`）/ `create_database` / `drop_database` / `scalar` / `config_for`；未配置时 `GTEST_SKIP` 由用例自行调用 |
+| `apps/master/tests/io_context_wait.h` | `dztrader::test::run_io_until(io_context&, pred, timeout)`：以 20ms 为片驱动 io_context 直到判据成立即早退（超时只是上限，不是同步手段）。master 进程级用例等待外部事件（子进程退出 / reap / async_wait 回调）共用：#335 门禁 flaky 的收敛 |
 
 单一用途头豁免：使用者少于 2 个的头不需要登记（检查器自动忽略）。若一个头故意不共享、却被 2 个及以上测试 `.cpp` 包含，必须在头文件里写一行显式豁免标记并给出理由：
 
