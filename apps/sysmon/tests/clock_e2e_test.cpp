@@ -548,12 +548,19 @@ TEST_F(ClockE2ETest, ProbeInFlightDoesNotBlockMeasureTicks) {
     ASSERT_TRUE(wait_for_frame(DZ_FRAME_RTN_SYSMON_SNAPSHOT, 15s).has_value());
     pending_.clear();
 
-    // 探测完成前至少两帧周期快照：计量样本在推进、且没有错过 tick。
+    // 探测完成前至少两帧周期快照：计量样本在**推进**（契约 sysmon §2.7：异步探测不占用
+    // io 线程，采集定时器照常推进）。
     //
-    // 等待预算取 15s / 20s：预算只是**上限**（条件等待命中即早退，正常路径不增加墙钟），
-    // 而 CI / 与构建并行的机器上推送定时器与探测回调可能被调度延迟数秒（#335 的 flaky
-    // 取证：CI 上该用例曾失败，同 run 其余 3801 例通过）。
+    // 断言只用「样本时刻严格前进」，**不**断言 `sampling.missed_ticks == 0`：missed_ticks
+    // 统计的是「定时器醒来时已越过计划 deadline 的 tick 数」（app 的 advance_deadline），
+    // 共享 CI runner / 与构建并行的机器上 OS 调度停顿足以让它 > 0（实测 4、7），这与探测
+    // 是否阻塞采集无关——#335 的 flaky 取证（CI 跑这个用例只用了 3.0s，远小于等待预算）。
+    // 「探测阻塞了 io 线程」这一回归由 waiting 条件本身捕获：阻塞期间不会有新快照到达，
+    // 谓词里的 `last_probe_unix_ms == 0` 与超时即失败仍会红。
+    //
+    // 等待预算取 15s / 20s：预算只是**上限**（条件等待命中即早退，正常路径不增加墙钟）。
     std::size_t in_flight_snapshots = 0;
+    int64_t previous_sample_ms = 0;
     for (int i = 0; i < 2; ++i) {
         const auto snapshot = wait_for_snapshot(
             [](const nlohmann::json& payload) {
@@ -563,7 +570,12 @@ TEST_F(ClockE2ETest, ProbeInFlightDoesNotBlockMeasureTicks) {
             15s);
         ASSERT_TRUE(snapshot.has_value())
             << "measure ticks stopped while a probe was in flight (contract sysmon §2.7)";
-        EXPECT_EQ((*snapshot)["sampling"]["missed_ticks"].get<uint64_t>(), 0U);
+        const int64_t sample_ms = (*snapshot)["sampling"]["last_sample_unix_ms"].get<int64_t>();
+        if (in_flight_snapshots > 0) {
+            EXPECT_GT(sample_ms, previous_sample_ms)
+                << "measure ticks did not advance while a probe was in flight";
+        }
+        previous_sample_ms = sample_ms;
         ++in_flight_snapshots;
     }
     EXPECT_EQ(in_flight_snapshots, 2U);
