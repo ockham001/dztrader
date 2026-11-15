@@ -1750,3 +1750,21 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
     expect(wrapper.find('[data-test="monitor-waiting"]').exists()).toBe(true)
   })
 })
+
+// #328：窄屏页头结构——标题组与 Tab 行分属 topbar 的两个子级（CSS 再决定同行 / 拆行 + 吸顶）。
+describe('MonitorView 响应式页头结构（#328）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('视图切换与标题组同属 topbar，但不在 header 内部（拆行由 CSS <md 块决定）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    expect(wrapper.find('.monitor-view__topbar [data-test="monitor-view-switch"]').exists()).toBe(true)
+    expect(wrapper.find('.monitor-view__header [data-test="monitor-view-switch"]').exists()).toBe(false)
+    // 标题组仍在 header 内
+    expect(wrapper.find('.monitor-view__header .monitor-view__heading').exists()).toBe(true)
+  })
+})

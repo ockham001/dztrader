@@ -541,30 +541,34 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 
 <template>
   <div class="monitor-view">
-    <header class="monitor-view__header">
-      <div class="monitor-view__heading">
-        <h1 class="monitor-view__title">资源监控</h1>
-        <!-- 实时视图的「等待快照」由下面状态行承担（#325），副标题不再重复同一件事；
-             历史 / 配置视图没有状态行，保留这句说明。 -->
-        <p
-          v-if="snapshot || viewMode !== 'realtime'"
-          class="monitor-view__subtitle"
-          data-test="monitor-subtitle"
-        >
-          <template v-if="snapshot">{{ platformDescription }}<template v-if="updatedAt"> · 更新于 {{ updatedAt }}</template></template>
-          <template v-else>系统监控数据尚未到达</template>
-        </p>
-        <!-- 实时快照状态（#325）：原为 `ds-tag` 药丸，在 390 宽与三个视图切换按钮同排、同属药丸族，
-             看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。 -->
-        <p
-          v-if="viewMode === 'realtime'"
-          class="monitor-view__snapshot-state"
-          :class="{ 'monitor-view__snapshot-state--waiting': !snapshot }"
-        >
-          <span class="monitor-view__snapshot-dot" aria-hidden="true"></span>
-          {{ snapshot ? '实时快照' : '等待快照' }}
-        </p>
-      </div>
+    <!-- 顶栏容器（#328）：≥768 单行（标题组 + Tab）；<md 用 display:contents 拆开，
+         让视图切换行成为滚动容器 .monitor-view 的直接子级，从而能单独吸顶（不钉整块 header）。 -->
+    <div class="monitor-view__topbar">
+      <header class="monitor-view__header">
+        <div class="monitor-view__heading">
+          <h1 class="monitor-view__title">资源监控</h1>
+          <!-- 实时视图的「等待快照」由下面状态行承担（#325），副标题不再重复同一件事；
+               历史 / 配置视图没有状态行，保留这句说明。 -->
+          <p
+            v-if="snapshot || viewMode !== 'realtime'"
+            class="monitor-view__subtitle"
+            data-test="monitor-subtitle"
+          >
+            <template v-if="snapshot">{{ platformDescription }}<template v-if="updatedAt"> · 更新于 {{ updatedAt }}</template></template>
+            <template v-else>系统监控数据尚未到达</template>
+          </p>
+          <!-- 实时快照状态（#325）：原为 `ds-tag` 药丸，在 390 宽与三个视图切换按钮同排、同属药丸族，
+               看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。 -->
+          <p
+            v-if="viewMode === 'realtime'"
+            class="monitor-view__snapshot-state"
+            :class="{ 'monitor-view__snapshot-state--waiting': !snapshot }"
+          >
+            <span class="monitor-view__snapshot-dot" aria-hidden="true"></span>
+            {{ snapshot ? '实时快照' : '等待快照' }}
+          </p>
+        </div>
+      </header>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
            tabpanel、aria-controls、方向键与 roving tabindex——读屏按 tabs 报语义、键盘却按按钮走，
            比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
@@ -597,7 +601,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           @click="viewMode = 'config'"
         >配置</button>
       </div>
-    </header>
+    </div>
 
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
          历史 tab **保持 v-if**：它的 onMounted 会发一次 history REST 查询，store 无缓存无去重，
@@ -1480,13 +1484,20 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   padding: var(--spacer-32) var(--spacer-24);
 }
 
-.monitor-view__header {
+/* 顶栏（#328）：默认单行「标题组 + 视图切换」，只使用宽度断点（640/768/1024/1280 白名单）。
+   <md 时 topbar 退化为 display:contents，视图切换行改由下方 max-width 块单独吸顶。 */
+.monitor-view__topbar {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: var(--spacer-16);
   margin-bottom: var(--spacer-24);
-  flex-wrap: wrap;
+}
+
+/* 标题组可收缩（#328）：中等宽度下让副标题走省略号，而不是把 Tab 顶到下一行。 */
+.monitor-view__header {
+  min-width: 0;
 }
 
 .monitor-view__title {
@@ -1546,6 +1557,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   display: inline-flex;
   gap: var(--spacer-4);
   margin-left: auto;
+}
+
+/* 中等宽度页头紧凑化（#328）：768–1279 在单行页头前提下收紧副标题——nowrap + 省略号，
+   不再把 Tab 顶到下一行。单行本身由 topbar 基础规则（flex-wrap: nowrap）保证；
+   可收缩的是作为 flex item 的 `.monitor-view__header`（其 min-width: 0 在基础规则里，
+   `.monitor-view__heading` 是普通块级元素，设 min-width 不会生效）。只用宽度断点。 */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+  .monitor-view__subtitle {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
 }
 
 /* 卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
@@ -2079,6 +2102,31 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 @media (max-width: 767.98px) {
   .monitor-view {
     padding: var(--spacer-24) var(--spacer-16);
+  }
+
+  /* 窄屏只钉住视图切换那一行（#328）：不钉整块 header（390×844 上会吃掉 90–110px 视口）。
+     display:contents 把 topbar 盒去掉，视图切换行成为滚动容器 .monitor-view 的直接子级，
+     sticky 才能跨越整个内容区生效；整行背景 + z-index 防止下方卡片从行下透出。
+     top 取负的滚动容器 padding-top：sticky 的约束矩形从内容盒顶起算，直接写 0 会让行停在
+     「容器顶 + padding-top」处，滚动时上方露出 28px 卡片条带（headless Chrome 实测
+     elementFromPoint 命中卡片）。这里抵掉同一 token，行才真正贴住容器顶。 */
+  .monitor-view__topbar {
+    display: contents;
+  }
+
+  .monitor-view__header {
+    margin-bottom: var(--spacer-12);
+  }
+
+  .monitor-view__view-switch {
+    position: sticky;
+    top: calc(-1 * var(--spacer-24));
+    z-index: 2;
+    display: flex;
+    width: 100%;
+    margin: 0 0 var(--spacer-16);
+    padding: var(--spacer-8) 0;
+    background: var(--bg-base-default);
   }
 
   /* 裸 1fr 的最小轨道是 auto，会被卡片内最长不可断行内容顶宽（#321）。 */
