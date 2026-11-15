@@ -1672,3 +1672,81 @@ describe('MonitorView 视图切换语义（#323：分段按钮组，不是 ARIA 
     expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
   })
 })
+
+// #325：实时视图信息呈现——卡片等高留白 / 「实时快照」标签形态 / 可点数值可发现性。
+describe('MonitorView 实时视图信息呈现（#325）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('5 处可点标量带 title 与 aria-label（不再只靠 hover 下划线）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    // 独立 oracle：指标名按用户可见口径手抄（不从被测代码取，避免自证）。
+    const cases = [
+      ['[data-test="monitor-cpu-value"]', 'CPU 使用率'],
+      ['[data-test="monitor-load-one"]', '系统负载（1 分钟）'],
+      ['[data-test="monitor-memory-value"]', '内存使用率'],
+      ['[data-test="monitor-memory-swap-usage"]', '交换使用率'],
+      ['[data-test="monitor-shm-total"] button', '共享内存目录占用'],
+    ] as const
+    for (const [selector, label] of cases) {
+      const el = wrapper.find(selector)
+      expect(el.exists(), selector).toBe(true)
+      expect(el.attributes('title'), selector).toBe(`查看${label}历史变化`)
+      const aria = el.attributes('aria-label') ?? ''
+      // WCAG 2.5.3 Label in Name：aria-label 必须包含可见文本（按钮内就是当前数值）
+      expect(aria, selector).toContain(el.text())
+      expect(aria, selector).toContain(`查看${label}历史变化`)
+      // 仍是按钮（键盘可达），无障碍属性不引入新元素
+      expect(el.element.tagName, selector).toBe('BUTTON')
+    }
+  })
+
+  it('Windows processor_queue 分支同样带 title 与 aria-label', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      cpuLoadAverage: { one: 3.25, five: null, fifteen: null, semantic: 'processor_queue' },
+    }))
+    const wrapper = await mountView()
+
+    const el = wrapper.find('[data-test="monitor-load-queue"]')
+    expect(el.exists()).toBe(true)
+    expect(el.attributes('title')).toBe('查看系统负载（1 分钟）历史变化')
+    expect(el.attributes('aria-label')).toContain('3.25')
+    expect(el.attributes('aria-label')).toContain('查看系统负载（1 分钟）历史变化')
+  })
+
+  it('实时快照状态降级为状态点 + 小字，且不与视图切换按钮同排', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    const state = wrapper.find('.monitor-view__heading .monitor-view__snapshot-state')
+    expect(state.exists()).toBe(true)
+    expect(state.text()).toContain('实时快照')
+    // 不再是 ds-tag 药丸族（原形态在 390 宽与三个 Tab 同排、看起来像第 4 个 Tab）
+    expect(state.classes()).not.toContain('ds-tag')
+    const dot = state.find('.monitor-view__snapshot-dot')
+    expect(dot.exists()).toBe(true)
+    expect(dot.attributes('aria-hidden')).toBe('true')
+    // 结构上不属于 header 直接子级 / 视图切换组 → 不与 Tab 处于同一视觉行
+    expect(wrapper.find('.monitor-view__header > .monitor-view__snapshot-state').exists()).toBe(false)
+    expect(wrapper.find('.monitor-view__view-switch .monitor-view__snapshot-state').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-subtitle"]').exists()).toBe(true)
+  })
+
+  it('等待快照态用警示色状态点，且副标题不重复「等待」语义', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountView()
+
+    const state = wrapper.find('.monitor-view__snapshot-state')
+    expect(state.exists()).toBe(true)
+    expect(state.text()).toContain('等待快照')
+    expect(state.classes()).toContain('monitor-view__snapshot-state--waiting')
+    expect(state.find('.monitor-view__snapshot-dot').attributes('aria-hidden')).toBe('true')
+    // 实时视图的等待语义只由状态行承担（副标题不重复同一句话）
+    expect(wrapper.find('[data-test="monitor-subtitle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-waiting"]').exists()).toBe(true)
+  })
+})
