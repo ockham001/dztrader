@@ -442,6 +442,8 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   it('监控页列数：<md 单列、md–xl 双列、≥xl 三列', () => {
     // 基础规则（md–xl）：双列（只认基础块本身，避免别处残留的 2 列让断言假绿）
     expect(ruleBody('.monitor-view__grid')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
+    expect(ruleBody('.monitor-view__grid')).toContain('align-items: start')
     // ≥xl（1280）：三列
     expect(mediaRuleBody('@media (min-width: 1280px)', '.monitor-view__grid'))
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)

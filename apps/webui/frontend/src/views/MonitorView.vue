@@ -115,6 +115,22 @@ function openHistory(metricKey: string): void {
   viewMode.value = 'history'
 }
 
+/**
+ * 可点标量的历史入口说明（#325）：让「数值可点、点了看什么」可被看见。
+ * 此前唯一线索是 `:hover` 下划线——触屏与键盘用户完全看不到。
+ * - `title`：短句动作（悬停提示）；
+ * - `aria-label`：**先带可见数值**（WCAG 2.5.3 Label in Name——读屏与语音控制要能用可见文本
+ *   定位控件），再接同一个动作。
+ * 不写死历史区间：历史视图有独立的区间选择器，区间文案的唯一真相源是 `SYSMON_HISTORY_RANGES`。
+ */
+function historyTitle(metricKey: string): string {
+  return `查看${trendMetricLabel(metricKey)}历史变化`
+}
+
+function historyAriaLabel(metricKey: string, visibleValue: string): string {
+  return `${trendMetricLabel(metricKey)} ${visibleValue}，${historyTitle(metricKey)}`
+}
+
 // ---- 配置草稿守卫（#322）----
 // 配置 tab 用 v-show 常驻（切视图不再卸载，草稿因此不丢）；但它仍会随页面卸载而丢失，
 // 而离开路由是日常最易误触的丢失路径（侧栏就在旁边），所以离开时按 `dirty` 拦一次。
@@ -527,9 +543,25 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     <header class="monitor-view__header">
       <div class="monitor-view__heading">
         <h1 class="monitor-view__title">资源监控</h1>
-        <p class="monitor-view__subtitle" data-test="monitor-subtitle">
+        <!-- 实时视图的「等待快照」由下面状态行承担（#325），副标题不再重复同一件事；
+             历史 / 配置视图没有状态行，保留这句说明。 -->
+        <p
+          v-if="snapshot || viewMode !== 'realtime'"
+          class="monitor-view__subtitle"
+          data-test="monitor-subtitle"
+        >
           <template v-if="snapshot">{{ platformDescription }}<template v-if="updatedAt"> · 更新于 {{ updatedAt }}</template></template>
           <template v-else>系统监控数据尚未到达</template>
+        </p>
+        <!-- 实时快照状态（#325）：原为 `ds-tag` 药丸，在 390 宽与三个视图切换按钮同排、同属药丸族，
+             看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。 -->
+        <p
+          v-if="viewMode === 'realtime'"
+          class="monitor-view__snapshot-state"
+          :class="{ 'monitor-view__snapshot-state--waiting': !snapshot }"
+        >
+          <span class="monitor-view__snapshot-dot" aria-hidden="true"></span>
+          {{ snapshot ? '实时快照' : '等待快照' }}
         </p>
       </div>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
@@ -564,8 +596,6 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           @click="viewMode = 'config'"
         >配置</button>
       </div>
-      <span v-if="viewMode === 'realtime' && snapshot" class="ds-tag">实时快照</span>
-      <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
 
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
@@ -639,6 +669,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   type="button"
                   class="monitor-view__metric monitor-view__value-btn"
                   data-test="monitor-cpu-value"
+                  :title="historyTitle('cpu.usage_ratio')"
+                  :aria-label="historyAriaLabel('cpu.usage_ratio', cpuPercent)"
                   @click="openHistory('cpu.usage_ratio')"
                 >{{ cpuPercent }}</button>
                 <SysmonSparkline
@@ -679,6 +711,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                       type="button"
                       class="monitor-view__value-btn"
                       data-test="monitor-load-queue"
+                      :title="historyTitle('cpu.load_average.one')"
+                      :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
                       @click="openHistory('cpu.load_average.one')"
                     >{{ formatDecimal(loadAverage.one) }}</button>
                   </dd>
@@ -691,6 +725,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                         type="button"
                         class="monitor-view__value-btn"
                         data-test="monitor-load-one"
+                        :title="historyTitle('cpu.load_average.one')"
+                        :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
                         @click="openHistory('cpu.load_average.one')"
                       >{{ formatDecimal(loadAverage.one) }}</button>
                     </dd>
@@ -881,6 +917,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               type="button"
               class="monitor-view__metric monitor-view__value-btn"
               data-test="monitor-memory-value"
+              :title="historyTitle('memory.used_ratio')"
+              :aria-label="historyAriaLabel('memory.used_ratio', formatPercent(memory.used_ratio))"
               @click="openHistory('memory.used_ratio')"
             >{{ formatPercent(memory.used_ratio) }}</button>
             <SysmonSparkline
@@ -930,6 +968,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   type="button"
                   class="monitor-view__value-btn"
                   data-test="monitor-memory-swap-usage"
+                  :title="historyTitle('swap.used_ratio')"
+                  :aria-label="historyAriaLabel('swap.used_ratio', formatPercent(swapInfo.used_ratio))"
                   @click="openHistory('swap.used_ratio')"
                 >{{ formatPercent(swapInfo.used_ratio) }}</button>
               </span>
@@ -1038,6 +1078,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   <button
                     type="button"
                     class="monitor-view__value-btn"
+                    :title="historyTitle('shm_dir.total_bytes')"
+                    :aria-label="historyAriaLabel('shm_dir.total_bytes', formatBytes(shmDir.total_bytes))"
                     @click="openHistory('shm_dir.total_bytes')"
                   >{{ formatBytes(shmDir.total_bytes) }}</button>
                 </dd>
@@ -1458,6 +1500,30 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   color: var(--text-tertiary);
 }
 
+/* 实时快照状态（#325）：状态点 + 小字（原 `ds-tag` 药丸在 390 宽与三个视图切换按钮同排、
+   同属药丸族，看起来像第 4 个 Tab）。放在标题组内，与 Tab 行分离。 */
+.monitor-view__snapshot-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-6);
+  margin: var(--spacer-4) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__snapshot-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--status-success-default);
+}
+
+.monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot {
+  background: var(--status-warning-default);
+}
+
 /* 离开确认对话框正文（#322）：与其它对话框正文同档字号，不引入新范式 */
 .monitor-view__leave-text {
   margin: 0;
@@ -1478,8 +1544,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   margin-left: auto;
 }
 
+/* 卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
+   造成大片卡内留白（实测温度 326px / 内存 169px / 网络 140px，1280 下网络还有 140px；#325）。 */
 .monitor-view__grid {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacer-16);
 }
