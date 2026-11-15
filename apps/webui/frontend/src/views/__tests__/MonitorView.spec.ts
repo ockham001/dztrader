@@ -1595,6 +1595,32 @@ describe('MonitorView 配置草稿守卫（#322）', () => {
     expect(wrapper.find('.ds-dialog').exists()).toBe(false)
   })
 
+  it('配置镜像未到达（503 / WS 未推送）时离开：不弹框（空表单不得算成有改动）', async () => {
+    // 空表单会让组件内的 dirty 判成「有改动」（解析不出数字）；守卫必须只在镜像就绪后才认它，
+    // 否则 dzsysmon 未运行期间每次离开监控页都会误报。
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockRejectedValue(new Error('HTTP 503'))
+    const { createRouter, createMemoryHistory } = await import('vue-router')
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/monitor', name: 'monitor', component: MonitorView },
+        { path: '/logs', name: 'logs', component: { template: '<div data-test="logs-page" />' } },
+      ],
+    })
+    await router.push('/monitor')
+    await router.isReady()
+    const wrapper = mount(RouteHost, { global: { plugins: [router], stubs } })
+    await flushPromises()
+    expect(useSysmonStore().config, '本用例要求镜像未到达').toBeNull()
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+
+    void router.push('/logs')
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/logs')
+  })
+
   it('无未保存改动时离开路由：不弹确认框，直接导航', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())

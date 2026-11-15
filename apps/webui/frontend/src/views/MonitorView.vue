@@ -119,8 +119,17 @@ function openHistory(metricKey: string): void {
 // 配置 tab 用 v-show 常驻（切视图不再卸载，草稿因此不丢）；但它仍会随页面卸载而丢失，
 // 而离开路由是日常最易误触的丢失路径（侧栏就在旁边），所以离开时按 `dirty` 拦一次。
 // 判定口径完全复用组件内的 `dirty`（不新写第二套 diff）；不拦刷新/关页（beforeunload）。
+//
+// 已知残留（本改动**没有**引入、也没变差）：`SysmonConfigTab` 内的
+// `watch(config, …, { immediate: true })` 在每次镜像更新时重置表单草稿。v-if 时代它只在
+// 组件挂着时生效；v-show 后组件常驻，于是「隐藏期间收到 WS sysmon_config」也会重置草稿。
+// 两种情况里草稿都会丢（挂着时收到推送同样会丢），差别只是发生时机；要做「脏时冻结草稿 +
+// 冲突提示」得另开票（#322 的「不做」段）。
 const configTabRef = ref<InstanceType<typeof SysmonConfigTab> | null>(null)
-const configDirty = computed(() => configTabRef.value?.dirty === true)
+// 生效镜像未到达（`GET /api/sysmon/config` 503 或 WS 尚未推送）时表单是空的，组件内的 `dirty`
+// 会把「空表单解析不出数字」算成有改动 —— 那会让每次离开都误报「有未保存的改动」。
+// 因此只在镜像就绪后才认这个判定（镜像一旦到达就不会再变回 null）。
+const configDirty = computed(() => sysmon.config !== null && configTabRef.value?.dirty === true)
 const leaveConfirmOpen = ref(false)
 /** 挂起的路由离开回调：确认后调用 `next()`，取消时 `next(false)` */
 let pendingLeaveNext: NavigationGuardNext | null = null
