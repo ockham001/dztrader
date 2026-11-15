@@ -1370,10 +1370,10 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     const tab = wrapper.find('[data-test="monitor-tab-config"]')
     expect(tab.exists()).toBe(true)
     expect(tab.text()).toBe('配置')
-    expect(tab.attributes('aria-selected')).toBe('false')
+    expect(tab.attributes('aria-pressed')).toBe('false')
 
     await tab.trigger('click')
-    expect(tab.attributes('aria-selected')).toBe('true')
+    expect(tab.attributes('aria-pressed')).toBe('true')
     // 配置 tab 用 v-show 常驻（#322：卸载即丢草稿），显隐由根元素的内联 display 表达。
     // 因此直接断内联样式，不用测试辅助的可见性判断（同 TradingDataView.spec.ts 的做法）。
     const configPanel = () => wrapper.find('[data-test="sysmon-config-tab"]').element as HTMLElement
@@ -1631,5 +1631,44 @@ describe('MonitorView 配置草稿守卫（#322）', () => {
 
     expect(router.currentRoute.value.path).toBe('/logs')
     expect(wrapper.find('.ds-dialog').exists()).toBe(false)
+  })
+})
+
+describe('MonitorView 视图切换语义（#323：分段按钮组，不是 ARIA tabs）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+    localStorage.setItem('jwt_token', 'test-token')
+  })
+
+  it('本控件不声明 tabs 角色：无 role=tablist/tab、无 aria-controls，选中态用 aria-pressed', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    // 声明 tabs 语义却不提供 tabpanel / aria-controls / 方向键 / roving tabindex，
+    // 比不做更糟（读屏按 tabs 报语义、键盘按按钮走）。退回普通按钮组。
+    // absence 断言限定在本控件内：同页其它控件将来合法使用 aria-controls 不该误红。
+    const switchEl = wrapper.find('[data-test="monitor-view-switch"]')
+    expect(switchEl.exists(), '找不到视图切换控件').toBe(true)
+    expect(switchEl.find('[role="tablist"]').exists()).toBe(false)
+    expect(switchEl.find('[role="tab"]').exists()).toBe(false)
+    expect(switchEl.find('[aria-controls]').exists()).toBe(false)
+    expect(switchEl.find('[aria-selected]').exists()).toBe(false)
+
+    // 「可访问名称 + button 角色 + pressed 状态」三件套（不只断 DOM 结构）
+    const NAMES: Record<string, string> = { realtime: '实时', history: '历史', config: '配置' }
+    for (const mode of ['realtime', 'history', 'config']) {
+      const btn = switchEl.find(`[data-test="monitor-tab-${mode}"]`)
+      expect(btn.element.tagName).toBe('BUTTON')
+      expect(btn.attributes('type')).toBe('button')
+      expect(btn.text()).toBe(NAMES[mode])
+      expect(btn.attributes('aria-pressed')).toBe(mode === 'realtime' ? 'true' : 'false')
+      expect(btn.attributes('tabindex')).toBeUndefined()
+    }
+
+    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
+    expect(wrapper.find('[data-test="monitor-tab-realtime"]').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
   })
 })
