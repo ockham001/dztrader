@@ -83,7 +83,8 @@ import type { SysmonVolumeInfo } from '@/types/generated'
 // 折叠状态不持久化；可用性空态不进折叠。列数 <md 单列、md–xl 双列、≥xl 三列（沿用既有断点，
 // 不使用容器查询），图表用容器自适应重排。
 // 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
-// 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间；偏差按配置阈值着色（与资源类共用
+// 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向说明（#326：正 = 本地快于
+// 参考源，触屏与键盘用户看不到注释）；偏差按配置阈值着色（与资源类共用
 // `useResourceLevel` 的定档实现与同一套等级词表），误差界越界另给「测量质量」提示且**不改变**
 // 偏差着色；展开显示每台服务器明细与同步服务检测（多服务运行给冲突提示）。三种空态（配置关闭 /
 // 尚未探测 / 全部失败）都渲染这张卡且都不显示 0；「立即查询」置灰时长取 `manual_min_interval_sec`，
@@ -113,6 +114,22 @@ onMounted(() => {
 function openHistory(metricKey: string): void {
   history.preselect(metricKey)
   viewMode.value = 'history'
+}
+
+/**
+ * 可点标量的历史入口说明（#325）：让「数值可点、点了看什么」可被看见。
+ * 此前唯一线索是 `:hover` 下划线——触屏与键盘用户完全看不到。
+ * - `title`：短句动作（悬停提示）；
+ * - `aria-label`：**先带可见数值**（WCAG 2.5.3 Label in Name——读屏与语音控制要能用可见文本
+ *   定位控件），再接同一个动作。
+ * 不写死历史区间：历史视图有独立的区间选择器，区间文案的唯一真相源是 `SYSMON_HISTORY_RANGES`。
+ */
+function historyTitle(metricKey: string): string {
+  return `查看${trendMetricLabel(metricKey)}历史变化`
+}
+
+function historyAriaLabel(metricKey: string, visibleValue: string): string {
+  return `${trendMetricLabel(metricKey)} ${visibleValue}，${historyTitle(metricKey)}`
 }
 
 // ---- 配置草稿守卫（#322）----
@@ -527,9 +544,25 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     <header class="monitor-view__header">
       <div class="monitor-view__heading">
         <h1 class="monitor-view__title">资源监控</h1>
-        <p class="monitor-view__subtitle" data-test="monitor-subtitle">
+        <!-- 实时视图的「等待快照」由下面状态行承担（#325），副标题不再重复同一件事；
+             历史 / 配置视图没有状态行，保留这句说明。 -->
+        <p
+          v-if="snapshot || viewMode !== 'realtime'"
+          class="monitor-view__subtitle"
+          data-test="monitor-subtitle"
+        >
           <template v-if="snapshot">{{ platformDescription }}<template v-if="updatedAt"> · 更新于 {{ updatedAt }}</template></template>
           <template v-else>系统监控数据尚未到达</template>
+        </p>
+        <!-- 实时快照状态（#325）：原为 `ds-tag` 药丸，在 390 宽与三个视图切换按钮同排、同属药丸族，
+             看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。 -->
+        <p
+          v-if="viewMode === 'realtime'"
+          class="monitor-view__snapshot-state"
+          :class="{ 'monitor-view__snapshot-state--waiting': !snapshot }"
+        >
+          <span class="monitor-view__snapshot-dot" aria-hidden="true"></span>
+          {{ snapshot ? '实时快照' : '等待快照' }}
         </p>
       </div>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
@@ -564,8 +597,6 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           @click="viewMode = 'config'"
         >配置</button>
       </div>
-      <span v-if="viewMode === 'realtime' && snapshot" class="ds-tag">实时快照</span>
-      <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
 
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
@@ -639,6 +670,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   type="button"
                   class="monitor-view__metric monitor-view__value-btn"
                   data-test="monitor-cpu-value"
+                  :title="historyTitle('cpu.usage_ratio')"
+                  :aria-label="historyAriaLabel('cpu.usage_ratio', cpuPercent)"
                   @click="openHistory('cpu.usage_ratio')"
                 >{{ cpuPercent }}</button>
                 <SysmonSparkline
@@ -679,6 +712,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                       type="button"
                       class="monitor-view__value-btn"
                       data-test="monitor-load-queue"
+                      :title="historyTitle('cpu.load_average.one')"
+                      :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
                       @click="openHistory('cpu.load_average.one')"
                     >{{ formatDecimal(loadAverage.one) }}</button>
                   </dd>
@@ -691,6 +726,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                         type="button"
                         class="monitor-view__value-btn"
                         data-test="monitor-load-one"
+                        :title="historyTitle('cpu.load_average.one')"
+                        :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
                         @click="openHistory('cpu.load_average.one')"
                       >{{ formatDecimal(loadAverage.one) }}</button>
                     </dd>
@@ -881,6 +918,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               type="button"
               class="monitor-view__metric monitor-view__value-btn"
               data-test="monitor-memory-value"
+              :title="historyTitle('memory.used_ratio')"
+              :aria-label="historyAriaLabel('memory.used_ratio', formatPercent(memory.used_ratio))"
               @click="openHistory('memory.used_ratio')"
             >{{ formatPercent(memory.used_ratio) }}</button>
             <SysmonSparkline
@@ -930,6 +969,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   type="button"
                   class="monitor-view__value-btn"
                   data-test="monitor-memory-swap-usage"
+                  :title="historyTitle('swap.used_ratio')"
+                  :aria-label="historyAriaLabel('swap.used_ratio', formatPercent(swapInfo.used_ratio))"
                   @click="openHistory('swap.used_ratio')"
                 >{{ formatPercent(swapInfo.used_ratio) }}</button>
               </span>
@@ -1038,6 +1079,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   <button
                     type="button"
                     class="monitor-view__value-btn"
+                    :title="historyTitle('shm_dir.total_bytes')"
+                    :aria-label="historyAriaLabel('shm_dir.total_bytes', formatBytes(shmDir.total_bytes))"
                     @click="openHistory('shm_dir.total_bytes')"
                   >{{ formatBytes(shmDir.total_bytes) }}</button>
                 </dd>
@@ -1259,8 +1302,8 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
 
-      <!-- 时间（#302，契约 sysmon §2.9）：偏差主数值 + 误差界/来源/stratum/上次探测相对时间；
-           偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
+      <!-- 时间（#302，契约 sysmon §2.9）：偏差主数值 + 方向说明 + 误差界/来源/stratum/上次探测
+           相对时间；偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
            （独立于偏差着色，契约 §2.8）；展开后是每台服务器明细 + 同步服务检测。
            三种空态都渲染这张卡（配置关闭也是明确空态而不是整块消失），且都不显示 0。
            顶栏另有常驻 NTP 徽章（ADR 0048：只给状态色与偏差数字，明细仍在本卡片）。 -->
@@ -1298,11 +1341,14 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               @click="clockDetailOpen = !clockDetailOpen"
             >{{ clockDetailOpen ? '收起' : '展开明细' }}</button>
           </div>
-          <!-- 有可用参考源：副信息 = 误差界 / 来源服务器 / stratum / 上次探测相对时间 -->
+          <!-- 有可用参考源：副信息 = 误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向
+               （#326：偏差是有符号量，界面必须给出「正 = 本地快于参考源」的方向说明，不能只靠
+              hover / 注释——触屏与键盘用户看不到注释） -->
           <p v-if="clockState === 'live'" class="monitor-view__meta" data-test="monitor-clock-summary">
             误差界 {{ formatMilliseconds(clock.bound_ms) }}
             · 来源 {{ clock.source }}（stratum {{ clock.source_stratum ?? UNAVAILABLE_TEXT }}）
             <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
+            · 正 = 本地快于参考源
           </p>
           <!-- 探测全部失败：偏差不可用，给出逐台原因（不得显示 0 或上一轮结果，契约 §2.9）；
                此时没有「来源 / stratum」可写，只报事实与原因，不留空标签。 -->
@@ -1458,6 +1504,30 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   color: var(--text-tertiary);
 }
 
+/* 实时快照状态（#325）：状态点 + 小字（原 `ds-tag` 药丸在 390 宽与三个视图切换按钮同排、
+   同属药丸族，看起来像第 4 个 Tab）。放在标题组内，与 Tab 行分离。 */
+.monitor-view__snapshot-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-6);
+  margin: var(--spacer-4) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__snapshot-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--status-success-default);
+}
+
+.monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot {
+  background: var(--status-warning-default);
+}
+
 /* 离开确认对话框正文（#322）：与其它对话框正文同档字号，不引入新范式 */
 .monitor-view__leave-text {
   margin: 0;
@@ -1478,8 +1548,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   margin-left: auto;
 }
 
+/* 卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
+   造成大片卡内留白（实测温度 326px / 内存 169px / 网络 140px，1280 下网络还有 140px；#325）。 */
 .monitor-view__grid {
   display: grid;
+  align-items: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacer-16);
 }
@@ -1900,6 +1973,15 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 .monitor-view__clock-probe {
   display: inline-flex;
   align-items: center;
+}
+
+/* 冷却期按钮宽度稳定（#326）：文案在「立即查询」与「N 秒后可再次查询」之间切换，
+   原实测宽度 87.1px → 138.5px，按钮自身左缘左移（卡片头是 space-between，标题位置不动）。
+   按最长文案预留宽度：`manual_min_interval_sec` 上限 3600 → 最长「3600 秒后可再次查询」，
+   实测 151.7px；留 ~6px 余量吸收跨平台字体回退 / DPR 取整后取 158px，内容居中
+   （正常态只是左右留白，不再有位移）。 */
+.monitor-view__clock-probe .ds-btn {
+  min-width: 158px;
 }
 
 /* 时钟卡片明细区（#302）：与主数值之间留白，复用面板标题 / 列表 / io-metrics 既有范式 */

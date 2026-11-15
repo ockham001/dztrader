@@ -442,6 +442,8 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   it('监控页列数：<md 单列、md–xl 双列、≥xl 三列', () => {
     // 基础规则（md–xl）：双列（只认基础块本身，避免别处残留的 2 列让断言假绿）
     expect(ruleBody('.monitor-view__grid')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
+    expect(ruleBody('.monitor-view__grid')).toContain('align-items: start')
     // ≥xl（1280）：三列
     expect(mediaRuleBody('@media (min-width: 1280px)', '.monitor-view__grid'))
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
@@ -475,6 +477,13 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
 
   it('不使用容器查询（既有白名单门禁只扫 @media，引入 @container 会绕过防野断点检查）', () => {
     expect(source).not.toContain('@container')
+  })
+
+  it('「立即查询」按钮按最长冷却文案预留宽度，倒计时不引起跳动（#326）', () => {
+    // 文案在「立即查询」/「N 秒后可再次查询」之间切换（原实测 87.1→138.5px）。
+    // `manual_min_interval_sec` 上限 3600 → 最长文案实测 151.7px；预留 158px（含跨平台字体
+    // 回退余量）使按钮宽度保持常量，内容居中，不再有左缘位移。
+    expect(ruleBody('.monitor-view__clock-probe .ds-btn')).toMatch(/min-width:\s*158px/)
   })
 
   it('sparkline 用容器自适应：viewBox 拉伸 + 宽度 100%，不靠 JS 断点计算', () => {
