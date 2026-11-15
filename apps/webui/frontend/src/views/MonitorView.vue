@@ -479,13 +479,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           <template v-else>系统监控数据尚未到达</template>
         </p>
       </div>
-      <div class="monitor-view__view-switch" role="tablist" data-test="monitor-view-switch">
+      <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
+           tabpanel、aria-controls、方向键与 roving tabindex——读屏按 tabs 报语义、键盘却按按钮走，
+           比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
+           不声明 ARIA tabs 角色（沿用 ds-btn 分段样式，不是 .ds-tab 类）。选中态用 aria-pressed
+           ——切换按钮的推荐形态，且不引入「当前项」这种导航语义：本控件切的是同一页内的视图来源，
+           不是跳转目的地（aria-pressed 只宣称「按下」这一个事实，不宣称与面板的关联）。 -->
+      <div class="monitor-view__view-switch" data-test="monitor-view-switch">
         <button
           class="ds-btn ds-btn--sm"
           :class="viewMode === 'realtime' ? 'ds-btn--primary' : 'ds-btn--secondary'"
           type="button"
-          role="tab"
-          :aria-selected="viewMode === 'realtime'"
+          :aria-pressed="viewMode === 'realtime'"
           data-test="monitor-tab-realtime"
           @click="viewMode = 'realtime'"
         >实时</button>
@@ -493,8 +498,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           class="ds-btn ds-btn--sm"
           :class="viewMode === 'history' ? 'ds-btn--primary' : 'ds-btn--secondary'"
           type="button"
-          role="tab"
-          :aria-selected="viewMode === 'history'"
+          :aria-pressed="viewMode === 'history'"
           data-test="monitor-tab-history"
           @click="viewMode = 'history'"
         >历史</button>
@@ -502,8 +506,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           class="ds-btn ds-btn--sm"
           :class="viewMode === 'config' ? 'ds-btn--primary' : 'ds-btn--secondary'"
           type="button"
-          role="tab"
-          :aria-selected="viewMode === 'config'"
+          :aria-pressed="viewMode === 'config'"
           data-test="monitor-tab-config"
           @click="viewMode = 'config'"
         >配置</button>
