@@ -484,7 +484,7 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
            比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
            不声明 ARIA tabs 角色（沿用 ds-btn 分段样式，不是 .ds-tab 类）。选中态用 aria-pressed
            ——切换按钮的推荐形态，且不引入「当前项」这种导航语义：本控件切的是同一页内的视图来源，
-           不是跳转目的地。 -->
+           不是跳转目的地（aria-pressed 只宣称「按下」这一个事实，不宣称与面板的关联）。 -->
       <div class="monitor-view__view-switch" data-test="monitor-view-switch">
         <button
           class="ds-btn ds-btn--sm"

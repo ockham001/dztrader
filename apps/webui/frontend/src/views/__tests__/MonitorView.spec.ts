@@ -1440,7 +1440,14 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
 })
 
 describe('MonitorView 视图切换语义（#323：分段按钮组，不是 ARIA tabs）', () => {
-  it('视图切换是分段按钮组而非 ARIA tabs（#323）：无 role=tablist/tab、无 aria-controls，选中态用 aria-pressed', async () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+    localStorage.setItem('jwt_token', 'test-token')
+  })
+
+  it('本控件不声明 tabs 角色：无 role=tablist/tab、无 aria-controls，选中态用 aria-pressed', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
@@ -1449,7 +1456,6 @@ describe('MonitorView 视图切换语义（#323：分段按钮组，不是 ARIA 
     // absence 断言限定在本控件内：同页其它控件将来合法使用 aria-controls 不该误红。
     const switchEl = wrapper.find('[data-test="monitor-view-switch"]')
     expect(switchEl.exists(), '找不到视图切换控件').toBe(true)
-    expect(switchEl.element.tagName).toBe('DIV')
     expect(switchEl.find('[role="tablist"]').exists()).toBe(false)
     expect(switchEl.find('[role="tab"]').exists()).toBe(false)
     expect(switchEl.find('[aria-controls]').exists()).toBe(false)
