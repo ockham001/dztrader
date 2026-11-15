@@ -519,12 +519,15 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
 
   it('窄屏只钉视图切换行，不钉整块 header（#328）', () => {
     const narrow = '@media (max-width: 767.98px)'
+    // 窄屏滚动容器是 document（dashboard.css ≤1024 放开高度）：.monitor-view 必须让出 overflow:auto，
+    // 否则它成为最近 scrollport、sticky 被困在内部（实测滚动时行直接跟着消失）
+    expect(ruleInMedia(narrow, '.monitor-view')).toContain('overflow: visible')
     // 拆 box：让视图切换行成为滚动容器直接子级，sticky 才能跨内容区生效
     expect(ruleInMedia(narrow, '.monitor-view__topbar')).toContain('display: contents')
     const switchRule = ruleInMedia(narrow, '.monitor-view__view-switch')
     expect(switchRule).toContain('position: sticky')
-    // 负的 padding-top：sticky 约束从内容盒顶起算，top: 0 会在滚动时露出 28px 卡片条带
-    expect(switchRule).toContain('top: calc(-1 * var(--spacer-24))')
+    // 贴在全局 .topbar（layout.css 固定 32px）下方，内容不从缝隙透出
+    expect(switchRule).toContain('top: 32px')
     expect(switchRule).toMatch(/z-index:\s*2/)
     expect(switchRule).toContain('background: var(--bg-base-default)')
     // 只钉 Tab 行：header 本身不得 sticky（否则 390×844 上吃掉 90–110px 视口）
