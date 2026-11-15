@@ -481,9 +481,10 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
       </div>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
            tabpanel、aria-controls、方向键与 roving tabindex——读屏按 tabs 报语义、键盘却按按钮走，
-           比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 的
-           .ds-tabs 先例一致；选中态用 aria-pressed（切换按钮的 WAI-ARIA 推荐形态，且不引入
-           「当前项」这种导航语义——本控件切的是同一页内的视图来源，不是跳转目的地）。 -->
+           比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
+           不声明 ARIA tabs 角色（沿用 ds-btn 分段样式，不是 .ds-tab 类）。选中态用 aria-pressed
+           ——切换按钮的推荐形态，且不引入「当前项」这种导航语义：本控件切的是同一页内的视图来源，
+           不是跳转目的地。 -->
       <div class="monitor-view__view-switch" data-test="monitor-view-switch">
         <button
           class="ds-btn ds-btn--sm"

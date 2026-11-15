@@ -1384,33 +1384,6 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(true)
   })
 
-  it('视图切换是分段按钮组而非 ARIA tabs（#323）：无 role=tablist/tab、无 aria-controls，选中态用 aria-pressed', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    const wrapper = await mountView()
-
-    // 声明 tabs 语义却不提供 tabpanel / aria-controls / 方向键 / roving tabindex，
-    // 比不做更糟（读屏按 tabs 报语义、键盘按按钮走）。退回普通按钮组。
-    expect(wrapper.find('[role="tablist"]').exists()).toBe(false)
-    expect(wrapper.find('[role="tab"]').exists()).toBe(false)
-    expect(wrapper.find('[aria-controls]').exists()).toBe(false)
-    expect(wrapper.find('[aria-selected]').exists()).toBe(false)
-
-    const switchEl = wrapper.find('[data-test="monitor-view-switch"]')
-    expect(switchEl.element.tagName).toBe('DIV')
-    // 三个按钮都在 Tab 序里（普通按钮组语义）且都带 aria-pressed（切换按钮的推荐形态）
-    for (const mode of ['realtime', 'history', 'config']) {
-      const btn = wrapper.find(`[data-test="monitor-tab-${mode}"]`)
-      expect(btn.element.tagName).toBe('BUTTON')
-      expect(btn.attributes('type')).toBe('button')
-      expect(btn.attributes('aria-pressed')).toBe(mode === 'realtime' ? 'true' : 'false')
-      expect(btn.attributes('tabindex')).toBeUndefined()
-    }
-
-    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
-    expect(wrapper.find('[data-test="monitor-tab-realtime"]').attributes('aria-pressed')).toBe('false')
-    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
-  })
-
   it('init 经 GET /api/sysmon/config 补拉配置镜像：配置 tab 直接展示生效值', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig({ realtime: { push_interval_sec: 10 } }))
@@ -1463,5 +1436,38 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
 
     expect(wrapper.find('[data-test="sysmon-config-readonly"]').text()).toContain('仅管理员可修改')
     expect(wrapper.find('[data-test="sysmon-config-save"]').exists()).toBe(false)
+  })
+})
+
+describe('MonitorView 视图切换语义（#323：分段按钮组，不是 ARIA tabs）', () => {
+  it('视图切换是分段按钮组而非 ARIA tabs（#323）：无 role=tablist/tab、无 aria-controls，选中态用 aria-pressed', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    // 声明 tabs 语义却不提供 tabpanel / aria-controls / 方向键 / roving tabindex，
+    // 比不做更糟（读屏按 tabs 报语义、键盘按按钮走）。退回普通按钮组。
+    // absence 断言限定在本控件内：同页其它控件将来合法使用 aria-controls 不该误红。
+    const switchEl = wrapper.find('[data-test="monitor-view-switch"]')
+    expect(switchEl.exists(), '找不到视图切换控件').toBe(true)
+    expect(switchEl.element.tagName).toBe('DIV')
+    expect(switchEl.find('[role="tablist"]').exists()).toBe(false)
+    expect(switchEl.find('[role="tab"]').exists()).toBe(false)
+    expect(switchEl.find('[aria-controls]').exists()).toBe(false)
+    expect(switchEl.find('[aria-selected]').exists()).toBe(false)
+
+    // 「可访问名称 + button 角色 + pressed 状态」三件套（不只断 DOM 结构）
+    const NAMES: Record<string, string> = { realtime: '实时', history: '历史', config: '配置' }
+    for (const mode of ['realtime', 'history', 'config']) {
+      const btn = switchEl.find(`[data-test="monitor-tab-${mode}"]`)
+      expect(btn.element.tagName).toBe('BUTTON')
+      expect(btn.attributes('type')).toBe('button')
+      expect(btn.text()).toBe(NAMES[mode])
+      expect(btn.attributes('aria-pressed')).toBe(mode === 'realtime' ? 'true' : 'false')
+      expect(btn.attributes('tabindex')).toBeUndefined()
+    }
+
+    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
+    expect(wrapper.find('[data-test="monitor-tab-realtime"]').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('[data-test="monitor-tab-history"]').attributes('aria-pressed')).toBe('true')
   })
 })
