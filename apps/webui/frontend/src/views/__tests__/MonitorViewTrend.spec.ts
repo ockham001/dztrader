@@ -422,6 +422,15 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
    * 不能只取该档第一个媒体块：1280 档有两个（页面网格与 CPU 网格），取第一个会拿错。
    * 按选择器定位也避免「块内加注释 / 调整规则顺序」导致断言假红。
    */
+  /** 取媒体块内某选择器的**单条规则**内容（mediaRuleBody 返回整块，断言会误配同块其它规则）。 */
+  function ruleInMedia(header: string, selector: string): string {
+    const block = mediaRuleBody(header, selector)
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const match = new RegExp(`${escaped}\\s*\\{([^}]*)\\}`).exec(block)
+    expect(match, `媒体块 ${header} 内缺少 ${selector} 规则`).not.toBeNull()
+    return (match as RegExpExecArray)[1]
+  }
+
   function mediaRuleBody(header: string, selector: string): string {
     let from = 0
     for (;;) {
@@ -494,5 +503,31 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(sparkline).toContain('viewBox="0 0 100 24"')
     expect(sparkline).toContain('preserveAspectRatio="none"')
     expect(sparkline).toMatch(/\.sysmon-sparkline\s*\{[^}]*width:\s*100%/)
+  })
+
+
+  it('768–1279 页头收紧：单行、标题组可收缩、副标题省略号（#328）', () => {
+    // 单行由基础规则保证（topbar nowrap）；可收缩的是作为 flex item 的 header
+    expect(ruleBody('.monitor-view__topbar')).toContain('flex-wrap: nowrap')
+    expect(ruleBody('.monitor-view__header')).toContain('min-width: 0')
+    // 中档只收紧副标题：省略号而不是把 Tab 顶到下一行
+    const subtitle = ruleInMedia('@media (min-width: 768px) and (max-width: 1279.98px)', '.monitor-view__subtitle')
+    expect(subtitle).toContain('white-space: nowrap')
+    expect(subtitle).toContain('overflow: hidden')
+    expect(subtitle).toContain('text-overflow: ellipsis')
+  })
+
+  it('窄屏只钉视图切换行，不钉整块 header（#328）', () => {
+    const narrow = '@media (max-width: 767.98px)'
+    // 拆 box：让视图切换行成为滚动容器直接子级，sticky 才能跨内容区生效
+    expect(ruleInMedia(narrow, '.monitor-view__topbar')).toContain('display: contents')
+    const switchRule = ruleInMedia(narrow, '.monitor-view__view-switch')
+    expect(switchRule).toContain('position: sticky')
+    // 负的 padding-top：sticky 约束从内容盒顶起算，top: 0 会在滚动时露出 28px 卡片条带
+    expect(switchRule).toContain('top: calc(-1 * var(--spacer-24))')
+    expect(switchRule).toMatch(/z-index:\s*2/)
+    expect(switchRule).toContain('background: var(--bg-base-default)')
+    // 只钉 Tab 行：header 本身不得 sticky（否则 390×844 上吃掉 90–110px 视口）
+    expect(ruleInMedia(narrow, '.monitor-view__header')).not.toContain('position: sticky')
   })
 })
