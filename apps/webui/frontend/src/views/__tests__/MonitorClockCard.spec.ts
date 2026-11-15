@@ -14,8 +14,10 @@ import {
 
 // #302：监控页「时间」卡片（契约 sysmon §2.9 / §2.8 / §3.1）。
 // 本文件只覆盖时间卡片：三种空态、偏差着色、测量质量提示的独立性、展开明细（每台服务器 +
-// 同步服务）、「立即查询」按钮的置灰与恢复。其余实时卡片的数据渲染见 MonitorView.spec.ts，
-// 折叠 / 响应式见 MonitorViewTrend.spec.ts，展示口径的纯函数判据见 composables/__tests__/sysmonClock.spec.ts。
+// 同步服务）、「立即查询」按钮的置灰与恢复；#326 补偏差方向说明与「全失败态无方向说明」。
+// 按钮宽度的 CSS 文本断言放 MonitorViewTrend.spec.ts（那里已有行首锚定的 ruleBody）。
+// 其余实时卡片的数据渲染见 MonitorView.spec.ts，折叠 / 响应式见 MonitorViewTrend.spec.ts，
+// 展示口径的纯函数判据见 composables/__tests__/sysmonClock.spec.ts。
 
 vi.mock('@/api/sysmon', () => ({
   sysmonApi: {
@@ -434,5 +436,37 @@ describe('时间卡片 · 不越界到顶栏', () => {
 
     expect(wrapper.find('[data-test="monitor-clock"]').exists()).toBe(true)
     expect(wrapper.text()).not.toContain('NTP')
+  })
+})
+
+// #326：时间卡片可读性——偏差符号方向说明（按钮宽度的 CSS 断言在 MonitorViewTrend.spec.ts）。
+describe('时间卡片 · 可读性（#326）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('实时态副信息行给出偏差方向说明（正 = 本地快于参考源）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(
+      makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }),
+    )
+    const wrapper = await mountView()
+
+    const summary = wrapper.find('[data-test="monitor-clock-summary"]')
+    expect(summary.exists()).toBe(true)
+    expect(summary.text()).toContain('正 = 本地快于参考源')
+  })
+
+  it('全部失败态不显示方向说明（偏差不可用，方向无意义）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(
+      makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }),
+    )
+    const wrapper = await mountView()
+
+    // 正向锚点：失败态确实渲染了「不可用」分支（否则卡片空白也会让下面的反证恒过）
+    expect(wrapper.find('[data-test="monitor-clock-unavailable"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-clock-summary"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-clock"]').text()).not.toContain('本地快于参考源')
   })
 })
