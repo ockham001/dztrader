@@ -409,3 +409,38 @@ describe('SysmonConfigTab 历史库上限单位换算（#207 B1）', () => {
     expect(hintText(wrapper)).toBe('请输入有效字节数')
   })
 })
+
+// #322：草稿是否未保存要交给父页守（父页在离开路由时用 Modal 确认）。暴露面就是组件内的
+// `dirty`，与「保存按钮是否可用」共用同一判定，父页不新写第二套 diff。
+describe('SysmonConfigTab 草稿脏标记对外暴露（#322）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sysmonPending.__resetForTests()
+    vi.clearAllMocks()
+  })
+
+  it('初值等于生效镜像：dirty 为 false', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+    expect((wrapper.vm as unknown as { dirty: boolean }).dirty).toBe(false)
+  })
+
+  it('改一个字段后 dirty 变 true，改回生效值后回到 false', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+    const input = wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]')
+
+    await input.setValue('2000')
+    expect((wrapper.vm as unknown as { dirty: boolean }).dirty).toBe(true)
+
+    // 改回镜像里的原值：diff 为空 → 又不算改动（不能靠「碰过就算脏」）
+    const original = (input.element as HTMLInputElement).defaultValue
+      || String(makeSysmonConfig().sampling.measure_interval_ms)
+    await input.setValue(original)
+    expect((wrapper.vm as unknown as { dirty: boolean }).dirty).toBe(false)
+  })
+
+  it('非法数字也算有改动（保存时会给提示，离开时同样不该静默丢）', async () => {
+    const { wrapper } = await mountTab({ config: makeSysmonConfig() })
+    await wrapper.find('[data-test="sysmon-config-input-measure_interval_ms"]').setValue('')
+    expect((wrapper.vm as unknown as { dirty: boolean }).dirty).toBe(true)
+  })
+})

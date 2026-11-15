@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave, type NavigationGuardNext, type Router } from 'vue-router'
 import Icon from '@/components/shared/Icon.vue'
+import Modal from '@/components/shared/Modal.vue'
 import SyncSwitch from '@/components/shared/SyncSwitch.vue'
 import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
@@ -111,6 +113,57 @@ onMounted(() => {
 function openHistory(metricKey: string): void {
   history.preselect(metricKey)
   viewMode.value = 'history'
+}
+
+// ---- 配置草稿守卫（#322）----
+// 配置 tab 用 v-show 常驻（切视图不再卸载，草稿因此不丢）；但它仍会随页面卸载而丢失，
+// 而离开路由是日常最易误触的丢失路径（侧栏就在旁边），所以离开时按 `dirty` 拦一次。
+// 判定口径完全复用组件内的 `dirty`（不新写第二套 diff）；不拦刷新/关页（beforeunload）。
+//
+// 已知残留（本改动**没有**引入、也没变差）：`SysmonConfigTab` 内的
+// `watch(config, …, { immediate: true })` 在每次镜像更新时重置表单草稿。v-if 时代它只在
+// 组件挂着时生效；v-show 后组件常驻，于是「隐藏期间收到 WS sysmon_config」也会重置草稿。
+// 两种情况里草稿都会丢（挂着时收到推送同样会丢），差别只是发生时机；要做「脏时冻结草稿 +
+// 冲突提示」得另开票（#322 的「不做」段）。
+const configTabRef = ref<InstanceType<typeof SysmonConfigTab> | null>(null)
+// 生效镜像未到达（`GET /api/sysmon/config` 503 或 WS 尚未推送）时表单是空的，组件内的 `dirty`
+// 会把「空表单解析不出数字」算成有改动 —— 那会让每次离开都误报「有未保存的改动」。
+// 因此只在镜像就绪后才认这个判定（镜像一旦到达就不会再变回 null）。
+const configDirty = computed(() => sysmon.config !== null && configTabRef.value?.dirty === true)
+const leaveConfirmOpen = ref(false)
+/** 挂起的路由离开回调：确认后调用 `next()`，取消时 `next(false)` */
+let pendingLeaveNext: NavigationGuardNext | null = null
+
+function cancelLeave(): void {
+  leaveConfirmOpen.value = false
+  pendingLeaveNext?.(false)
+  pendingLeaveNext = null
+}
+
+function confirmLeave(): void {
+  leaveConfirmOpen.value = false
+  const next = pendingLeaveNext
+  pendingLeaveNext = null
+  next?.()
+}
+
+// 守卫必须注册在 setup 同步阶段（路由离开时才注册会漏掉本次导航）。
+// 只在真的挂了 router 时注册：`onBeforeRouteLeave` 依赖 `<router-view>` provide 的路由记录，
+// 直接 mount 本组件的单元测试没有路由上下文（不判断会在每个用例上打一条 vue-router 警告）。
+// 取 router 用 appContext 而不是 useRouter()：后者在没有 router 时本身就会 warn。
+const router = getCurrentInstance()?.appContext.config.globalProperties.$router as Router | undefined
+if (router) {
+  onBeforeRouteLeave((to, _from, next) => {
+    // 会话结束类导航直接放行：登出路径是「先清 token 再 push('/login')」
+    // （`Sidebar.vue` logout），此时本页已在 AppShell 里且会话已失效，
+    // 再拦下来会让用户停在已登出的私有页上（选「留下」也没有任何意义）。
+    if (to.name === 'login' || !configDirty.value) {
+      next()
+      return
+    }
+    pendingLeaveNext = next
+    leaveConfirmOpen.value = true
+  })
 }
 
 const snapshot = computed(() => sysmon.snapshot)
@@ -515,11 +568,15 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
       <span v-else-if="viewMode === 'realtime'" class="ds-tag ds-tag--warning">等待快照</span>
     </header>
 
-    <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响） -->
+    <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
+         历史 tab **保持 v-if**：它的 onMounted 会发一次 history REST 查询，store 无缓存无去重，
+         常驻会改变加载时机（#322 有意保留这一处不对称）。 -->
     <SysmonHistoryTab v-if="viewMode === 'history'" />
 
-    <!-- 配置视图（#81）：展示生效配置（所有认证用户）+ 编辑入口（仅 admin） -->
-    <SysmonConfigTab v-if="viewMode === 'config'" />
+    <!-- 配置视图（#81）：展示生效配置（所有认证用户）+ 编辑入口（仅 admin）。
+         用 v-show 而不是 v-if：草稿是组件本地 reactive，卸载即丢（#322）；本组件无 onMounted、
+         无网络请求、无定时器，常驻代价仅是多一份表单 DOM 与一个 watch。 -->
+    <SysmonConfigTab ref="configTabRef" v-show="viewMode === 'config'" />
 
     <!-- 实时视图（默认）：快照尚未到达时整页空态（不得显示 0 或假数字） -->
     <div
@@ -1354,6 +1411,18 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
     </div>
+
+    <!-- 离开前的草稿确认（#322）：只在有未保存改动时出现；两个分支都是显式动作，
+         遮罩点击与 Esc 等同「留下」（不丢草稿）。 -->
+    <Modal :open="leaveConfirmOpen" title="有未保存的改动" @close="cancelLeave">
+      <p class="monitor-view__leave-text">
+        配置项有未保存的修改，离开本页后这些改动会丢失。
+      </p>
+      <template #footer>
+        <button class="ds-btn ds-btn--secondary" type="button" data-test="monitor-leave-cancel" @click="cancelLeave">留下</button>
+        <button class="ds-btn ds-btn--primary" type="button" data-test="monitor-leave-confirm" @click="confirmLeave">离开</button>
+      </template>
+    </Modal>
   </div>
 </template>
 
@@ -1387,6 +1456,14 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   color: var(--text-tertiary);
+}
+
+/* 离开确认对话框正文（#322）：与其它对话框正文同档字号，不引入新范式 */
+.monitor-view__leave-text {
+  margin: 0;
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  color: var(--text-secondary);
 }
 
 .monitor-view__waiting {

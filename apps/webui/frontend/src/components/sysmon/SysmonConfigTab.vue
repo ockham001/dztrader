@@ -529,6 +529,10 @@ async function onSave(): Promise<void> {
   }
   toast.success('配置已保存')
 }
+
+// 草稿是否未保存（#322）：切视图不再卸载本组件，因此「有未保存改动」这个事实必须交给
+// 父页去守（切视图不丢，但离开路由会丢）。判定口径沿用本组件的 `dirty`，不新写第二套 diff。
+defineExpose({ dirty })
 </script>
 
 <template>
