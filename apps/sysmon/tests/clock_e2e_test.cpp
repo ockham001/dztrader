@@ -549,6 +549,10 @@ TEST_F(ClockE2ETest, ProbeInFlightDoesNotBlockMeasureTicks) {
     pending_.clear();
 
     // 探测完成前至少两帧周期快照：计量样本在推进、且没有错过 tick。
+    //
+    // 等待预算取 15s / 20s：预算只是**上限**（条件等待命中即早退，正常路径不增加墙钟），
+    // 而 CI / 与构建并行的机器上推送定时器与探测回调可能被调度延迟数秒（#335 的 flaky
+    // 取证：CI 上该用例曾失败，同 run 其余 3801 例通过）。
     std::size_t in_flight_snapshots = 0;
     for (int i = 0; i < 2; ++i) {
         const auto snapshot = wait_for_snapshot(
@@ -556,7 +560,7 @@ TEST_F(ClockE2ETest, ProbeInFlightDoesNotBlockMeasureTicks) {
                 return payload["clock"]["last_probe_unix_ms"].get<int64_t>() == 0 &&
                        payload["sampling"]["last_sample_unix_ms"].get<int64_t>() > 0;
             },
-            5s);
+            15s);
         ASSERT_TRUE(snapshot.has_value())
             << "measure ticks stopped while a probe was in flight (contract sysmon §2.7)";
         EXPECT_EQ((*snapshot)["sampling"]["missed_ticks"].get<uint64_t>(), 0U);
@@ -569,10 +573,10 @@ TEST_F(ClockE2ETest, ProbeInFlightDoesNotBlockMeasureTicks) {
         [](const nlohmann::json& payload) {
             return payload["clock"]["last_probe_unix_ms"].get<int64_t>() > 0;
         },
-        10s);
+        20s);
     ASSERT_TRUE(probed.has_value()) << "slow probe did not complete";
-    EXPECT_EQ(probed->at("clock").at("source"), "fake-ok-slow");
-    EXPECT_EQ(platform::SysmonSnapshot::validate(*probed), std::nullopt);
+    EXPECT_EQ(probed->at("clock").at("source"), "fake-ok-slow") << probed->at("clock").dump();
+    EXPECT_EQ(platform::SysmonSnapshot::validate(*probed), std::nullopt) << probed->dump();
 }
 
 // AC2 / AC4：运行期 SET `probe_times` 后按新时刻排期（不需重启）；到点后快照自动更新、
