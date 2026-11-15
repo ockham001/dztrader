@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
 import { useSysmonStore } from '@/stores/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
+import { useToastStore } from '@/stores/toast'
+import { installClipboardStub, restoreClipboard } from '@/test-utils/clipboard'
 import { SYSMON_TREND_METRIC_KEYS } from '@/stores/sysmonTrend'
 import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable, SysmonHistoryResponse } from '@/types/api'
@@ -245,5 +247,152 @@ describe('MonitorView 实时 / 历史视图切换（不影响 WS 与实时数据
     await history.load()
     await flushPromises()
     expect(sysmon.cpuUsageRatio).toBe(0.7)
+  })
+})
+
+// #327：历史视图序列导出（复制 / CSV）——纯前端行为，不新增 REST 端点、不改查询参数语义。
+describe('MonitorView 历史视图序列导出（#327）', () => {
+  const originalCreateObjectURL = URL.createObjectURL
+  const originalRevokeObjectURL = URL.revokeObjectURL
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    useToastStore().clear()
+  })
+
+  afterEach(() => {
+    URL.createObjectURL = originalCreateObjectURL
+    URL.revokeObjectURL = originalRevokeObjectURL
+    restoreClipboard()
+    vi.restoreAllMocks()
+  })
+
+  it('复制 / 导出按钮与「刷新」并列；有数据时可用、非 ready 态禁用', async () => {
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(makeAvailable())
+    const wrapper = await mountView()
+    await openHistory(wrapper)
+
+    const copy = wrapper.find('[data-test="sysmon-history-copy"]')
+    const exportBtn = wrapper.find('[data-test="sysmon-history-export"]')
+    expect(copy.exists()).toBe(true)
+    expect(exportBtn.exists()).toBe(true)
+    expect(copy.attributes('disabled')).toBeUndefined()
+    expect(exportBtn.attributes('disabled')).toBeUndefined()
+    // 与刷新同在查询控件行（并列而不改变查询参数语义）
+    expect(wrapper.find('.sysmon-history__controls [data-test="sysmon-history-refresh"]').exists()).toBe(true)
+    expect(wrapper.find('.sysmon-history__controls [data-test="sysmon-history-copy"]').exists()).toBe(true)
+    expect(wrapper.find('.sysmon-history__controls [data-test="sysmon-history-export"]').exists()).toBe(true)
+  })
+
+  it('非 ready 三态（无数据 / 不可用 / 加载中）导出按钮均禁用——避免导出只有表头的空文件', async () => {
+    // empty
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(
+      makeAvailable({ series: [{ dimension: '', points: [] }], interval_sec: null }),
+    )
+    let wrapper = await mountView()
+    await openHistory(wrapper)
+    expect(wrapper.find('[data-test="sysmon-history-copy"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="sysmon-history-export"]').attributes('disabled')).toBeDefined()
+
+    // unavailable
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue({ available: false, reason: 'not_found' })
+    wrapper = await mountView()
+    await openHistory(wrapper)
+    expect(wrapper.find('[data-test="sysmon-history-copy"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="sysmon-history-export"]').attributes('disabled')).toBeDefined()
+
+    // loading（请求在途）
+    vi.mocked(sysmonApi.getHistory).mockReturnValue(new Promise<SysmonHistoryResponse>(() => {}))
+    wrapper = await mountView()
+    await openHistory(wrapper)
+    expect(wrapper.find('[data-test="sysmon-history-copy"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="sysmon-history-export"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('复制：写入剪贴板的 CSV = 当前指标 + 当前范围的全部记录窗口（null 留空、不写 0）', async () => {
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(
+      makeAvailable({
+        series: [{
+          dimension: '',
+          points: [
+            { ts: 1_790_000_000, min: 0.1, max: 0.5, avg: 0.3, last: 0.2, n: 5 },
+            { ts: 1_790_000_060, min: null, max: null, avg: null, last: null, n: null },
+          ],
+        }],
+      }),
+    )
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    installClipboardStub({ writeText })
+    const wrapper = await mountView()
+    await openHistory(wrapper)
+
+    const historyCallsBefore = vi.mocked(sysmonApi.getHistory).mock.calls.length
+    await wrapper.find('[data-test="sysmon-history-copy"]').trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledTimes(1)
+    const csv = writeText.mock.calls[0]![0] as string
+    const lines = csv.split('\r\n')
+    expect(lines[0]).toBe('timestamp,min,avg,max,n')
+    expect(lines[1]).toBe('1790000000,0.1,0.3,0.5,5')
+    expect(lines[2]).toBe('1790000060,,,,')
+    expect(csv).not.toContain(',0,0,0,0')
+    expect(useToastStore().items.map(item => item.message)).toContain('已复制 CSV')
+    // 导出不发请求、不改查询参数（历史查询次数不因复制/导出增加）
+    expect(vi.mocked(sysmonApi.getHistory).mock.calls.length).toBe(historyCallsBefore)
+  })
+
+  it('复制失败（权限拒绝）：给出可见错误提示，不静默、不弹原生 alert', async () => {
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(makeAvailable())
+    installClipboardStub({ writeText: vi.fn().mockRejectedValue(new Error('NotAllowedError')) })
+    const alertSpy = vi.spyOn(globalThis, 'alert').mockImplementation(() => {})
+    const wrapper = await mountView()
+    await openHistory(wrapper)
+
+    await wrapper.find('[data-test="sysmon-history-copy"]').trigger('click')
+    await flushPromises()
+
+    expect(alertSpy).not.toHaveBeenCalled()
+    const messages = useToastStore().items.map(item => item.message)
+    expect(messages.some(message => message.includes('复制失败'))).toBe(true)
+  })
+
+  it('导出 CSV：用 Blob + <a download> 触发下载，文件名带指标与区间', async () => {
+    vi.mocked(sysmonApi.getHistory).mockResolvedValue(makeAvailable())
+    const blobs: Blob[] = []
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      blobs.push(blob)
+      return 'blob:mock-csv'
+    }) as typeof URL.createObjectURL
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL
+    let downloadedName = ''
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        downloadedName = this.download
+      })
+    const wrapper = await mountView()
+    await openHistory(wrapper)
+
+    await wrapper.find('[data-test="sysmon-history-export"]').trigger('click')
+    await flushPromises()
+
+    expect(blobs).toHaveLength(1)
+    // 默认指标 cpu.usage_ratio、默认范围 6 小时（21600s）
+    expect(downloadedName).toBe('sysmon-history-cpu-usage-ratio-21600s.csv')
+    // jsdom 的 Blob 无 text()，用 FileReader 读回内容（CSV 生成本身另有纯函数单测）
+    const csvText = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result ?? ''))
+      reader.onerror = () => reject(new Error('read blob failed'))
+      reader.readAsText(blobs[0]!)
+    })
+    expect(csvText).toContain('1790000000,0.1,0.3,0.5,5')
+    // revoke 延后一拍（Firefox/Safari 在 click 返回后才真正开始读 blob）
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock-csv')
+    expect(clickSpy).toHaveBeenCalledTimes(1)
   })
 })

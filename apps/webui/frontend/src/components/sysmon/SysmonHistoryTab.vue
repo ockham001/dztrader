@@ -4,7 +4,9 @@ import Dropdown from '@/components/shared/Dropdown.vue'
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import Icon from '@/components/shared/Icon.vue'
 import SysmonHistoryChart from '@/components/sysmon/SysmonHistoryChart.vue'
+import { copyTextToClipboard } from '@/composables/clipboard'
 import { formatDuration } from '@/composables/format'
+import { historyCsv, historyCsvFilename } from '@/composables/sysmonHistoryCsv'
 import {
   historyUnavailableText,
   SYSMON_HISTORY_LEVELS,
@@ -12,6 +14,7 @@ import {
   SYSMON_HISTORY_RANGES,
   useSysmonHistoryStore,
 } from '@/stores/sysmonHistory'
+import { useToastStore } from '@/stores/toast'
 
 // 资源监控历史视图（《帧契约：系统监控》§6.1）：时间范围与粒度选择、min/max 包络、缺口与时钟
 // 跳变标记、悬停显示精确值与时间。
@@ -20,6 +23,7 @@ import {
 // 历史不可用时显示明确降级文案 + 原因，**不显示任何伪造数据**（不得用 0 冒充）。
 // 本视图只发 REST 查询，不订阅任何 WS 消息——切换到历史视图不影响实时 store 的 WS 数据。
 const history = useSysmonHistoryStore()
+const toast = useToastStore()
 
 onMounted(() => { void history.load() })
 
@@ -93,6 +97,35 @@ async function onRangeChange(value: string | number): Promise<void> {
 async function onLevelChange(value: string | number): Promise<void> {
   await history.setLevel(String(value) as 'auto' | 'raw' | 'minute')
 }
+
+/** 当前序列导出为 CSV 文本（#327）：纯前端、只读 store，不发请求、不改查询参数。 */
+function currentCsvText(): string {
+  return historyCsv(history.points)
+}
+
+/** 复制到剪贴板（#327）：失败必须可见（toast），不静默、不弹原生 alert。 */
+async function onCopyCsv(): Promise<void> {
+  if (await copyTextToClipboard(currentCsvText())) {
+    toast.success('已复制 CSV')
+  } else {
+    toast.error('复制失败：浏览器不允许访问剪贴板')
+  }
+}
+
+/** 导出 CSV 文件（#327）：Blob + 临时 <a download>，纯前端，不新增 REST 端点。
+ * 临时 `<a>` 需挂到 DOM 再点击（Firefox/Safari 对游离节点可能不触发下载）；
+ * revoke 延后一拍——部分浏览器在 click 返回后才真正开始读取 blob。 */
+function onExportCsv(): void {
+  const blob = new Blob([currentCsvText()], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = historyCsvFilename(history.metricKey, history.rangeSeconds)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
+}
 </script>
 
 <template>
@@ -135,6 +168,22 @@ async function onLevelChange(value: string | number): Promise<void> {
         data-test="sysmon-history-refresh"
         @click="history.load()"
       >刷新</button>
+      <!-- 导出（#327）：纯前端复制 / CSV，只导出当前指标与当前范围的全部记录窗口；
+           无数据（三个非 ready 态）时禁用，避免导出只有表头的空文件。 -->
+      <button
+        class="ds-btn ds-btn--secondary ds-btn--sm"
+        type="button"
+        data-test="sysmon-history-copy"
+        :disabled="!isReady"
+        @click="onCopyCsv"
+      >复制</button>
+      <button
+        class="ds-btn ds-btn--secondary ds-btn--sm"
+        type="button"
+        data-test="sysmon-history-export"
+        :disabled="!isReady"
+        @click="onExportCsv"
+      >导出 CSV</button>
     </div>
 
     <!-- 加载中 -->
