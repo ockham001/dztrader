@@ -669,6 +669,9 @@ async function main() {
 }
 
 main().catch((err) => {
+  // 兜底：main 的 try/finally 覆盖不到「进 try 之前就抛」的路径（如 loadRoutes）。
+  // cleanupChrome 幂等，多调一次没有代价，但能保证任何异常退出都不留含 token 的 profile。
+  cleanupChrome()
   process.stderr.write(`viewport-smoke: 未捕获异常: ${err.stack ?? err.message}\n`)
   process.exit(2)
 })
