@@ -142,7 +142,35 @@ function parseArgs(argv) {
   return opts
 }
 
+/**
+ * 已启动的 Chrome 句柄。`fail()` 会直接 process.exit(2)，绕过 main 的 finally ——
+ * 而 profile 目录里存着本次写入的 jwt_token（localStorage），必须在这里也能回收。
+ * 所以把「回收」做成模块级的一次性动作，由 fail() / finally / 退出路径共同调用。
+ */
+const chromeState = { proc: null, profileDir: null, cleaned: false }
+
+/** 关闭 Chrome 并删除它的 profile 目录（幂等） */
+function cleanupChrome() {
+  if (chromeState.cleaned) return
+  chromeState.cleaned = true
+  if (chromeState.proc) {
+    try {
+      chromeState.proc.kill('SIGKILL')
+    } catch {
+      /* 已退出 */
+    }
+  }
+  if (chromeState.profileDir) {
+    try {
+      rmSync(chromeState.profileDir, { recursive: true, force: true })
+    } catch {
+      /* 删不掉也不该让脚本崩：调用方可能正要报错退出 */
+    }
+  }
+}
+
 function fail(message) {
+  cleanupChrome()
   process.stderr.write(`viewport-smoke: ${message}\n`)
   process.exit(2)
 }
@@ -258,12 +286,15 @@ async function launchChrome(chromePath, port) {
   while (Date.now() < deadline) {
     try {
       await getJson(`${endpoint}/json/version`)
+      chromeState.proc = proc
+      chromeState.profileDir = userDataDir
       return { proc, endpoint, userDataDir }
     } catch {
       await sleep(250)
     }
   }
-  proc.kill('SIGKILL')
+  chromeState.proc = proc
+  chromeState.profileDir = userDataDir
   fail(`Chrome 启动超时（20s），端点 ${endpoint} 不可达`)
 }
 
@@ -530,17 +561,18 @@ async function main() {
   if (!opts.token) auth.user = (await getJson(`${opts.base}/api/user/me`, { headers: { Authorization: `Bearer ${auth.token}` } }).catch(() => null)) ?? auth.user
 
   const port = 9333
-  let chromeProc = null
-  let chromeProfileDir = null
   let endpoint = opts.cdp
   if (!endpoint) {
     const chromePath = detectChrome(opts.chrome)
-    const launched = await launchChrome(chromePath, port)
-    chromeProc = launched.proc
-    chromeProfileDir = launched.userDataDir
-    endpoint = launched.endpoint
+    endpoint = (await launchChrome(chromePath, port)).endpoint
   }
-  const client = await connectPage(endpoint)
+  let client
+  try {
+    client = await connectPage(endpoint)
+  } catch (err) {
+    cleanupChrome()
+    fail(`连接浏览器调试端点失败：${err.message}`)
+  }
 
   const auditSource = `(${pageAudit.toString()})(${JSON.stringify({ minRatio: opts.minRatio, maxFindings: opts.maxFindings })})`
   const results = []
@@ -604,10 +636,7 @@ async function main() {
   } finally {
     if (!opts.keepOpen) {
       client.close()
-      if (chromeProc) chromeProc.kill('SIGKILL')
-      // profile 目录里有本次写入的 jwt_token（localStorage），必须删掉：
-      // 留在 /tmp 等于把会话凭据留在磁盘上。
-      if (chromeProfileDir) rmSync(chromeProfileDir, { recursive: true, force: true })
+      cleanupChrome()
     }
 
     process.stdout.write(summarize(results) + '\n')

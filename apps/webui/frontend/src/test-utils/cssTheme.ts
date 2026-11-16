@@ -19,12 +19,6 @@ import postcss, { type Root, type Rule } from 'postcss'
 /** system 主题段的选择器（跟随系统，无 .light/.dark class） */
 export const SYSTEM_SELECTOR = 'html:not(.light):not(.dark)'
 
-/** 裸规则里的浅色段选择器 */
-export const LIGHT_SELECTOR = ':root'
-
-/** 显式深色段选择器 */
-export const DARK_SELECTOR = '.dark'
-
 /**
  * 规则是否位于**裸的**深色媒体条件内。
  *
