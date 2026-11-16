@@ -2,11 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import postcss, { type Root, type Rule } from 'postcss'
+import postcss, { type Root } from 'postcss'
+import { parseCssFile, tokenDeclarationsOf } from '@/test-utils/cssTheme'
 
 // 主题验收门禁（#348，母票 #345 T0-c）
 //
-// 为什么需要：`themeTokens.spec.ts` 验证 token 的**结构**（三段对称、别名目标存在），
+// 为什么需要：`themeTokens.spec.ts` 验证的是 token 的**结构**（三段对称、别名目标存在），
 // 不验证**可读性**。取证实测的 4 条缺陷全部从它眼皮底下通过 —— 两个 token 都完整定义在
 // 三段里（结构对称 ✅），但同值（#525252 on #525252 = 1.00:1，文字完全消失）。
 //
@@ -20,20 +21,22 @@ import postcss, { type Root, type Rule } from 'postcss'
 //   - 每个不达标对**逐条登记**在 KNOWN_VIOLATIONS（带 ticket 与 why），并 pin 住实测比值；
 //   - 实测集合必须与登记集合**完全相等**：新缺陷 → 红；缺陷被修复而登记没删 → 也红。
 //     基线只会收缩，不会静默腐化。
-//   - 「门禁不是恒绿」由末尾的自证用例保证：把取证时的缺陷字面值喂给同一个纯函数 `evaluateContrast`，
-//     断言它报出的正是那几条、且比值与取证一致（#309 恒真断言防范）。
+//   - 「门禁不是恒绿」由自证用例保证：把取证时的缺陷字面值喂给同一个纯函数
+//     `evaluateContrast`，断言它报出的正是那几条、且比值与取证一致（#309 恒真断言防范）。
+//
+// 关键设计：**本文件里没有任何一条用例断言「HEAD 现在有缺陷」**。那种用例是一次性脚手架
+// ——它会在修复票（#349）落地时变红，逼着人回来删用例，而删用例恰恰是门禁被削弱的常见
+// 起点。取而代之的是两条永久不变量：
+//   (a)「实测不达标集合 == 基线」：评估逻辑一旦失效返回空集，全部基线立刻「过期」→ 红；
+//   (b)「取证缺陷快照必须报红」：把当年 buggy 的字面 token 喂进同一个纯函数，断言它抓出
+//      的正是取证点名的那两条、且比值对得上。
+// #349 修好之后要做的事只有一件：删掉对应的 KNOWN_VIOLATIONS 登记。用例全不动。
 //
 // disabled 态的豁免口径（#345 拍板）：WCAG 明确豁免 disabled 控件，但本次缺陷是
 // **1.00:1** —— 文字与底色完全相同，视觉上是一个无字灰块。豁免条款是给「可辨识但不可用」
 // 的，不覆盖「完全消失」。所以项目口径：disabled 文字仍要求 ≥1.5:1。
-// 依据：取证截图 05-logs-dark.png 里「批量设置级别」是无字灰块。
-//
-// 关于 AC2（门禁必须在 HEAD 上抓出现有缺陷）的实现方式：没有写「断言 HEAD 现在有缺陷」的
-// 用例 —— 那种用例在 #349 修好之后必须删除，是一次性脚手架而不是门禁。这里用两步闭环代替：
-//   1) `KNOWN_VIOLATIONS` 里登记了取证点名的两条 <1.05 缺陷，且「实测 == 基线」用例把它们
-//      与 live token 死死绑住：评估逻辑一旦失效（返回空集），基线就会全部「过期」而变红；
-//   2) 取证快照自证用例证明同一个纯函数对这些字面值确实报红、比值与取证一致。
-// 两者合起来即「门禁在 HEAD 的缺陷上会红」，且 #349 修复后只需删登记（无需删用例）。
+// 可复算依据（不依赖任何 gitignore 截图）：components.css 的 `.ds-btn--primary[disabled]`
+// 同时消费 --bg-invert-disabled（底）与 --text-disabled（字），深色段两者都是 #525252。
 
 const CSS_DIR = join(fileURLToPath(import.meta.url), '..', '..')
 const SRC_DIR = join(CSS_DIR, '..', '..')
@@ -76,45 +79,14 @@ type ThemeName = 'light' | 'dark' | 'system'
 const THEMES: readonly ThemeName[] = ['light', 'dark', 'system'] as const
 type TokenScope = Map<string, string>
 
-/** 规则是否位于 @media (prefers-color-scheme: dark) 内（system 段；裸正条件） */
-function isInsideDarkMedia(rule: Rule): boolean {
-  type Ancestor = { type: string; name?: string; params?: string; parent?: Ancestor | undefined }
-  let node = rule.parent as unknown as Ancestor | undefined
-  while (node) {
-    if (node.type === 'atrule' && node.name?.toLowerCase() === 'media') {
-      const params = (node.params ?? '').replace(/\s+/g, '')
-      if (/prefers-color-scheme:dark/i.test(params) && !/\bnot\b/i.test(params)) return true
-    }
-    node = node.parent
-  }
-  return false
-}
-
-/** 取指定选择器的自定义属性声明；requireDarkMedia 区分「裸规则」与「@media 内规则」 */
-function tokenMapOf(root: Root, selector: string, requireDarkMedia: boolean): TokenScope {
-  const out: TokenScope = new Map()
-  root.walkRules((rule) => {
-    if (rule.selectors.length !== 1 || rule.selectors[0].trim() !== selector) return
-    if (isInsideDarkMedia(rule) !== requireDarkMedia) return
-    rule.walkDecls((decl) => {
-      if (decl.prop.startsWith('--')) out.set(decl.prop.trim(), decl.value.trim())
-    })
-  })
-  return out
-}
-
-const themeRoot = parseCss(readFileSync(themePath, 'utf8'), themePath)
-const lightTokens = tokenMapOf(themeRoot, ':root', false)
-const darkTokens = tokenMapOf(themeRoot, '.dark', false)
-const systemTokens = tokenMapOf(themeRoot, 'html:not(.light):not(.dark)', true)
+const themeRoot = parseCssFile(themePath)
+const lightTokens = tokenDeclarationsOf(themeRoot, ':root', false)
+const darkTokens = tokenDeclarationsOf(themeRoot, '.dark', false)
+const systemTokens = tokenDeclarationsOf(themeRoot, 'html:not(.light):not(.dark)', true)
 
 // design-tokens.css 定义非主题色 token（radius/spacer/font/status/brand…），三段共用。
 // theme.css 在它之后加载（src/main.ts 的导入顺序），同名 token 主题段胜 —— 合并顺序照此。
-const designTokens = tokenMapOf(
-  parseCss(readFileSync(designTokensPath, 'utf8'), designTokensPath),
-  ':root',
-  false,
-)
+const designTokens = tokenDeclarationsOf(parseCssFile(designTokensPath), ':root', false)
 
 function scopeOf(themeSegment: TokenScope): TokenScope {
   return new Map([...designTokens, ...themeSegment])
@@ -272,7 +244,7 @@ const CONTRAST_PAIRS: readonly ContrastPair[] = [
   { id: 'tag-danger', usage: '危险标签（.ds-tag--danger：废单/已停止）', fg: '--status-error-default', bg: '--status-error-surface-l1', base: '--bg-card', min: 4.5 },
 
   // 非文字分隔线：口径不是 WCAG 1.4.11 的 3:1（那会让整族 border token 变红，等于重做
-  // 边框系统，不在本波范围），而是「必须与背景可区分」≥1.10 —— 1.00 等于线消失（缺陷 B7）。
+  // 边框系统，不在本波范围），而是「必须与背景可区分」≥1.10 —— 1.00 等于线消失。
   // 注意这两条的分工：`row-separator-on-card` 钉的是 dashboard.css **当前**用的
   // `--bg-base-secondary`（缺陷本体）；`border-on-card` 钉的是语义正确的边框 token ——
   // #349 把分隔线改用 `--border-neutral-l1` 后，前者要改指后者并删登记。
@@ -331,13 +303,13 @@ interface KnownViolation {
 }
 
 const KNOWN_VIOLATIONS: Record<string, KnownViolation> = {
-  // --- 缺陷 1（#345 取证 B2）：深色 primary disabled 文字与底色同值 → 无字灰块。#349 修 ---
+  // --- 缺陷 1（#345 取证）：深色 primary disabled 文字与底色同值 → 无字灰块。#349 修 ---
   'dark/primary-button-disabled-label': {
     ratio: 1.0,
     ticket: 349,
     why: '--bg-invert-disabled 与 --text-disabled 在深色段同为 #525252（禁用底与禁用文字共用同一个灰，建模错）',
   },
-  // --- 缺陷 2（#345 取证 B7）：浅色背景层级退化，表格行分隔线用背景 token 当边框。#349 修 ---
+  // --- 缺陷 2（#345 取证）：浅色背景层级退化，表格行分隔线用背景 token 当边框。#349 修 ---
   'light/row-separator-on-card': {
     ratio: 1.0,
     ticket: 349,
@@ -348,7 +320,7 @@ const KNOWN_VIOLATIONS: Record<string, KnownViolation> = {
     ticket: 349,
     why: '深色段 --bg-base-secondary(#262626) on --bg-card(#202020) 仅 1.08，同样低于「可区分」下限',
   },
-  // --- 缺陷 3（#345 取证 B6）：状态标签「同色相 + 低透明底」，浅色底太浅字太亮。#349 修 ---
+  // --- 缺陷 3（#345 取证）：状态标签「同色相 + 低透明底」，浅色底太浅字太亮。#349 修 ---
   'light/tag-success': { ratio: 2.52, ticket: 349, why: '浅色段 #15A877 on 12% 同色底（取证报告记 2.56 是白底测量，卡片底更严）' },
   'light/tag-warning': { ratio: 2.46, ticket: 349, why: '浅色段 #E27900 on 12% 同色底（同上，报告记 2.56）' },
   'light/tag-danger': { ratio: 3.08, ticket: 349, why: '浅色段 #E8463A on 12% 同色底' },
@@ -439,25 +411,16 @@ describe('#348 检查 1：token 对对比度', () => {
     expect(problems, problems.join('\n')).toEqual([])
   })
 
-  // AC2：门禁必须在 HEAD 上抓出取证点名的「完全不可见」缺陷。
-  // 这里断言的是**已登记的基线**（静态事实）而非 live 求值 —— 后者在 #349 修复后必然要删，
-  // 是一次性脚手架。基线由上一个用例与 live token 强制绑定，所以本断言等价于
-  // 「HEAD 上确实红过」且修复后不需要删用例（只删登记）。
-  it('AC2：基线含取证点名的两条 <1.05「完全不可见」缺陷', () => {
-    const invisible = Object.entries(KNOWN_VIOLATIONS)
-      .filter(([, v]) => v.ratio < 1.05)
-      .map(([key]) => key)
-    expect(invisible).toEqual(
-      expect.arrayContaining(['dark/primary-button-disabled-label', 'light/row-separator-on-card']),
-    )
-  })
-
-  it('自证：取证时的缺陷快照会让门禁红，且比值与取证一致（防恒绿断言）', () => {
+  // AC2 的载体：门禁必须能抓出取证点名的「完全不可见」缺陷。
+  // 判据不是「HEAD 现在红」（那会与「修复后门禁必须绿」冲突），而是**同一个求值函数**对
+  // 取证时的字面 token 值报红、且比值对得上。这样一来 #349 修好之后本用例依然成立
+  // （历史事实不会因为 token 被修好而改变），不需要删任何用例。
+  it('AC2 自证：取证时的缺陷快照会让门禁红，且比值与取证一致（防恒绿断言）', () => {
     // 复刻取证当时（#345）的 token 字面值
     const light: TokenScope = new Map([
       ['--bg-base-default', '#FFFFFF'],
       ['--bg-card', '#F5F5F5'],
-      ['--bg-base-secondary', '#F5F5F5'], // B7：与 bg-card 同值 → 分隔线不可见
+      ['--bg-base-secondary', '#F5F5F5'], // 与 bg-card 同值 → 分隔线不可见
       ['--bg-invert', '#262626'],
       ['--bg-invert-disabled', 'rgba(115, 115, 115, 0.20)'],
       ['--text-disabled', '#A1A1A1'],
@@ -482,8 +445,8 @@ describe('#348 检查 1：token 对对比度', () => {
       ['--bg-card', '#202020'],
       ['--bg-base-secondary', '#262626'],
       ['--bg-invert', '#e5e5e5'],
-      ['--bg-invert-disabled', '#525252'], // B2：与 text-disabled 同值
-      ['--text-disabled', '#525252'], // B2
+      ['--bg-invert-disabled', '#525252'], // 与 text-disabled 同值
+      ['--text-disabled', '#525252'],
       ['--text-default', '#e5e5e5'],
       ['--text-secondary', '#a1a1a1'],
       ['--text-tertiary', '#737373'],
@@ -549,7 +512,7 @@ const RUNTIME_INJECTED: Record<string, string> = {
  * 与 KNOWN_VIOLATIONS 同一套语义：新悬空 → 红；修好了没删登记 → 也红。
  */
 const KNOWN_DANGLING: Record<string, { files: string[]; ticket: number | null; why: string }> = {
-  // #348 AC3 点名的 4 处（取证报告 M6）。行号不稳定，基线以**文件**为粒度。
+  // #348 AC3 点名的 4 处（issue 正文逐个列出）。行号不稳定，基线以**文件**为粒度。
   '--brand-primary': {
     files: ['components/layout/Sidebar.vue'],
     ticket: 349,

@@ -33,7 +33,13 @@
 //   - 需要**已登录**的会话：脚本不处理「默认口令强制改密」，请用改了密的 dev home 起栈
 
 import { spawn } from 'node:child_process'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+/** 脚本自身所在目录（apps/webui/frontend/scripts），用于定位 ../src/router/routes.ts */
+const here = dirname(fileURLToPath(import.meta.url))
 
 // ---------------------------------------------------------------------------
 // 参数
@@ -50,7 +56,9 @@ const HELP = `五档视口冒烟（#348 检查 3）——零依赖 CDP 客户端
   --user <name>        用账号密码登录；也可用环境变量 DZ_SMOKE_USER（默认 admin）
   --pass <word>        配合 --user；也可用环境变量 DZ_SMOKE_PASS
   --cdp <url>          复用已开着的浏览器调试端点（如 http://127.0.0.1:9222），不自己启动 Chrome
-  --chrome <path>      Chrome 可执行文件；默认依次探测 CHROME_PATH 与常见安装路径
+  --chrome <path>      Chrome 可执行文件；也可用环境变量 CHROME_PATH
+                       都不给时探测系统安装位置（常见发行版路径与 Windows 的
+                       Chrome/Edge）；chrome-for-testing 之类自下载位置请显式指定
 
 视口（--viewport 可重复指定 name 或 name=宽x高）
   默认跑五档：desktop1600=1600x900、laptop1366=1366x768、tablet1024=1024x768、
@@ -153,34 +161,56 @@ const DEFAULT_VIEWPORTS = [
 ]
 
 /**
- * 已落地的应用路由（与 src/router/routes.ts 的 appRoutes 对齐）。
- * 刻意不解析 routes.ts：那需要 TS 解析依赖；新增路由时同步这里，漏了不会报错但会少覆盖。
- * 排除 /login（无需登录态，另有其专项验收）与 4 个 wip 占位页（同一 PlaceholderView）。
+ * 从 `src/router/routes.ts` 的 appRoutes 里抽路由（单一真相源，不在脚本里抄第二份）。
+ *
+ * 为什么用正则而不是 import：routes.ts 里 `component: () => import(...)` 是动态导入，
+ * 在 Node 里直接 import 会去解析 .vue；而 routes.ts 本身是 TS。正则只取 `path: '...'`
+ * 与 `meta: { ... wip: true }`，够用且零依赖。
+ *
+ * 排除项（各有理由，不是漏覆盖）：
+ *   - `/login`：public 路由，脚本本身要先落它写 localStorage，不必再作为被测页
+ *   - 404 兜底 `/:pathMatch(.*)*`：不是真实页面
+ *   - 带 `wip: true` 的占位页：都是同一个 PlaceholderView，扫一遍等价
  */
-const DEFAULT_ROUTES = [
-  '/',
-  '/market-sources',
-  '/trading',
-  '/trading-data',
-  '/logs',
-  '/monitor',
-  '/user-management',
-  '/settings',
-]
+function loadRoutes() {
+  const file = join(here, '..', 'src', 'router', 'routes.ts')
+  let source
+  try {
+    source = readFileSync(file, 'utf8')
+  } catch {
+    fail(`读不到路由表 ${file}（脚本必须在 apps/webui/frontend/scripts/ 下运行）`)
+  }
+  const routes = []
+  // 每条路由是一个 `{ path: '...', ... }` 对象字面量；按行扫描够用（项目内写法单行）
+  for (const line of source.split('\n')) {
+    const pathMatch = /\bpath:\s*'([^']+)'/.exec(line)
+    if (!pathMatch) continue
+    const path = pathMatch[1]
+    if (path === '/login' || path.includes('pathMatch')) continue
+    if (/\bwip:\s*true\b/.test(line)) continue
+    routes.push(path)
+  }
+  if (routes.length === 0) fail(`${file} 里没抽到任何路由（routes.ts 写法变了吗？）`)
+  return routes
+}
 
-/** 探测 Chrome：环境变量 → 本机 chrome-for-testing → 常见包管理器路径 */
+/** 探测 Chrome：--chrome / CHROME_PATH 优先，否则探通用的系统安装位置 */
 function detectChrome(explicit) {
   if (explicit) {
     if (!existsSync(explicit)) fail(`--chrome 指向的文件不存在: ${explicit}`)
     return explicit
   }
+  // 只列「发行版/官方安装器装在哪」这类通用位置，不写某个人的 home 路径。
+  // chrome-for-testing 这类自下载位置用 CHROME_PATH 或 --chrome 显式给。
   const candidates = [
-    '/home/ockham/.local/share/chrome-for-testing/chrome-linux64/chrome',
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/snap/bin/chromium',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
   ]
   const found = candidates.find((p) => existsSync(p))
   if (!found) {
@@ -204,9 +234,9 @@ async function getJson(url, init) {
   return res.json()
 }
 
-/** 启动 headless Chrome，返回 { proc, endpoint } */
+/** 启动 headless Chrome，返回 { proc, endpoint, userDataDir }（profile 必须在退出时删掉） */
 async function launchChrome(chromePath, port) {
-  const userDataDir = `/tmp/dz-viewport-smoke-${process.pid}`
+  const userDataDir = join(tmpdir(), `dz-viewport-smoke-${process.pid}`)
   const proc = spawn(
     chromePath,
     [
@@ -228,7 +258,7 @@ async function launchChrome(chromePath, port) {
   while (Date.now() < deadline) {
     try {
       await getJson(`${endpoint}/json/version`)
-      return { proc, endpoint }
+      return { proc, endpoint, userDataDir }
     } catch {
       await sleep(250)
     }
@@ -480,7 +510,7 @@ function summarize(results) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2))
-  const routes = opts.routes ?? DEFAULT_ROUTES
+  const routes = opts.routes ?? loadRoutes()
   const viewports = (opts.viewports ?? DEFAULT_VIEWPORTS.map((v) => v.name)).map(parseViewportArg)
   const themes = opts.themes
   for (const theme of themes) {
@@ -501,11 +531,13 @@ async function main() {
 
   const port = 9333
   let chromeProc = null
+  let chromeProfileDir = null
   let endpoint = opts.cdp
   if (!endpoint) {
     const chromePath = detectChrome(opts.chrome)
     const launched = await launchChrome(chromePath, port)
     chromeProc = launched.proc
+    chromeProfileDir = launched.userDataDir
     endpoint = launched.endpoint
   }
   const client = await connectPage(endpoint)
@@ -573,6 +605,9 @@ async function main() {
     if (!opts.keepOpen) {
       client.close()
       if (chromeProc) chromeProc.kill('SIGKILL')
+      // profile 目录里有本次写入的 jwt_token（localStorage），必须删掉：
+      // 留在 /tmp 等于把会话凭据留在磁盘上。
+      if (chromeProfileDir) rmSync(chromeProfileDir, { recursive: true, force: true })
     }
 
     process.stdout.write(summarize(results) + '\n')
