@@ -73,17 +73,34 @@
   background: var(--icon-tertiary, rgba(128,128,128,0.6));
 }
 
-/* ===== 表格基础（覆盖 components.css 全局样式） ===== */
-/* 禁止文本选择 */
-.ds-table, .ds-table thead, .ds-table tbody,
-.ds-table th, .ds-table td {
+/* ===== 表格基础（仅限仪表盘面板内，不全局改写组件库） ===== */
+/* 本文件经 main.ts 全局导入且在 components.css 之后加载：任何无前缀的 .ds-table
+   规则都会改写全站表格（#347）。以下规则一律用 .dashboard-panel 作用域，
+   非仪表盘视图（用户管理/交易账户/日志/行情源）回到 components.css 的默认样式。 */
+
+/* 禁止文本选择 — 仅限制面板内，且正文单元格放开（见下条） */
+.dashboard-panel .ds-table,
+.dashboard-panel .ds-table thead,
+.dashboard-panel .ds-table tbody,
+.dashboard-panel .ds-table th {
   user-select: none;
   -webkit-user-select: none;
 }
-.ds-table tbody tr { cursor: default; }
+/* 正文单元格允许选择：账户号/合约代码/订单号需要能被复制去核对（#347 AC2/AC3）。
+   表头仍不可选，避免拖选列时误选。 */
+.dashboard-panel .ds-table td {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.dashboard-panel .ds-table tbody tr { cursor: default; }
 
-/* 统一表格字体 — body-xs */
-.ds-table {
+/* 统一表格字体 — 保持既有渲染结果（仅面板内） */
+/* 重要：components.css 的 `.ds-table th, .ds-table td` 直接给单元格设了 font-size
+   （td=--body-base 15px、th=--body-md 13px），本文件再把表头覆盖为 body-xs-strong 11px。
+   也就是说「表格主体 15px + 表头 11px」是既有渲染结果，本文件的 .ds-table font-size
+   只作继承兜底。本票（#347）验收是「视觉零变化」，所以**不**在单元格层级重设字号 ——
+   显式覆盖会把 td 从 15px 压到 11px，属本票不应引入的视觉变更（实测回归过一次）。 */
+.dashboard-panel .ds-table {
   font-family: var(--body-xs-font-family);
   font-size: var(--body-xs-font-size);
   font-weight: var(--body-xs-font-weight);
@@ -93,8 +110,13 @@
   width: 100%;
 }
 
-/* 表头 — body-xs-strong */
-.ds-table thead th {
+/* 表头 — body-xs-strong（仅面板内） */
+/* 不在此设 background / border-bottom：两者都由上方「面板内表格背景/边框覆盖」段
+   统一给（bg-card + bg-base-secondary）。原先这里是无前缀的 .ds-table thead th，
+   靠它 .dashboard-panel .ds-table thead th（特异性更高）压住才没生效；
+   收进面板作用域后两者同特异性，后出现的这条会覆盖掉上方规则 ——
+   表头会变白、分割线会从 #F5F5F5 变成 #E5E5E5（#347 两次实测回归都是这个原因）。 */
+.dashboard-panel .ds-table thead th {
   font-weight: var(--body-xs-strong-font-weight);
   font-size: var(--body-xs-strong-font-size);
   color: var(--text-secondary);
@@ -102,40 +124,44 @@
   padding: 0 var(--spacer-12);
   height: 28px;
   text-align: left;
-  border-bottom: 1px solid var(--border-neutral-l1);
-  background: transparent;
   text-transform: none;
   letter-spacing: normal;
 }
 
-/* 紧凑行间距 — 持仓/委托表 */
-.ds-table--dense tbody td {
+/* 紧凑行间距 — 持仓/委托表（仅面板内）
+   不在此设 border-bottom：原始代码里 .dashboard-panel .ds-table tbody td（特异性更高）
+   的 bg-base-secondary 边框胜出。收进面板作用域后两者同特异性，若这里再写
+   border-neutral-l1 就会把分割线颜色换掉（#347 视觉回归）。分割线颜色统一由
+   上方「面板内表格背景/边框覆盖」段决定。 */
+.dashboard-panel .ds-table--dense tbody td {
   padding: var(--spacer-6) var(--spacer-12);
-  border-bottom: 1px solid var(--border-neutral-l1);
   white-space: nowrap;
 }
 
-/* 正常行间距 — 资金表 */
-.ds-table--normal tbody td {
+/* 正常行间距 — 资金表（仅面板内） */
+.dashboard-panel .ds-table--normal tbody td {
   padding: var(--spacer-6) var(--spacer-12);
-  border-bottom: 1px solid var(--border-neutral-l1);
   white-space: nowrap;
 }
 
-/* ===== 单元格对齐 ===== */
-.ds-table .cell-text { text-align: left; }
-.ds-table .cell-num {
+/* ===== 单元格对齐（仅面板内） ===== */
+.dashboard-panel .ds-table .cell-text { text-align: left; }
+.dashboard-panel .ds-table .cell-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-/* ===== 冻结列 ===== */
-.ds-table th.frozen,
-.ds-table td.frozen {
+/* ===== 冻结列（仅面板内） ===== */
+/* 不在此设 background：冻结列背景由上方「面板内表格背景/边框覆盖」段的
+   .dashboard-panel .ds-table th.frozen / td.frozen 给 var(--bg-card)。
+   原始代码里这里是无前缀的 .ds-table th.frozen（特异性更低）写 bg-base-default，
+   因此上方的 bg-card 胜出；收进面板作用域后两者同特异性，若保留 bg-base-default
+   就会把冻结列刷成白底（#347 实测回归）。背景语义归属统一由上方那段决定。 */
+.dashboard-panel .ds-table th.frozen,
+.dashboard-panel .ds-table td.frozen {
   position: sticky;
   z-index: 2;
-  background: var(--bg-base-default);
   will-change: transform;
   flex-shrink: 0;
   box-sizing: content-box;
@@ -143,8 +169,8 @@
   min-width: -webkit-max-content;
   min-width: max-content;
 }
-.ds-table thead th.frozen { z-index: 3; }
-.ds-table tbody td.frozen { min-width: inherit; }
+.dashboard-panel .ds-table thead th.frozen { z-index: 3; }
+.dashboard-panel .ds-table tbody td.frozen { min-width: inherit; }
 
 /* ===== 双行单元格 ===== */
 .cell-two-line {
@@ -162,11 +188,12 @@
   color: var(--text-tertiary);
 }
 
-/* ===== 涨跌着色（中国期货：红涨绿跌） ===== */
-.ds-table td.diff-pos { color: #d4543e !important; }
-.ds-table td.diff-neg { color: #2a9d5c !important; }
-.ds-table td.trade-buy { color: color-mix(in srgb, #d4543e 70%, var(--text-default)) !important; }
-.ds-table td.trade-sell { color: color-mix(in srgb, #2a9d5c 70%, var(--text-default)) !important; }
+/* ===== 涨跌着色（中国期货：红涨绿跌，仅面板内） ===== */
+/* TODO(#349): 裸色 + !important 属于待收编的 token 债，本票只收作用域不改色值。 */
+.dashboard-panel .ds-table td.diff-pos { color: #d4543e !important; }
+.dashboard-panel .ds-table td.diff-neg { color: #2a9d5c !important; }
+.dashboard-panel .ds-table td.trade-buy { color: color-mix(in srgb, #d4543e 70%, var(--text-default)) !important; }
+.dashboard-panel .ds-table td.trade-sell { color: color-mix(in srgb, #2a9d5c 70%, var(--text-default)) !important; }
 
 /* ===== 委托状态图标（纯色，无背景圆圈） ===== */
 .order-status-icon {
@@ -184,19 +211,19 @@
 .order-status-icon--cancelled { color: var(--text-tertiary); }
 .order-status-icon--rejected { color: var(--text-tertiary); text-decoration: line-through; }
 
-/* ===== 委托行状态 ===== */
-.order-row--rejected td {
+/* ===== 委托行状态（仅面板内） ===== */
+.dashboard-panel .order-row--rejected td {
   color: var(--text-tertiary) !important;
 }
-.order-row--rejected .cell-text {
+.dashboard-panel .order-row--rejected .cell-text {
   text-decoration: line-through;
 }
-.order-row--cancelled td {
+.dashboard-panel .order-row--cancelled td {
   color: var(--text-tertiary);
 }
 
-/* ===== 委托标签药丸（紧凑圆角） ===== */
-.ds-table .ds-tag {
+/* ===== 委托标签药丸（紧凑圆角，仅面板内） ===== */
+.dashboard-panel .ds-table .ds-tag {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 10px;
@@ -206,7 +233,7 @@
   height: auto;
   line-height: 16px;
 }
-.ds-table .ds-tag--success {
+.dashboard-panel .ds-table .ds-tag--success {
   background: rgba(42, 157, 92, 0.15);
   color: #2a9d5c;
 }
@@ -214,15 +241,15 @@
   color: var(--status-alert-default);
   background: color-mix(in srgb, var(--status-alert-default) 15%, transparent);
 }
-.ds-table .ds-tag--alert {
+.dashboard-panel .ds-table .ds-tag--alert {
   background: rgba(91, 141, 239, 0.15);
   color: #5b8def;
 }
-.ds-table .ds-tag--danger {
+.dashboard-panel .ds-table .ds-tag--danger {
   background: rgba(212, 84, 62, 0.15);
   color: #d4543e;
 }
-.ds-table .ds-tag:not([class*="ds-tag--"]) {
+.dashboard-panel .ds-table .ds-tag:not([class*="ds-tag--"]) {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-tertiary);
 }
