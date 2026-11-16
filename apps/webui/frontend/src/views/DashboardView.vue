@@ -409,7 +409,7 @@ onUnmounted(() => {
       <div ref="leftPanelEl" class="dashboard-left-panel">
 
         <!-- Position Monitor（#249：真实持仓；契约 rest §2.9.4 / 契约 webui-ws §2.5/§5） -->
-        <div class="dashboard-panel dashboard-panel--position" :style="{ flex: `${positionFlex} 1 0%` }">
+        <div class="dashboard-panel dashboard-panel--position" :style="{ '--dashboard-panel-flex': `${positionFlex} 1 0%` }">
           <div class="dashboard-panel__hd">
             <span class="dashboard-panel__title">
               <span class="dashboard-panel__title-text">持仓</span>
@@ -536,10 +536,10 @@ onUnmounted(() => {
         <div class="splitter-v v-splitter-1" @mousedown="onVSplitter1Down"></div>
 
         <!-- Bottom: Funds + Orders -->
-        <div ref="bottomPanelEl" class="dashboard-bottom-panel" :style="{ flex: `${bottomFlex} 1 0%` }">
+        <div ref="bottomPanelEl" class="dashboard-bottom-panel" :style="{ '--dashboard-bottom-flex': `${bottomFlex} 1 0%` }">
 
           <!-- Funds（#250：真实资金卡；契约 rest §2.9.4 / 契约 webui-ws §2.5/§5） -->
-          <div class="dashboard-panel dashboard-panel--fund" :style="{ flex: `${fundFlex} 1 0%` }">
+          <div class="dashboard-panel dashboard-panel--fund" :style="{ '--dashboard-panel-flex': `${fundFlex} 1 0%` }">
             <div class="dashboard-panel__hd">
               <span class="dashboard-panel__title">
                 <span class="dashboard-panel__title-text">资金</span>
@@ -629,7 +629,7 @@ onUnmounted(() => {
           <div class="splitter-h h-splitter" @mousedown="onHSplitterDown"></div>
 
           <!-- Orders -->
-          <div class="dashboard-panel dashboard-panel--orders" :style="{ flex: `${orderFlex} 1 0%` }">
+          <div class="dashboard-panel dashboard-panel--orders" :style="{ '--dashboard-panel-flex': `${orderFlex} 1 0%` }">
             <div class="dashboard-panel__hd">
               <span class="dashboard-panel__title">
                 <span class="dashboard-panel__title-text">委托</span>
@@ -690,7 +690,7 @@ onUnmounted(() => {
       <div ref="rightPanelEl" class="dashboard-right-panel">
 
         <!-- Market Sources -->
-        <div class="dashboard-panel dashboard-panel--market" :style="{ flex: `${marketFlex} 1 0%` }">
+        <div class="dashboard-panel dashboard-panel--market" :style="{ '--dashboard-panel-flex': `${marketFlex} 1 0%` }">
           <div class="dashboard-panel__hd">
             <span class="dashboard-panel__title-text">行情</span>
             <span class="dashboard-panel__aggregate" title="已登录行情源/总行情源">{{ marketOnlineCount }}/{{ marketTotalCount }}</span>
@@ -722,7 +722,7 @@ onUnmounted(() => {
         <div class="splitter-h market-strategy-splitter" @mousedown="startMarketDrag"></div>
 
         <!-- Strategy List -->
-        <div class="dashboard-panel dashboard-panel--strategy" :style="{ flex: `${strategyFlex} 1 0%` }">
+        <div class="dashboard-panel dashboard-panel--strategy" :style="{ '--dashboard-panel-flex': `${strategyFlex} 1 0%` }">
           <div class="dashboard-panel__hd">
             <span class="dashboard-panel__title">
               <span class="dashboard-panel__title-text">策略</span>
@@ -751,7 +751,7 @@ onUnmounted(() => {
         <div class="splitter-h strategy-msg-splitter" @mousedown="startStrategyMsgDrag"></div>
 
         <!-- Messages -->
-        <div class="dashboard-panel dashboard-panel--messages" :style="{ flex: `${msgFlex} 1 0%` }">
+        <div class="dashboard-panel dashboard-panel--messages" :style="{ '--dashboard-panel-flex': `${msgFlex} 1 0%` }">
           <div class="dashboard-panel__hd">
             <span class="dashboard-panel__title">
               <span class="dashboard-panel__title-text">消息</span>

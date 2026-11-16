@@ -19,6 +19,12 @@
    （弹性系数 / 百分比 / 状态色），其余静态声明一律提成语义类。
    改动纪律：只搬运、不改值 —— 每组类都逐字对应原内联对象，AC4 要求视觉零变化。 */
 .dashboard-panel {
+  /* 弹性系数由模板按拖拽状态注入（内联只写 `--dashboard-panel-flex`），flex 声明留在
+     样式表里 —— 这样窄屏媒体规则能用同特异性的 `flex: none` 覆盖它，不必借助
+     !important（#349 AC5）。这里的默认值只是**兜底**（模板每次都注入，永不生效），
+     故不再逐面板重复 JS 里的初始系数 —— 那份事实只在 `DashboardView.vue` 的 ref 里有一处。 */
+  --dashboard-panel-flex: 1 1 0%;
+  flex: var(--dashboard-panel-flex);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border-neutral-l1);
@@ -73,6 +79,9 @@
 }
 
 .dashboard-bottom-panel {
+  /* 同上：flex 由变量给，窄屏媒体规则可同特异性覆盖 */
+  --dashboard-bottom-flex: 1 1 0%;
+  flex: var(--dashboard-bottom-flex);
   display: flex;
   flex-direction: row;
   overflow: hidden;
@@ -80,19 +89,24 @@
 }
 
 /* ===== 面板内表格背景/边框覆盖 ===== */
-/* 静态设计：面板内表格用 bg-card 背景 + bg-base-secondary 分割线 */
+/* 静态设计：面板内表格用 bg-card 背景 + 行分隔线。
+   #349：分隔线原用背景 token `--bg-base-secondary`，而它在浅色段与 `--bg-card` 同为
+   #F5F5F5 → 实测 1.00:1，密集数字表失去横向追踪。改用语义正确的边框 token
+   `--border-neutral-l1`（浅色 1.15:1、深色 1.31:1，均高于门禁的可区分下限 1.10）。
+   本文件里所有「用背景 token 当边框」的站点一并收编（顶栏/侧栏头另见 layout.css
+   与 Sidebar.vue 的同批改动）。 */
 .dashboard-panel .ds-table thead th {
   background: var(--bg-card);
-  border-bottom: 1px solid var(--bg-base-secondary);
+  border-bottom: 1px solid var(--border-neutral-l1);
 }
 .dashboard-panel .ds-table tbody td {
   background: var(--bg-card);
-  border-bottom: 1px solid var(--bg-base-secondary);
+  border-bottom: 1px solid var(--border-neutral-l1);
 }
 .dashboard-panel .ds-table th.frozen,
 .dashboard-panel .ds-table td.frozen {
   background: var(--bg-card);
-  border-bottom: 1px solid var(--bg-base-secondary);
+  border-bottom: 1px solid var(--border-neutral-l1);
 }
 .dashboard-panel .auto-scroll {
   background: var(--bg-card);
@@ -262,11 +276,14 @@
 }
 
 /* ===== 涨跌着色（中国期货：红涨绿跌，仅面板内） ===== */
-/* TODO(#349): 裸色 + !important 属于待收编的 token 债，本票只收作用域不改色值。 */
-.dashboard-panel .ds-table td.diff-pos { color: #d4543e !important; }
-.dashboard-panel .ds-table td.diff-neg { color: #2a9d5c !important; }
-.dashboard-panel .ds-table td.trade-buy { color: color-mix(in srgb, #d4543e 70%, var(--text-default)) !important; }
-.dashboard-panel .ds-table td.trade-sell { color: color-mix(in srgb, #2a9d5c 70%, var(--text-default)) !important; }
+/* #349：色值进 token（`--color-rise` / `--color-fall`，定义在 design-tokens.css 的
+   非标 token 段；深浅色同值，方向保持国内习惯）。裸色清零。
+   同时去掉 !important：本段选择器 (0,3,1) 已高于面板内所有会与本属性竞争的规则
+   （`.dashboard-panel .ds-table td` (0,2,1)、单元格修饰类 (0,3,1)），且本段在其后加载。 */
+.dashboard-panel .ds-table td.diff-pos { color: var(--color-rise); }
+.dashboard-panel .ds-table td.diff-neg { color: var(--color-fall); }
+.dashboard-panel .ds-table td.trade-buy { color: color-mix(in srgb, var(--color-rise) 70%, var(--text-default)); }
+.dashboard-panel .ds-table td.trade-sell { color: color-mix(in srgb, var(--color-fall) 70%, var(--text-default)); }
 
 /* ===== 委托状态图标（纯色，无背景圆圈） ===== */
 .order-status-icon {
@@ -285,8 +302,12 @@
 .order-status-icon--rejected { color: var(--text-tertiary); text-decoration: line-through; }
 
 /* ===== 委托行状态（仅面板内） ===== */
-.dashboard-panel .order-row--rejected td {
-  color: var(--text-tertiary) !important;
+/* #349：原先靠 !important 压过 `.dashboard-panel .ds-table td.cell-text--secondary`
+   （(0,3,1)）。去掉 !important 后改为抬特异性到 (0,5,3)：`tbody tr.` + 两个 `:not()`。
+   **必须排除买卖列** —— 涨跌色在废单行里仍要显示（原实现里 td.trade-buy/sell 也带
+   !important 且 (0,3,1) 更高，所以它们本来就不被这条盖住；快照实测验证过）。 */
+.dashboard-panel .ds-table tbody tr.order-row--rejected td:not(.trade-buy):not(.trade-sell) {
+  color: var(--text-tertiary);
 }
 .dashboard-panel .order-row--rejected .cell-text {
   text-decoration: line-through;
@@ -296,6 +317,12 @@
 }
 
 /* ===== 委托标签药丸（紧凑圆角，仅面板内） ===== */
+/* #349：本段只留**形态**（尺寸/圆角/字重）；**状态色配色交给 components.css 的
+   `.ds-tag--*`** —— 它们现在用 `-surface-l1` 底 + `-on-surface` 文字，浅深两套都过 4.5:1。
+   原先这里裸写 #2a9d5c / #5b8def / #d4543e + 15% alpha 底，浅色段实测仅 2.56–3.12:1。
+   例外：下面「无 ds-tag-- 修饰」的中性药丸仍用 `rgba(255,255,255,.08)` 白叠底 ——
+   它不属于状态色族（票面范围只到 `.ds-tag--*`），且改成 `--bg-overlay-*` 会改变观感，
+   留待统一边框/叠层 token 时处理。 */
 .dashboard-panel .ds-table .ds-tag {
   display: inline-block;
   padding: 1px 6px;
@@ -306,22 +333,13 @@
   height: auto;
   line-height: 16px;
 }
-.dashboard-panel .ds-table .ds-tag--success {
-  background: rgba(42, 157, 92, 0.15);
-  color: #2a9d5c;
-}
-/* 委托标签药丸的三个状态色只在面板内定义。原先这里还有一条**无前缀**的
-   `.ds-tag--alert`（浅色 --status-alert-default 底 + 15% alpha 背景）：它在面板内
-   恒被下面这条 (0,3,0) 压制，在面板外全仓无消费点 —— 属 #347 同类的「页面级文件
-   全局改写组件库类」残留，已随之删除（可见效果为零：唯一使用点 DashboardView 的
-   委托表在面板内）。 */
+/* 「部分成交」蓝色标签：历史类名 `.ds-tag--alert`，语义是「进行中/部分成交」，#349 起
+   改用 primary 蓝色族（底 --status-primary-surface-l1 + 文字 --status-primary-on-surface，
+   浅色 5.62 / 深色 6.54）。类名保持不动以免改模板数据；后续正名时一并调整。
+   注：这里原先还有一条无前缀 `.ds-tag--alert` 的全局改写，已在 #347 删除。 */
 .dashboard-panel .ds-table .ds-tag--alert {
-  background: rgba(91, 141, 239, 0.15);
-  color: #5b8def;
-}
-.dashboard-panel .ds-table .ds-tag--danger {
-  background: rgba(212, 84, 62, 0.15);
-  color: #d4543e;
+  background: var(--status-primary-surface-l1);
+  color: var(--status-primary-on-surface);
 }
 .dashboard-panel .ds-table .ds-tag:not([class*="ds-tag--"]) {
   background: rgba(255, 255, 255, 0.08);
@@ -471,13 +489,11 @@
   border-bottom: 1px solid var(--border-neutral-l1);
   flex-shrink: 0;
 }
-/* 右栏三个面板头原本用的是 --bg-base-secondary 分割线（左栏/底栏用 border-neutral-l1）；
-   这是既有视觉差异，归位时原样保留，不趁重构统一。 */
-.dashboard-panel--market .dashboard-panel__hd,
-.dashboard-panel--strategy .dashboard-panel__hd,
-.dashboard-panel--messages .dashboard-panel__hd {
-  border-bottom-color: var(--bg-base-secondary);
-}
+/* 注：#346 归位时右栏三个面板头用的是 `--bg-base-secondary`，与左栏的
+   `--border-neutral-l1` 是**两种颜色**（当时为保视觉零变化而分别保留）。
+   #349 把全部分隔线统一收编到 `--border-neutral-l1` 后，两条规则同值 —— 右栏那三个
+   面板头的分隔线因此变深（浅色 #F5F5F5 → rgb(229,229,229)），属本票缺陷 2 的
+   「分隔线不可见」同一根因，修饰规则随之删除（快照差异里已计入分隔线一族）。 */
 
 /* 面板头左侧标题区（原内联 display:flex / align-items:center / gap:spacer-6） */
 .dashboard-panel__title {
@@ -578,10 +594,10 @@
   justify-content: space-between;
   padding: var(--spacer-8) var(--spacer-16);
 }
-/* 行间分割线：原内联按「是否首/末行」切换 border 值。拆成修饰类后模板只判布尔，
-   颜色仍与既有实现一致（--bg-base-secondary，见 #349 的收编范围）。 */
-.dashboard-panel__row--divided { border-top: 1px solid var(--bg-base-secondary); }
-.dashboard-panel__row--divided-bottom { border-bottom: 1px solid var(--bg-base-secondary); }
+/* 行间分割线：原内联按「是否首/末行」切换 border 值。拆成修饰类后模板只判布尔。
+   颜色在 #349 起统一走边框 token `--border-neutral-l1`（原先是背景 token）。 */
+.dashboard-panel__row--divided { border-top: 1px solid var(--border-neutral-l1); }
+.dashboard-panel__row--divided-bottom { border-bottom: 1px solid var(--border-neutral-l1); }
 /* 行情面板行另外继承 body-xs 字号与不换行（原内联） */
 .dashboard-panel--market .dashboard-panel__row {
   font-size: var(--body-xs-font-size);
@@ -635,7 +651,7 @@
   padding: var(--spacer-8) var(--spacer-16);
   font-size: var(--body-xs-font-size);
   color: var(--text-tertiary);
-  border-top: 1px solid var(--bg-base-secondary);
+  border-top: 1px solid var(--border-neutral-l1);
 }
 
 /* 面板内标签：ds-tag 默认 body-sm(12px)，面板内统一压到 10px（原内联逐处写 10px） */
@@ -738,76 +754,79 @@
 }
 
 /* ===== 响应式布局 — 窄屏 + 矮屏 ===== */
+/* #349 AC5 要求本文件 **0 处 !important**。原先这里的 !important 有两个来源：
+   1) 压过 #346 之前的模板内联样式 —— 内联已全部归位成类，这一层已无必要；
+   2) 压过 `.dashboard-panel` 上的内联 `flex: <系数> 1 0%` —— 改为内联只提供
+      CSS 变量（`--dashboard-panel-flex` / `--dashboard-bottom-flex`），flex 声明留在
+      样式表里，于是同特异性下「后面的媒体规则」自然胜出，不必动用 !important。
+   其余跨文件覆盖本来就不需要 !important：
+   - `body` / `.app-shell`：本文件经 main.ts **最后**导入，同特异性下后者胜；
+   - `.app-shell > .workspace` 对的是 AppShell.vue 的 scoped `.app-shell__workspace`
+     （元素同时带 `workspace` 与 `app-shell__workspace` 两个类，见 AppShell.vue:79）。
+     两者都是 (0,2,0) —— scoped 的 `[data-v-*]` 与后代组合各算到的类数相同 ——
+     平局由源码顺序决定，dashboard.css 最后导入故它胜（layout.css 里没有 `.workspace`
+     规则，原注释的这条依据是错的）。 */
 @media (max-width: 1024px), (max-height: 600px) {
   body {
-    height: auto !important;
-    overflow: visible !important;
+    height: auto;
+    overflow: visible;
   }
   .app-shell {
-    height: auto !important;
-    overflow: visible !important;
+    height: auto;
+    overflow: visible;
   }
   /* 让 workspace 跟随 app-shell 释放高度，topbar 才能基于视口 sticky */
   .app-shell > .workspace {
-    height: auto !important;
-    overflow: visible !important;
+    height: auto;
+    overflow: visible;
   }
   /* 注意：这里**不再**写 gap / padding。断点里的这两条在 #346 之前恒被模板内联的
      `padding: 6px; column-gap: 0; row-gap: var(--spacer-6)` 压住（内联 > 非 !important），
      属从未生效的声明；保留它们会在内联拆除后突然把窄屏内边距从 6px 放大到 10px，
-     与本票「视觉零变化」冲突。窄屏间距重排属母票 #345 的设计阶段。 */
+     与本波「视觉零变化」冲突。窄屏间距重排属母票 #345 的设计阶段。 */
   .dashboard-content {
-    grid-template-columns: 1fr !important;
-    grid-template-rows: auto !important;
-    overflow: visible !important;
-    display: flex !important;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    overflow: visible;
+    display: flex;
     flex-direction: column;
   }
-  .dashboard-content > .v-splitter-main { display: none !important; }
+  .dashboard-content > .v-splitter-main { display: none; }
 
   .dashboard-left-panel {
     min-height: auto;
-    overflow: visible !important;
+    overflow: visible;
     gap: var(--spacer-8);
     display: flex;
     flex-direction: column;
   }
   .dashboard-right-panel {
-    border-left: none !important;
+    border-left: none;
     min-height: auto;
-    overflow: visible !important;
+    overflow: visible;
     gap: var(--spacer-8);
     display: flex;
     flex-direction: column;
   }
-  /* min-height 同样删掉：断点里的 200px 在 #346 之前恒被模板内联的 80/100/120px 压住，
-     从未生效。保留会让内联拆除后的窄屏面板突然长到 200px。 */
+  /* 面板不再参与弹性分配（内联 flex 已改为 CSS 变量，见文件头说明） */
   .dashboard-panel {
-    flex: none !important;
+    flex: none;
     overflow: hidden;
   }
   .dashboard-bottom-panel {
-    flex: none !important;
-    flex-direction: column !important;
+    flex: none;
+    flex-direction: column;
     gap: var(--spacer-8);
-    min-height: auto !important;
+    min-height: auto;
   }
   .dashboard-panel--fund {
-    border-right: none !important;
+    border-right: none;
   }
 
   .v-splitter-1,
   .h-splitter,
   .market-strategy-splitter,
   .strategy-msg-splitter {
-    display: none !important;
-  }
-}
-
-/* ===== 减少动画 ===== */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
+    display: none;
   }
 }

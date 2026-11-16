@@ -254,6 +254,15 @@
   --color-error: var(--status-error-default);
   --color-error-soft: var(--status-error-surface-l1);
 
+  /* #349：涨跌色（交易系统最强语义信号）。**中国期货惯例：红涨绿跌**，与欧美相反 ——
+     方向不要改。深浅色同值：历史实现就是同值，故按「不随主题变」定义在这里
+     （theme.css 不动）。实测对比度（页面底 / 卡片底）：浅色 rise 4.09 / 3.75、
+     fall 3.46 / 3.17；深色 rise 4.39 / 3.99、fall 5.19 / 4.71 —— 作为正文数字未达
+     4.5:1，已在 tokenContrast 登记为已知项（达标需重设色相，属全站色彩专项）。
+     消费方：dashboard.css 的 .diff-pos/.diff-neg/.trade-buy/.trade-sell。 */
+  --color-rise: #D4543E;
+  --color-fall: #2A9D5C;
+
   /* brand */
   --brand-50: #F2F7FF;
   --brand-100: #E5EAFF;
