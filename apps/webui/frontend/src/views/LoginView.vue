@@ -86,47 +86,32 @@ function togglePassword(): void {
 
 <template>
   <!-- Theme dropdown (fixed top-right) -->
-  <div :style="{ position: 'fixed', top: 'var(--spacer-16)', right: 'var(--spacer-16)', zIndex: 50 }">
+  <div class="login-theme-corner">
     <ThemeDropdown />
   </div>
 
-  <main :style="{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: 'var(--spacer-32) var(--spacer-16)', background: 'var(--bg-base-default)' }">
-    <div :style="{ width: '100%', maxWidth: '384px' }">
+  <main class="login-main">
+    <div class="login-container">
 
       <!-- Brand Identity -->
-      <div :style="{ textAlign: 'center', marginBottom: 'var(--spacer-20)' }">
-        <div :style="{ marginBottom: 'var(--spacer-16)', display: 'inline-flex' }">
+      <div class="login-brand">
+        <div class="login-brand__logo">
           <img
             src="/icons/builtin/DZ-Bolt.svg"
             alt="DZTrader"
-            :style="{ width: '40px', height: '40px', borderRadius: '10px' }"
+            class="login-brand__logo-img"
           />
         </div>
-        <h1 :style="{
-          fontFamily: 'var(--font-family-heading)',
-          fontSize: 'var(--heading-xl-font-size)',
-          lineHeight: 'var(--heading-xl-line-height)',
-          fontWeight: 'var(--heading-xl-font-weight)',
-          color: 'var(--text-default)',
-          margin: 0,
-        }">DZTrader 量化交易系统</h1>
+        <h1 class="login-title">DZTrader 量化交易系统</h1>
       </div>
 
       <!-- Login Card -->
-      <div class="ds-card" :style="{ padding: 'var(--spacer-24)' }">
-        <form @submit.prevent="handleLogin" :style="{ display: 'flex', flexDirection: 'column', gap: 'var(--spacer-20)' }">
+      <div class="ds-card login-card">
+        <form @submit.prevent="handleLogin" class="login-form">
 
           <!-- Username Field -->
-          <div :style="{ display: 'flex', flexDirection: 'column', gap: 'var(--spacer-8)' }">
-            <label
-              for="username"
-              :style="{
-                fontSize: 'var(--body-base-font-size)',
-                lineHeight: 'var(--body-base-line-height)',
-                color: 'var(--text-default)',
-                fontWeight: 'var(--font-weight-medium)',
-              }"
-            >用户名</label>
+          <div class="login-field">
+            <label for="username" class="login-field__label">用户名</label>
             <div class="ds-input">
               <span class="ds-input__icon"><Icon name="UserCheck" :size="16" /></span>
               <input
@@ -143,16 +128,8 @@ function togglePassword(): void {
           </div>
 
           <!-- Password Field -->
-          <div :style="{ display: 'flex', flexDirection: 'column', gap: 'var(--spacer-8)' }">
-            <label
-              for="password"
-              :style="{
-                fontSize: 'var(--body-base-font-size)',
-                lineHeight: 'var(--body-base-line-height)',
-                color: 'var(--text-default)',
-                fontWeight: 'var(--font-weight-medium)',
-              }"
-            >密码</label>
+          <div class="login-field">
+            <label for="password" class="login-field__label">密码</label>
             <div class="ds-input">
               <span class="ds-input__icon"><Icon name="Lock" :size="16" /></span>
               <input
@@ -166,20 +143,7 @@ function togglePassword(): void {
               />
               <button
                 type="button"
-                :style="{
-                  background: 'transparent',
-                  border: 'none',
-                  padding: 0,
-                  width: '24px',
-                  height: '24px',
-                  minWidth: '24px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                  borderRadius: 'var(--radius-8)',
-                  color: 'var(--icon-tertiary)',
-                }"
+                class="login-password-toggle"
                 aria-label="显示密码"
                 @click="togglePassword"
               >
@@ -191,35 +155,19 @@ function togglePassword(): void {
           <!-- Error message -->
           <div
             v-if="errorMessage"
+            class="login-error"
+            :class="{ 'login-error--warning': errorType !== 'error' }"
             :data-test-error-level="errorType"
-            :style="{
-              padding: 'var(--spacer-8) var(--spacer-12)',
-              borderRadius: 'var(--radius-8)',
-              fontSize: 'var(--body-sm-font-size)',
-              lineHeight: 'var(--body-sm-line-height)',
-              ...(errorType === 'error'
-                ? { background: 'var(--status-error-surface-l1)', color: 'var(--status-error-default)' }
-                : { background: 'var(--status-warning-surface-l1)', color: 'var(--status-warning-default)' }),
-            }"
           >{{ errorMessage }}</div>
 
           <!-- Login Button -->
           <button
             type="submit"
-            class="ds-btn ds-btn--brand ds-btn--lg"
+            class="ds-btn ds-btn--brand ds-btn--lg login-submit"
             :disabled="auth.loading"
-            :style="{ width: '100%', height: '38px', marginTop: 'var(--spacer-8)' }"
           >
-            <span v-if="auth.loading" :style="{ display: 'inline-flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
-              <span :style="{
-                width: '14px',
-                height: '14px',
-                border: '2px solid currentColor',
-                borderTopColor: 'transparent',
-                borderRadius: '50%',
-                display: 'inline-block',
-                animation: 'spin 0.6s linear infinite',
-              }"></span>
+            <span v-if="auth.loading" class="login-submit__loading">
+              <span class="login-submit__spinner"></span>
               登录中...
             </span>
             <span v-else>登录</span>
@@ -228,13 +176,7 @@ function togglePassword(): void {
         </form>
       </div>
 
-      <p :style="{
-        textAlign: 'center',
-        marginTop: 'var(--spacer-24)',
-        fontSize: '12px',
-        color: 'var(--text-tertiary)',
-        letterSpacing: '0.5px',
-      }">DZTrader Quantitative Trading System</p>
+      <p class="login-footer">DZTrader Quantitative Trading System</p>
 
     </div>
   </main>
@@ -243,5 +185,141 @@ function togglePassword(): void {
 <style>
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+</style>
+
+<style scoped>
+/* #346：模板里静态的 :style 声明归位到本组件的 scoped 样式；值逐字搬运，未做任何视觉调整。
+   @keyframes spin 仍留在上面的非 scoped 块（原本就全局，不随本风格改动）。 */
+.login-theme-corner {
+  position: fixed;
+  top: var(--spacer-16);
+  right: var(--spacer-16);
+  z-index: 50;
+}
+
+.login-main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--spacer-32) var(--spacer-16);
+  background: var(--bg-base-default);
+}
+
+.login-container {
+  width: 100%;
+  max-width: 384px;
+}
+
+.login-brand {
+  text-align: center;
+  margin-bottom: var(--spacer-20);
+}
+
+.login-brand__logo {
+  margin-bottom: var(--spacer-16);
+  display: inline-flex;
+}
+
+.login-brand__logo-img {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-10);
+}
+
+.login-title {
+  font-family: var(--font-family-heading);
+  font-size: var(--heading-xl-font-size);
+  line-height: var(--heading-xl-line-height);
+  font-weight: var(--heading-xl-font-weight);
+  color: var(--text-default);
+  margin: 0;
+}
+
+.login-card {
+  padding: var(--spacer-24);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-20);
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-8);
+}
+
+.login-field__label {
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+  color: var(--text-default);
+  font-weight: var(--font-weight-medium);
+}
+
+.login-password-toggle {
+  background: transparent;
+  border: none;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: var(--radius-8);
+  color: var(--icon-tertiary);
+}
+
+/* 底色/文字色随 errorType 变化，属逐实例动态值，仍由模板内联三元决定，这里只放静态部分。 */
+.login-error {
+  padding: var(--spacer-8) var(--spacer-12);
+  border-radius: var(--radius-8);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  /* 默认（errorType === 'error'）走错误色；警告级别见下面的修饰类 */
+  background: var(--status-error-surface-l1);
+  color: var(--status-error-default);
+}
+
+/* 警告级提示（如「密码即将过期」）。原先是内联 spread 三元：两个分支都是静态字面量，
+   只是按 errorType 选配色 —— 与 SyncSwitch/UserManagement 的同类处理一致，提为修饰类。 */
+.login-error--warning {
+  background: var(--status-warning-surface-l1);
+  color: var(--status-warning-default);
+}
+
+.login-submit {
+  width: 100%;
+  height: 38px;
+  margin-top: var(--spacer-8);
+}
+
+.login-submit__loading {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-6);
+}
+
+.login-submit__spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.6s linear infinite;
+}
+
+.login-footer {
+  text-align: center;
+  margin-top: var(--spacer-24);
+  font-size: var(--body-sm-font-size);
+  color: var(--text-tertiary);
+  letter-spacing: 0.5px;
 }
 </style>

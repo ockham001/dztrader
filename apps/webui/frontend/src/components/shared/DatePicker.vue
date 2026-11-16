@@ -202,7 +202,7 @@ onUnmounted(() => {
       @click.stop="toggle()"
     >
       <span class="ds-datepicker__trigger-label">{{ displayLabel }}</span>
-      <span class="icon ds-datepicker__trigger-icon" data-icon :style="{ width: '16px', height: '16px', '--icon-url': `url('/icons/builtin/calendar.svg')` }" aria-hidden="true"></span>
+      <span class="icon ds-datepicker__trigger-icon" data-icon aria-hidden="true"></span>
     </button>
 
     <!-- Panel: Teleport to body to escape parent overflow / stacking contexts -->
@@ -217,11 +217,11 @@ onUnmounted(() => {
         >
           <div class="ds-datepicker__header">
             <button class="ds-datepicker__nav" type="button" @click="prevMonth" aria-label="上个月">
-              <span class="icon" data-icon :style="{ width: '16px', height: '16px', '--icon-url': `url('/icons/builtin/arrow_left_large.svg')` }" aria-hidden="true"></span>
+              <span class="icon ds-datepicker__nav-icon ds-datepicker__nav-icon--prev" data-icon aria-hidden="true"></span>
             </button>
             <span class="ds-datepicker__month">{{ monthLabel }}</span>
             <button class="ds-datepicker__nav" type="button" @click="nextMonth" aria-label="下个月">
-              <span class="icon" data-icon :style="{ width: '16px', height: '16px', '--icon-url': `url('/icons/builtin/arrow_right_large.svg')` }" aria-hidden="true"></span>
+              <span class="icon ds-datepicker__nav-icon ds-datepicker__nav-icon--next" data-icon aria-hidden="true"></span>
             </button>
           </div>
           <div class="ds-datepicker__weekdays">
@@ -246,3 +246,28 @@ onUnmounted(() => {
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+/* #346：模板 :style 里的静态图标尺寸与图标地址归位。只搬运不改值。
+   16px 图标沿用 .icon 的 --icon-size-16 基线；三个 --icon-url 逐元素固定，故进类。
+   Teleport 到 body 的面板节点仍带本组件的 data-v 作用域属性，scoped 规则照样生效。 */
+.ds-datepicker__trigger-icon {
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+
+  --icon-url: url('/icons/builtin/calendar.svg');
+}
+
+.ds-datepicker__nav-icon {
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+}
+
+.ds-datepicker__nav-icon--prev {
+  --icon-url: url('/icons/builtin/arrow_left_large.svg');
+}
+
+.ds-datepicker__nav-icon--next {
+  --icon-url: url('/icons/builtin/arrow_right_large.svg');
+}
+</style>

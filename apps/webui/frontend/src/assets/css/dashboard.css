@@ -14,7 +14,13 @@
 }
 
 /* ===== 面板卡片化 ===== */
+/* #346：原 DashboardView.vue 模板里的内联静态样式全部归位到本文件（含本段与下方
+   「内联样式归位」段）。判据是票面 AC1：模板 `:style` 里只留**逐实例计算**的值
+   （弹性系数 / 百分比 / 状态色），其余静态声明一律提成语义类。
+   改动纪律：只搬运、不改值 —— 每组类都逐字对应原内联对象，AC4 要求视觉零变化。 */
 .dashboard-panel {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-12);
   background: var(--bg-card);
@@ -29,6 +35,48 @@
 .dashboard-panel {
   min-width: 0;
   min-height: 0;
+}
+
+/* 面板尺寸下限（原内联 minHeight / minWidth）。**必须写在上面的 min-*:0 之后**：
+   那条「允许收缩到内容以下」的规则会覆盖同特异性更早的 min-height。
+   窄屏断点里原有的 min-height（200/180/280px）已删除：它们在 #346 之前恒被模板内联值
+   压住（内联 > 非 !important 的样式表规则），属从未生效的声明；保留会在内联拆除后
+   突然改变窄屏布局，与本票「视觉零变化」冲突。响应式重排属母票 #345 的设计阶段。 */
+.dashboard-panel { min-height: 80px; }
+.dashboard-panel--position { min-height: 120px; }
+.dashboard-panel--fund { min-width: 150px; min-height: 100px; }
+.dashboard-panel--orders { min-width: 150px; min-height: 100px; }
+
+/* 三栏骨架（原内联 display/flex-direction/overflow）
+   列宽含拖拽产生的左右弹性系数 → 数值走 CSS 变量（模板只写 `--dashboard-*-fr` 两个数字），
+   列模板本身（minmax 边界、6px 分隔条占位）固定在 CSS 里，不再逐字面量漂在模板上。
+   两个变量在本规则里给默认值（拖拽前的初始档），模板的 `:style` 只做逐实例覆盖 ——
+   这也是 `tokenContrast.spec.ts` 检查 2 要求的「引用必须有定义处」。 */
+.dashboard-content {
+  --dashboard-left-fr: 1fr;
+  --dashboard-right-fr: 1fr;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(300px, var(--dashboard-left-fr)) var(--spacer-6) minmax(200px, var(--dashboard-right-fr));
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  padding: var(--spacer-6);
+  column-gap: var(--spacer-0);
+  row-gap: var(--spacer-6);
+}
+
+.dashboard-left-panel,
+.dashboard-right-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dashboard-bottom-panel {
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  min-height: 100px;
 }
 
 /* ===== 面板内表格背景/边框覆盖 ===== */
@@ -51,10 +99,31 @@
 }
 
 /* ===== 滚动条（macOS 风格：默认透明，hover 显形） ===== */
+/* #346：`.auto-scroll` 原本只有滚动条样式，flex/overflow 靠模板内联给。
+   归位后统一在类里给（三处用法都是「占满剩余高度并自身滚动」）。 */
 .auto-scroll {
+  flex: 1;
+  overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 200ms;
+}
+/* 持仓面板的滚动区额外要 padding: 0（原内联；面板内表格自带内边距）。
+   fund/orders/strategy/msg 四处不带 padding，故单独给持仓。 */
+.dashboard-panel--position .auto-scroll {
+  padding: var(--spacer-0);
+}
+/* 行情面板竖向排布，策略/消息面板继承排版 token（均为原内联） */
+.dashboard-panel--market .auto-scroll {
+  display: flex;
+  flex-direction: column;
+}
+.dashboard-panel--strategy .auto-scroll {
+  font-size: var(--body-xs-font-size);
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-panel--messages .auto-scroll {
+  font-size: var(--body-xs-font-size);
 }
 .auto-scroll:hover {
   scrollbar-color: var(--icon-quaternary, rgba(128,128,128,0.4)) transparent;
@@ -155,6 +224,7 @@
 }
 
 /* ===== 冻结列（仅面板内） ===== */
+/* left: 0 原先是模板内联，sticky 定位靠它贴左；唯一位于最左侧，故固定 0。 */
 /* 不在此设 background：冻结列背景由上方「面板内表格背景/边框覆盖」段的
    .dashboard-panel .ds-table th.frozen / td.frozen 给 var(--bg-card)。
    原始代码里这里是无前缀的 .ds-table th.frozen（特异性更低）写 bg-base-default，
@@ -163,6 +233,7 @@
 .dashboard-panel .ds-table th.frozen,
 .dashboard-panel .ds-table td.frozen {
   position: sticky;
+  left: 0;
   z-index: 2;
   will-change: transform;
   flex-shrink: 0;
@@ -385,13 +456,247 @@
 /* 详情列（默认隐藏，勾选后展开）：明细数字列，宽度不参与冻结列计算 */
 .position-detail-col { color: var(--text-secondary); }
 
+/* ═══ 内联样式归位（#346）═══
+   下列类逐条对应 DashboardView.vue 模板里被拆掉的静态内联对象；**只搬运不改值**，
+   类名按 BEM + 面板语义。源注释统一标注原内联所在的属性组合，便于审查时逐条对照。 */
+
+/* 面板头（原内联 display:flex / align-items:center / justify-content:space-between /
+   padding / background / border-bottom / flex-shrink:0）×6 个面板逐字重复） */
+.dashboard-panel__hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacer-8) var(--spacer-16);
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-neutral-l1);
+  flex-shrink: 0;
+}
+/* 右栏三个面板头原本用的是 --bg-base-secondary 分割线（左栏/底栏用 border-neutral-l1）；
+   这是既有视觉差异，归位时原样保留，不趁重构统一。 */
+.dashboard-panel--market .dashboard-panel__hd,
+.dashboard-panel--strategy .dashboard-panel__hd,
+.dashboard-panel--messages .dashboard-panel__hd {
+  border-bottom-color: var(--bg-base-secondary);
+}
+
+/* 面板头左侧标题区（原内联 display:flex / align-items:center / gap:spacer-6） */
+.dashboard-panel__title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-6);
+}
+/* min-width:0 只在「标题 + 标签」会撑破头部的三个面板上有（原内联逐处不同，
+   归位时按原样区分，避免凭空改变 flex 收缩行为）。 */
+.dashboard-panel--position .dashboard-panel__title,
+.dashboard-panel--fund .dashboard-panel__title,
+.dashboard-panel--strategy .dashboard-panel__title {
+  min-width: 0;
+}
+/* 面板标题文字（原内联 fontSize:body-sm / fontWeight:strong / color:text-default）×6 */
+.dashboard-panel__title-text {
+  font-size: var(--body-sm-font-size);
+  font-weight: var(--font-weight-strong);
+  color: var(--text-default);
+}
+
+/* 面板级数据日期（原内联 fontSize:10px + 单行省略） */
+.dashboard-panel__meta {
+  font-size: var(--font-size-10);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 面板头右侧控制区（原内联 display:flex / align-items:center / gap:spacer-12 / fontSize:body-xs） */
+.dashboard-panel__tools {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-12);
+  font-size: var(--body-xs-font-size);
+}
+
+/* 面板头右侧聚合数字（原内联 fontSize:body-xs / tabular-nums / color:text-tertiary） */
+.dashboard-panel__aggregate {
+  font-size: var(--body-xs-font-size);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+/* 持仓净仓合计（原内联另加 status-success 色与 cursor:default） */
+.dashboard-panel__aggregate--positive {
+  color: var(--status-success-default);
+  cursor: default;
+}
+/* 委托笔数/手数聚合（原内联另加 cursor:pointer / user-select:none，可点击切换） */
+.dashboard-panel__aggregate--clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 面板头里的紧凑复选框（原内联覆盖 .ds-check 的 min-height / 字号 / 颜色） */
+.dashboard-panel__check {
+  min-height: auto;
+  font-size: var(--body-xs-font-size);
+  color: var(--text-secondary);
+}
+
+/* 持仓账户筛选触发器（原内联把 button 的 UA 样式清掉，继承父级排版） */
+.dashboard-pos-filter__trigger {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+}
+
+/* 面板内表格（原内联：内容自适应宽度 + 不换行 + 自动布局 + 至少占满容器） */
+.dashboard-panel__table {
+  min-width: 100%;
+  width: max-content;
+  table-layout: auto;
+  white-space: nowrap;
+}
+/* 委托表按容器宽度均分。原内联只给了 width:100%，**没有** min-width —— 所以 `.ds-table`
+   自带的 min-width:720px 仍然生效，这里不得覆盖（否则窄屏列被压扁）。 */
+.dashboard-panel__table--stretch {
+  width: 100%;
+  table-layout: auto;
+  white-space: nowrap;
+}
+/* 冻结表头（原内联 position:sticky / top:0 / z-index:1） */
+.dashboard-panel__thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* 面板内行结构（原内联 flex 列 + 1px 间隙 + 省略号） */
+.dashboard-panel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacer-8) var(--spacer-16);
+}
+/* 行间分割线：原内联按「是否首/末行」切换 border 值。拆成修饰类后模板只判布尔，
+   颜色仍与既有实现一致（--bg-base-secondary，见 #349 的收编范围）。 */
+.dashboard-panel__row--divided { border-top: 1px solid var(--bg-base-secondary); }
+.dashboard-panel__row--divided-bottom { border-bottom: 1px solid var(--bg-base-secondary); }
+/* 行情面板行另外继承 body-xs 字号与不换行（原内联） */
+.dashboard-panel--market .dashboard-panel__row {
+  font-size: var(--body-xs-font-size);
+  white-space: nowrap;
+}
+.dashboard-panel__row-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.dashboard-panel__row-title {
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-panel__row-sub {
+  font-size: var(--font-size-10);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 行内进程状态文字：只在颜色之外补 4px 左间距（颜色逐行计算，仍留在内联） */
+.dashboard-panel__row-state {
+  margin-left: var(--spacer-4);
+}
+
+/* 消息行（原内联 padding / flex 顶部对齐 / gap:spacer-10） */
+.dashboard-panel__msg-row {
+  padding: var(--spacer-8) var(--spacer-16);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacer-10);
+}
+.dashboard-panel__msg-body {
+  min-width: 0;
+  flex: 1;
+}
+.dashboard-panel__msg-text { color: var(--text-secondary); }
+.dashboard-panel__msg-meta {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-10);
+}
+
+/* 面板底栏（策略面板的「合计」行：原内联 padding + body-xs + 三级文字 + 上分割线） */
+.dashboard-panel__footer {
+  padding: var(--spacer-8) var(--spacer-16);
+  font-size: var(--body-xs-font-size);
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--bg-base-secondary);
+}
+
+/* 面板内标签：ds-tag 默认 body-sm(12px)，面板内统一压到 10px（原内联逐处写 10px） */
+.dashboard-panel__tag { font-size: var(--font-size-10); }
+/* 中性标签（无 ds-tag--* 修饰）另加三级文字色 */
+.dashboard-panel__tag--muted { color: var(--text-tertiary); }
+/* 行尾不参与压缩的标签（原内联 flexShrink:0） */
+.dashboard-panel__tag--fixed { flex-shrink: 0; }
+
+/* 单元格文字色修饰（原内联 color:--text-secondary / --text-tertiary） */
+/* 特异性必须 ≥ `.ds-table td`（0,1,1），否则会被组件库的 td 颜色规则压回去 —— 原内联
+   天然胜出，改类名后必须显式补前缀（#346 实测：不补则颜色回落到 --text-secondary）。 */
+.dashboard-panel .ds-table td.cell-text--secondary { color: var(--text-secondary); }
+.dashboard-panel .ds-table td.cell-muted { color: var(--text-tertiary); }
+/* 均价列原内联是 `avgPrice === '--' ? tertiary : 'inherit'`：非占位符时显式 inherit，
+   绕开 .ds-table td 的 --text-secondary。取值不变、只搬家（#346）。
+   特异性必须 ≥ `.ds-table td`（0,1,1），否则会被组件库的 td 颜色规则压回去。 */
+.dashboard-panel .ds-table td.cell-inherit { color: inherit; }
+/* 居中单元格。必须带 .dashboard- 前缀作用域：本文件经 main.ts 全局导入，
+   无前缀的通用类名会外溢到其它视图（#347 的同类教训，见本文件表格段注释）。 */
+.dashboard-panel .ds-table td.cell-center { text-align: center; }
+/* 冻结列首列的强调字重（原内联 fontWeight:--font-weight-medium） */
+.dashboard-panel__cell-strong { font-weight: var(--font-weight-medium); }
+
+/* 消息面板头的「n分钟前」切换按钮（原内联清掉 button UA 样式 + 三级文字色） */
+.dashboard-panel__link-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  padding: 0 var(--spacer-4);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--code-editor-line-height);
+}
+
 /* ===== 分隔条 ===== */
+/* #346：尺寸与光标原先是模板内联（width|height 6px / cursor:row-resize|col-resize /
+   flex-shrink:0 / margin:0），按横竖两个方向归位到类里。 */
 .splitter-v, .splitter-h {
   background: transparent;
   flex-shrink: 0;
+  margin: 0;
   transition: background-color 120ms;
   position: relative;
   z-index: 5;
+}
+/* 方向判定不能只看 `.splitter-v` / `.splitter-h`：本视图里这套类名与方向历史上是错位的
+   （`.splitter-v` 的 `v-splitter-1` 实际做上下分栏，`.splitter-h` 的 `h-splitter` 实际做左右分栏）。
+   按具体元素类定方向，逐条对应原内联的 width/height/cursor，避免按类名前缀想当然。 */
+/* 竖向分隔条（左右分栏）：6px 宽的竖线 + 列拖拽光标 */
+.v-splitter-main,
+.h-splitter {
+  width: var(--spacer-6);
+  cursor: col-resize;
+}
+/* 横向分隔条（上下分栏）：6px 高的横线 + 行拖拽光标 */
+.v-splitter-1,
+.market-strategy-splitter,
+.strategy-msg-splitter {
+  height: var(--spacer-6);
+  cursor: row-resize;
 }
 .splitter-v::before, .splitter-h::before {
   content: '';
@@ -447,14 +752,16 @@
     height: auto !important;
     overflow: visible !important;
   }
+  /* 注意：这里**不再**写 gap / padding。断点里的这两条在 #346 之前恒被模板内联的
+     `padding: 6px; column-gap: 0; row-gap: var(--spacer-6)` 压住（内联 > 非 !important），
+     属从未生效的声明；保留它们会在内联拆除后突然把窄屏内边距从 6px 放大到 10px，
+     与本票「视觉零变化」冲突。窄屏间距重排属母票 #345 的设计阶段。 */
   .dashboard-content {
     grid-template-columns: 1fr !important;
     grid-template-rows: auto !important;
     overflow: visible !important;
     display: flex !important;
     flex-direction: column;
-    gap: var(--spacer-8);
-    padding: var(--spacer-8);
   }
   .dashboard-content > .v-splitter-main { display: none !important; }
 
@@ -473,9 +780,10 @@
     display: flex;
     flex-direction: column;
   }
+  /* min-height 同样删掉：断点里的 200px 在 #346 之前恒被模板内联的 80/100/120px 压住，
+     从未生效。保留会让内联拆除后的窄屏面板突然长到 200px。 */
   .dashboard-panel {
     flex: none !important;
-    min-height: 200px;
     overflow: hidden;
   }
   .dashboard-bottom-panel {
@@ -486,10 +794,7 @@
   }
   .dashboard-panel--fund {
     border-right: none !important;
-    min-height: 180px;
   }
-  .dashboard-panel--orders { min-height: 180px; }
-  .dashboard-panel--position { min-height: 280px; }
 
   .v-splitter-1,
   .h-splitter,

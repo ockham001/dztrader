@@ -325,7 +325,8 @@ function formatTs(ts: string): string {
 }
 
 /* #207 C2：禁用态视觉（.ds-switch 本身只按 input:disabled 变灰，仍像可点）。
-   本页 scoped 类名，避免动全局组件库的 .ds-switch（SyncSwitch 用的是内联 opacity）。 */
+   本页 scoped 类名，避免动全局组件库的 .ds-switch。
+   （#346 后 SyncSwitch 的禁用态光标/透明度也已由自身 `.ds-switch--disabled` 类承担。） */
 .log-viewer__tail-switch--disabled {
   cursor: not-allowed;
   opacity: 0.5;

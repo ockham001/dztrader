@@ -66,7 +66,7 @@ const src = computed(() => props.source)
 
     <!-- 卡片体：在下方按需填本类型的专属展示与操作。 -->
     <div v-if="src.expanded" class="source-card__body is-open">
-      <div style="margin-bottom: var(--spacer-12)">
+      <div class="source-card__action">
         <ProcessStartButton :source="src" />
       </div>
 
@@ -123,6 +123,11 @@ const src = computed(() => props.source)
 
 .source-card__body.is-open {
   display: block;
+}
+
+/* #346：卡片体首个操作区与下方内容留白（原内联 style="margin-bottom: …"） */
+.source-card__action {
+  margin-bottom: var(--spacer-12);
 }
 
 .source-card__info {

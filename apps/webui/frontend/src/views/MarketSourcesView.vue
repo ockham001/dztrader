@@ -137,21 +137,15 @@ async function confirmBatch(): Promise<void> {
 </script>
 
 <template>
-  <div :style="{ flex: 1, overflow: 'auto', maxWidth: '1200px', width: '100%', margin: '0 auto', padding: 'var(--spacer-32) var(--spacer-24)' }">
+  <div class="ms-view">
 
       <!-- ===== Page Header ===== -->
       <div class="page-header">
-        <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-16)' }">
-          <h1 :style="{
-            margin: 0,
-            fontSize: 'var(--heading-xl-font-size)',
-            lineHeight: 'var(--heading-xl-line-height)',
-            fontWeight: 'var(--heading-xl-font-weight)',
-            color: 'var(--text-default)',
-          }">行情源管理</h1>
-          <span class="ds-tag" :style="{ fontVariantNumeric: 'tabular-nums' }">共 {{ store.sourceCount }} 个行情源</span>
+        <div class="page-header__row">
+          <h1 class="page-title">行情源管理</h1>
+          <span class="ds-tag ms-count">共 {{ store.sourceCount }} 个行情源</span>
         </div>
-        <div :style="{ display: 'flex', gap: 'var(--spacer-8)', alignItems: 'center' }">
+        <div class="ms-toolbar">
           <SyncSelect
             :items="addSourceItems"
             :model-value="addSourceSelected"
@@ -171,7 +165,7 @@ async function confirmBatch(): Promise<void> {
       <!-- #207 C3：按钮上直接标出将影响的源数量，点击后弹确认框列出具体目标；无目标时禁用 -->
       <div class="batch-bar">
         <div class="batch-bar__actions">
-          <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-8)', flexWrap: 'nowrap' }">
+          <div class="batch-bar__group">
             <button
               class="ds-btn ds-btn--secondary ds-btn--sm"
               type="button"
@@ -193,7 +187,7 @@ async function confirmBatch(): Promise<void> {
               @click="requestBatch('logout')"
             >批量登出{{ batchTargets('logout').length > 0 ? `（${batchTargets('logout').length}）` : '' }}</button>
           </div>
-          <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-8)', flexWrap: 'nowrap' }">
+          <div class="batch-bar__group">
             <button
               class="ds-btn ds-btn--secondary ds-btn--sm"
               type="button"
@@ -280,6 +274,25 @@ async function confirmBatch(): Promise<void> {
 </template>
 
 <style scoped>
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+.ms-view {
+  flex: 1;
+  overflow: auto;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--spacer-32) var(--spacer-24);
+}
+
+/* 页面主标题（原内联 heading-xl 三元组 + 去默认 margin） */
+.page-title {
+  margin: 0;
+  font-size: var(--heading-xl-font-size);
+  line-height: var(--heading-xl-line-height);
+  font-weight: var(--heading-xl-font-weight);
+  color: var(--text-default);
+}
+
 /* Page-specific styles */
 
 .page-header {
@@ -289,6 +302,25 @@ async function confirmBatch(): Promise<void> {
   gap: var(--spacer-16);
   margin-bottom: var(--spacer-24);
   flex-wrap: wrap;
+}
+
+/* 页头标题行：标题 + 行情源计数（原内联 display:flex; align-items:center; gap:var(--spacer-16)） */
+.page-header__row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-16);
+}
+
+/* 行情源计数（原内联 font-variant-numeric: tabular-nums） */
+.ms-count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页头右侧工具区（原内联 display:flex; gap:var(--spacer-8); align-items:center） */
+.ms-toolbar {
+  display: flex;
+  gap: var(--spacer-8);
+  align-items: center;
 }
 
 /* Batch operations bar */
@@ -310,6 +342,14 @@ async function confirmBatch(): Promise<void> {
   align-items: center;
   gap: var(--spacer-8);
   flex-wrap: wrap;
+}
+
+/* 同组批量按钮不换行（原内联 display:flex; align-items:center; gap:var(--spacer-8); flex-wrap:nowrap） */
+.batch-bar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  flex-wrap: nowrap;
 }
 
 /* Dialog form */

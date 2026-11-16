@@ -160,10 +160,10 @@ watch(() => store.browserTab, (tab) => {
           <thead>
             <tr>
               <th>错误模板</th>
-              <th style="width: 80px">次数</th>
-              <th style="width: 180px">首次时间</th>
-              <th style="width: 180px">末次时间</th>
-              <th style="width: 80px">操作</th>
+              <th class="log-analysis__col-narrow">次数</th>
+              <th class="log-analysis__col-time">首次时间</th>
+              <th class="log-analysis__col-time">末次时间</th>
+              <th class="log-analysis__col-narrow">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -286,6 +286,10 @@ watch(() => store.browserTab, (tab) => {
   border-radius: var(--radius-8);
   overflow-x: auto;
 }
+
+/* ── #346：错误聚合表列宽（原模板静态 style="width: …"）── */
+.log-analysis__col-narrow { width: 80px; }
+.log-analysis__col-time { width: 180px; }
 
 .log-analysis__msg-pattern {
   font-family: var(--code-terminal-font-family);

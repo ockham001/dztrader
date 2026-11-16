@@ -393,7 +393,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :style="{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }">
+  <div class="um-page">
     <!-- Toast — 悬浮顶部居中的瞬时操作反馈（参考 um-toast）-->
     <transition name="ds-toast-fade">
       <div
@@ -402,29 +402,23 @@ onUnmounted(() => {
         :class="`ds-toast--${toast.type}`"
       >{{ toast.message }}</div>
     </transition>
-    <div :style="{ flex: 1, overflow: 'auto', maxWidth: '1200px', width: '100%', margin: '0 auto', padding: 'var(--spacer-32) var(--spacer-24)' }">
+    <div class="um-content">
 
       <!-- ===== 1. Page Header ===== -->
       <div class="page-header">
-        <div :style="{ display: 'flex', flexDirection: 'column', gap: 'var(--spacer-8)' }">
-          <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-16)' }">
-            <h1 :style="{
-              margin: 0,
-              fontSize: 'var(--heading-xl-font-size)',
-              lineHeight: 'var(--heading-xl-line-height)',
-              fontWeight: 'var(--heading-xl-font-weight)',
-              color: 'var(--text-default)',
-            }">访问控制</h1>
+        <div class="um-header-stack">
+          <div class="um-header-row">
+            <h1 class="um-page-title">访问控制</h1>
           </div>
         </div>
       </div>
 
       <!-- ===== 2. Login Lockout Switch ===== -->
       <div class="ds-card">
-        <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacer-16)', flexWrap: 'wrap', gap: 'var(--spacer-12)' }">
-          <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)' }">
-            <div class="ds-card__title" :style="{ marginBottom: 0, fontSize: 'var(--heading-md-font-size)', lineHeight: 'var(--heading-md-line-height)', fontWeight: 'var(--heading-md-font-weight)' }">用户管理</div>
-            <span class="ds-tag" :style="{ fontVariantNumeric: 'tabular-nums' }">共 {{ store.userCount }} 个用户</span>
+        <div class="um-card-header">
+          <div class="um-card-header__left">
+            <div class="ds-card__title um-card-title">用户管理</div>
+            <span class="ds-tag um-tabular-nums">共 {{ store.userCount }} 个用户</span>
           </div>
           <button class="ds-btn ds-btn--secondary" type="button" @click="openAddUserModal">
             <Icon name="Plus" :size="16" />
@@ -432,21 +426,21 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)', marginBottom: 'var(--spacer-16)' }">
+        <div class="um-switch-row">
           <SyncSwitch
             :model-value="store.securityConfig.login_lockout_enabled"
             :pending="store.securityConfig.lockoutPending"
             label="登录失败锁定"
             @change="(v: boolean) => store.toggleLoginLockout(v)"
           />
-          <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)' }">登录失败锁定</span>
-          <span :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">连续登录失败 {{ store.securityConfig.max_failed_attempts }} 次后锁定账号 {{ Math.floor(store.securityConfig.lockout_duration_sec / 60) }} 分钟</span>
-          <div :style="{ flex: 1 }"></div>
+          <span class="um-switch-label">登录失败锁定</span>
+          <span class="um-switch-hint">连续登录失败 {{ store.securityConfig.max_failed_attempts }} 次后锁定账号 {{ Math.floor(store.securityConfig.lockout_duration_sec / 60) }} 分钟</span>
+          <div class="um-flex-fill"></div>
         </div>
 
       <!-- ===== 3. Filter/Search Bar ===== -->
       <div class="filter-bar">
-        <div class="ds-input" :style="{ maxWidth: '280px' }">
+        <div class="ds-input um-search-input">
           <span class="icon ds-input__icon"><Icon name="Search" :size="16" /></span>
           <input v-model="searchQuery" type="text" placeholder="搜索用户名、显示名称或邮箱..." aria-label="搜索用户">
         </div>
@@ -472,35 +466,35 @@ onUnmounted(() => {
                 <th>角色</th>
                 <th>状态</th>
                 <th>最后登录</th>
-                <th :style="{ textAlign: 'right' }">操作</th>
+                <th class="um-align-right">操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="u in filteredUsers" :key="u.id" :style="{ opacity: u.status === 'disabled' ? 0.55 : 1 }">
+              <tr v-for="u in filteredUsers" :key="u.id" :class="{ 'um-user-row--disabled': u.status === 'disabled' }">
                 <td>
-                  <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)' }">
+                  <div class="um-user-cell">
                     <span class="ds-avatar ds-avatar--sm">{{ avatarChar(u.display_name) }}</span>
                     <div>
-                      <div :style="{ fontWeight: 'var(--font-weight-medium)' }">{{ u.username }}</div>
-                      <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">{{ u.email }}</div>
+                      <div class="um-user-cell__name">{{ u.username }}</div>
+                      <div class="um-user-cell__email">{{ u.email }}</div>
                     </div>
                   </div>
                 </td>
                 <td>{{ u.display_name }}</td>
                 <td>
-                  <span class="ds-tag" :style="u.role === 'admin' ? { background: 'var(--bg-brand)', color: 'var(--text-onbrand)' } : {}">
+                  <span class="ds-tag" :class="{ 'um-tag--admin': u.role === 'admin' }">
                     {{ u.role === 'admin' ? '管理员' : '普通用户' }}
                   </span>
                 </td>
                 <td>
-                  <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
+                  <div class="um-status-cell">
                     <span class="status-dot" :class="statusDotClass(u.status)"></span>
                     <span>{{ statusText(u.status) }}</span>
                   </div>
                 </td>
-                <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ u.last_login_at ?? '--' }}</td>
+                <td class="um-tabular-nums">{{ u.last_login_at ?? '--' }}</td>
                 <td class="ds-table__actions">
-                  <div :style="{ display: 'flex', gap: 'var(--spacer-4)', justifyContent: 'flex-end' }">
+                  <div class="um-actions">
                     <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm" type="button" title="编辑" @click="openEditUserModal(u)">
                       <Icon name="edit" :size="14" />
                     </button>
@@ -509,10 +503,9 @@ onUnmounted(() => {
                     </button>
                     <button
                       v-if="u.status === 'locked'"
-                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
+                      class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm um-btn-unlock"
                       type="button"
                       title="解锁"
-                      :style="{ color: 'var(--status-success-default)' }"
                       :disabled="u.actionPending"
                       @click="store.updateUserStatus(u.id, 'unlocked')"
                     >
@@ -557,8 +550,8 @@ onUnmounted(() => {
           </table>
         </div>
         <!-- Pagination -->
-        <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-12) var(--spacer-20)', borderTop: '1px solid var(--border-neutral-l1)' }">
-          <span :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">共 {{ filteredUsers.length }} 条记录，第 1 / 1 页</span>
+        <div class="um-pagination-bar">
+          <span class="um-pagination-bar__summary">共 {{ filteredUsers.length }} 条记录，第 1 / 1 页</span>
           <div class="ds-pagination">
             <button class="ds-pagination__item" type="button" disabled>&lt;</button>
             <button class="ds-pagination__item is-active" type="button">1</button>
@@ -570,14 +563,14 @@ onUnmounted(() => {
       <!-- ===== 5. Blacklist/Whitelist Section ===== -->
       <div class="section-gap">
         <div class="ds-card">
-          <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacer-16)', flexWrap: 'wrap', gap: 'var(--spacer-12)' }">
-            <div class="ds-card__title" :style="{ marginBottom: 0, fontSize: 'var(--heading-md-font-size)', lineHeight: 'var(--heading-md-line-height)', fontWeight: 'var(--heading-md-font-weight)' }">黑白名单管理</div>
+          <div class="um-card-header">
+            <div class="ds-card__title um-card-title">黑白名单管理</div>
           </div>
 
           <!-- Access mode selector -->
-          <div :style="{ marginBottom: 'var(--spacer-16)' }">
-            <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-10)', marginBottom: 'var(--spacer-8)' }">
-              <div :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)', flexShrink: 0 }">访问模式</div>
+          <div class="um-access-mode">
+            <div class="um-access-mode__row">
+              <div class="um-field-label">访问模式</div>
               <SyncSelect
                 :items="accessModeItems"
                 :model-value="store.securityConfig.access_mode"
@@ -585,7 +578,7 @@ onUnmounted(() => {
                 placeholder="自适应防护"
                 @change="(v: string | number) => store.setAccessMode(v as 'auto' | 'whitelist' | 'blacklist')"
               />
-              <div :style="{ flex: 1 }"></div>
+              <div class="um-flex-fill"></div>
             </div>
             <div class="ds-notif ds-notif--info">
               <span class="ds-notif__icon"><Icon name="info" :size="16" /></span>
@@ -594,12 +587,12 @@ onUnmounted(() => {
           </div>
 
           <!-- Tabs -->
-          <div class="ds-tabs" :style="{ marginBottom: 'var(--spacer-16)' }">
+          <div class="ds-tabs um-tabs">
             <button class="ds-tab" :class="{ 'is-active': bwTab === 'black' }" type="button" @click="bwTab = 'black'">
-              黑名单 <span class="ds-tag" :class="{ 'ds-tag--danger': true }" :style="{ marginLeft: 'var(--spacer-6)' }">{{ store.blacklistCount }}</span>
+              黑名单 <span class="ds-tag um-tag-count" :class="{ 'ds-tag--danger': true }">{{ store.blacklistCount }}</span>
             </button>
             <button class="ds-tab" :class="{ 'is-active': bwTab === 'white' }" type="button" @click="bwTab = 'white'">
-              白名单 <span class="ds-tag" :style="{ marginLeft: 'var(--spacer-6)' }">{{ store.whitelistCount }}</span>
+              白名单 <span class="ds-tag um-tag-count">{{ store.whitelistCount }}</span>
             </button>
           </div>
 
@@ -611,7 +604,7 @@ onUnmounted(() => {
             <div class="ds-input">
               <input v-model="newIpReason" type="text" placeholder="备注（可选）" aria-label="IP 备注" :disabled="addIpPending" @keyup.enter="handleAddIp">
             </div>
-            <button class="ds-btn ds-btn--secondary ds-btn--sm" type="button" :disabled="addIpPending" @click="handleAddIp" :style="{ flexShrink: 0 }">
+            <button class="ds-btn ds-btn--secondary ds-btn--sm um-btn-static" type="button" :disabled="addIpPending" @click="handleAddIp">
               <span v-if="addIpPending" class="ds-btn__spinner"></span>
               <Icon v-else name="Plus" :size="14" />
               {{ bwTab === 'black' ? '添加到黑名单' : '添加到白名单' }}
@@ -627,15 +620,15 @@ onUnmounted(() => {
                   <th>添加方式</th>
                   <th>备注</th>
                   <th>添加时间</th>
-                  <th :style="{ textAlign: 'right' }">操作</th>
+                  <th class="um-align-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="entry in store.blacklist" :key="entry.id">
-                  <td><code :style="{ fontFamily: 'var(--code-editor-font-family)' }">{{ entry.ip }}</code></td>
+                  <td><code class="um-ip-code">{{ entry.ip }}</code></td>
                   <td><span :class="sourceTypeClass(entry.sourceType)">{{ sourceTypeText(entry.sourceType) }}</span></td>
-                  <td :style="{ color: 'var(--text-secondary)' }">{{ entry.reason ?? '--' }}</td>
-                  <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ entry.created_at }}</td>
+                  <td class="um-text-secondary">{{ entry.reason ?? '--' }}</td>
+                  <td class="um-tabular-nums">{{ entry.created_at }}</td>
                   <td class="ds-table__actions">
                     <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon" type="button"
                       :title="`删除 ${entry.ip}`" :aria-label="`从黑名单删除 ${entry.ip}`"
@@ -646,7 +639,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="store.blacklist.length === 0">
-                  <td colspan="5" :style="{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 'var(--spacer-16)' }">暂无黑名单记录</td>
+                  <td colspan="5" class="um-empty-cell">暂无黑名单记录</td>
                 </tr>
               </tbody>
             </table>
@@ -661,15 +654,15 @@ onUnmounted(() => {
                   <th>添加方式</th>
                   <th>备注</th>
                   <th>添加时间</th>
-                  <th :style="{ textAlign: 'right' }">操作</th>
+                  <th class="um-align-right">操作</th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="entry in store.whitelist" :key="entry.id">
-                  <td><code :style="{ fontFamily: 'var(--code-editor-font-family)' }">{{ entry.ip }}</code></td>
+                  <td><code class="um-ip-code">{{ entry.ip }}</code></td>
                   <td><span :class="sourceTypeClass(entry.sourceType)">{{ sourceTypeText(entry.sourceType) }}</span></td>
-                  <td :style="{ color: 'var(--text-secondary)' }">{{ entry.reason ?? '--' }}</td>
-                  <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ entry.created_at }}</td>
+                  <td class="um-text-secondary">{{ entry.reason ?? '--' }}</td>
+                  <td class="um-tabular-nums">{{ entry.created_at }}</td>
                   <td class="ds-table__actions">
                     <button class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon" type="button"
                       :title="`删除 ${entry.ip}`" :aria-label="`从白名单删除 ${entry.ip}`"
@@ -680,7 +673,7 @@ onUnmounted(() => {
                   </td>
                 </tr>
                 <tr v-if="store.whitelist.length === 0">
-                  <td colspan="5" :style="{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 'var(--spacer-16)' }">暂无白名单记录</td>
+                  <td colspan="5" class="um-empty-cell">暂无白名单记录</td>
                 </tr>
               </tbody>
             </table>
@@ -691,11 +684,11 @@ onUnmounted(() => {
       <!-- ===== 6. Login History ===== -->
       <div class="section-gap">
         <div class="ds-card">
-          <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--spacer-16)', flexWrap: 'wrap', gap: 'var(--spacer-12)' }">
-            <div class="ds-card__title" :style="{ marginBottom: 0, fontSize: 'var(--heading-md-font-size)', lineHeight: 'var(--heading-md-line-height)', fontWeight: 'var(--heading-md-font-weight)' }">登录历史</div>
+          <div class="um-card-header">
+            <div class="ds-card__title um-card-title">登录历史</div>
           </div>
-          <div :style="{ overflowX: 'auto' }">
-            <table class="ds-table" :style="{ width: '100%', tableLayout: 'auto' }">
+          <div class="um-history-scroll">
+            <table class="ds-table um-history-table">
               <thead>
                 <tr>
                   <th>用户</th>
@@ -709,17 +702,17 @@ onUnmounted(() => {
               <tbody>
                 <tr v-for="entry in store.loginHistory" :key="entry.id">
                   <td>
-                    <span class="ds-avatar ds-avatar--xs" :style="{ marginRight: 'var(--spacer-8)', verticalAlign: 'middle' }">{{ avatarChar(entry.username) }}</span>
+                    <span class="ds-avatar ds-avatar--xs um-avatar">{{ avatarChar(entry.username) }}</span>
                     {{ entry.username }}
                   </td>
-                  <td :style="{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }">{{ toLocalTime(entry.created_at) }}</td>
-                  <td :style="{ fontVariantNumeric: 'tabular-nums' }">{{ entry.ip }}</td>
-                  <td :style="{ color: 'var(--text-secondary)' }">{{ parseDevice(entry.user_agent) }}</td>
+                  <td class="um-history-time">{{ toLocalTime(entry.created_at) }}</td>
+                  <td class="um-tabular-nums">{{ entry.ip }}</td>
+                  <td class="um-text-secondary">{{ parseDevice(entry.user_agent) }}</td>
                   <td><span :class="historyStatusTag(entry.success)">{{ historyStatusText(entry.success) }}</span></td>
-                  <td :style="{ color: 'var(--text-secondary)' }">{{ entry.success ? '' : loginFailReason(entry.reason) }}</td>
+                  <td class="um-text-secondary">{{ entry.success ? '' : loginFailReason(entry.reason) }}</td>
                 </tr>
                 <tr v-if="store.loginHistory.length === 0">
-                  <td colspan="6" :style="{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 'var(--spacer-16)' }">暂无登录记录</td>
+                  <td colspan="6" class="um-empty-cell">暂无登录记录</td>
                 </tr>
               </tbody>
             </table>
@@ -727,18 +720,18 @@ onUnmounted(() => {
             <div
               v-if="store.loginHistory.length > 0"
               ref="loginHistorySentinel"
-              :style="{ height: '1px' }"
+              class="um-history-sentinel"
             ></div>
             <div
               v-if="store.loginHistoryLoadingMore"
-              :style="{ textAlign: 'center', padding: 'var(--spacer-12)', color: 'var(--text-tertiary)', fontSize: 'var(--body-xs-font-size)' }"
+              class="um-history-footer"
             >
-              <span class="ds-btn__spinner" :style="{ width: '14px', height: '14px', marginRight: 'var(--spacer-8)', verticalAlign: 'middle' }"></span>
+              <span class="ds-btn__spinner um-loading-spinner"></span>
               加载中...
             </div>
             <div
               v-else-if="!store.loginHistoryHasMore && store.loginHistory.length > 0"
-              :style="{ textAlign: 'center', padding: 'var(--spacer-12)', color: 'var(--text-tertiary)', fontSize: 'var(--body-xs-font-size)' }"
+              class="um-history-footer"
             >
               没有更多记录
             </div>
@@ -867,9 +860,9 @@ onUnmounted(() => {
 
     <!-- ===== Delete User Confirmation Modal (#204: 二次确认) ===== -->
     <Modal :open="removeUserModalOpen" title="确认删除用户" @close="closeRemoveUserModal">
-      <div :style="{ color: 'var(--text-default)' }">
-        确认删除用户 <code class="mono" :style="{ fontWeight: 500 }">{{ removeUserTarget?.username }}</code> 吗？
-        <div :style="{ marginTop: 'var(--spacer-8)', color: 'var(--text-tertiary)', fontSize: 'var(--body-sm-font-size)' }">
+      <div class="um-confirm-text">
+        确认删除用户 <code class="mono um-confirm-code">{{ removeUserTarget?.username }}</code> 吗？
+        <div class="um-confirm-note">
           删除后不可恢复，已登录会话会被断开。
         </div>
       </div>
@@ -962,6 +955,277 @@ onUnmounted(() => {
   font-size: var(--body-base-font-size);
   color: var(--text-default);
   font-weight: var(--font-weight-medium);
+}
+
+/* ===== #346：模板内联静态样式收编（值与原内联逐字一致） ===== */
+
+/* 页面骨架（原根节点 + 内容区 wrapper 内联） */
+.um-page {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.um-content {
+  flex: 1;
+  overflow: auto;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--spacer-32) var(--spacer-24);
+}
+
+/* 页头标题组（原 page-header 内的两层 flex 容器与 h1 内联） */
+.um-header-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-8);
+}
+
+.um-header-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-16);
+}
+
+.um-page-title {
+  margin: 0;
+  font-size: var(--heading-xl-font-size);
+  line-height: var(--heading-xl-line-height);
+  font-weight: var(--heading-xl-font-weight);
+  color: var(--text-default);
+}
+
+/* 卡片标题行（用户管理 / 黑白名单 / 登录历史三处复用）；
+   .um-card-title 覆盖全局 .ds-card__title 的 heading-sm 尺寸与 margin */
+.um-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--spacer-12);
+  margin-bottom: var(--spacer-16);
+}
+
+.um-card-header__left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-12);
+}
+
+.um-card-title {
+  margin-bottom: 0;
+  font-size: var(--heading-md-font-size);
+  line-height: var(--heading-md-line-height);
+  font-weight: var(--heading-md-font-weight);
+}
+
+/* 数字等宽（计数标签 / 表格数字列） */
+.um-tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 登录失败锁定行 */
+.um-switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-12);
+  margin-bottom: var(--spacer-16);
+}
+
+.um-switch-label {
+  font-size: var(--body-sm-font-size);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+
+.um-switch-hint {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-tertiary);
+}
+
+/* 撑满剩余宽度的占位（两处 flex: 1 空 div） */
+.um-flex-fill {
+  flex: 1;
+}
+
+/* 搜索框：原内联 max-width 在窄屏也压住 .filter-bar .ds-input 的 media 放开规则，
+   故用三段选择器（scoped 后 0,4,0 > media 的 0,3,0）逐字保留该优先级 */
+.filter-bar .ds-input.um-search-input {
+  max-width: 280px;
+}
+
+/* 操作列表头右对齐 */
+.um-align-right {
+  text-align: right;
+}
+
+/* 用户单元格（头像 + 用户名/邮箱两行） */
+.um-user-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-10);
+}
+
+.um-user-cell__name {
+  font-weight: var(--font-weight-medium);
+}
+
+.um-user-cell__email {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-tertiary);
+}
+
+/* 管理员角色标签（原条件内联对象） */
+.um-tag--admin {
+  background: var(--bg-brand);
+  color: var(--text-onbrand);
+}
+
+/* 状态单元格（状态点 + 文案） */
+.um-status-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-6);
+}
+
+/* 行内操作按钮组 */
+.um-actions {
+  display: flex;
+  gap: var(--spacer-4);
+  justify-content: flex-end;
+}
+
+/* 解锁按钮：原内联 color 压住 .ds-btn--tertiary 的 hover/[disabled]（0,2,0），
+   双类（scoped 后 0,3,0）逐字保留原优先级 */
+.um-btn-unlock.um-btn-unlock {
+  color: var(--status-success-default);
+}
+
+/* 分页条 */
+.um-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacer-12) var(--spacer-20);
+  border-top: 1px solid var(--border-neutral-l1);
+}
+
+.um-pagination-bar__summary {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-tertiary);
+}
+
+/* 访问模式选择块 */
+.um-access-mode {
+  margin-bottom: var(--spacer-16);
+}
+
+.um-access-mode__row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-10);
+  margin-bottom: var(--spacer-8);
+}
+
+.um-field-label {
+  flex-shrink: 0;
+  font-size: var(--body-sm-font-size);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+
+/* Tabs 下间距与 tab 内计数标签 */
+.um-tabs {
+  margin-bottom: var(--spacer-16);
+}
+
+.um-tag-count {
+  margin-left: var(--spacer-6);
+}
+
+/* 不参与伸缩的按钮（黑白名单添加） */
+.um-btn-static {
+  flex-shrink: 0;
+}
+
+/* 黑白名单 IP 代码列 / 次要文本列 */
+.um-ip-code {
+  font-family: var(--code-editor-font-family);
+}
+
+.um-text-secondary {
+  color: var(--text-secondary);
+}
+
+/* 空态单元格：scoped 单类（0,2,0）会输给全局 .ds-table td:first-child（0,2,1），
+   故用双类抬到（0,3,0），逐字保留原内联的 color/padding */
+.um-empty-cell.um-empty-cell {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: var(--spacer-16);
+}
+
+/* 登录历史：横向滚动容器 / 表格 / 头像 / 时间列 */
+.um-history-scroll {
+  overflow-x: auto;
+}
+
+.um-history-table {
+  width: 100%;
+  table-layout: auto;
+}
+
+.um-avatar {
+  margin-right: var(--spacer-8);
+  vertical-align: middle;
+}
+
+.um-history-time {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 无限滚动哨兵 / 加载与尾行 / 尾行 spinner */
+.um-history-sentinel {
+  height: 1px;
+}
+
+.um-history-footer {
+  text-align: center;
+  padding: var(--spacer-12);
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+}
+
+.um-loading-spinner {
+  width: var(--icon-size-14);
+  height: var(--icon-size-14);
+  margin-right: var(--spacer-8);
+  vertical-align: middle;
+}
+
+/* 删除确认弹窗文案 */
+.um-confirm-text {
+  color: var(--text-default);
+}
+
+.um-confirm-code {
+  font-weight: var(--font-weight-medium);
+}
+
+.um-confirm-note {
+  margin-top: var(--spacer-8);
+  color: var(--text-tertiary);
+  font-size: var(--body-sm-font-size);
+}
+
+/* 禁用用户行（原内联三元 opacity） */
+.um-user-row--disabled {
+  opacity: 0.55;
 }
 
 /* Responsive（P5 收编原 900 → lg 档：窄屏放开 filter 控件宽度限制） */

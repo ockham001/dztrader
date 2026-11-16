@@ -239,11 +239,11 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
       </div>
 
       <div class="td-form__row">
-        <label class="ds-check" :style="{ minHeight: 'auto' }">
+        <label class="ds-check td-form__check">
           <input v-model="form.enabled" type="checkbox">
           <span class="ds-check__box"></span> 启用该账户
         </label>
-        <label class="ds-check" :style="{ minHeight: 'auto' }">
+        <label class="ds-check td-form__check">
           <input v-model="form.risk_control_enabled" type="checkbox">
           <span class="ds-check__box"></span> 账户级风控
         </label>
@@ -333,7 +333,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
           尚未配置前置地址；连接时至少需要一个「已启用且地址非空」的前置，否则网关拒绝连接
         </div>
         <div v-for="(fe, index) in form.frontends" :key="`fe-${index}`" class="td-form__frontend-row">
-          <label class="ds-check" :style="{ minHeight: 'auto', flexShrink: 0 }">
+          <label class="ds-check td-form__check td-form__check--fixed">
             <input v-model="fe.enabled" type="checkbox" :aria-label="`启用前置 ${index + 1}`">
             <span class="ds-check__box"></span>
           </label>
@@ -445,6 +445,16 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 
 .td-form__hint--warn {
   color: var(--status-warning-default);
+}
+
+/* #346：原模板内联 minHeight: 'auto' 归位（压住 .ds-check 的 min-height: 40px）；
+   --fixed 对应原内联 flexShrink: 0（仅前置行内的勾选标签需要，其他两处保持可收缩）。 */
+.td-form__check {
+  min-height: auto;
+}
+
+.td-form__check--fixed {
+  flex-shrink: 0;
 }
 
 @media (max-width: 767.98px) {

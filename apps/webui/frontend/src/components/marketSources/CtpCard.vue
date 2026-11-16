@@ -266,7 +266,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       @keydown.enter.prevent="store.toggleExpand(src.id)"
       @keydown.space.prevent="store.toggleExpand(src.id)"
     >
-      <span class="icon source-card__chevron" :class="{ 'is-expanded': src.expanded }" :style="{ width: '16px', height: '16px', color: 'var(--icon-tertiary)' }" aria-hidden="true">
+      <span class="icon source-card__chevron" :class="{ 'is-expanded': src.expanded }" aria-hidden="true">
         <Icon name="arrow-right" :size="16" />
       </span>
       <div class="source-card__info">
@@ -276,7 +276,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       <div class="source-card__meta-row">
         <span class="source-card__info-meta">交易日：<span>{{ src.date }}</span></span>
         <span class="source-card__info-sub" :class="subscribeClass(src)">订阅：<span>{{ src.subscribeCount }}/{{ src.subscribeTotal }}</span></span>
-        <span class="source-card__info-meta" :style="{ color: src.auto_login ? 'var(--status-success-default)' : 'var(--status-alert-default)' }">自动登录：<span>{{ autoLoginStatusText(src) }}</span></span>
+        <span class="source-card__info-meta" :class="src.auto_login ? 'source-card__info-meta--auto-on' : 'source-card__info-meta--auto-off'">自动登录：<span>{{ autoLoginStatusText(src) }}</span></span>
         <span class="source-card__info-meta" :style="{ color: processStateColor(src.process_state) }">进程：<span>{{ processStateText(src.process_state) }}</span></span>
         <!-- 契约 md-status 前端义务②：持久展示上次登录/连接失败原因 + 时间；
              message 为空时按 code 映射中文，绝不展示 snake_case 机器码 -->
@@ -319,7 +319,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       <!-- ── 经纪商 ── -->
       <div class="card-section">
         <div class="card-section__row">
-          <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-8)' }">
+          <div class="card-section__title-group">
             <span class="card-section__title">经纪商</span>
           </div>
           <!-- F-C4: 添加经纪商不受状态保护 (只扩展候选列表, 不改变当前连接) -->
@@ -392,7 +392,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           </div>
 
           <!-- ── 行情通道（契约 shm SHM 行情通道配置, dzmd_* 通用层）── -->
-          <div class="card-section__row" style="margin-top: var(--spacer-12)">
+          <div class="card-section__row card-section__row--top-12">
             <span class="card-section__title">行情通道</span>
           </div>
           <div class="gateway-info">
@@ -413,7 +413,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
             </label>
           </div>
           <div class="preload-list">
-            <div class="card-section__row" style="margin-top: var(--spacer-8)">
+            <div class="card-section__row card-section__row--top-8">
               <span class="card-section__title">预加载点</span>
               <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" @click="openPreloadModal">添加</button>
             </div>
@@ -428,8 +428,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
                   :disabled="src.shmConfigPending" @blur="onPreloadBlur(time, 'bytes', $event)">
               </label>
               <button
-                class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
-                style="margin-left: auto"
+                class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon preload-item__remove"
                 type="button"
                 :disabled="src.shmConfigPending"
                 :title="`删除预加载点 ${time}`"
@@ -445,8 +444,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
       </div>
 
       <button
-        class="ds-btn ds-btn--danger-subtle"
-        :style="{ width: '100%', marginTop: 'var(--spacer-16)', justifyContent: 'center' }"
+        class="ds-btn ds-btn--danger-subtle source-card__delete"
         type="button"
         :disabled="src.stopPending"
         @click="openSourceDeleteModal"
@@ -529,9 +527,9 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
     </Modal>
     <!-- ===== Delete Source Confirmation Modal (#204: 二次确认) ===== -->
     <Modal :open="sourceDeleteModalOpen" title="确认删除行情源" @close="closeSourceDeleteModal">
-      <div :style="{ color: 'var(--text-default)' }">
-        确认删除行情源 <code class="mono" :style="{ fontWeight: 500 }">{{ src.display_name || src.source_name }}</code> 吗？
-        <div :style="{ marginTop: 'var(--spacer-8)', color: 'var(--text-tertiary)', fontSize: 'var(--body-sm-font-size)' }">
+      <div class="confirm-message">
+        确认删除行情源 <code class="mono confirm-message__code">{{ src.display_name || src.source_name }}</code> 吗？
+        <div class="confirm-message__hint">
           删除后将停止行情进程，并从自动启动配置中移除该行情源，此操作不可撤销。
           <template v-if="src.process_state === 'Running'">当前运行中，将先停止进程。</template>
         </div>
@@ -556,7 +554,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .source-card { margin-bottom: var(--spacer-12); overflow: hidden; color: var(--text-default); min-width: 0; }
 .source-card__header { display: flex; align-items: center; gap: var(--spacer-12); padding: var(--spacer-16) var(--spacer-20); cursor: pointer; flex-wrap: nowrap; overflow-x: auto; }
 .source-card__header:hover { background: var(--bg-overlay-l1); }
-.source-card__chevron { transition: transform 0.2s ease; flex-shrink: 0; }
+.source-card__chevron { transition: transform 0.2s ease; flex-shrink: 0; width: var(--icon-size-16); height: var(--icon-size-16); color: var(--icon-tertiary); }
 .source-card__chevron.is-expanded { transform: rotate(90deg); }
 .source-card__body { padding: 0 var(--spacer-20) var(--spacer-20); overflow-x: auto; }
 .source-card__body.is-open { display: block; }
@@ -564,6 +562,9 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .source-card__info { display: flex; flex-direction: column; gap: var(--spacer-1); flex-shrink: 0; }
 .source-card__info-name { font-weight: var(--font-weight-medium); color: var(--text-secondary); white-space: nowrap; }
 .source-card__info-meta { font-size: var(--font-size-10); color: var(--text-tertiary); white-space: nowrap; }
+/* 自动登录状态配色（原模板三元 :style，两条声明都是静态值，仅选中哪条由实例状态决定） */
+.source-card__info-meta--auto-on { color: var(--status-success-default); }
+.source-card__info-meta--auto-off { color: var(--status-alert-default); }
 .source-card__info-sub { font-size: var(--font-size-10); white-space: nowrap; }
 .source-card__info-sub--ok { color: var(--text-tertiary); }
 .source-card__info-sub--warn { color: var(--status-error-default); }
@@ -573,6 +574,11 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .card-section { padding-bottom: var(--spacer-12); border-bottom: 1px solid var(--border-neutral-l1); margin-bottom: var(--spacer-12); }
 .card-section:last-of-type { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .card-section__row { display: flex; align-items: center; justify-content: space-between; gap: var(--spacer-12); margin-bottom: var(--spacer-8); }
+/* 分组标题行（原内联 display:flex; align-items:center; gap:var(--spacer-8)） */
+.card-section__title-group { display: flex; align-items: center; gap: var(--spacer-8); }
+/* 分组行上方留白（原内联静态 style="margin-top: …"） */
+.card-section__row--top-12 { margin-top: var(--spacer-12); }
+.card-section__row--top-8 { margin-top: var(--spacer-8); }
 .card-section__title { font-size: var(--body-sm-font-size); font-weight: var(--font-weight-medium); color: var(--text-default); }
 .card-section__body { margin-top: var(--spacer-4); }
 .card-hint { font-size: var(--body-sm-font-size); color: var(--text-tertiary); padding: var(--spacer-4) 0; }
@@ -617,6 +623,26 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
 .dialog-row__control { flex: 1; min-width: 0; }
 
 /* Spinner: 复用全局 components.css 的 .ds-btn__spinner（P4 T4 去重复，统一 14px） */
+
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+/* 预加载点删除按钮推到行尾（原内联 style="margin-left: auto"） */
+.preload-item__remove { margin-left: auto; }
+
+/* 卡片底部「删除此行情源」整行按钮（原内联 :style 三元组） */
+.source-card__delete {
+  width: 100%;
+  margin-top: var(--spacer-16);
+  justify-content: center;
+}
+
+/* 删除确认框正文（原内联 :style 静态声明） */
+.confirm-message { color: var(--text-default); }
+.confirm-message__code { font-weight: var(--font-weight-medium); }
+.confirm-message__hint {
+  margin-top: var(--spacer-8);
+  color: var(--text-tertiary);
+  font-size: var(--body-sm-font-size);
+}
 
 @media (max-width: 767.98px) {
   .source-card__header { gap: var(--spacer-8); padding: var(--spacer-12); }

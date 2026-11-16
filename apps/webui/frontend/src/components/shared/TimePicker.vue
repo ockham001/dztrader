@@ -179,7 +179,7 @@ onUnmounted(() => {
       @click="toggle()"
     >
       <span class="ds-timepicker__trigger-label">{{ displayLabel }}</span>
-      <span class="icon ds-timepicker__trigger-icon" data-icon :style="{ width: '16px', height: '16px', '--icon-url': `url('/icons/builtin/time.svg')` }" aria-hidden="true"></span>
+      <span class="icon ds-timepicker__trigger-icon" data-icon aria-hidden="true"></span>
     </button>
 
     <Teleport to="body">
@@ -275,6 +275,12 @@ onUnmounted(() => {
 }
 
 .ds-timepicker__trigger-icon {
+  /* #346：原模板内联的图标尺寸（16px）与 --icon-url 归位（常量 URL = 静态值）。 */
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+
+  --icon-url: url('/icons/builtin/time.svg');
+
   color: var(--icon-secondary);
   flex-shrink: 0;
   display: flex;

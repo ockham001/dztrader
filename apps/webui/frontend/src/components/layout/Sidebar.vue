@@ -130,62 +130,23 @@ function openAbout(): void {
       'sidebar-collapsed': collapsed,
       'sidebar-mobile-open': mobileOpen,
     }"
-    :style="{
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 'var(--spacer-16)',
-      padding: '0 var(--spacer-12) var(--spacer-16)',
-      background: 'var(--bg-base-default)',
-    }"
   >
     <!-- 注：position/top/height/zIndex 已归 layout.css 的 .sidebar-panel
          （P5-T2：布局属性归 CSS，消除 media !important 覆盖 inline 的打架） -->
     <!-- Brand row -->
-    <div
-      class="sidebar-header"
-      :style="{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 'var(--spacer-8)',
-        height: '32px',
-        padding: '0 var(--spacer-4)',
-        borderBottom: '1px solid var(--bg-base-secondary)',
-      }"
-    >
+    <div class="sidebar-header">
       <button type="button"
         class="brand-toggle"
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--spacer-8)',
-          background: 'none',
-          border: 'none',
-          cursor: 'pointer',
-          font: 'inherit',
-          color: 'var(--text-default)',
-          padding: 0,
-          flex: 1,
-          minWidth: 0,
-        }"
         aria-label="折叠/展开侧边栏"
         @click="onBrandToggle"
       >
         <img
           src="/icons/builtin/DZ-Bolt.svg"
           alt=""
-          :style="{ width: '20px', height: '20px', borderRadius: '4px', flexShrink: 0 }"
+          class="sidebar-brand-logo"
         />
         <span
-          class="sidebar-brand-text"
-          :style="{
-            fontSize: 'var(--heading-xs-font-size)',
-            lineHeight: 'var(--heading-xs-line-height)',
-            fontWeight: 'var(--heading-xs-font-weight)',
-            color: 'var(--text-default)',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-          }"
+          class="sidebar-brand-text sidebar-brand-title"
         >DZTrader</span>
       </button>
     </div>
@@ -193,50 +154,29 @@ function openAbout(): void {
     <!-- Navigation -->
     <div
       class="sidebar-nav-scroll no-scrollbar"
-      :style="{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 'var(--spacer-4)' }"
     >
-      <nav :style="{ display: 'flex', flexDirection: 'column', gap: 'var(--spacer-2)', flex: 1 }">
+      <nav class="sidebar-nav">
         <router-link
           v-for="item in visibleNavItems"
           :key="item.label"
           :to="item.route"
           class="nav-link"
           active-class="nav-link--active"
-          :style="{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 'var(--spacer-10)',
-            minHeight: '32px',
-            padding: '0 var(--spacer-10)',
-            borderRadius: 'var(--radius-8)',
-            color: 'var(--text-secondary)',
-            fontSize: 'var(--body-base-font-size)',
-            lineHeight: 'var(--body-base-line-height)',
-            textDecoration: 'none',
-            whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            borderLeft: '2px solid transparent',
-            transition: 'background-color 120ms cubic-bezier(.2,0,0,1), color 120ms cubic-bezier(.2,0,0,1)',
-          }"
           @click="onNavClick"
         >
           <span
             class="icon"
-            :style="{ width: '16px', height: '16px', color: 'var(--icon-tertiary)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }"
             aria-hidden="true"
           >
             <Icon :name="item.icon" :size="16" />
           </span>
           <span
             class="nav-label"
-            :style="{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }"
           >{{ item.label }}</span>
           <!-- #207 C4：占位页功能在导航上先标出「开发中」，用户不必点进去才发现 -->
           <span
             v-if="item.wip"
-            class="ds-tag ds-tag--warning"
-            :style="{ marginLeft: 'auto', flexShrink: 0, fontSize: 'var(--body-xs-font-size)' }"
+            class="ds-tag ds-tag--warning sidebar-wip-tag"
             data-test="nav-wip-tag"
             :title="`${item.label}功能开发中`"
           >开发中</span>
@@ -247,16 +187,7 @@ function openAbout(): void {
     <!-- User section -->
     <div
       ref="userSectionRef"
-      :style="{
-        position: 'relative',
-        marginTop: 'auto',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 'var(--spacer-4)',
-        paddingTop: 'var(--spacer-8)',
-        paddingBottom: 'var(--spacer-8)',
-        borderTop: '1px solid var(--border-neutral-l1)',
-      }"
+      class="sidebar-user"
     >
       <!-- User menu button -->
       <button type="button"
@@ -264,42 +195,14 @@ function openAbout(): void {
         class="user-section-btn"
         aria-haspopup="menu"
         :aria-expanded="userDropdownOpen"
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--spacer-8)',
-          width: '100%',
-          minHeight: '36px',
-          padding: 'var(--spacer-6) var(--spacer-8)',
-          borderRadius: 'var(--radius-8)',
-          background: 'transparent',
-          border: 'none',
-          color: 'var(--text-default)',
-          cursor: 'pointer',
-          font: 'inherit',
-          textAlign: 'left',
-          transition: 'background-color 120ms cubic-bezier(.2,0,0,1)',
-        }"
         @click.stop="toggleUserDropdown"
       >
-        <span class="ds-avatar ds-avatar--sm sidebar-avatar" :style="{ flexShrink: 0 }">{{ avatarLetter }}</span>
+        <span class="ds-avatar ds-avatar--sm sidebar-avatar">{{ avatarLetter }}</span>
         <span
-          class="sidebar-brand-text"
-          :style="{
-            flex: 1,
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            fontSize: 'var(--body-base-font-size)',
-            lineHeight: 'var(--body-base-line-height)',
-            color: 'var(--text-default)',
-            fontWeight: 'var(--font-weight-medium)',
-          }"
+          class="sidebar-brand-text sidebar-user-name"
         >{{ displayName }}</span>
         <span
-          class="icon sidebar-brand-text"
-          :style="{ width: '12px', height: '12px', color: 'var(--icon-tertiary)', flexShrink: 0 }"
+          class="icon sidebar-brand-text sidebar-chevron"
           aria-hidden="true"
         >
           <Icon name="chevron_up_large" :size="12" />
@@ -310,27 +213,11 @@ function openAbout(): void {
       <div
         v-if="userDropdownOpen"
         class="user-dropdown"
-        :style="{
-          display: 'block',
-          position: 'absolute',
-          bottom: 'calc(100% + 4px)',
-          left: 0,
-          zIndex: 200,
-          minWidth: '220px',
-        }"
         @click.stop
       >
         <div
-          class="ds-menu"
+          class="ds-menu sidebar-user-menu"
           role="menu"
-          :style="{
-            margin: 0,
-            boxShadow: '0 12px 32px color-mix(in srgb, var(--text-default) 12%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent)',
-            background: 'var(--bg-menu)',
-            border: '1px solid var(--border-neutral-l1)',
-            borderRadius: 'var(--radius-8)',
-            padding: 'var(--spacer-4)',
-          }"
         >
           <!-- 菜单项用原生 <button>（而不是 div + @click）：Tab 可达 + Enter/Space 由浏览器
                原生派发 click，不需要也不允许再写 keydown.enter，否则会双触发。 -->
@@ -340,7 +227,7 @@ function openAbout(): void {
             class="ds-menu__item user-menu__item"
             @click="openChangePassword"
           >
-            <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="authentication" :size="16" /></span>
+            <span class="icon sidebar-user-menu-icon" aria-hidden="true"><Icon name="authentication" :size="16" /></span>
             修改密码
           </button>
           <!-- role="menu" 的允许子角色只有 menuitem / menuitemradio / menuitemcheckbox /
@@ -352,7 +239,7 @@ function openAbout(): void {
             class="ds-menu__item ds-menu__item--danger user-menu__item"
             @click="logout"
           >
-            <span class="icon" :style="{ width: '16px', height: '16px' }" aria-hidden="true"><Icon name="logout" :size="16" /></span>
+            <span class="icon sidebar-user-menu-icon" aria-hidden="true"><Icon name="logout" :size="16" /></span>
             登出
           </button>
         </div>
@@ -361,34 +248,16 @@ function openAbout(): void {
       <!-- About button -->
       <button type="button"
         class="about-btn"
-        :style="{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--spacer-8)',
-          width: '100%',
-          minHeight: '36px',
-          padding: 'var(--spacer-6) var(--spacer-8)',
-          borderRadius: 'var(--radius-8)',
-          background: 'transparent',
-          border: 'none',
-          color: 'var(--text-default)',
-          cursor: 'pointer',
-          font: 'inherit',
-          textAlign: 'left',
-          transition: 'background-color 120ms cubic-bezier(.2,0,0,1)',
-        }"
         @click="openAbout"
       >
         <span
           class="icon"
-          :style="{ width: '24px', height: '24px', color: 'var(--icon-tertiary)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }"
           aria-hidden="true"
         >
           <Icon name="Tips" :size="20" />
         </span>
         <span
-          class="sidebar-brand-text"
-          :style="{ flex: 1, fontSize: 'var(--body-base-font-size)', color: 'var(--text-secondary)' }"
+          class="sidebar-brand-text sidebar-about-label"
         >关于</span>
       </button>
     </div>
@@ -398,14 +267,14 @@ function openAbout(): void {
 
     <!-- About modal -->
     <Modal :open="aboutOpen" title="关于 DZTrader" @close="aboutOpen = false">
-      <div :style="{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--spacer-16)', padding: 'var(--spacer-16) 0' }">
-        <div :style="{ fontSize: '48px', fontWeight: 700, color: 'var(--brand-primary)' }">DZTrader</div>
-        <div :style="{ fontSize: 'var(--body-lg-font-size)', color: 'var(--text-secondary)' }">DZTrader 量化交易系统</div>
-        <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }" data-test="about-version">{{ aboutVersion }}</div>
-        <div :style="{ width: '100%', height: '1px', background: 'var(--border-neutral-l1)', margin: 'var(--spacer-8) 0' }"></div>
-        <div :style="{ width: '100%' }">
-          <div :style="{ fontSize: 'var(--body-base-font-size)', fontWeight: 600, marginBottom: 'var(--spacer-8)', color: 'var(--text-default)' }">技术栈 / 开源致谢</div>
-          <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-secondary)', lineHeight: 1.8 }">
+      <div class="sidebar-about">
+        <div class="sidebar-about-title">DZTrader</div>
+        <div class="sidebar-about-subtitle">DZTrader 量化交易系统</div>
+        <div class="sidebar-about-version" data-test="about-version">{{ aboutVersion }}</div>
+        <div class="sidebar-about-divider"></div>
+        <div class="sidebar-about-section">
+          <div class="sidebar-about-heading">技术栈 / 开源致谢</div>
+          <div class="sidebar-about-list">
             • Drogon/Trantor (HTTP/WebSocket)<br>
             • spdlog (日志)<br>
             • nlohmann/json (JSON)<br>
@@ -415,15 +284,15 @@ function openAbout(): void {
             • msgpack-c (序列化)
           </div>
         </div>
-        <div :style="{ width: '100%', height: '1px', background: 'var(--border-neutral-l1)', margin: 'var(--spacer-8) 0' }"></div>
-        <div :style="{ width: '100%' }">
-          <div :style="{ fontSize: 'var(--body-base-font-size)', fontWeight: 600, marginBottom: 'var(--spacer-8)', color: 'var(--text-default)' }">免责声明</div>
-          <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-secondary)', lineHeight: 1.6 }">
+        <div class="sidebar-about-divider"></div>
+        <div class="sidebar-about-section">
+          <div class="sidebar-about-heading">免责声明</div>
+          <div class="sidebar-about-disclaimer">
             本软件仅供学习和研究使用。使用本软件进行实盘交易所产生的一切盈亏由使用者自行承担，软件作者及贡献者不承担任何责任。
           </div>
         </div>
-        <div :style="{ width: '100%', height: '1px', background: 'var(--border-neutral-l1)', margin: 'var(--spacer-8) 0' }"></div>
-        <div :style="{ fontSize: 'var(--body-sm-font-size)', color: 'var(--text-tertiary)' }">© 2024-2026 DZTrader Contributors</div>
+        <div class="sidebar-about-divider"></div>
+        <div class="sidebar-about-copyright">© 2024-2026 DZTrader Contributors</div>
       </div>
       <template #footer>
         <button type="button" class="ds-btn ds-btn--primary" @click="aboutOpen = false">确定</button>
@@ -457,5 +326,293 @@ function openAbout(): void {
 /* danger 项沿用 .ds-menu__item--danger 的语义色；上面 color: inherit 需要在这里重新声明 */
 .user-menu__item.ds-menu__item--danger {
   color: var(--status-error-default);
+}
+
+/* ═══ #346：模板里的静态内联样式归位（只搬运、不改值；验收 = 计算样式零变化）═══
+   特异性说明：原内联样式压过 layout.css 里所有非 !important 的形态覆盖
+   （.sidebar-collapsed .* 、@media (max-width: 767.98px) 的 .sidebar-panel .*）。
+   提成类后必须保持同等压制力，否则折叠态/移动端的计算值会变 —— 故对存在竞争规则的元素
+   多套一层组件祖先类（.sidebar-panel .nav-link / .sidebar-user .user-dropdown 等），
+   使其特异性严格高于上述 0,2,0 规则。原先就被 !important 压住的内联声明照原样搬运，不顺手修。 */
+
+/* 面板容器（position/top/height/z-index 仍归 assets/css/layout.css，见模板注释） */
+.sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-16);
+  padding: 0 var(--spacer-12) var(--spacer-16);
+  background: var(--bg-base-default);
+}
+
+/* 品牌行 */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  height: 32px;
+  padding: 0 var(--spacer-4);
+  border-bottom: 1px solid var(--bg-base-secondary);
+}
+
+.brand-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-default);
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-brand-logo {
+  width: var(--icon-size-20);
+  height: var(--icon-size-20);
+  border-radius: var(--radius-4);
+  flex-shrink: 0;
+}
+
+.sidebar-brand-title {
+  font-size: var(--heading-xs-font-size);
+  line-height: var(--heading-xs-line-height);
+  font-weight: var(--heading-xs-font-weight);
+  color: var(--text-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 导航容器 */
+.sidebar-nav-scroll {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-4);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
+  flex: 1;
+}
+
+/* 导航项：桌面形态。折叠态（.sidebar-collapsed .nav-link）与 <md 的 layout.css 规则
+   都是非 !important，原先被内联压住，这里继续压住（否则折叠/移动端间距会变）。 */
+.sidebar-panel .nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-10);
+  min-height: 32px;
+  padding: 0 var(--spacer-10);
+  border-radius: var(--radius-8);
+  color: var(--text-secondary);
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 2px solid transparent;
+  transition: background-color 120ms cubic-bezier(.2,0,0,1), color 120ms cubic-bezier(.2,0,0,1);
+}
+
+.sidebar-panel .nav-link .icon {
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+  color: var(--icon-tertiary);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-panel .nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-wip-tag {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--body-xs-font-size);
+}
+
+/* 底部用户区容器（顶部细线 + margin-top: auto 把用户区推到底部） */
+.sidebar-user {
+  position: relative;
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-4);
+  padding-top: var(--spacer-8);
+  padding-bottom: var(--spacer-8);
+  border-top: 1px solid var(--border-neutral-l1);
+}
+
+/* 用户区按钮：折叠态与 <md 的 layout.css 规则非 !important，原先被内联压住，继续压住 */
+.sidebar-panel .user-section-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  width: 100%;
+  min-height: 36px;
+  padding: var(--spacer-6) var(--spacer-8);
+  border-radius: var(--radius-8);
+  background: transparent;
+  border: none;
+  color: var(--text-default);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background-color 120ms cubic-bezier(.2,0,0,1);
+}
+
+.sidebar-avatar {
+  flex-shrink: 0;
+}
+
+.sidebar-user-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--body-base-font-size);
+  line-height: var(--body-base-line-height);
+  color: var(--text-default);
+  font-weight: var(--font-weight-medium);
+}
+
+.sidebar-chevron {
+  width: var(--icon-size-12);
+  height: var(--icon-size-12);
+  color: var(--icon-tertiary);
+  flex-shrink: 0;
+}
+
+/* 用户下拉：折叠态（.sidebar-collapsed .user-dropdown）与 <md 的 layout.css 规则非 !important，
+   原先被内联压住，继续压住（min-width 220px 等桌面值保持不变）。 */
+.sidebar-user .user-dropdown {
+  display: block;
+  position: absolute;
+  bottom: calc(100% + var(--spacer-4));
+  left: 0;
+  z-index: 200;
+  min-width: 220px;
+}
+
+.sidebar-user-menu {
+  margin: 0;
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--text-default) 12%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent);
+  background: var(--bg-menu);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  padding: var(--spacer-4);
+}
+
+.sidebar-user-menu-icon {
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+}
+
+/* 关于按钮：折叠态与 <md 的 layout.css 规则非 !important，原先被内联压住，继续压住 */
+.sidebar-panel .about-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  width: 100%;
+  min-height: 36px;
+  padding: var(--spacer-6) var(--spacer-8);
+  border-radius: var(--radius-8);
+  background: transparent;
+  border: none;
+  color: var(--text-default);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: background-color 120ms cubic-bezier(.2,0,0,1);
+}
+
+.sidebar-panel .about-btn .icon {
+  width: var(--icon-size-24);
+  height: var(--icon-size-24);
+  color: var(--icon-tertiary);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-about-label {
+  flex: 1;
+  font-size: var(--body-base-font-size);
+  color: var(--text-secondary);
+}
+
+/* 「关于」弹窗内容 */
+.sidebar-about {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacer-16);
+  padding: var(--spacer-16) 0;
+}
+
+.sidebar-about-title {
+  font-size: var(--font-size-48);
+  font-weight: 700;
+  color: var(--brand-primary);
+}
+
+.sidebar-about-subtitle {
+  font-size: var(--body-lg-font-size);
+  color: var(--text-secondary);
+}
+
+.sidebar-about-version {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-tertiary);
+}
+
+.sidebar-about-divider {
+  width: 100%;
+  height: 1px;
+  background: var(--border-neutral-l1);
+  margin: var(--spacer-8) 0;
+}
+
+.sidebar-about-section {
+  width: 100%;
+}
+
+.sidebar-about-heading {
+  font-size: var(--body-base-font-size);
+  font-weight: var(--font-weight-strong);
+  margin-bottom: var(--spacer-8);
+  color: var(--text-default);
+}
+
+.sidebar-about-list {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-secondary);
+  line-height: 1.8;
+}
+
+.sidebar-about-disclaimer {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.sidebar-about-copyright {
+  font-size: var(--body-sm-font-size);
+  color: var(--text-tertiary);
 }
 </style>
