@@ -351,7 +351,8 @@ function openAbout(): void {
   gap: var(--spacer-8);
   height: 32px;
   padding: 0 var(--spacer-4);
-  border-bottom: 1px solid var(--bg-base-secondary);
+  /* #349：侧栏头分隔线同批收编（原先用背景 token，浅色下几乎不可见） */
+  border-bottom: 1px solid var(--border-neutral-l1);
 }
 
 .brand-toggle {

@@ -289,7 +289,9 @@ pre {
     .ds-btn--primary { background: var(--bg-invert); color: var(--bg-base-default); border-color: var(--bg-invert); }
     .ds-btn--primary:hover { background: var(--bg-invert-hover); border-color: var(--bg-invert-hover); }
     .ds-btn--primary:active { background: var(--bg-invert-active); border-color: var(--bg-invert-active); }
-    .ds-btn--primary[disabled] { background: var(--bg-invert-disabled); color: var(--text-disabled); border-color: transparent; cursor: not-allowed; }
+    /* #349：反色禁用底不能用通用 --text-disabled（深色段两者同值 1.00:1，文字消失）。
+       浅色 3.34:1 / 深色 3.48:1。 */
+    .ds-btn--primary[disabled] { background: var(--bg-invert-disabled); color: var(--text-oninvert-disabled); border-color: transparent; cursor: not-allowed; }
     .ds-btn--secondary { background: var(--bg-overlay-l1); color: var(--text-default); border-color: var(--border-neutral-l1); }
     .ds-btn--secondary:hover { background: var(--bg-overlay-l2); border-color: var(--border-neutral-l2); }
     .ds-btn--secondary:active { background: var(--bg-overlay-l3); border-color: var(--border-neutral-l3); }
@@ -887,7 +889,23 @@ pre {
 /* ===== Tag / Badge ===== */
     .ds-tag { display: inline-flex; align-items: center; gap: var(--spacer-4); height: 22px; padding: 0 var(--spacer-8); border-radius: var(--radius-8); font-size: var(--body-sm-font-size); line-height: var(--body-sm-line-height); background: var(--bg-overlay-l2); color: var(--text-secondary); border: 1px solid var(--border-neutral-l1); }
     .ds-tag .icon { width: 12px; height: 12px; }
+    /* #349：状态标签「同色相 + 低透明底」在浅色段必然字太亮/底太浅（实测 2.46–3.08:1）。
+       文字改用 -on-surface 档（浅色压暗、深色提亮），底继续用 -surface-l1。
+       不重定义 --status-*-default：那影响状态点/进度条/图表，属 #324 专项。 */
     .ds-tag--brand { background: var(--bg-brand-popup); color: var(--text-brand); }
-    .ds-tag--success { background: var(--status-success-surface-l1); color: var(--status-success-default); }
-    .ds-tag--warning { background: var(--status-warning-surface-l1); color: var(--status-warning-default); }
-    .ds-tag--danger { background: var(--status-error-surface-l1); color: var(--status-error-default); }
+    .ds-tag--success { background: var(--status-success-surface-l1); color: var(--status-success-on-surface); }
+    .ds-tag--warning { background: var(--status-warning-surface-l1); color: var(--status-warning-on-surface); }
+    .ds-tag--danger { background: var(--status-error-surface-l1); color: var(--status-error-on-surface); }
+
+/* ===== 减少动画（全局，原先在 dashboard.css 里） =====
+   #349：dashboard.css 的验收要求是「0 处 !important」，而把「减少动画」做对**必须**
+   用 !important —— 它要压过任意组件自己的 transition/animation 声明（`*` 的特异性是 0，
+   不加 !important 会被 .ds-btn / .ds-table 等任何类规则击败）。它本来就是全局重置，
+   语义归属也在组件库这一层，故移到本文件（行为与之前完全一致：它是全局选择器，放在
+   哪个全局 CSS 里生效范围都一样）。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

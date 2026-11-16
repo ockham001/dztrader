@@ -82,11 +82,23 @@
   --text-secondary-active: #171717;
   --text-tertiary: #737373;
   --text-disabled: #A1A1A1;
+  /* #349：反色底（primary 按钮）上的禁用文字——与通用 --text-disabled 拆开建模：
+     浅色禁用底是 #525252@20% 叠白 ≈ #E3E3E3，通用禁用灰 #A1A1A1 在其上仅 2.01:1。 */
+  --text-oninvert-disabled: #7A7A7A;
   --text-onbrand: #FFFFFF;
   --text-onaccent: #FFFFFF;
   --text-white: #FFFFFF;
   --text-brand: #4B3FE3;
   --text-brand-hover: #6A6FFF;
+
+  /* #349：状态标签「文字」档（底仍用 --status-*-surface-l1）。
+     同色相 + 透明度做底必然让浅色段的字太亮，故为标签单独提供一张可在浅色下
+     压暗、在深色下提亮的文字色表；不改 --status-*-default（那影响状态点/进度条/图表，
+     属 #324 专项）。取值实测：浅色 5.18–5.59:1，深色 4.82–6.23:1。 */
+  --status-success-on-surface: #0B6B4B;
+  --status-warning-on-surface: #8A4A00;
+  --status-error-on-surface: #B32518;
+  --status-primary-on-surface: #1D4FC4;
   --color-foreground: var(--text-default);
   --color-foreground-hover: var(--text-default-hover);
   --color-on-surface: var(--text-default);
@@ -155,11 +167,19 @@
   --text-secondary-active: #e5e5e5;
   --text-tertiary: #737373;
   --text-disabled: #525252;
+  /* #349：深色禁用底 #525252 上必须用更亮的灰（--text-disabled 与底色同值 1.00:1） */
+  --text-oninvert-disabled: #ADADAD;
   --text-onbrand: #ffffff;
   --text-onaccent: #ffffff;
   --text-white: #ffffff;
   --text-brand: #6a6fff;
   --text-brand-hover: #4b3fe3;
+
+  /* #349：状态标签文字档（深色）——成功/危险在 12% 同色底上原本 4.43/3.70，提到 ≥4.5 */
+  --status-success-on-surface: #2FB287;
+  --status-warning-on-surface: #E27900;
+  --status-error-on-surface: #F26A5F;
+  --status-primary-on-surface: #7FB0FF;
 
   --icon-default: #e5e5e5;
   --icon-default-hover: #fafafa;
@@ -225,11 +245,17 @@
     --text-secondary-active: #e5e5e5;
     --text-tertiary: #737373;
     --text-disabled: #525252;
+    --text-oninvert-disabled: #ADADAD;
     --text-onbrand: #ffffff;
     --text-onaccent: #ffffff;
     --text-white: #ffffff;
     --text-brand: #6a6fff;
     --text-brand-hover: #4b3fe3;
+
+    --status-success-on-surface: #2FB287;
+    --status-warning-on-surface: #E27900;
+    --status-error-on-surface: #F26A5F;
+    --status-primary-on-surface: #7FB0FF;
 
     --icon-default: #e5e5e5;
     --icon-default-hover: #fafafa;

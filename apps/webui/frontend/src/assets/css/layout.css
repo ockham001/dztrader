@@ -191,7 +191,9 @@ body {
   height: 32px;
   padding: 0 var(--spacer-16);
   background: var(--bg-base-default);
-  border-bottom: 1px solid var(--bg-base-secondary);
+  /* #349：分隔线原先复用背景 token（浅色段与页面底色几乎同值 → 不可见）；
+     改用边框 token，与 dashboard.css 的表格分隔线同一收编。 */
+  border-bottom: 1px solid var(--border-neutral-l1);
   position: sticky;
   top: 0;
   z-index: 90;
@@ -390,10 +392,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 /* Divider between service status and system resources */
+/* #349：原先画在 `var(--border-default, var(--bg-base-secondary))` 上 —— `--border-default`
+   从未定义（悬空引用，见 tokenContrast 的 KNOWN_DANGLING），实际一直落到**背景** token，
+   浅色段与顶栏底色几乎同值（同一「背景 token 当分隔线」根因）。改用边框 token。 */
 .topbar__resource-divider {
   width: 1px;
   height: 20px;
-  background: var(--border-default, var(--bg-base-secondary));
+  background: var(--border-neutral-l1);
   flex-shrink: 0;
 }
 /* Gauge collapsed mode — server icon with status color */

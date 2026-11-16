@@ -11,7 +11,11 @@ import postcss, { type Root } from 'postcss'
 //
 // 不变量（回归即红）：
 //   1. 引用组件库类（`.ds-*`）的每条选择器都必须带仪表盘作用域（`.dashboard-*` 前缀）；
-//   2. 被测文件仍含表格规则（采集健全性护栏，防扫描收窄后静默空转）。
+//   2. 被测文件仍含表格规则（采集健全性护栏，防扫描收窄后静默空转）；
+//   3. 被测文件 **0 处 `!important`**（#349 AC5：原先这里用 !important 压模板内联样式，
+//      #346 把内联归位成类后不再需要；机器护栏比人肉 grep 可靠）；
+//   4. 分隔线/描边**不得**用背景 token（`border-*: … var(--bg-*)`）—— #349 缺陷 2 的
+//      根因形态，改回背景 token 会立刻红（浅色段与卡片同值 = 线消失）。
 // 反向自证在最后一个 describe：谓词必须能对违规样例返回违规、对合规样例返回空，
 // 否则本 spec 会退化成恒绿断言（#309 的恒真断言防范）。
 
@@ -38,6 +42,29 @@ function unscopedComponentSelectors(root: Root): string[] {
   return offenders
 }
 
+/** 返回声明里用背景 token 画边框/描边的位置（`border*` / `outline*` 的简写或长写都算） */
+function backgroundTokenBorders(root: Root): string[] {
+  const offenders: string[] = []
+  root.walkDecls((decl) => {
+    if (!/^(border|outline)(-[a-z]+)*$/.test(decl.prop)) return
+    if (!/var\(\s*--bg-/.test(decl.value)) return
+    const line = decl.source?.start?.line ?? '?'
+    offenders.push(`line ${line}: ${decl.prop}: ${decl.value}`)
+  })
+  return offenders
+}
+
+/** 返回 CSS 源码里 `!important` 的声明数（注释已在解析阶段被剥离，不会误计） */
+function importantDeclarations(root: Root): string[] {
+  const offenders: string[] = []
+  root.walkDecls((decl) => {
+    if (!decl.important) return
+    const line = decl.source?.start?.line ?? '?'
+    offenders.push(`line ${line}: ${decl.prop}: ${decl.value} !important`)
+  })
+  return offenders
+}
+
 describe('#347 dashboard.css 作用域护栏', () => {
   it('可被标准 CSS 解析器解析', () => {
     expect(() => postcss.parse(SOURCE, { from: DASHBOARD_CSS })).not.toThrow()
@@ -47,6 +74,16 @@ describe('#347 dashboard.css 作用域护栏', () => {
     const offenders = unscopedComponentSelectors(postcss.parse(SOURCE, { from: DASHBOARD_CSS }))
     // 失败信息里带行号与选择器，修复方式唯一：收进作用域，或删掉（若无消费点）
     expect(offenders, `dashboard.css 存在无前缀的组件库改写：\n${offenders.join('\n')}`).toEqual([])
+  })
+
+  it('0 处 !important（#349 AC5）', () => {
+    const offenders = importantDeclarations(postcss.parse(SOURCE, { from: DASHBOARD_CSS }))
+    expect(offenders, `dashboard.css 出现 !important（本文件应靠特异性/加载顺序取胜）：\n${offenders.join('\n')}`).toEqual([])
+  })
+
+  it('分隔线不得用背景 token 当边框（#349 缺陷 2 根因）', () => {
+    const offenders = backgroundTokenBorders(postcss.parse(SOURCE, { from: DASHBOARD_CSS }))
+    expect(offenders, `dashboard.css 用背景 token 画边框（应改用 --border-*）：\n${offenders.join('\n')}`).toEqual([])
   })
 
   it('仍包含面板内表格规则（采集健全性护栏）', () => {
@@ -84,5 +121,46 @@ describe('作用域谓词的反向自证（防止恒绿）', () => {
       .order-status-icon { color: var(--status-success-default); }
     `)
     expect(unscopedComponentSelectors(root)).toEqual([])
+  })
+
+  it('#349 谓词①：!important 违规样例被判红、合规样例被判绿', () => {
+    const bad = postcss.parse(`
+      .dashboard-panel { flex: none !important; }
+      .dashboard-panel .ds-table td { color: var(--text-tertiary) !important; }
+      .dashboard-panel .ds-table th { border-bottom: 1px solid var(--border-neutral-l1); }
+    `)
+    const offenders = importantDeclarations(bad)
+    // 2 条违规必须全部点名（第 3 条无 !important 不得误报）
+    expect(offenders).toHaveLength(2)
+    expect(offenders[0]).toContain('flex: none !important')
+    expect(offenders[1]).toContain('color: var(--text-tertiary) !important')
+
+    const good = postcss.parse(`.dashboard-panel { flex: none; }`)
+    expect(importantDeclarations(good)).toEqual([])
+  })
+
+  it('#349 谓词②：背景 token 当边框的违规样例被判红、合规样例被判绿', () => {
+    const bad = postcss.parse(`
+      .dashboard-panel .ds-table th { border-bottom: 1px solid var(--bg-base-secondary); }
+      .dashboard-panel .ds-table td { border: 1px solid var(--bg-overlay-l2); }
+      .dashboard-panel__hd { border-bottom-color: var(--bg-card); }
+      .dashboard-panel .ds-table td { outline: 1px solid var(--bg-base-tertiary); }
+      .dashboard-panel .ds-table { border-color: var(--bg-brand); }
+    `)
+    const offenders = backgroundTokenBorders(bad)
+    // 4 条用背景 token 的（含简写 border / 长写 border-color / outline）必须点名；
+    // 第 5 条 border-color: var(--bg-brand) 是「边框与底色同色」的既有设计，谓词不区分
+    // 语义，故也在此列出 —— 真正的守卫范围是 dashboard.css 本身（该文件无此类设计）。
+    expect(offenders).toHaveLength(5)
+    expect(offenders.some((entry) => entry.includes('border-bottom: 1px solid var(--bg-base-secondary)'))).toBe(true)
+    expect(offenders.some((entry) => entry.includes('border: 1px solid var(--bg-overlay-l2)'))).toBe(true)
+    expect(offenders.some((entry) => entry.includes('border-bottom-color: var(--bg-card)'))).toBe(true)
+    expect(offenders.some((entry) => entry.includes('outline: 1px solid var(--bg-base-tertiary)'))).toBe(true)
+
+    const good = postcss.parse(`
+      .dashboard-panel .ds-table th { border-bottom: 1px solid var(--border-neutral-l1); }
+      .dashboard-panel .ds-table td { border-color: var(--border-neutral-l2); }
+    `)
+    expect(backgroundTokenBorders(good)).toEqual([])
   })
 })

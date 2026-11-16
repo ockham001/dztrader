@@ -95,8 +95,11 @@ function closeMobile(): void {
 <style scoped>
 /* #346：原模板 :style 的静态声明归位。display 留在内联（mobileSidebarOpen 逐实例动态，
    AppShell.spec.ts 断言 element.style.display）；其余定位/层叠/底色均静态，进类。
-   dashboard.css 窄屏 @media 里 .app-shell > .workspace 的 height/overflow !important
-   仍然覆盖本类的同名声明 —— 与原内联被 !important 压住的行为一致，未改。 */
+   窄屏（≤1024px 或 ≤600px 高）时 dashboard.css 的
+   `.app-shell > .workspace { height:auto; overflow:visible }` 会压过本类的同名声明：
+   两者都是 (0,2,0)（scoped 的 `[data-v-*]` 与 `.app-shell` + `.workspace` 各算一个类），
+   平局由**源码顺序**决定 —— dashboard.css 在 main.ts 里最后导入，故它胜。
+   （#349 去掉了那里的 !important；行为与原内联被 !important 压住时一致，快照无差异。） */
 .app-shell__overlay {
   position: fixed;
   inset: 0;
