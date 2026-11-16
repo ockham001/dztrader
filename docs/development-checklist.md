@@ -15,13 +15,14 @@
 |---|------|------------------------------|
 | A1 | 新增/修改组件或 store | `npm run type-check`（Vue/TS 类型）；`npm run lint`（eslint 0 警告） |
 | A2 | 组件内写样式 | `npm run lint:css`：禁止裸色/字号/间距字面量（`dz/token-literal`）；禁止 domain 里重定义 `.ds-*`（`dz/no-ds-namespace`）；@media 宽度必须 ∈ 标准档（断点白名单，实际由 `breakpointWhitelist.spec.ts` 守）；`.css` 必须能被标准 CSS 解析器解析（语法错必红——`customSyntax` 只对 `**/*.vue` 生效；注释提前闭合由选择器类规则 + `themeTokens.spec.ts` 兜底） |
-| A3 | 新增颜色/间距/圆角 | 先进 `design-tokens.css`/`theme.css` token，再引用 `var(--x)`；勿裸写。主题色 token 须三段对称（`.dark` 与 system token 集合相等且同值、`:root` 字面量 ⊆ 深色段、深色段 ⊆ `:root` 浅色基线、`var()` 别名目标三段均覆盖），由 `themeTokens.spec.ts` 守 |
+| A3 | 新增颜色/间距/圆角 | 先进 `design-tokens.css`/`theme.css` token，再引用 `var(--x)`；勿裸写。主题色 token 须三段对称（`.dark` 与 system token 集合相等且同值、`:root` 字面量 ⊆ 深色段、深色段 ⊆ `:root` 浅色基线、`var()` 别名目标三段均覆盖），由 `themeTokens.spec.ts` 守；**可读性**由 `tokenContrast.spec.ts` 守（显式声明的前景/背景 token 对须达各自最低对比度、`var(--x)` 不得悬空——新增会承载文字的 token 时要在该 spec 的 `CONTRAST_PAIRS` 加一行，不达标项进 `KNOWN_VIOLATIONS` 基线，基线外的缺陷与「修好却没删登记」都会红） |
 | A4 | 新增响应式布局 | 用 Tailwind 档断点（640/768/1024/1280）写 CSS @media，或行为分支用 `useBreakpoint`；勿造野断点 |
 | A5 | 新增操作（pending 流程） | 走领域 runner（`useOperation`）+ 在 `CLEAR_BY_RTN` 声明清理触点；勿手写分散清理 |
 | A6 | 新增行情源类型 | 四件套：新建 `<Type>Card.vue`（复制 `MarketSourceCardTemplate`）+ `marketSourcesCardRegistry` 加一行（键小写）；store/api/view 免改 |
 | A7 | 处理 WS 广播消息 | 类型经 `src/types/generated.ts`（schema 单源）+ 判别联合 `WsDataByType` 类型化；handler 勿用宽松 cast |
 | A8 | 加测试 | 现有 spec 目录补充；改动后 `npm test` 全绿 |
 | A9 | 新增可点击/可操作元素、对话框 | 无障碍规则门禁（`eslint-plugin-vuejs-accessibility` recommended，见 `eslint.config.js`）：`div` + `@click` 必须补键盘等效路径与 `role`/`tabindex`（键盘可达）、对话框必须有 `role="dialog"` + `aria-modal` + `aria-labelledby` 并走 `useFocusTrap`（焦点移入/框内循环/关闭还原，见 `src/composables/useFocusTrap.ts`）、需要锁背景滚动的走 `useScrollLock`（引用计数，见 `src/composables/useScrollLock.ts`）、图标按钮必须有 `aria-label`。**静态装饰性元素**（拖拽分隔条、点击遮罩）用 `role="presentation"` 或行内 `eslint-disable-next-line` 并写明理由。表单控件必须有**程序化关联的 label**：`<label for>` + 控件 `id`（多实例/弹窗/列表等会重复出现的字段用 `useFieldId()` 生成稳定 id，见 `src/composables/useFieldId.ts`；`v-for` 字段的 slug 必须拼循环键，不得用 index；单页面单实例可直接写静态 id），或控件嵌套在 label 内且 label 有可读文字；纯图形控件（`SyncSwitch`、无文字复选框）用 `aria-label`；仅 placeholder 的搜索框用 `aria-label`。`label-has-for` / `form-control-has-label` 自 #233 起为 `error`（`label-has-for` 口径 `some:['nesting','id']`） |
+| A10 | 改布局 / 响应式 / 面板密度 | `npm test` 里的静态断言看不到**真实渲染**：改完用 `cd apps/webui/frontend && node scripts/viewport-smoke.mjs`（五档视口 × 浅深两主题 × 全部路由，零依赖 CDP）本地跑一次，确认无横向溢出、无「文字色 == 有效底色」。**不进 CI**（需浏览器 + 起栈），属本地验收脚本；`--help` 列全部选项。前置：已起 dev 栈、账户已改过密。 |
 
 ## B. 后台（`apps/webui` C++ / 契约）
 
