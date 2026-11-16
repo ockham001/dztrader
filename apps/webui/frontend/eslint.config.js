@@ -76,6 +76,18 @@ export default tsPlugin.config(
       'vue/no-v-html': 'off',
     },
   },
+  // Node 侧的 .mjs 工具脚本（scripts/ 下，如 gen-types.mjs / viewport-smoke.mjs）：
+  // 运行在 Node 而非浏览器，需要 process 等 Node 全局；ESLint flat config 的
+  // recommended 只提供 ES 内建全局，会把这些当 no-undef。只声明脚本实际用到的，
+  // 不为一个本地验收脚本新增 globals 依赖。
+  {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+      },
+    },
+  },
   // 代码风格：优先 Prettier 语义，禁用与格式冲突的 styl 规则
   {
     rules: {

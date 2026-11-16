@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import postcss, { type Root, type Rule } from 'postcss'
+import { SYSTEM_SELECTOR, isInsideBareDarkMedia } from '@/test-utils/cssTheme'
 
 // 主题 token 完整性回归（#198）：
 // theme.css 头注释里的 `bg-*/` 会让块注释在 `*/` 处提前闭合，注释后的说明文字变成非法
@@ -78,8 +79,6 @@ function requireThemeRoot(): Root {
   return themeRoot as Root
 }
 
-const SYSTEM_SELECTOR = /html:not\(\.light\):not\(\.dark\)/
-
 /**
  * 「浅色基线」= src 下全部 .css 的顶层 `:root` 声明并集。
  * token 允许按文件分工（`--log-*` 的浅色值在 design-tokens.css、深色值在 theme.css），
@@ -105,33 +104,17 @@ function collectLightBaseline(): Map<string, string> {
 
 /**
  * system 段是否受「深色」媒体条件保护。
- * 必须沿祖先链找 @media（system 段可能合法嵌套），且条件必须是**裸的正条件**：
- * 接受 `(prefers-color-scheme: dark)` / `screen and (...)` / 附加 `and (min-width…)`；
- * 拒绝 `not (...)`（语义反转）、`@supports`（不是媒体查询）、媒体列表
- * `(prefers-color-scheme: dark), (min-width: 0px)`（含恒真分支）。
+ *
+ * 判定实现在 `src/test-utils/cssTheme.ts`（#348 收编）：`tokenContrast.spec.ts` 需要同一条
+ * 判定，两处各写一份会漂移（审查实测新版一度放宽成「含 dark 字样即算」，会把
+ * `(prefers-color-scheme: dark), (min-width: 0px)` 这类恒真媒体列表误认成 system 段）。
  */
-function systemRuleIsGuarded(rule: Rule): boolean {
-  // 沿祖先链找 @media（system 段可能合法嵌套）。postcss 的 parent 类型含 Document_，
-  // 这里只需 type/name/params/parent 四件事，用结构类型避免其类型联合的噪音。
-  type Ancestor = { type: string; name?: string; params?: string; parent?: Ancestor | undefined }
-  let node = rule.parent as unknown as Ancestor | undefined
-  while (node) {
-    if (node.type === 'atrule' && node.name?.toLowerCase() === 'media') {
-      const params = (node.params ?? '').trim()
-      // 媒体列表（顶层逗号）会让 dark 条件与别的条件并列 → 不是"仅深色时生效"
-      const isBareDarkQuery =
-        !params.includes(',') && !/\bnot\b/i.test(params) && /prefers-color-scheme:\s*dark/i.test(params)
-      if (isBareDarkQuery) return true
-    }
-    node = node.parent
-  }
-  return false
-}
+const systemRuleIsGuarded = isInsideBareDarkMedia
 
 const lightOf = () => declarationsOf(requireThemeRoot(), (r) => r.selector.trim() === ':root')
 const darkOf = () => declarationsOf(requireThemeRoot(), (r) => r.selector.trim() === '.dark')
 const systemOf = () =>
-  declarationsOf(requireThemeRoot(), (r) => SYSTEM_SELECTOR.test(r.selector) && systemRuleIsGuarded(r))
+  declarationsOf(requireThemeRoot(), (r) => r.selector.trim() === SYSTEM_SELECTOR && systemRuleIsGuarded(r))
 
 const isAlias = (value: string | undefined): boolean => value?.startsWith('var(') === true
 
@@ -182,7 +165,7 @@ describe('#198 主题 token 回归', () => {
     const unguarded: string[] = []
     let found = 0
     root.walkRules((rule) => {
-      if (!SYSTEM_SELECTOR.test(rule.selector)) return
+      if (rule.selector.trim() !== SYSTEM_SELECTOR) return
       found += 1
       if (!systemRuleIsGuarded(rule)) {
         const at = rule.parent?.type === 'atrule' ? (rule.parent as { params: string }).params : '(非 @media)'
