@@ -56,17 +56,15 @@ function closeMobile(): void {
   >
     <!-- Mobile overlay：点击关闭抽屉是鼠标便利路径，键盘等效路径是顶栏抽屉按钮与抽屉内导航；
          role="presentation" 表明遮罩本身不是可交互控件（#206） -->
+    <!-- dz-allow-inline-style: display 是 JS 状态驱动的开/关（静态定位与层叠已进 .app-shell__overlay）。
+         未改成修饰类的理由：AppShell.spec.ts 把「抽屉开/关」直接断言成 element.style.display 的
+         内联值（3 处），改类要连带改该 spec 的断言口径 —— 那是行为契约的变更，不属于本票
+         「纯搬运不改行为」的范围，留给后续票。 -->
     <div
       v-if="isMobile"
-      class="sidebar-overlay"
+      class="sidebar-overlay app-shell__overlay"
       role="presentation"
-      :style="{
-        display: mobileSidebarOpen ? 'block' : 'none',
-        position: 'fixed',
-        inset: '0',
-        zIndex: 100,
-        background: 'var(--bg-overlay-l4)',
-      }"
+      :style="{ display: mobileSidebarOpen ? 'block' : 'none' }"
       @click="closeMobile"
     />
 
@@ -78,17 +76,7 @@ function closeMobile(): void {
       @close-mobile="closeMobile"
     />
 
-    <div
-      class="workspace"
-      :style="{
-        minWidth: 0,
-        background: 'var(--bg-base-default)',
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        overflow: 'hidden',
-      }"
-    >
+    <div class="workspace app-shell__workspace">
       <Topbar @toggle-mobile="toggleMobile" />
       <!-- 服务器连接状态 banner（WS 断开/重连时显示，把内容顶下去）-->
       <div
@@ -103,3 +91,25 @@ function closeMobile(): void {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* #346：原模板 :style 的静态声明归位。display 留在内联（mobileSidebarOpen 逐实例动态，
+   AppShell.spec.ts 断言 element.style.display）；其余定位/层叠/底色均静态，进类。
+   dashboard.css 窄屏 @media 里 .app-shell > .workspace 的 height/overflow !important
+   仍然覆盖本类的同名声明 —— 与原内联被 !important 压住的行为一致，未改。 */
+.app-shell__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--bg-overlay-l4);
+}
+
+.app-shell__workspace {
+  min-width: 0;
+  background: var(--bg-base-default);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+</style>

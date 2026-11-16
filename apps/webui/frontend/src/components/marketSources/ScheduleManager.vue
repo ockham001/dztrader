@@ -74,7 +74,7 @@ const scheduleAddPending = computed(() => {
 <template>
   <div class="card-section">
     <div class="card-section__row">
-      <button class="ds-btn ds-btn--tertiary ds-btn--sm" type="button" style="margin-left: auto" :disabled="autoLoginBusy" @click="openScheduleModal(src.id)">
+      <button class="ds-btn ds-btn--tertiary ds-btn--sm card-section__row-end" type="button" :disabled="autoLoginBusy" @click="openScheduleModal(src.id)">
         添加时段
       </button>
     </div>
@@ -85,8 +85,7 @@ const scheduleAddPending = computed(() => {
         <span class="schedule-item__logout">{{ sch.logout_time }}</span>
         <span v-if="isOvernight(sch)" class="schedule-item__overnight" title="跨午夜时段：[登录,24:00) ∪ [00:00,登出)">跨午夜</span>
         <button
-          class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
-          style="margin-left: auto"
+          class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon schedule-item__remove"
           type="button"
           :disabled="autoLoginBusy"
           :title="`删除时段 ${sch.login_time}→${sch.logout_time}`"
@@ -152,6 +151,12 @@ const scheduleAddPending = computed(() => {
   color: var(--text-tertiary);
   padding: var(--spacer-4) 0;
 }
+
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+/* 行尾「添加时段」按钮（原内联 style="margin-left: auto"） */
+.card-section__row-end { margin-left: auto; }
+/* 行尾删除按钮（原内联 style="margin-left: auto"） */
+.schedule-item__remove { margin-left: auto; }
 
 /* Schedule list */
 .schedule-list {

@@ -26,7 +26,7 @@ const tab = ref<'orders' | 'trades'>('orders')
 
     <StatsBar class="trading-data-view__stats" />
 
-    <div class="ds-tabs" :style="{ marginBottom: 'var(--spacer-16)' }">
+    <div class="ds-tabs trading-data-view__tabs">
       <button
         class="ds-tab"
         :class="{ 'is-active': tab === 'orders' }"
@@ -80,6 +80,10 @@ const tab = ref<'orders' | 'trades'>('orders')
 
 /* 统计条与 tab 栏之间的间距（tab 栏自带 marginBottom 到面板） */
 .trading-data-view__stats {
+  margin-bottom: var(--spacer-16);
+}
+
+.trading-data-view__tabs {
   margin-bottom: var(--spacer-16);
 }
 

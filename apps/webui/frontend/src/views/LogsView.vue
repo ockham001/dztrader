@@ -156,15 +156,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div :style="{ flex: 1, overflow: 'auto', maxWidth: '1400px', width: '100%', margin: '0 auto', padding: 'var(--spacer-32) var(--spacer-24)' }">
+  <div class="logs-view">
     <div class="page-header">
-      <h1 :style="{
-        margin: 0,
-        fontSize: 'var(--heading-xl-font-size)',
-        lineHeight: 'var(--heading-xl-line-height)',
-        fontWeight: 'var(--heading-xl-font-weight)',
-        color: 'var(--text-default)',
-      }">日志</h1>
+      <h1 class="page-title">日志</h1>
     </div>
 
     <div class="section-gap">
@@ -176,20 +170,15 @@ onUnmounted(() => {
 
     <div class="section-gap">
       <div class="ds-card">
-        <div class="log-browser__header" style="display: flex; align-items: center; justify-content: space-between;">
-          <div class="ds-card__title" style="margin-bottom: 0;">日志浏览器</div>
-          <div class="ds-tabs" style="margin-bottom: 0;">
+        <div class="log-browser__header">
+          <div class="ds-card__title log-browser__title">日志浏览器</div>
+          <div class="ds-tabs log-browser__tabs">
             <button class="ds-tab" :class="{ 'is-active': store.browserTab === 'viewer' }" type="button" @click="store.browserTab = 'viewer'">查看</button>
             <button class="ds-tab" :class="{ 'is-active': store.browserTab === 'analysis' }" type="button" @click="store.browserTab = 'analysis'">分析</button>
           </div>
         </div>
-        <div ref="logBrowserEl" class="log-browser" :style="{
-          display: 'grid',
-          gridTemplateColumns: `minmax(200px, ${sidebarFlex}px) 6px minmax(300px, 1fr)`,
-          overflow: 'hidden',
-          minHeight: '500px',
-        }">
-          <div class="log-browser__sidebar" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">
+        <div ref="logBrowserEl" class="log-browser" :style="{ '--log-browser-sidebar-width': `${sidebarFlex}px` }">
+          <div class="log-browser__sidebar">
             <div class="log-browser__toolbar">
               <div class="log-browser__toolbar-spacer"></div>
               <button
@@ -199,7 +188,7 @@ onUnmounted(() => {
                 @click="handleRefreshFiles"
                 title="刷新文件列表"
               >
-                <span class="icon" data-icon :style="{ width: '14px', height: '14px', '--icon-url': `url('/icons/builtin/Refresh.svg')` }"></span>
+                <span class="icon log-browser__refresh-icon" data-icon></span>
               </button>
             </div>
             <div class="log-browser__filter">
@@ -265,7 +254,7 @@ onUnmounted(() => {
           <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
           <div class="splitter-v log-splitter" @mousedown="onSplitterDown"></div>
 
-          <div class="log-browser__content" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">
+          <div class="log-browser__content">
             <LogViewerTab v-show="store.browserTab === 'viewer'" />
             <LogAnalysisTab v-show="store.browserTab === 'analysis'" />
           </div>
@@ -276,6 +265,25 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+.logs-view {
+  flex: 1;
+  overflow: auto;
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--spacer-32) var(--spacer-24);
+}
+
+/* 页面主标题（原内联 heading-xl 三元组 + 去默认 margin） */
+.page-title {
+  margin: 0;
+  font-size: var(--heading-xl-font-size);
+  line-height: var(--heading-xl-line-height);
+  font-weight: var(--heading-xl-font-weight);
+  color: var(--text-default);
+}
+
 .page-header {
   margin-bottom: var(--spacer-24);
 }
@@ -285,10 +293,31 @@ onUnmounted(() => {
 }
 
 .log-browser__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: var(--spacer-16);
 }
 
+/* 原内联 margin-bottom: 0（压在 .ds-card__title 的默认 margin 上） */
+.log-browser__title {
+  margin-bottom: 0;
+}
+
+/* 原内联 margin-bottom: 0（压在 .ds-tabs 上） */
+.log-browser__tabs {
+  margin-bottom: 0;
+}
+
 .log-browser {
+  display: grid;
+  /* 拖拽前的初始侧栏宽度；运行时由模板 :style 覆盖为实测 px。
+     在 CSS 侧声明默认值是为了让 token 引用有定义处（tokenContrast.spec.ts 检查 2）。 */
+  --log-browser-sidebar-width: 240px;
+
+  grid-template-columns: minmax(200px, var(--log-browser-sidebar-width)) 6px minmax(300px, 1fr);
+  overflow: hidden;
+  min-height: 500px;
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-12);
   background: var(--bg-base-secondary);
@@ -337,6 +366,10 @@ onUnmounted(() => {
 }
 
 .log-browser__sidebar {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
   border-right: 1px solid var(--border-neutral-l1);
 }
 
@@ -354,6 +387,16 @@ onUnmounted(() => {
   flex-shrink: 0;
   height: 32px;
   width: 32px;
+}
+
+/* 刷新图标：逐实例固定的尺寸与图标地址（原模板内联 :style），进类后可被主题变量统一覆盖。
+   用「按钮类 + 图标类」两段选择器：全局 `.ds-btn .icon` 也是两段特异度，仅靠 scoped 的
+   [data-v-*] 会打平、依赖样式表顺序；显式多一段类确保 14px 稳定压过按钮内图标基线 16px。 */
+.log-browser__refresh-btn .log-browser__refresh-icon {
+  width: var(--icon-size-14);
+  height: var(--icon-size-14);
+
+  --icon-url: url('/icons/builtin/Refresh.svg');
 }
 
 .log-browser__filter {
@@ -436,6 +479,10 @@ onUnmounted(() => {
 }
 
 .log-browser__content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
   border: none;
   border-radius: 0;
   background: transparent;

@@ -129,17 +129,17 @@ function onFrontendAddressBlur(
       <table class="ds-table">
         <thead>
           <tr>
-            <th :style="{ width: '60px' }">启用</th>
+            <th class="front-table__col-enable">启用</th>
             <th>地址</th>
-            <th :style="{ width: '120px' }">标签</th>
-            <th :style="{ width: '90px', textAlign: 'right' }">操作</th>
+            <th class="front-table__col-label">标签</th>
+            <th class="front-table__col-actions">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="fe in broker.frontends" :key="fe.address">
             <!-- enabled 为 checkbox 语义, 多个前置可同时启用, CTP 自动故障切换 -->
             <td>
-              <label class="ds-check" :style="{ minHeight: 'auto' }" :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''">
+              <label class="ds-check front-table__check" :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''">
                 <input
                   type="checkbox"
                   :checked="fe.enabled"
@@ -162,8 +162,8 @@ function onFrontendAddressBlur(
                 @blur="onFrontendAddressBlur(src.id, broker.name, fe.address, $event)"
               >
             </td>
-            <td><code class="mono" :style="{ fontSize: 'var(--body-sm-font-size)' }">{{ fe.label || '--' }}</code></td>
-            <td :style="{ textAlign: 'right' }">
+            <td><code class="mono front-table__label">{{ fe.label || '--' }}</code></td>
+            <td class="front-table__cell--right">
               <button
                 class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
                 type="button"
@@ -178,7 +178,7 @@ function onFrontendAddressBlur(
             </td>
           </tr>
           <tr v-if="broker.frontends.length === 0">
-            <td colspan="4" :style="{ textAlign: 'center', color: 'var(--text-tertiary)', padding: 'var(--spacer-16)' }">暂无前置地址</td>
+            <td colspan="4" class="front-table__empty">暂无前置地址</td>
           </tr>
         </tbody>
       </table>
@@ -214,8 +214,8 @@ function onFrontendAddressBlur(
 
   <!-- ===== Delete Frontend Confirmation Modal (F-C2: 二次确认) ===== -->
   <Modal :open="frontendDeleteModalOpen" title="确认删除前置地址" @close="closeFrontendDeleteModal">
-    <div :style="{ color: 'var(--text-default)' }">
-      确认删除前置地址 <code class="mono" :style="{ fontWeight: 500 }">{{ frontendDeleteAddress }}</code> 吗？
+    <div class="confirm-message">
+      确认删除前置地址 <code class="mono confirm-message__code">{{ frontendDeleteAddress }}</code> 吗？
     </div>
     <template #footer>
       <button class="ds-btn ds-btn--secondary" type="button" @click="closeFrontendDeleteModal">取消</button>
@@ -250,6 +250,29 @@ function onFrontendAddressBlur(
 .front-table-wrap .ds-table {
   min-width: 560px;
 }
+
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+/* 列宽（原内联 :style width / text-align） */
+.front-table__col-enable { width: 60px; }
+.front-table__col-label { width: 120px; }
+.front-table__col-actions { width: 90px; text-align: right; }
+/* 紧凑 checkbox：压掉 .ds-check 的默认 min-height（原内联 :style minHeight: 'auto'） */
+.front-table__check { min-height: auto; }
+/* 标签单元格等宽字体小字号（原内联 :style fontSize） */
+.front-table__label { font-size: var(--body-sm-font-size); }
+.front-table__cell--right { text-align: right; }
+/* 空态行（原内联 :style textAlign/color/padding）。
+   全局 `.ds-table td:first-child`（c=2,d=1）比单类+[data-v-*]（c=2,d=0）高一段，
+   空态 td 恰好是 first-child，故用容器限定提到 c=3，确保 color 仍是原内联的 --text-tertiary。 */
+.front-table-wrap .front-table__empty {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: var(--spacer-16);
+}
+
+/* 删除确认框正文（原内联 :style 静态声明） */
+.confirm-message { color: var(--text-default); }
+.confirm-message__code { font-weight: var(--font-weight-medium); }
 
 /* Frontend address inline-edit input */
 .fe-address-input {

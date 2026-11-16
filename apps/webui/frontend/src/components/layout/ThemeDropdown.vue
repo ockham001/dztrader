@@ -42,7 +42,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="filter-dropdown theme-dropdown" :style="{ position: 'relative' }">
+  <div class="filter-dropdown theme-dropdown">
     <button type="button"
       class="topbar__theme"
       :aria-label="'切换主题'"
@@ -101,3 +101,11 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* #346：原模板内联的 position: relative 归位。
+   .filter-dropdown 全仓无样式定义（不可依赖），故在本地 .theme-dropdown 上补 position。 */
+.theme-dropdown {
+  position: relative;
+}
+</style>

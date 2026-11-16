@@ -387,16 +387,7 @@ onUnmounted(() => {
   <div
     ref="dashboardContent"
     class="dashboard-content"
-    :style="{
-        flex: 1,
-        display: 'grid',
-        gridTemplateColumns: `minmax(300px, ${leftFlex}fr) 6px minmax(200px, ${rightFlex}fr)`,
-        gridTemplateRows: 'auto minmax(0, 1fr)',
-        overflow: 'hidden',
-        padding: '6px',
-        columnGap: '0',
-        rowGap: 'var(--spacer-6)',
-      }"
+    :style="{ '--dashboard-left-fr': `${leftFlex}fr`, '--dashboard-right-fr': `${rightFlex}fr` }"
     >
       <!-- 演示数据横幅（issue #200）：首屏永久可见，与是否滚动 / 展开无关。
            委托 / 策略 / 消息三个面板的交易数据链路尚未建立（issue #6），横幅是读者
@@ -415,29 +406,28 @@ onUnmounted(() => {
       </div>
 
       <!-- Left Panel -->
-      <div ref="leftPanelEl" class="dashboard-left-panel" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">
+      <div ref="leftPanelEl" class="dashboard-left-panel">
 
         <!-- Position Monitor（#249：真实持仓；契约 rest §2.9.4 / 契约 webui-ws §2.5/§5） -->
-        <div class="dashboard-panel dashboard-panel--position" :style="{ flex: `${positionFlex} 1 0%`, minHeight: '120px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
-          <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)', minWidth: 0 }">
-              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">持仓</span>
+        <div class="dashboard-panel dashboard-panel--position" :style="{ flex: `${positionFlex} 1 0%` }">
+          <div class="dashboard-panel__hd">
+            <span class="dashboard-panel__title">
+              <span class="dashboard-panel__title-text">持仓</span>
               <!-- 数据日期（面板级）：行内「数据日期」列是权威来源；这里给整屏一眼可读的标记。
                    持仓行的 date 是各账户锚点日，可能早于当前交易日 —— 读者必须看得出这是旧快照。 -->
               <span
                 v-if="positionDateLabel"
                 data-test="position-date-label"
-                :style="{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
+                class="dashboard-panel__meta"
               >{{ positionDateLabel }}</span>
             </span>
-            <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)', fontSize: 'var(--body-xs-font-size)' }">
+            <div class="dashboard-panel__tools">
               <div class="dashboard-pos-filter">
                 <button
-                  class="filter-dropdown__trigger"
+                  class="dashboard-pos-filter__trigger"
                   type="button"
                   :aria-expanded="positionFilterOpen"
                   aria-controls="dashboard-position-account-filter"
-                  :style="{ cursor: 'pointer', border: 'none', background: 'transparent', padding: 0, color: 'inherit', font: 'inherit' }"
                   data-test="position-account-filter-trigger"
                   @click="positionFilterOpen = !positionFilterOpen"
                 >{{ positionFilterLabel }}</button>
@@ -468,15 +458,15 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-              <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
+              <label class="ds-check dashboard-panel__check">
                 <input v-model="showPositionDetail" type="checkbox" data-test="position-detail-toggle">
                 <span class="ds-check__box"></span> 详情
               </label>
-              <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
+              <label class="ds-check dashboard-panel__check">
                 <input v-model="hideMatchedPositions" type="checkbox" data-test="position-hide-matched">
                 <span class="ds-check__box"></span> 隐藏匹配行
               </label>
-              <span data-test="position-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--status-success-default)', cursor: 'default' }" title="净仓非零行/全部行">{{ positionAggregate }}</span>
+              <span data-test="position-aggregate" class="dashboard-panel__aggregate dashboard-panel__aggregate--positive" title="净仓非零行/全部行">{{ positionAggregate }}</span>
             </div>
           </div>
           <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据） -->
@@ -493,11 +483,11 @@ onUnmounted(() => {
             持仓行数超过单次拉取上限，列表不完整；请用账户筛选缩小范围
           </div>
           <div v-if="positionsStore.error" class="dashboard-pos-error" role="alert">{{ positionsStore.error }}</div>
-          <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', padding: 0 }">
-            <table class="ds-table ds-table--dense" :style="{ minWidth: '100%', width: 'max-content', tableLayout: 'auto', whiteSpace: 'nowrap' }">
-              <thead :style="{ position: 'sticky', top: 0, zIndex: 1 }">
+          <div class="auto-scroll">
+            <table class="ds-table ds-table--dense dashboard-panel__table">
+              <thead class="dashboard-panel__thead">
                 <tr>
-                  <th class="frozen frozen-last" :style="{ left: 0 }">合约代码</th>
+                  <th class="frozen frozen-last">合约代码</th>
                   <th>持仓差值</th>
                   <th>账户净仓</th>
                   <th>策略净仓</th>
@@ -511,14 +501,14 @@ onUnmounted(() => {
               </thead>
               <tbody>
                 <tr v-for="group in visiblePositionGroups" :key="group.key">
-                  <td class="frozen frozen-last cell-text" :style="{ left: 0, fontWeight: 'var(--font-weight-medium)' }">{{ group.instrument_id }}</td>
+                  <td class="frozen frozen-last cell-text dashboard-panel__cell-strong">{{ group.instrument_id }}</td>
                   <!-- 策略维度持仓归属尚未建立（策略记账在策略进程内）：保留列位置显示占位，
                        不拿账户净仓冒充策略净仓（契约 strategy §「策略逻辑持仓」）。 -->
-                  <td class="cell-num" :style="{ color: 'var(--text-tertiary)' }" title="策略维度持仓归属尚未建立">—</td>
+                  <td class="cell-num cell-muted" title="策略维度持仓归属尚未建立">—</td>
                   <td class="cell-num" :class="netVolumeClass(group.netVolume)">{{ netVolumeText(group.netVolume) }}</td>
-                  <td class="cell-num" :style="{ color: 'var(--text-tertiary)' }" title="策略维度持仓归属尚未建立">—</td>
-                  <td class="cell-text" :style="{ color: 'var(--text-secondary)' }">{{ group.account_id }}</td>
-                  <td class="cell-num" :style="{ color: 'var(--text-tertiary)' }" data-test="position-row-date">{{ formatTdDate(group.date) }}</td>
+                  <td class="cell-num cell-muted" title="策略维度持仓归属尚未建立">—</td>
+                  <td class="cell-text cell-text--secondary">{{ group.account_id }}</td>
+                  <td class="cell-num cell-muted" data-test="position-row-date">{{ formatTdDate(group.date) }}</td>
                   <td v-for="name in strategyNames" :key="name" class="cell-num strategy-col" title="策略维度持仓归属尚未建立">—</td>
                   <template v-if="showPositionDetail">
                     <td
@@ -543,24 +533,24 @@ onUnmounted(() => {
 
         <!-- Vertical Splitter 1 (Position / Bottom) -->
         <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
-        <div class="splitter-v v-splitter-1" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="onVSplitter1Down"></div>
+        <div class="splitter-v v-splitter-1" @mousedown="onVSplitter1Down"></div>
 
         <!-- Bottom: Funds + Orders -->
-        <div ref="bottomPanelEl" class="dashboard-bottom-panel" :style="{ flex: `${bottomFlex} 1 0%`, minHeight: '100px', display: 'flex', flexDirection: 'row', overflow: 'hidden' }">
+        <div ref="bottomPanelEl" class="dashboard-bottom-panel" :style="{ flex: `${bottomFlex} 1 0%` }">
 
           <!-- Funds（#250：真实资金卡；契约 rest §2.9.4 / 契约 webui-ws §2.5/§5） -->
-          <div class="dashboard-panel dashboard-panel--fund" :style="{ flex: `${fundFlex} 1 0%`, minWidth: '150px', minHeight: '100px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
-            <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-              <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)', minWidth: 0 }">
-                <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">资金</span>
+          <div class="dashboard-panel dashboard-panel--fund" :style="{ flex: `${fundFlex} 1 0%` }">
+            <div class="dashboard-panel__hd">
+              <span class="dashboard-panel__title">
+                <span class="dashboard-panel__title-text">资金</span>
                 <!-- 面板级数据日期：行内「数据日期」列是权威来源；各账户锚点日可能不同，全部列出 -->
                 <span
                   v-if="fundDateLabel"
                   data-test="fund-date-label"
-                  :style="{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }"
+                  class="dashboard-panel__meta"
                 >{{ fundDateLabel }}</span>
               </span>
-              <span data-test="fund-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="在线账户/已登记账户">{{ fundAggregate }}</span>
+              <span data-test="fund-aggregate" class="dashboard-panel__aggregate" title="在线账户/已登记账户">{{ fundAggregate }}</span>
             </div>
             <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据） -->
             <div
@@ -573,11 +563,11 @@ onUnmounted(() => {
               <span>{{ fundsStore.degradedText }}</span>
             </div>
             <div v-if="fundsStore.error" class="dashboard-fund-error" role="alert" data-test="fund-error">{{ fundsStore.error }}</div>
-            <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto' }">
-              <table class="ds-table ds-table--normal" :style="{ minWidth: '100%', width: 'max-content', tableLayout: 'auto', whiteSpace: 'nowrap' }">
-                <thead :style="{ position: 'sticky', top: 0, zIndex: 1 }">
+            <div class="auto-scroll">
+              <table class="ds-table ds-table--normal dashboard-panel__table">
+                <thead class="dashboard-panel__thead">
                   <tr>
-                    <th class="frozen frozen-last" :style="{ left: 0 }">账户</th>
+                    <th class="frozen frozen-last">账户</th>
                     <th>状态</th>
                     <th>权益</th>
                     <th>可用</th>
@@ -598,12 +588,11 @@ onUnmounted(() => {
                     data-test="fund-row"
                     :title="row.has_data ? undefined : '该账户无资金记录'"
                   >
-                    <td class="frozen frozen-last cell-text" :style="{ left: 0, fontWeight: 'var(--font-weight-medium)' }">{{ row.account_id }}</td>
-                    <td :style="{ textAlign: 'center' }">
+                    <td class="frozen frozen-last cell-text dashboard-panel__cell-strong">{{ row.account_id }}</td>
+                    <td class="cell-center">
                       <span
-                        class="ds-tag"
+                        class="ds-tag dashboard-panel__tag"
                         :class="isTdAccountOnline(row.account_id, fundsStore.onlineAccounts) ? 'ds-tag--success' : 'ds-tag--danger'"
-                        :style="{ fontSize: '10px' }"
                       >{{ fundStatusText(row.account_id, fundsStore.onlineAccounts) }}</span>
                     </td>
                     <td class="cell-num">{{ formatTdMoney(row.balance) }}</td>
@@ -613,7 +602,7 @@ onUnmounted(() => {
                     <td class="cell-num">{{ formatTdMoney(row.commission) }}</td>
                     <td class="cell-num">{{ formatTdMoney(row.withdraw_quota) }}</td>
                     <td class="cell-num">{{ formatDepositWithdraw(row.deposit, row.withdraw) }}</td>
-                    <td class="cell-num" data-test="fund-row-date" :style="{ color: 'var(--text-tertiary)' }">{{ row.has_data && row.date ? formatTdDate(row.date) : '—' }}</td>
+                    <td class="cell-num cell-muted" data-test="fund-row-date">{{ row.has_data && row.date ? formatTdDate(row.date) : '—' }}</td>
                   </tr>
                   <!-- 空态（请求已结束）：降级 / 失败 / 无数据三态互斥，不可用与「无数据」必须可区分，
                        不能用 0 或假空态冒充（契约 webui-ws §5 第 13 条）。
@@ -637,27 +626,27 @@ onUnmounted(() => {
 
           <!-- Horizontal Splitter (Funds / Orders) -->
           <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
-          <div class="splitter-h h-splitter" :style="{ width: '6px', cursor: 'col-resize', flexShrink: 0, margin: 0 }" @mousedown="onHSplitterDown"></div>
+          <div class="splitter-h h-splitter" @mousedown="onHSplitterDown"></div>
 
           <!-- Orders -->
-          <div class="dashboard-panel dashboard-panel--orders" :style="{ flex: `${orderFlex} 1 0%`, minWidth: '150px', minHeight: '100px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }">
-            <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--border-neutral-l1)', flexShrink: 0 }">
-              <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
-                <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">委托</span>
-                <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+          <div class="dashboard-panel dashboard-panel--orders" :style="{ flex: `${orderFlex} 1 0%` }">
+            <div class="dashboard-panel__hd">
+              <span class="dashboard-panel__title">
+                <span class="dashboard-panel__title-text">委托</span>
+                <span class="ds-tag ds-tag--warning dashboard-panel__tag" data-test="dashboard-demo-tag">演示</span>
               </span>
-              <div :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-12)', fontSize: 'var(--body-xs-font-size)' }">
-                <label class="ds-check" :style="{ minHeight: 'auto', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-secondary)' }">
+              <div class="dashboard-panel__tools">
+                <label class="ds-check dashboard-panel__check">
                   <input type="checkbox"><span class="ds-check__box"></span> 仅挂单
                 </label>
-                <span data-test="orders-aggregate" :style="{ fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)', cursor: 'pointer', userSelect: 'none' }" title="点击切换 笔数/手数">{{ ordersAggregate }}</span>
+                <span data-test="orders-aggregate" class="dashboard-panel__aggregate dashboard-panel__aggregate--clickable" title="点击切换 笔数/手数">{{ ordersAggregate }}</span>
               </div>
             </div>
-            <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto' }">
-              <table class="ds-table ds-table--dense" :style="{ width: '100%', tableLayout: 'auto', whiteSpace: 'nowrap' }">
-                <thead :style="{ position: 'sticky', top: 0, zIndex: 1 }">
+            <div class="auto-scroll">
+              <table class="ds-table ds-table--dense dashboard-panel__table--stretch">
+                <thead class="dashboard-panel__thead">
                   <tr>
-                    <th class="frozen frozen-last" :style="{ left: 0 }">合约</th>
+                    <th class="frozen frozen-last">合约</th>
                     <th>来源</th>
                     <th>账户</th>
                     <th>买卖</th>
@@ -670,20 +659,20 @@ onUnmounted(() => {
                 </thead>
                 <tbody>
                   <tr v-for="(ord, idx) in orders" :key="idx" :class="ord.rowClass">
-                    <td class="frozen frozen-last cell-text" :style="{ left: 0, fontWeight: 'var(--font-weight-medium)' }">
+                    <td class="frozen frozen-last cell-text dashboard-panel__cell-strong">
                       <span class="order-status-icon" :class="`order-status-icon--${ord.icon}`">{{ ord.icon === 'filled' ? '✓' : ord.icon === 'cancelled' ? '✗' : ord.icon === 'rejected' ? '✗' : '◷' }}</span>
                       {{ ord.contract }}
                     </td>
-                    <td class="cell-text" :style="{ color: 'var(--text-secondary)' }">{{ ord.source }}</td>
-                    <td class="cell-text" :style="{ color: 'var(--text-secondary)' }">{{ ord.account }}</td>
+                    <td class="cell-text cell-text--secondary">{{ ord.source }}</td>
+                    <td class="cell-text cell-text--secondary">{{ ord.account }}</td>
                     <td class="cell-text" :class="ord.direction === 'buy' ? 'trade-buy' : 'trade-sell'">{{ ord.direction === 'buy' ? '买入' : '卖出' }}</td>
                     <td class="cell-num">{{ ord.filled }}</td>
                     <td class="cell-num">{{ ord.price }}</td>
-                    <td class="cell-num" :style="{ color: ord.avgPrice === '--' ? 'var(--text-tertiary)' : 'inherit' }">{{ ord.avgPrice }}</td>
+                    <td class="cell-num" :class="ord.avgPrice === '--' ? 'cell-muted' : 'cell-inherit'">{{ ord.avgPrice }}</td>
                     <td class="cell-num">{{ ord.time }}</td>
                     <td class="cell-text">
-                      <span v-if="ord.tagClass" class="ds-tag" :class="ord.tagClass" :style="{ fontSize: '10px' }">{{ ord.tagText }}</span>
-                      <span v-else class="ds-tag" :style="{ fontSize: '10px', color: 'var(--text-tertiary)' }">{{ ord.tagText }}</span>
+                      <span v-if="ord.tagClass" class="ds-tag dashboard-panel__tag" :class="ord.tagClass">{{ ord.tagText }}</span>
+                      <span v-else class="ds-tag dashboard-panel__tag dashboard-panel__tag--muted">{{ ord.tagText }}</span>
                     </td>
                   </tr>
                 </tbody>
@@ -695,34 +684,31 @@ onUnmounted(() => {
 
       <!-- Vertical Splitter 2 (Left / Right) -->
       <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
-      <div class="splitter-v v-splitter-main" :style="{ width: '6px', cursor: 'col-resize', flexShrink: 0 }" @mousedown="onVSplitter2Down"></div>
+      <div class="splitter-v v-splitter-main" @mousedown="onVSplitter2Down"></div>
 
       <!-- Right Panel -->
-      <div ref="rightPanelEl" class="dashboard-right-panel" :style="{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }">
+      <div ref="rightPanelEl" class="dashboard-right-panel">
 
         <!-- Market Sources -->
-        <div class="dashboard-panel" :style="{ flex: `${marketFlex} 1 0%`, minHeight: '80px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }">
-          <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--bg-base-secondary)', flexShrink: 0 }">
-            <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">行情</span>
-            <span :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="已登录行情源/总行情源">{{ marketOnlineCount }}/{{ marketTotalCount }}</span>
+        <div class="dashboard-panel dashboard-panel--market" :style="{ flex: `${marketFlex} 1 0%` }">
+          <div class="dashboard-panel__hd">
+            <span class="dashboard-panel__title-text">行情</span>
+            <span class="dashboard-panel__aggregate" title="已登录行情源/总行情源">{{ marketOnlineCount }}/{{ marketTotalCount }}</span>
           </div>
-          <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column' }">
+          <div class="auto-scroll">
             <div
               v-for="(src, idx) in marketSourcesStore.sources" :key="src.source_name"
-              :style="{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: 'var(--spacer-8) var(--spacer-16)',
-                fontSize: 'var(--body-xs-font-size)', whiteSpace: 'nowrap',
-                borderTop: idx > 0 ? '1px solid var(--bg-base-secondary)' : 'none',
-              }"
+              class="dashboard-panel__row"
+              :class="{ 'dashboard-panel__row--divided': idx > 0 }"
             >
-              <div :style="{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: 0, overflow: 'hidden' }">
-                <div :style="{ fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }">{{ src.display_name }}</div>
-                <div :style="{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }">
+              <div class="dashboard-panel__row-body">
+                <div class="dashboard-panel__row-title">{{ src.display_name }}</div>
+                <div class="dashboard-panel__row-sub">
                   {{ src.source_name }} · 订阅 {{ src.subscribeCount }}/{{ src.subscribeTotal }}
                   <span
                     v-if="marketProcessStateText(src.process_state)"
-                    :style="{ color: processStateColor(src.process_state), marginLeft: '4px' }"
+                    class="dashboard-panel__row-state"
+                    :style="{ color: processStateColor(src.process_state) }"
                   >· {{ marketProcessStateText(src.process_state) }}</span>
                 </div>
               </div>
@@ -733,62 +719,56 @@ onUnmounted(() => {
 
         <!-- Splitter (Market / Strategy) -->
         <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
-        <div class="splitter-h market-strategy-splitter" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="startMarketDrag"></div>
+        <div class="splitter-h market-strategy-splitter" @mousedown="startMarketDrag"></div>
 
         <!-- Strategy List -->
-        <div class="dashboard-panel" :style="{ flex: `${strategyFlex} 1 0%`, minHeight: '80px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }">
-          <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--bg-base-secondary)', flexShrink: 0 }">
-            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)', minWidth: 0 }">
-              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">策略</span>
-              <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+        <div class="dashboard-panel dashboard-panel--strategy" :style="{ flex: `${strategyFlex} 1 0%` }">
+          <div class="dashboard-panel__hd">
+            <span class="dashboard-panel__title">
+              <span class="dashboard-panel__title-text">策略</span>
+              <span class="ds-tag ds-tag--warning dashboard-panel__tag" data-test="dashboard-demo-tag">演示</span>
             </span>
-            <span data-test="strategy-aggregate" :style="{ fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums', color: 'var(--text-tertiary)' }" title="正常运行策略/总策略数">{{ strategyAggregate }}</span>
+            <span data-test="strategy-aggregate" class="dashboard-panel__aggregate" title="正常运行策略/总策略数">{{ strategyAggregate }}</span>
           </div>
-          <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', fontSize: 'var(--body-xs-font-size)', fontVariantNumeric: 'tabular-nums' }">
+          <div class="auto-scroll">
             <div
               v-for="(strat, idx) in strategyList" :key="strat.id"
-              :style="{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: 'var(--spacer-8) var(--spacer-16)',
-                borderBottom: idx < strategyList.length - 1 ? '1px solid var(--bg-base-secondary)' : 'none',
-              }"
+              class="dashboard-panel__row"
+              :class="{ 'dashboard-panel__row--divided-bottom': idx < strategyList.length - 1 }"
             >
-              <div :style="{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: 0, overflow: 'hidden' }">
-                <div :style="{ fontWeight: 'var(--font-weight-medium)', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }">{{ strat.name }}</div>
-                <div :style="{ fontSize: '10px', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }">{{ strat.id }} · {{ strat.lang }}</div>
+              <div class="dashboard-panel__row-body">
+                <div class="dashboard-panel__row-title">{{ strat.name }}</div>
+                <div class="dashboard-panel__row-sub">{{ strat.id }} · {{ strat.lang }}</div>
               </div>
-              <span class="ds-tag" :class="strat.running ? 'ds-tag--success' : 'ds-tag--danger'" :style="{ fontSize: '10px', flexShrink: 0 }">{{ strat.running ? '运行中' : '已停止' }}</span>
+              <span class="ds-tag dashboard-panel__tag dashboard-panel__tag--fixed" :class="strat.running ? 'ds-tag--success' : 'ds-tag--danger'">{{ strat.running ? '运行中' : '已停止' }}</span>
             </div>
-            <div :style="{ padding: 'var(--spacer-8) var(--spacer-16)', fontSize: 'var(--body-xs-font-size)', color: 'var(--text-tertiary)', borderTop: '1px solid var(--bg-base-secondary)' }" data-test="strategy-footer">{{ strategyFooter }}</div>
+            <div class="dashboard-panel__footer" data-test="strategy-footer">{{ strategyFooter }}</div>
           </div>
         </div>
 
         <!-- Splitter (Strategy / Messages) -->
         <!-- eslint-disable-next-line vuejs-accessibility/no-static-element-interactions -- 拖拽把手，键盘等效交互走后续票 -->
-        <div class="splitter-h strategy-msg-splitter" :style="{ height: '6px', cursor: 'row-resize', flexShrink: 0, margin: 0 }" @mousedown="startStrategyMsgDrag"></div>
+        <div class="splitter-h strategy-msg-splitter" @mousedown="startStrategyMsgDrag"></div>
 
         <!-- Messages -->
-        <div class="dashboard-panel" :style="{ flex: `${msgFlex} 1 0%`, minHeight: '80px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }">
-          <div :style="{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: 'var(--spacer-8) var(--spacer-16)', background: 'var(--bg-card)', borderBottom: '1px solid var(--bg-base-secondary)', flexShrink: 0 }">
-            <span :style="{ display: 'flex', alignItems: 'center', gap: 'var(--spacer-6)' }">
-              <span :style="{ fontSize: 'var(--body-sm-font-size)', fontWeight: 'var(--font-weight-strong)', color: 'var(--text-default)' }">消息</span>
-              <span class="ds-tag ds-tag--warning" data-test="dashboard-demo-tag" :style="{ fontSize: '10px' }">演示</span>
+        <div class="dashboard-panel dashboard-panel--messages" :style="{ flex: `${msgFlex} 1 0%` }">
+          <div class="dashboard-panel__hd">
+            <span class="dashboard-panel__title">
+              <span class="dashboard-panel__title-text">消息</span>
+              <span class="ds-tag ds-tag--warning dashboard-panel__tag" data-test="dashboard-demo-tag">演示</span>
             </span>
-            <button type="button" :style="{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '0 4px', fontSize: 'var(--body-xs-font-size)', lineHeight: '20px' }" title="切换时间显示">n分钟前</button>
+            <button type="button" class="dashboard-panel__link-btn" title="切换时间显示">n分钟前</button>
           </div>
-          <div class="auto-scroll" :style="{ flex: 1, overflow: 'auto', fontSize: 'var(--body-xs-font-size)' }">
+          <div class="auto-scroll">
             <div
               v-for="(msg, idx) in messages" :key="idx"
-              :style="{
-                padding: 'var(--spacer-8) var(--spacer-16)',
-                borderBottom: idx < messages.length - 1 ? '1px solid var(--bg-base-secondary)' : 'none',
-                display: 'flex', alignItems: 'flex-start', gap: 'var(--spacer-10)',
-              }"
+              class="dashboard-panel__msg-row"
+              :class="{ 'dashboard-panel__row--divided-bottom': idx < messages.length - 1 }"
             >
               <span class="msg-level-icon" :class="`msg-level-icon--${msg.level}`"></span>
-              <div :style="{ minWidth: 0, flex: 1 }">
-                <div :style="{ color: 'var(--text-secondary)' }">{{ msg.text }}</div>
-                <div :style="{ color: 'var(--text-tertiary)', fontSize: '10px' }">{{ msg.time }} · {{ msg.source }}</div>
+              <div class="dashboard-panel__msg-body">
+                <div class="dashboard-panel__msg-text">{{ msg.text }}</div>
+                <div class="dashboard-panel__msg-meta">{{ msg.time }} · {{ msg.source }}</div>
               </div>
             </div>
           </div>

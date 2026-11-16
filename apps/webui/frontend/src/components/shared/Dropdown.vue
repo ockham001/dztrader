@@ -85,7 +85,7 @@ onUnmounted(() => {
         aria-hidden="true"
       ></span>
       <span class="ds-dropdown__trigger-label">{{ selectedLabel }}</span>
-      <span class="icon ds-dropdown__trigger-icon" data-icon :style="{ width: '16px', height: '16px', '--icon-url': `url('/icons/builtin/chevron_up_large.svg')` }" aria-hidden="true"></span>
+      <span class="icon ds-dropdown__trigger-icon" data-icon aria-hidden="true"></span>
     </button>
     <div class="ds-dropdown__menu" role="menu">
       <button
@@ -104,8 +104,27 @@ onUnmounted(() => {
           aria-hidden="true"
         ></span>
         <span class="ds-dropdown__item-label">{{ item.label }}</span>
-        <span class="icon ds-dropdown__item-check" data-icon :style="{ width: '14px', height: '14px', '--icon-url': `url('/icons/builtin/check.svg')` }" aria-hidden="true"></span>
+        <span class="icon ds-dropdown__item-check" data-icon aria-hidden="true"></span>
       </button>
     </div>
   </div>
 </template>
+
+<style scoped>
+/* #346：模板 :style 里的静态图标尺寸与图标地址归位。只搬运不改值。
+   宽度/高度沿用 .icon 的 --icon-size-16 基线；--icon-url 逐实例固定，故进类。
+   scoped 的 [data-v-*] 只提升特异性，不影响外部改写的值。 */
+.ds-dropdown__trigger-icon {
+  width: var(--icon-size-16);
+  height: var(--icon-size-16);
+
+  --icon-url: url('/icons/builtin/chevron_up_large.svg');
+}
+
+.ds-dropdown__item-check {
+  width: var(--icon-size-14);
+  height: var(--icon-size-14);
+
+  --icon-url: url('/icons/builtin/check.svg');
+}
+</style>

@@ -53,7 +53,6 @@ function onToggle(e: Event): void {
       'ds-switch--pending': pending,
       'ds-switch--disabled': disabled,
     }"
-    :style="{ cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1 }"
   >
     <input
       type="checkbox"
@@ -67,3 +66,13 @@ function onToggle(e: Event): void {
     </span>
   </label>
 </template>
+
+<style scoped>
+/* #346：禁用态光标与透明度原为内联三元（两个分支都是静态字面量 → 提为修饰类）。
+   .ds-switch--disabled 在 components.css 里没有定义（只有 --pending），故在此本地定义；
+   非禁用态走 .ds-switch 基础规则：cursor: pointer 已有，opacity 默认 1，计算值与原内联一致。 */
+.ds-switch--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+</style>

@@ -130,7 +130,7 @@ function handleSelectAll(event: Event): void {
       <table class="ds-table">
         <thead>
           <tr>
-            <th style="width: 40px">
+            <th class="log-control__col-check">
               <label class="ds-check ds-check--all">
                 <input
                   type="checkbox"
@@ -144,20 +144,20 @@ function handleSelectAll(event: Event): void {
               </label>
             </th>
             <th>进程名</th>
-            <th style="width: 100px">类型</th>
-            <th style="width: 120px">当前级别</th>
-            <th style="width: 200px">操作</th>
+            <th class="log-control__col-type">类型</th>
+            <th class="log-control__col-level">当前级别</th>
+            <th class="log-control__col-actions">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="store.processes.length === 0">
-            <td colspan="5" style="text-align: center; color: var(--text-tertiary); padding: var(--spacer-24)">
+            <td colspan="5" class="log-control__empty">
               暂无进程数据（等待 WebSocket 推送进程级别信息）
             </td>
           </tr>
           <tr v-for="proc in store.processes" :key="proc.name">
             <td>
-              <label v-if="!isStrategy(proc)" class="ds-check" :style="{ minHeight: 'auto' }">
+              <label v-if="!isStrategy(proc)" class="ds-check log-control__check">
                 <input
                   type="checkbox"
                   :aria-label="`选择进程 ${proc.name}`"
@@ -198,7 +198,7 @@ function handleSelectAll(event: Event): void {
                     :disabled="!isAdmin() || store.isProcessPending(proc.name)"
                     @click="handleFlush(proc)"
                   >
-                    <span v-if="store.isProcessPending(proc.name)" class="icon log-level__icon-spin" :style="{ width: '12px', height: '12px', display: 'inline-flex' }">
+                    <span v-if="store.isProcessPending(proc.name)" class="icon log-level__icon-spin">
                       <Icon name="Refresh" :size="12" />
                     </span>
                     <Icon v-else name="Refresh" :size="12" />
@@ -268,6 +268,33 @@ function handleSelectAll(event: Event): void {
   border-radius: var(--radius-12);
 }
 
+/* #346：原模板静态 style 属性的列宽/空态/勾选行高归位。 */
+.log-control__col-check {
+  width: 40px;
+}
+
+.log-control__col-type {
+  width: 100px;
+}
+
+.log-control__col-level {
+  width: 120px;
+}
+
+.log-control__col-actions {
+  width: 200px;
+}
+
+.log-control__empty {
+  text-align: center;
+  color: var(--text-tertiary);
+  padding: var(--spacer-24);
+}
+
+.log-control__check {
+  min-height: auto;
+}
+
 .log-control__actions {
   display: flex;
   align-items: center;
@@ -286,11 +313,17 @@ function handleSelectAll(event: Event): void {
   font-style: italic;
 }
 
-.log-level__icon-spin {
+/* #346：原模板内联的 width/height/display 归位（12px 压住 .icon 的 --icon-size-16 基线）。
+   该 span 在 .ds-btn 按钮内，同时命中 assets/css 的 `.ds-btn .icon`（0,2,0：inline-block +
+   16px）—— 只写单类会被打平，胜负取决于 CSS 加载顺序；原先内联样式必胜，这里用
+   .log-control__actions 后代限定提高到 (0,3,0) 保持确定性。 */
+.log-control__actions .log-level__icon-spin {
   animation: log-control-spin 0.6s linear infinite;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: var(--icon-size-12);
+  height: var(--icon-size-12);
 }
 
 /* Responsive */

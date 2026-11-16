@@ -142,27 +142,21 @@ async function saveWebui(): Promise<void> {
 </script>
 
 <template>
-  <div class="settings-view" style="flex:1;overflow-y:auto;padding:var(--spacer-24)">
+  <div class="settings-view">
     <div class="page-header">
-      <h1 :style="{
-        margin: 0,
-        fontSize: 'var(--heading-xl-font-size)',
-        lineHeight: 'var(--heading-xl-line-height)',
-        fontWeight: 'var(--heading-xl-font-weight)',
-        color: 'var(--text-default)',
-      }">系统设置</h1>
+      <h1 class="page-title">系统设置</h1>
     </div>
 
-    <div class="ds-tabs" style="margin-bottom:var(--spacer-16)">
+    <div class="ds-tabs settings-view__tabs">
       <button class="ds-tab" :class="{ 'is-active': tab === 'event' }" type="button" @click="tab = 'event'">事件通道</button>
       <button class="ds-tab" :class="{ 'is-active': tab === 'webui' }" type="button" @click="tab = 'webui'">WebUI</button>
       <button class="ds-tab" :class="{ 'is-active': tab === 'master' }" type="button" @click="tab = 'master'">主进程</button>
     </div>
 
     <!-- 事件通道 (契约 shm: page_size_mb 不可变; check_* 与 preload_points 可编辑, preload 内 null=删除) -->
-    <div v-if="tab === 'event'" class="ds-card" style="padding:var(--spacer-16);max-width:640px">
+    <div v-if="tab === 'event'" class="ds-card settings-view__card">
       <div class="ds-card__title">事件通道配置</div>
-      <div v-if="store.eventShmConfig" style="display:flex;flex-direction:column;gap:var(--spacer-12)">
+      <div v-if="store.eventShmConfig" class="settings-view__stack">
         <div class="cfg-row">
           <span class="cfg-label">页大小</span>
           <span>{{ store.eventShmConfig.page_size_mb }} MB</span>
@@ -170,15 +164,15 @@ async function saveWebui(): Promise<void> {
         </div>
         <div class="cfg-row">
           <label class="cfg-label" :for="fieldId('check-interval-min')">周期检查间隔(分)</label>
-          <div class="ds-input" style="width:120px"><input :id="fieldId('check-interval-min')" type="number" :value="store.eventShmConfig.check_interval_min" :disabled="store.eventShmPending" @blur="onCheckBlur('check_interval_min', $event)"></div>
+          <div class="ds-input settings-view__num"><input :id="fieldId('check-interval-min')" type="number" :value="store.eventShmConfig.check_interval_min" :disabled="store.eventShmPending" @blur="onCheckBlur('check_interval_min', $event)"></div>
         </div>
         <div class="cfg-row">
           <label class="cfg-label" :for="fieldId('check-pages')">检查预载页数</label>
-          <div class="ds-input" style="width:120px"><input :id="fieldId('check-pages')" type="number" :value="store.eventShmConfig.check_pages" :disabled="store.eventShmPending" @blur="onCheckBlur('check_pages', $event)"></div>
+          <div class="ds-input settings-view__num"><input :id="fieldId('check-pages')" type="number" :value="store.eventShmConfig.check_pages" :disabled="store.eventShmPending" @blur="onCheckBlur('check_pages', $event)"></div>
         </div>
         <div class="cfg-row">
           <label class="cfg-label" :for="fieldId('check-bytes')">检查预载字节</label>
-          <div class="ds-input" style="width:120px"><input :id="fieldId('check-bytes')" type="number" :value="store.eventShmConfig.check_bytes" :disabled="store.eventShmPending" @blur="onCheckBlur('check_bytes', $event)"></div>
+          <div class="ds-input settings-view__num"><input :id="fieldId('check-bytes')" type="number" :value="store.eventShmConfig.check_bytes" :disabled="store.eventShmPending" @blur="onCheckBlur('check_bytes', $event)"></div>
         </div>
         <div class="cfg-row">
           <span class="cfg-label">预加载点</span>
@@ -195,8 +189,7 @@ async function saveWebui(): Promise<void> {
               :disabled="store.eventShmPending" @blur="onPreloadBlur(time, 'bytes', $event)">
           </label>
           <button
-            class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"
-            style="margin-left: auto"
+            class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon settings-view__row-end"
             type="button"
             :disabled="store.eventShmPending"
             :title="`删除预加载点 ${time}`"
@@ -208,16 +201,16 @@ async function saveWebui(): Promise<void> {
         </div>
         <div v-if="preloadEntries.length === 0" class="cfg-row">
           <span class="cfg-label"></span>
-          <span style="color:var(--text-tertiary);font-size:var(--body-sm-font-size)">无预加载点</span>
+          <span class="settings-view__empty">无预加载点</span>
         </div>
       </div>
-      <div v-else style="color:var(--text-tertiary)">等待 WebSocket 推送事件通道配置（dztraderd 未启动时不可见）</div>
+      <div v-else class="settings-view__hint">等待 WebSocket 推送事件通道配置（dztraderd 未启动时不可见）</div>
     </div>
 
     <!-- WebUI (webui.json) -->
-    <div v-if="tab === 'webui'" class="ds-card" style="padding:var(--spacer-16);max-width:640px">
+    <div v-if="tab === 'webui'" class="ds-card settings-view__card">
       <div class="ds-card__title">WebUI 配置</div>
-      <div v-if="store.webui" style="display:flex;flex-direction:column;gap:var(--spacer-12)">
+      <div v-if="store.webui" class="settings-view__stack">
         <div class="cfg-row">
           <span class="cfg-label">监听地址</span>
           <span>{{ store.webui.server_listen }}:{{ store.webui.server_port }}</span>
@@ -230,11 +223,11 @@ async function saveWebui(): Promise<void> {
         </div>
         <div class="cfg-row">
           <label class="cfg-label" :for="fieldId('webui-token-ttl-sec')">Token 有效期(秒)</label>
-          <div class="ds-input" style="width:120px"><input :id="fieldId('webui-token-ttl-sec')" v-model.number="webuiForm.token_ttl_sec" type="number" min="60" max="604800" :disabled="webuiSaving"></div>
+          <div class="ds-input settings-view__num"><input :id="fieldId('webui-token-ttl-sec')" v-model.number="webuiForm.token_ttl_sec" type="number" min="60" max="604800" :disabled="webuiSaving"></div>
         </div>
         <div class="cfg-row">
           <label class="cfg-label" :for="fieldId('webui-notify-cache-size')">Notify 缓存条数</label>
-          <div class="ds-input" style="width:120px"><input :id="fieldId('webui-notify-cache-size')" v-model.number="webuiForm.notify_cache_size" type="number" min="0" max="1000000" :disabled="webuiSaving"></div>
+          <div class="ds-input settings-view__num"><input :id="fieldId('webui-notify-cache-size')" v-model.number="webuiForm.notify_cache_size" type="number" min="0" max="1000000" :disabled="webuiSaving"></div>
           <span class="ds-tag ds-tag--warning">重启后生效</span>
         </div>
         <div class="cfg-row">
@@ -252,13 +245,13 @@ async function saveWebui(): Promise<void> {
           <span v-if="!webuiDirty && !webuiSaving" class="webui-save-hint" data-test="webui-save-clean">无改动</span>
         </div>
       </div>
-      <div v-else style="color:var(--text-tertiary)">加载中...</div>
+      <div v-else class="settings-view__hint">加载中...</div>
     </div>
 
     <!-- 主进程 (只读) -->
-    <div v-if="tab === 'master'" class="ds-card" style="padding:var(--spacer-16);max-width:640px">
+    <div v-if="tab === 'master'" class="ds-card settings-view__card">
       <div class="ds-card__title">主进程配置（dztraderd）</div>
-      <div v-if="store.master" style="display:flex;flex-direction:column;gap:var(--spacer-12)">
+      <div v-if="store.master" class="settings-view__stack">
         <div class="cfg-row">
           <span class="cfg-label">停止超时(秒)</span>
           <span>{{ store.master.single_stop_timeout_sec }}</span>
@@ -275,11 +268,11 @@ async function saveWebui(): Promise<void> {
           <span class="cfg-label">元数据文件大小</span>
           <span>{{ formatBytes(store.master.meta_file_size) }}</span>
         </div>
-        <p style="margin:0;color:var(--text-tertiary);font-size:var(--body-sm-font-size)">
+        <p class="settings-view__note">
           以上项当前仅支持人工修改 dztraderd.json 后重启 dztraderd 生效；UI 可编辑能力规划中。
         </p>
       </div>
-      <div v-else style="color:var(--text-tertiary)">加载中...</div>
+      <div v-else class="settings-view__hint">加载中...</div>
     </div>
 
     <!-- ===== Add Preload Point Modal ===== -->
@@ -314,6 +307,15 @@ async function saveWebui(): Promise<void> {
 <style scoped>
 .page-header {
   margin-bottom: var(--spacer-24);
+}
+
+/* 页面主标题（原内联 heading-xl 三元组 + 去默认 margin） */
+.page-title {
+  margin: 0;
+  font-size: var(--heading-xl-font-size);
+  line-height: var(--heading-xl-line-height);
+  font-weight: var(--heading-xl-font-weight);
+  color: var(--text-default);
 }
 
 /* 配置行: 标签(固定宽) + 值/输入, 水平居中 */
@@ -364,4 +366,38 @@ async function saveWebui(): Promise<void> {
 
 /* #207 C1：无改动提示（与 SysmonConfigTab 的「无改动」同一形态） */
 .webui-save-hint { font-size: var(--body-sm-font-size); color: var(--text-tertiary); }
+
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+.settings-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacer-24);
+}
+.settings-view__tabs { margin-bottom: var(--spacer-16); }
+/* 各 Tab 的配置卡片：内边距 + 阅读宽度上限（原内联 style="padding:…;max-width:640px"） */
+.settings-view__card {
+  padding: var(--spacer-16);
+  max-width: 640px;
+}
+/* 配置项竖排容器（原内联 display:flex;flex-direction:column;gap:var(--spacer-12)） */
+.settings-view__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-12);
+}
+/* 数字输入框固定宽度（原内联 style="width:120px" ×4） */
+.settings-view__num { width: 120px; }
+/* 行内推到最右（原内联 style="margin-left:auto"） */
+.settings-view__row-end { margin-left: auto; }
+/* 三级灰提示文案（原内联 color:var(--text-tertiary)） */
+.settings-view__hint { color: var(--text-tertiary); }
+.settings-view__empty {
+  color: var(--text-tertiary);
+  font-size: var(--body-sm-font-size);
+}
+.settings-view__note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-sm-font-size);
+}
 </style>

@@ -90,7 +90,6 @@ function onBrokerFieldBlur(
       <label
         class="ds-radio broker-card__radio"
         :class="{ 'is-pending': src.brokerSelectPending }"
-        :style="{ minHeight: 'auto' }"
         :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''"
       >
         <input
@@ -193,9 +192,9 @@ function onBrokerFieldBlur(
 
   <!-- ===== Delete Broker Confirmation Modal (F-C1: 二次确认) ===== -->
   <Modal :open="brokerDeleteModalOpen" title="确认删除经纪商" @close="closeBrokerDeleteModal">
-    <div :style="{ color: 'var(--text-default)' }">
-      确认删除经纪商 <code class="mono" :style="{ fontWeight: 500 }">{{ brokerDeleteName }}</code> 吗？
-      <div :style="{ marginTop: 'var(--spacer-8)', color: 'var(--text-tertiary)', fontSize: 'var(--body-sm-font-size)' }">
+    <div class="confirm-message">
+      确认删除经纪商 <code class="mono confirm-message__code">{{ brokerDeleteName }}</code> 吗？
+      <div class="confirm-message__hint">
         删除后该经纪商的所有前置地址和登录字段将一并移除。若删除的是当前选中经纪商，选中将被置空。
       </div>
     </div>
@@ -247,7 +246,8 @@ function onBrokerFieldBlur(
 .broker-card__summary { font-size: var(--body-xs-font-size); color: var(--text-tertiary); }
 
 /* 当前选中 radio: 对齐头部行高, 避免撑高; disabled 态与 ds-check 一致(去掉 not-allowed 光标) */
-.broker-card__radio { flex-shrink: 0; }
+/* #346：min-height: auto 原为模板内联覆盖 .ds-check/.ds-radio 的默认 40px，归位到类 */
+.broker-card__radio { flex-shrink: 0; min-height: auto; }
 .broker-card__radio input:disabled + .ds-radio__dot { opacity: .5; }
 
 .broker-card__name {
@@ -309,5 +309,15 @@ function onBrokerFieldBlur(
 .login-field .ds-input input {
   font-family: var(--code-editor-font-family);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── #346：模板静态内联样式归位（只搬运不改值）── */
+/* 删除确认框正文（原内联 :style 静态声明） */
+.confirm-message { color: var(--text-default); }
+.confirm-message__code { font-weight: var(--font-weight-medium); }
+.confirm-message__hint {
+  margin-top: var(--spacer-8);
+  color: var(--text-tertiary);
+  font-size: var(--body-sm-font-size);
 }
 </style>

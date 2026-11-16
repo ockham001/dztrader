@@ -15,6 +15,8 @@ export default {
     // 注：插件的 `if (actual !== true) return` 要求 primary 必须为 true；
     // severity 用 secondary options 设置（P4-T1 曾为 warning 摸清存量）。
     'dz/token-literal': [true, { severity: 'error' }],
+    // #346：关闭模板 :style 旁路。存量已清零，直接 error（不走 #233 的 warning 过渡）。
+    'dz/no-inline-style-literal': [true, { severity: 'error' }],
     // 组件三层（P4 T4）：dz/no-ds-namespace 仅对 domain 目录生效（见底部 overrides）
 
     // ----- 标准规则收敛 -----

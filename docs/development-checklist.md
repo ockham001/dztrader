@@ -14,7 +14,7 @@
 | # | 动作 | 对应的自动化门禁（机器强制） |
 |---|------|------------------------------|
 | A1 | 新增/修改组件或 store | `npm run type-check`（Vue/TS 类型）；`npm run lint`（eslint 0 警告） |
-| A2 | 组件内写样式 | `npm run lint:css`：禁止裸色/字号/间距字面量（`dz/token-literal`）；禁止 domain 里重定义 `.ds-*`（`dz/no-ds-namespace`）；@media 宽度必须 ∈ 标准档（断点白名单，实际由 `breakpointWhitelist.spec.ts` 守）；`.css` 必须能被标准 CSS 解析器解析（语法错必红——`customSyntax` 只对 `**/*.vue` 生效；注释提前闭合由选择器类规则 + `themeTokens.spec.ts` 兜底） |
+| A2 | 组件内写样式 | `npm run lint:css`：禁止裸色/字号/间距字面量（`dz/token-literal`）；**模板里的静态样式同样禁止**（`dz/no-inline-style-literal`：`:style="{…}"` 里除逐实例计算的值外一律提为语义类，静态 `style="…"` 属性同样拦截，理由充分的个案用 `<!-- dz-allow-inline-style: 理由 -->` 豁免）；禁止 domain 里重定义 `.ds-*`（`dz/no-ds-namespace`）；@media 宽度必须 ∈ 标准档（断点白名单，实际由 `breakpointWhitelist.spec.ts` 守）；`.css` 必须能被标准 CSS 解析器解析（语法错必红——`customSyntax` 只对 `**/*.vue` 生效；注释提前闭合由选择器类规则 + `themeTokens.spec.ts` 兜底） |
 | A3 | 新增颜色/间距/圆角 | 先进 `design-tokens.css`/`theme.css` token，再引用 `var(--x)`；勿裸写。主题色 token 须三段对称（`.dark` 与 system token 集合相等且同值、`:root` 字面量 ⊆ 深色段、深色段 ⊆ `:root` 浅色基线、`var()` 别名目标三段均覆盖），由 `themeTokens.spec.ts` 守；**可读性**由 `tokenContrast.spec.ts` 守（显式声明的前景/背景 token 对须达各自最低对比度、`var(--x)` 不得悬空——新增会承载文字的 token 时要在该 spec 的 `CONTRAST_PAIRS` 加一行，不达标项进 `KNOWN_VIOLATIONS` 基线，基线外的缺陷与「修好却没删登记」都会红） |
 | A4 | 新增响应式布局 | 用 Tailwind 档断点（640/768/1024/1280）写 CSS @media，或行为分支用 `useBreakpoint`；勿造野断点 |
 | A5 | 新增操作（pending 流程） | 走领域 runner（`useOperation`）+ 在 `CLEAR_BY_RTN` 声明清理触点；勿手写分散清理 |
