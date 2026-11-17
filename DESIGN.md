@@ -17,6 +17,14 @@ colors:
   brand-violet: "#4B3FE3"
   brand-violet-hover: "#6A6FFF"
   brand-violet-active: "#3F31C6"
+  invert-light: "#262626"
+  invert-dark: "#E5E5E5"
+  overlay-l1: "rgba(115, 115, 115, 0.08)"
+  overlay-l2: "rgba(115, 115, 115, 0.12)"
+  overlay-l1-dark: "#d4d4d40a"
+  overlay-l2-dark: "#d4d4d40f"
+  card-light: "#F5F5F5"
+  card-dark: "#202020"
   rise-crimson: "#D4543E"
   fall-jade: "#2A9D5C"
   status-success: "#15A877"
@@ -105,13 +113,13 @@ spacing:
   "64": "64px"
 components:
   button-primary:
-    backgroundColor: "{colors.ink-strongest}"
+    backgroundColor: "{colors.invert-light}"
     textColor: "{colors.paper-base}"
     rounded: "{rounded.8}"
     padding: "0 14px"
     height: "28px"
   button-secondary:
-    backgroundColor: "{colors.paper-base}"
+    backgroundColor: "{colors.overlay-l1}"
     textColor: "{colors.ink-strongest}"
     rounded: "{rounded.8}"
     padding: "0 14px"
@@ -129,23 +137,23 @@ components:
     padding: "0 14px"
     height: "28px"
   input:
-    backgroundColor: "{colors.paper-base}"
+    backgroundColor: "{colors.overlay-l1}"
     textColor: "{colors.ink-strongest}"
     rounded: "{rounded.8}"
     padding: "0 14px"
     height: "32px"
   card:
-    backgroundColor: "{colors.paper-secondary}"
+    backgroundColor: "{colors.card-light}"
     textColor: "{colors.ink-strongest}"
     rounded: "{rounded.12}"
     padding: "24px"
   panel:
-    backgroundColor: "{colors.paper-secondary}"
+    backgroundColor: "{colors.card-light}"
     textColor: "{colors.ink-strongest}"
     rounded: "{rounded.12}"
     padding: "0"
   tag:
-    backgroundColor: "{colors.paper-tertiary}"
+    backgroundColor: "{colors.overlay-l2}"
     textColor: "{colors.ink-secondary}"
     rounded: "{rounded.8}"
     padding: "0 10px"
@@ -292,10 +300,18 @@ The `1px → 2px` focus and the 8/12 pairing are the entire form language. There
 ### Cards / Panels
 
 - **Corner Style:** 12px.
-- **Background:** Paper-secondary, one step off the page.
+- **Background:** `--bg-base-secondary` for cards; dashboard panels use `--bg-card`, which differs from it (light `#F5F5F5` vs `#F5F5F5` — same; dark `#202020` vs `#262626` — panels are *darker* than cards).
 - **Shadow Strategy:** See Elevation — edge shadow on panels, none on static cards.
 - **Border:** 1px hairline.
 - **Internal Padding:** 24px for cards; panels use per-region padding of 8–16px with a distinct 8px/16px header row separated by a hairline.
+
+### Dialogs / Drawers
+
+- **Shape:** 12px radius, max-width 520px (form variant 560px) or 360px for the drawer; `max-height: calc(100vh - 48px)` with a scrolling body so the header and footer stay pinned.
+- **Background:** `--bg-base-secondary` for dialogs, `--bg-base-default` for drawers — the drawer sits a step lighter than a dialog on purpose.
+- **Elevation:** the dialog shadow step (24px/64px ink at 14%, plus a 4px/16px contact shadow).
+- **Structure:** header and footer are separated by spacing only — neither gets a `border-bottom`/`border-top`, which is why the dialog reads as one surface rather than three stacked bands.
+- **Scrim:** `.modal-overlay` is a `color-mix()` tint of the page ground at 60% plus `backdrop-filter: blur(4px)`, so the page dissolves rather than simply dimming.
 
 ### Inputs / Fields
 
@@ -312,6 +328,8 @@ The `1px → 2px` focus and the 8/12 pairing are the entire form language. There
 ### Status Indicator (signature)
 
 The system's most-used custom component: a single inline chip that renders one of four states (`idle` / `loading` / `done` / `indeterminate`) from a `current`/`max` progress pair. Colour encodes state, but the component always carries text — "已登录", "登录中", "未登录" — so the state survives greyscale, colour-blindness, and a screenshot pasted into a chat. When the range is indeterminate it animates a bar back and forth rather than guessing a percentage.
+
+**Known contrast debt (recorded, not fixed):** the `done` and `idle` badges paint `-status-*-default` text on a 12% `-surface-l1` ground of the same hue — measured 2.74:1 and 3.34:1 against the composited background, both under 4.5:1. The tag component solved this with the paired `-on-surface` step (which reaches ~5.8:1), but the status indicator was never migrated. This is the system's clearest existing accessibility gap and is tracked separately; **do not** copy the status indicator's colour pairing into new components — copy the tag's.
 
 ### Tables
 

@@ -126,39 +126,48 @@
     "typographyMeta": {
       "display": {
         "displayName": "Display",
-        "purpose": "Pre-authentication surfaces only (login title, about screen). Never inside the app shell."
+        "purpose": "**Unused.** Defined in the scale but consumed nowhere in the codebase. The largest type actually rendered is 48px (About dialog). Do not start using it without a deliberate decision.",
+        "mapsTo": "--heading-display-* (52px) / --heading-display-sm-* (40px)"
       },
       "headline-md": {
         "displayName": "Headline",
-        "purpose": "Page-level headings."
+        "purpose": "Page-level headings.",
+        "mapsTo": "--heading-md-* / --heading-lg-* / --heading-xl-* / --heading-2xl-* / --heading-3xl-*"
       },
       "title-sm": {
         "displayName": "Title",
-        "purpose": "Panel, card, and dialog titles."
+        "purpose": "Panel, card, and dialog titles.",
+        "mapsTo": "--heading-sm-*"
       },
       "body-base": {
         "displayName": "Body",
-        "purpose": "Default reading size for dialogs, forms, and table cells."
+        "purpose": "Default reading size for dialogs, forms, and table cells.",
+        "mapsTo": "--body-base-*"
       },
       "body-sm": {
         "displayName": "Small Body",
-        "purpose": "Panel sub-labels, meta rows, compact tags."
+        "purpose": "Panel sub-labels, meta rows, compact tags.",
+        "mapsTo": "--body-sm-*"
       },
       "body-xs": {
         "displayName": "Micro",
-        "purpose": "Topbar chrome, timestamps, status badges, count pills."
+        "purpose": "Topbar chrome, timestamps, status badges, count pills.",
+        "mapsTo": "--body-xs-*"
       },
       "label-md": {
         "displayName": "Label",
-        "purpose": "Form labels, table headers, button text at body scale."
+        "purpose": "Form labels, table headers, button text at body scale.",
+        "mapsTo": "--body-md-* (note: token weight is 400 for the regular step; the 500 here refers to --body-md-strong-* / --font-weight-medium usage in labels and table headers)"
       },
       "metric": {
         "displayName": "Metric",
-        "purpose": "Counts and percentages in narrow chrome. Always tabular."
+        "purpose": "Counts and percentages in narrow chrome. Always tabular.",
+        "mapsTo": "--font-family-metric + --body-xs-* (metric face at micro size)"
       },
       "code": {
         "displayName": "Mono",
-        "purpose": "Codes, IDs, prices, numeric table cells. Always tabular."
+        "purpose": "Codes, IDs, prices, numeric table cells. Always tabular.",
+        "mapsTo": "--code-editor-* / --code-terminal-*"
       }
     },
     "shadows": [
@@ -295,7 +304,7 @@
       "refersTo": "input",
       "description": "32px field on an overlay ground. Focus thickens the border instead of changing the fill.",
       "html": "<div class=\"ds-input\"><input type=\"text\" placeholder=\"请输入用户名\" /></div>",
-      "css": ".ds-input { display:flex; align-items:center; gap:var(--spacer-8); min-height:32px; padding:0 var(--spacer-12); background:var(--bg-overlay-l1); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-8); color:var(--text-default); width:100%; font-family:var(--body-base-font-family); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); } .ds-input:focus-within { border-color:var(--border-neutral-l3); background:var(--bg-overlay-l1); border-width:2px; } .ds-input input { flex:1; background:transparent; border:none; outline:none; color:var(--text-default); font:inherit; min-width:0; } .ds-input input::placeholder { color:var(--text-tertiary); } .ds-input.is-error { border-color:var(--status-error-default); }"
+      "css": ".ds-input { display:flex; align-items:center; gap:var(--spacer-8); min-height:32px; padding:0 var(--spacer-12); background:var(--bg-overlay-l1); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-8); color:var(--text-default); width:100%; box-sizing:border-box; font-family:var(--body-base-font-family); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); } .ds-input:focus-within { border-color:var(--border-neutral-l3); background:var(--bg-overlay-l1); border-width:2px; } .ds-input input { flex:1; background:transparent; border:none; outline:none; color:var(--text-default); font:inherit; min-width:0; } .ds-input input::placeholder { color:var(--text-tertiary); } .ds-input.is-error { border-color:var(--status-error-default); }"
     },
     {
       "name": "Card",
@@ -303,15 +312,15 @@
       "refersTo": "card",
       "description": "Generic content container, one tonal step off the page.",
       "html": "<div class=\"ds-card\"><div class=\"ds-card__title\">账户概览</div><div class=\"ds-card__desc\">共 3 个已登记账户</div></div>",
-      "css": ".ds-card { background:var(--bg-base-secondary); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); padding:var(--spacer-20); color:var(--text-default); } .ds-card__title { font-size:var(--heading-sm-font-size); line-height:var(--heading-sm-line-height); font-weight:var(--heading-sm-font-weight); margin-bottom:var(--spacer-8); } .ds-card__desc { font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); color:var(--text-secondary); }"
+      "css": ".ds-card { background:var(--bg-base-secondary); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); padding:var(--spacer-20); color:var(--text-default);  box-sizing:border-box; } .ds-card__title { font-size:var(--heading-sm-font-size); line-height:var(--heading-sm-line-height); font-weight:var(--heading-sm-font-weight); margin-bottom:var(--spacer-8); } .ds-card__desc { font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); color:var(--text-secondary); }"
     },
     {
       "name": "Dashboard Panel",
       "kind": "card",
       "refersTo": "panel",
       "description": "The dashboard's structural unit: flat on the page, hairline border, distinct header band.",
-      "html": "<div class=\"panel\"><div class=\"panel__hd\"><span class=\"panel__title\">持仓</span><span class=\"panel__meta\">8/8</span></div><div class=\"panel__body\">内容区</div></div>",
-      "css": ".panel { display:flex; flex-direction:column; border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); background:var(--bg-card); box-shadow:0 1px 3px color-mix(in srgb, var(--text-default) 6%, transparent); overflow:hidden; min-height:80px; } .panel__hd { display:flex; align-items:center; justify-content:space-between; padding:var(--spacer-8) var(--spacer-16); background:var(--bg-card); border-bottom:1px solid var(--border-neutral-l1); flex-shrink:0; } .panel__title { font-size:var(--body-sm-font-size); font-weight:var(--font-weight-strong); color:var(--text-default); } .panel__meta { font-size:var(--font-size-10); color:var(--text-tertiary); } .panel__body { padding:var(--spacer-8) var(--spacer-16); color:var(--text-secondary); font-size:var(--body-base-font-size); }"
+      "html": "<div class=\"ds-dashboard-panel\"><div class=\"ds-dashboard-panel__hd\"><span class=\"ds-dashboard-panel__title\">持仓</span><span class=\"ds-dashboard-panel__meta\">8/8</span></div><div class=\"ds-dashboard-panel__body\">内容区</div></div>",
+      "css": ".ds-dashboard-panel { display:flex; flex-direction:column; border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); background:var(--bg-card); box-shadow:0 1px 3px color-mix(in srgb, var(--text-default) 6%, transparent); overflow:hidden; min-height:80px; box-sizing:border-box; } .ds-dashboard-panel__hd { display:flex; align-items:center; justify-content:space-between; padding:var(--spacer-8) var(--spacer-16); background:var(--bg-card); border-bottom:1px solid var(--border-neutral-l1); flex-shrink:0; } .ds-dashboard-panel__title { font-size:var(--body-sm-font-size); font-weight:var(--font-weight-strong); color:var(--text-default); } .ds-dashboard-panel__meta { font-size:var(--font-size-10); color:var(--text-tertiary); } .ds-dashboard-panel__body { padding:var(--spacer-8) var(--spacer-16); color:var(--text-secondary); font-size:var(--body-base-font-size); }"
     },
     {
       "name": "Status Tag",
@@ -319,39 +328,39 @@
       "refersTo": "tag",
       "description": "22px chip. Status variants pair a -surface ground with its matching -on-surface label.",
       "html": "<div style=\"display:flex;gap:var(--spacer-8);flex-wrap:wrap\"><span class=\"ds-tag\">中性</span><span class=\"ds-tag ds-tag--success\">已登录</span><span class=\"ds-tag ds-tag--warning\">未登录</span><span class=\"ds-tag ds-tag--danger\">已停止</span><span class=\"ds-tag ds-tag--brand\">admin</span></div>",
-      "css": ".ds-tag { display:inline-flex; align-items:center; gap:var(--spacer-4); height:22px; padding:0 var(--spacer-8); border-radius:var(--radius-8); font-size:var(--body-sm-font-size); line-height:var(--body-sm-line-height); background:var(--bg-overlay-l2); color:var(--text-secondary); border:1px solid var(--border-neutral-l1); } .ds-tag--brand { background:var(--bg-brand-popup); color:var(--text-brand); } .ds-tag--success { background:var(--status-success-surface-l1); color:var(--status-success-on-surface); } .ds-tag--warning { background:var(--status-warning-surface-l1); color:var(--status-warning-on-surface); } .ds-tag--danger { background:var(--status-error-surface-l1); color:var(--status-error-on-surface); }"
+      "css": ".ds-tag { display:inline-flex; align-items:center; gap:var(--spacer-4); height:22px; padding:0 var(--spacer-8); border-radius:var(--radius-8); font-size:var(--body-sm-font-size); line-height:var(--body-sm-line-height); background:var(--bg-overlay-l2); color:var(--text-secondary); border:1px solid var(--border-neutral-l1);  box-sizing:border-box; } .ds-tag--brand { background:var(--bg-brand-popup); color:var(--text-brand); } .ds-tag--success { background:var(--status-success-surface-l1); color:var(--status-success-on-surface); } .ds-tag--warning { background:var(--status-warning-surface-l1); color:var(--status-warning-on-surface); } .ds-tag--danger { background:var(--status-error-surface-l1); color:var(--status-error-on-surface); }"
     },
     {
       "name": "Status Indicator",
       "kind": "custom",
       "refersTo": null,
       "description": "Signature component: one inline chip for idle/loading/done/indeterminate, always carrying text so state survives greyscale.",
-      "html": "<div style=\"display:flex;gap:var(--spacer-8);flex-wrap:wrap;align-items:center\"><span class=\"st st--done\">已登录</span><span class=\"st st--idle\">未登录</span><span class=\"st st--busy\">登录中 <span class=\"st__bar\"><span class=\"st__fill\"></span></span></span></div>",
-      "css": ".st { display:inline-flex; align-items:center; gap:var(--spacer-6); font-size:var(--body-xs-font-size); line-height:1.6; padding:var(--spacer-1) var(--spacer-8); border-radius:var(--radius-8); white-space:nowrap; } .st--done { background:var(--status-success-surface-l1); color:var(--status-success-on-surface); } .st--idle { background:var(--status-error-surface-l1); color:var(--status-error-on-surface); } .st--busy { color:var(--status-primary-on-surface); } .st__bar { display:inline-block; width:56px; height:3px; border-radius:var(--radius-full); background:var(--bg-overlay-l2); overflow:hidden; } .st__fill { display:block; width:60%; height:100%; background:var(--status-primary-default); border-radius:var(--radius-full); }"
+      "html": "<div style=\"display:flex;gap:var(--spacer-8);flex-wrap:wrap;align-items:center\"><span class=\"ds-status\"><span class=\"ds-status__text ds-status__text--done\">已登录</span></span><span class=\"ds-status\"><span class=\"ds-status__text ds-status__text--idle\">未登录</span></span><span class=\"ds-status\"><span class=\"ds-status__progress-text\">登录中</span></span></div>",
+      "css": ".ds-status { display:inline-flex; align-items:center; font-size:var(--body-xs-font-size); flex-shrink:0; } .ds-status__text { font-size:var(--body-xs-font-size); white-space:nowrap; padding:var(--spacer-1) var(--spacer-8); border-radius:var(--radius-8); line-height:1.6; } .ds-status__text--done { color:var(--status-success-default); background:var(--status-success-surface-l1); } .ds-status__text--idle { color:var(--status-error-default); background:var(--status-error-surface-l1); } .ds-status__progress-text { font-size:var(--font-size-10); white-space:nowrap; color:var(--text-secondary); }"
     },
     {
       "name": "Data Table",
       "kind": "custom",
       "refersTo": null,
       "description": "Dense table with hairline row separators; numeric columns right-aligned in tabular mono.",
-      "html": "<table class=\"tbl\"><thead><tr><th>合约</th><th class=\"num\">持仓</th><th class=\"num\">差异</th></tr></thead><tbody><tr><td>zz2601</td><td class=\"num\">5</td><td class=\"num rise\">+3</td></tr><tr><td>yy2601</td><td class=\"num\">-1</td><td class=\"num fall\">-2</td></tr></tbody></table>",
-      "css": ".tbl { width:100%; border-collapse:collapse; } .tbl th, .tbl td { text-align:left; vertical-align:middle; padding:var(--spacer-8) var(--spacer-8); border-bottom:1px solid var(--border-neutral-l1); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); white-space:nowrap; } .tbl th { color:var(--text-tertiary); font-weight:var(--font-weight-medium); font-size:var(--body-md-font-size); text-transform:uppercase; } .tbl td { color:var(--text-secondary); } .tbl td:first-child { color:var(--text-default); } .tbl tr:last-child td { border-bottom:none; } .tbl .num { text-align:right; font-family:var(--code-editor-font-family); font-variant-numeric:tabular-nums; } .tbl .rise { color:var(--color-rise); } .tbl .fall { color:var(--color-fall); }"
+      "html": "<table class=\"ds-table\"><thead><tr><th>合约</th><th class=\"num\">持仓</th><th class=\"num\">差异</th></tr></thead><tbody><tr><td>zz2601</td><td class=\"num\">5</td><td class=\"num diff-pos\">+3</td></tr><tr><td>yy2601</td><td class=\"num\">-1</td><td class=\"num diff-neg\">-2</td></tr></tbody></table>",
+      "css": ".ds-table { width:100%; border-collapse:collapse; } .ds-table th, .ds-table td { text-align:left; vertical-align:middle; padding:var(--spacer-16) var(--spacer-8); border-bottom:1px solid var(--border-neutral-l1); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); white-space:nowrap; } .ds-table th { padding-top:var(--spacer-8); padding-bottom:var(--spacer-12); color:var(--text-tertiary); font-weight:var(--font-weight-medium); font-size:var(--body-md-font-size); text-transform:uppercase; } .ds-table td { color:var(--text-secondary); } .ds-table td:first-child { color:var(--text-default); } .ds-table tr:last-child td { border-bottom:none; } .ds-table .num { text-align:right; font-family:var(--code-editor-font-family); font-variant-numeric:tabular-nums; } .ds-table .diff-pos { color:var(--color-rise); } .ds-table .diff-neg { color:var(--color-fall); }"
     },
     {
       "name": "Dialog",
       "kind": "custom",
       "refersTo": null,
       "description": "Modal on a blurred scrim; header and footer are separated by spacing, not rules.",
-      "html": "<div style=\"background:var(--bg-base-default);padding:12px;display:flex;justify-content:center;width:100%;box-sizing:border-box\"><div class=\"dlg\"><div class=\"dlg__hd\"><span class=\"dlg__title\">新建账户</span><button class=\"dlg__close\" aria-label=\"关闭\">×</button></div><div class=\"dlg__body\">填写账户信息后保存。</div><div class=\"dlg__foot\"><button class=\"ds-btn ds-btn--secondary\">取消</button><button class=\"ds-btn ds-btn--primary\">保存</button></div></div></div>",
-      "css": ".dlg { background:var(--bg-base-secondary); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); width:100%; max-width:100%; display:flex; flex-direction:column; overflow:hidden; color:var(--text-default); box-shadow:0 24px 64px color-mix(in srgb, var(--text-default) 14%, transparent), 0 4px 16px color-mix(in srgb, var(--text-default) 8%, transparent); } .dlg__hd { padding:var(--spacer-16) var(--spacer-20); display:flex; align-items:center; justify-content:space-between; } .dlg__title { font-size:var(--heading-sm-font-size); font-weight:var(--heading-sm-font-weight); } .dlg__close { width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--icon-secondary); cursor:pointer; border-radius:var(--radius-8); font-size:18px; } .dlg__close:hover { background:var(--bg-overlay-l2); color:var(--icon-default); } .dlg__body { padding:var(--spacer-16) var(--spacer-20); color:var(--text-secondary); font-size:var(--body-base-font-size); } .dlg__foot { padding:var(--spacer-12) var(--spacer-20); display:flex; justify-content:flex-end; gap:var(--spacer-8); } .ds-btn { display:inline-flex; align-items:center; justify-content:center; height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; font-size:var(--body-base-strong-font-size); font-weight:var(--body-base-strong-font-weight); } .ds-btn--primary { background:var(--bg-invert); color:var(--bg-base-default); border-color:var(--bg-invert); } .ds-btn--secondary { background:var(--bg-overlay-l1); color:var(--text-default); border-color:var(--border-neutral-l1); }"
+      "html": "<div style=\"background:var(--bg-base-default);padding:12px;display:flex;justify-content:center;width:100%;box-sizing:border-box\"><div class=\"ds-dialog\"><div class=\"ds-dialog__head\"><span class=\"ds-dialog__title\">新建账户</span><button class=\"ds-dialog__close\" aria-label=\"关闭\">×</button></div><div class=\"ds-dialog__body\">填写账户信息后保存。</div><div class=\"ds-dialog__foot\"><button class=\"ds-btn ds-btn--secondary\">取消</button><button class=\"ds-btn ds-btn--primary\">保存</button></div></div></div>",
+      "css": ".ds-dialog { background:var(--bg-base-secondary); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); width:100%; max-width:100%; box-sizing:border-box; display:flex; flex-direction:column; overflow:hidden; color:var(--text-default); box-shadow:0 24px 64px color-mix(in srgb, var(--text-default) 14%, transparent), 0 4px 16px color-mix(in srgb, var(--text-default) 8%, transparent); } .ds-dialog__head { padding:var(--spacer-16) var(--spacer-20); display:flex; align-items:center; justify-content:space-between; flex-shrink:0; } .ds-dialog__title { font-size:var(--heading-sm-font-size); line-height:var(--heading-sm-line-height); font-weight:var(--heading-sm-font-weight); color:var(--text-default); } .ds-dialog__close { width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--icon-secondary); cursor:pointer; border-radius:var(--radius-8); font-size:18px; } .ds-dialog__close:hover { background:var(--bg-overlay-l2); color:var(--icon-default); } .ds-dialog__body { padding:var(--spacer-16) var(--spacer-20); color:var(--text-secondary); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); } .ds-dialog__foot { padding:var(--spacer-12) var(--spacer-20); display:flex; justify-content:flex-end; gap:var(--spacer-8); flex-shrink:0; } .ds-btn { display:inline-flex; align-items:center; justify-content:center; height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; font-size:var(--body-base-strong-font-size); font-weight:var(--body-base-strong-font-weight); box-sizing:border-box; } .ds-btn--primary { background:var(--bg-invert); color:var(--bg-base-default); border-color:var(--bg-invert); } .ds-btn--secondary { background:var(--bg-overlay-l1); color:var(--text-default); border-color:var(--border-neutral-l1); }"
     },
     {
       "name": "Sidebar Navigation",
       "kind": "nav",
       "refersTo": null,
       "description": "220px sticky column (56px collapsed rail). Active state is a filled overlay pill, not a left bar.",
-      "html": "<nav style=\"width:220px;background:var(--bg-base-default);border-right:1px solid var(--border-neutral-l1);padding:var(--spacer-10);display:flex;flex-direction:column;gap:var(--spacer-2)\"><a class=\"nav nav--active\" href=\"#\">仪表盘</a><a class=\"nav\" href=\"#\">行情源</a><a class=\"nav\" href=\"#\">交易账户</a><a class=\"nav\" href=\"#\">资源监控</a></nav>",
-      "css": ".nav { display:flex; align-items:center; gap:var(--spacer-10); min-height:32px; padding:0 var(--spacer-10); border-radius:var(--radius-8); color:var(--text-secondary); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); text-decoration:none; white-space:nowrap; transition:background .12s ease; } .nav:hover { background:var(--bg-overlay-l1); color:var(--text-default); } .nav--active { background:var(--bg-overlay-l2); color:var(--text-default); }"
+      "html": "<nav style=\"width:220px;background:var(--bg-base-default);border-right:1px solid var(--border-neutral-l1);padding:var(--spacer-10);display:flex;flex-direction:column;gap:var(--spacer-2)\"><a class=\"nav-link nav-link--active\" href=\"#\">仪表盘</a><a class=\"nav-link\" href=\"#\">行情源</a><a class=\"nav-link\" href=\"#\">交易账户</a><a class=\"nav-link\" href=\"#\">资源监控</a></nav>",
+      "css": ".nav-link { display:flex; align-items:center; gap:var(--spacer-10); min-height:32px; padding:0 var(--spacer-10); border-radius:var(--radius-8); color:var(--text-secondary); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); text-decoration:none; white-space:nowrap; overflow:hidden; transition:background .12s ease, color .12s ease; box-sizing:border-box; } .nav-link:not(.nav-link--active):hover { background:var(--bg-overlay-l1); color:var(--text-default); } .nav-link--active { background:var(--bg-overlay-l2); color:var(--text-default); }"
     }
   ],
   "narrative": {
