@@ -76,7 +76,7 @@ WebUI 存在的理由**不是**提供交易终端，而是**让操作者在不�
 
 **技术约束（设计必须遵守）**：
 
-- 前端所有颜色 / 间距 / 圆角必须走设计 token，禁止 CSS 字面量；模板 `:style` 不得写静态样式；`.ds-*` 命名空间只在组件层定义。三条均由自定义 stylelint 插件机械强制
+- 前端所有颜色 / 间距 / 圆角必须走设计 token，禁止 CSS 字面量；模板 `:style` 不得写静态样式；`.ds-*` 命名空间只在组件层定义。前两条由自定义 stylelint 插件全量强制；第三条（`dz/no-ds-namespace`）目前只对 `src/components/marketSources/**` 与 `src/components/logs/**` 启用，其余目录仍在人工约束范围
 - 改前端后必须走 `./scripts/build.sh`（禁止 `npm run build`），UI 只在 `http://localhost:8080` 验收
 - 深浅色是同等需求（light / dark / system 三态），不是可选皮肤
 
@@ -85,7 +85,7 @@ WebUI 存在的理由**不是**提供交易终端，而是**让操作者在不�
 ## Brand Commitments
 
 - 产品名 **DZTrader**（`<title>` 与侧边栏品牌字均为此写法）
-- 品牌标识 `public/icons/builtin/DZ-Bolt.svg`（闪电）—— 既有资产，不重新设计
+- 品牌标识 `apps/webui/frontend/public/icons/builtin/DZ-Bolt.svg`（紫色圆角底 + 白色块状 T）—— 既有资产，不重新设计
 - 品牌色为紫色基底 `--bg-brand`，配套 `--brand-50` … `--brand-700` 色阶。用途被现有规则限定：**品牌标识、登录按钮、admin 角色徽章**；不用于普通按钮、开关、通用标签
 - 界面语言为**简体中文**；日志与异常文本按仓库约定为英文、小写开头
 
@@ -108,6 +108,6 @@ WebUI 存在的理由**不是**提供交易终端，而是**让操作者在不�
 
 ## Accessibility & Inclusion
 
-- 触摸设备需可用（iPad 是明确目标设备之一）：现有 `@media (pointer: coarse)` 已将点击目标放大到 ≥44px
+- 触摸设备需可用（iPad 是明确目标设备之一）：组件库在 `@media (pointer: coarse)` 下把按钮 / 页签 / 菜单项 / 输入框 / 勾选框的点击目标放大到 ≥44px。**注意覆盖不完整**——`.nav-link` 的 44px 只在 `<768px` 的媒体块内生效，横屏 iPad（1024）等桌面触摸尺寸不命中，适配新界面时需自行补齐
 - 深浅色需同等可用；长时间盯盘是真实场景，暗色不是装饰
 - 状态不得仅靠颜色区分；现有实现中状态均带文字或图标，新增设计必须延续

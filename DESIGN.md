@@ -23,8 +23,12 @@ colors:
   overlay-l2: "rgba(115, 115, 115, 0.12)"
   overlay-l1-dark: "#d4d4d40a"
   overlay-l2-dark: "#d4d4d40f"
-  card-light: "#F5F5F5"
-  card-dark: "#202020"
+  on-invert-light: "#FFFFFF"
+  on-invert-dark: "#171717"
+  surface-card-light: "#F5F5F5"
+  surface-card-dark: "#262626"
+  surface-panel-light: "#F5F5F5"
+  surface-panel-dark: "#202020"
   rise-crimson: "#D4543E"
   fall-jade: "#2A9D5C"
   status-success: "#15A877"
@@ -114,7 +118,7 @@ spacing:
 components:
   button-primary:
     backgroundColor: "{colors.invert-light}"
-    textColor: "{colors.paper-base}"
+    textColor: "{colors.on-invert-light}"
     rounded: "{rounded.8}"
     padding: "0 14px"
     height: "28px"
@@ -143,12 +147,12 @@ components:
     padding: "0 14px"
     height: "32px"
   card:
-    backgroundColor: "{colors.card-light}"
+    backgroundColor: "{colors.surface-card-light}"
     textColor: "{colors.ink-strongest}"
     rounded: "{rounded.12}"
     padding: "24px"
   panel:
-    backgroundColor: "{colors.card-light}"
+    backgroundColor: "{colors.surface-panel-light}"
     textColor: "{colors.ink-strongest}"
     rounded: "{rounded.12}"
     padding: "0"
@@ -172,7 +176,7 @@ The register is deliberately generic — neutral system UI, no brand gesture, no
 
 Depth is nearly absent. Panels sit flat on the page separated by hairlines; elevation is reserved for things that float above the document (menus, dialogs, tooltips) and therefore need to be distinguishable from it. Typography carries hierarchy instead of size jumps and drop shadows: a 13px semibold and a 15px regular read as clearly different ranks when everything around them is 11–12px.
 
-Color is spent carefully and only on state. The chrome is achromatic on purpose so that the four chromatic families that do appear — brand violet, rise/fall, the four status hues, and one contract gold — each mean exactly one thing. When the whole interface is grey, a single amber cell is unmissable.
+Color is spent carefully and only on state. The chrome is achromatic on purpose so that the chromatic families that do appear — brand violet, rise/fall, and the five status hues — each mean exactly one thing. When the whole interface is grey, a single amber cell is unmissable.
 
 **Key Characteristics:**
 - Neutral system UI stack; no brand typeface, no expressive chrome
@@ -193,8 +197,8 @@ A near-achromatic grey spine, with four saturated families allowed to speak: bra
 ### Secondary
 
 - **Rise Crimson** (#D4543E) and **Fall Jade** (#2A9D5C): Direction of change. **Red is up, green is down** — Chinese futures convention, the inverse of the Western default. This is a domain invariant, not a palette preference. Applied to position deltas, trade side, and P&L; never to decoration.
-- **Status hues** — Success `#15A877`, Alert `#FEA900`, Warning `#E27900`, Error `#E8463A`, Primary `#2F74FF`: Process and connection state. Each ships a three-step surface ramp (`-surface-l1/l2/l3` at 12%/18%/36% alpha) for tag and badge backgrounds, plus a separate `-on-surface` text step that darkens in light mode and lightens in dark mode so the label clears 4.5:1 on top of its own tinted ground.
-- **Contract Gold** (#B8860B light / #D4A017 dark): One badge, one meaning — main-contract instruments. The single piece of purely semantic custom color in the system.
+- **Status hues** (five families) — Success `#15A877`, Alert `#FEA900`, Warning `#E27900`, Error `#E8463A`, Primary `#2F74FF`: Process and connection state. Each ships a three-step surface ramp (`-surface-l1/l2/l3`) for tag and badge backgrounds, plus a separate `-on-surface` text step that darkens in light mode and lightens in dark mode so the label clears 4.5:1 on top of its own tinted ground. Note the ramps are not uniform: primary and success step 12/18/36% alpha, warning and error 12/16/36%, alert 14/20/36%.
+- **Contract Gold** (`#B8860B` light / `#D4A017` dark): **Unused.** The token pair `--bg-contract-main` / `--text-on-contract-main` is defined with the stated intent of a main-contract badge, but no component consumes it and no such badge exists in the codebase. Recorded here so it is not mistaken for a live semantic color.
 
 ### Neutral
 
@@ -249,7 +253,7 @@ Spacing is scale-free by design: the token names are pixel values (`--spacer-8` 
 
 Overwhelmingly flat. Panels are separated from the page by a 1px hairline and by a tonal step in the paper scale, not by shadow. A dashboard panel does carry one nearly-invisible shadow (`0 1px 3px` at 6% ink) that reads as a crisp edge more than as lift.
 
-Shadows appear only where something genuinely floats: menus, dropdowns, popovers, dialogs, drawers. They are built with `color-mix()` against the current text color rather than hardcoded black, so the same shadow definition produces a soft grey in light mode and a deep, correct shadow in dark mode without a second token.
+Shadows appear only where something genuinely floats: menus, dropdowns, popovers, dialogs, drawers. The floating-layer shadows are built with `color-mix()` against the current text color rather than hardcoded black, so one definition produces a soft grey in light mode and a deep, correct shadow in dark mode without a second token. Note this is not uniform: the three `--shadow-sm/lg/xl` utility tokens in `design-tokens.css` are still hardcoded `rgb(0 0 0 / …)` and have eight call sites outside their own definition — new floating layers should follow the `color-mix()` form, not those.
 
 Backdrop blur is used twice, both defensibly: the topbar blurs content scrolling beneath it (with a gradient fade at its lower edge so text dissolves rather than clipping), and the modal overlay blurs the page behind it.
 
@@ -303,7 +307,7 @@ The `1px → 2px` focus and the 8/12 pairing are the entire form language. There
 - **Background:** `--bg-base-secondary` for cards; dashboard panels use `--bg-card`, which differs from it (light `#F5F5F5` vs `#F5F5F5` — same; dark `#202020` vs `#262626` — panels are *darker* than cards).
 - **Shadow Strategy:** See Elevation — edge shadow on panels, none on static cards.
 - **Border:** 1px hairline.
-- **Internal Padding:** 24px for cards; panels use per-region padding of 8–16px with a distinct 8px/16px header row separated by a hairline.
+- **Internal Padding:** 24px for cards. Panels keep per-region padding of 7–18px and give the header row `padding: var(--spacer-8) var(--spacer-16)` — which resolves to **10px / 18px**, not 8/16 — followed by a hairline separator.
 
 ### Dialogs / Drawers
 
@@ -321,19 +325,19 @@ The `1px → 2px` focus and the 8/12 pairing are the entire form language. There
 
 ### Navigation
 
-- **Style:** 32px min-height rows, 8px radius, 14px icon, 15px label, 10px gutter between icon and text.
+- **Style:** 32px min-height rows, 8px radius, 16px icon, 15px label, 12px gutter between icon and text. (The gutter is written as `var(--spacer-10)` in source — note that `--spacer-10` resolves to *12px*, not 10px; the token names are pixel values from a design-tool export and only some of them match their suffix.)
 - **States:** Rest is ink-secondary; active is overlay-l2 ground with ink-strongest text; hover is a lighter overlay. No left-edge indicator bar — the filled pill is the indicator.
 - **Collapsed:** Below `md` the sidebar becomes a drawer; on desktop it can collapse to a 56px rail showing icons only, with the brand text and labels hidden.
 
 ### Status Indicator (signature)
 
-The system's most-used custom component: a single inline chip that renders one of four states (`idle` / `loading` / `done` / `indeterminate`) from a `current`/`max` progress pair. Colour encodes state, but the component always carries text — "已登录", "登录中", "未登录" — so the state survives greyscale, colour-blindness, and a screenshot pasted into a chat. When the range is indeterminate it animates a bar back and forth rather than guessing a percentage.
+The system's most-used custom component: a single inline chip that renders one of four states (`idle` / `loading` / `done` / `indeterminate`) from a `current`/`max` progress pair. Colour encodes state, but the component always carries a text label — "已登录" / "登录中" / "未登录" — so the state survives greyscale, colour-blindness, and a screenshot pasted into a chat. (In the loading and indeterminate states the badge text is hidden by CSS and the label moves to `.ds-status__progress-text`; the words are still on screen either way.) When the range is indeterminate it animates a bar back and forth rather than guessing a percentage.
 
 **Known contrast debt (recorded, not fixed):** the `done` and `idle` badges paint `-status-*-default` text on a 12% `-surface-l1` ground of the same hue — measured 2.74:1 and 3.34:1 against the composited background, both under 4.5:1. The tag component solved this with the paired `-on-surface` step (which reaches ~5.8:1), but the status indicator was never migrated. This is the system's clearest existing accessibility gap and is tracked separately; **do not** copy the status indicator's colour pairing into new components — copy the tag's.
 
 ### Tables
 
-Dense by default: 15px cells, 13px headers in ink-tertiary (uppercase outside the dashboard; the dashboard's in-panel headers drop the uppercase and step down to 11px), hairline row separators, first column promoted to ink-strongest. Numeric columns right-align with tabular figures in the mono face. Panel tables compress vertical padding to 6px, landing rows around 28px — a status table that shows 8 rows without scrolling beats one that shows 5 comfortably.
+Dense by default: 15px cells, 13px headers in ink-tertiary (uppercase outside the dashboard; the dashboard's in-panel headers drop the uppercase and step down to 11px), hairline row separators, first column promoted to ink-strongest. Numeric columns right-align with tabular figures in the mono face. Panel tables compress vertical cell padding to 6px, which lands body rows at 35px (22px line-height + 12px padding + 1px rule); the panel header row is a fixed 28px. A status table that shows 8 rows without scrolling beats one that shows 5 comfortably.
 
 ## Do's and Don'ts
 
