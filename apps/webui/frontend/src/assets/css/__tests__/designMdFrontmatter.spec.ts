@@ -182,7 +182,7 @@ const COMPONENT_BINDING: Record<
  */
 type TypeProp = 'fontSize' | 'fontWeight' | 'lineHeight' | 'fontFamily'
 /** letterSpacing 是可选校验项（只有部分条目声明）。 */
-type TypeMap = Record<TypeProp, string> & { letterSpacing?: string }
+type TypeMap = Record<TypeProp, string> & { letterSpacing?: string | null }
 
 const TYPE_TO_PREFIX: Record<string, TypeMap> = {
   display: {
@@ -197,12 +197,14 @@ const TYPE_TO_PREFIX: Record<string, TypeMap> = {
     fontWeight: 'heading-md-font-weight',
     lineHeight: 'heading-md-line-height',
     fontFamily: 'heading-md-font-family',
+    letterSpacing: 'heading-md-letter-spacing',
   },
   'title-sm': {
     fontSize: 'heading-sm-font-size',
     fontWeight: 'heading-sm-font-weight',
     lineHeight: 'heading-sm-line-height',
     fontFamily: 'heading-sm-font-family',
+    letterSpacing: 'heading-sm-letter-spacing',
   },
   'body-base': {
     fontSize: 'body-base-font-size',
@@ -216,12 +218,14 @@ const TYPE_TO_PREFIX: Record<string, TypeMap> = {
     fontWeight: 'body-sm-font-weight',
     lineHeight: 'body-sm-line-height',
     fontFamily: 'body-sm-font-family',
+    letterSpacing: 'body-sm-letter-spacing',
   },
   'body-xs': {
     fontSize: 'body-xs-font-size',
     fontWeight: 'body-xs-font-weight',
     lineHeight: 'body-xs-line-height',
     fontFamily: 'body-xs-font-family',
+    letterSpacing: 'body-xs-letter-spacing',
   },
   // label-md 的 500 来自 --body-md-strong-*（普通 --body-md-* 是 400）
   'label-md': {
@@ -229,18 +233,21 @@ const TYPE_TO_PREFIX: Record<string, TypeMap> = {
     fontWeight: 'body-md-strong-font-weight',
     lineHeight: 'body-md-strong-line-height',
     fontFamily: 'body-md-strong-font-family',
+    letterSpacing: 'body-md-strong-letter-spacing',
   },
   metric: {
     fontSize: 'body-xs-font-size',
     fontWeight: 'body-xs-font-weight',
     lineHeight: 'body-xs-line-height',
     fontFamily: 'font-family-metric',
+    letterSpacing: 'body-xs-letter-spacing',
   },
   code: {
     fontSize: 'code-editor-font-size',
     fontWeight: 'code-editor-font-weight',
     lineHeight: 'code-editor-line-height',
     fontFamily: 'code-editor-font-family',
+    letterSpacing: null,
   },
 }
 
@@ -406,7 +413,12 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
         ['lineHeight', mapping.lineHeight],
         ['fontFamily', mapping.fontFamily],
       ]
-      if (mapping.letterSpacing !== undefined) {
+      if (mapping.letterSpacing === null) {
+        // CSS 里没有对应 token（如 code 无 code-editor-letter-spacing）→ frontmatter 不得声明
+        if (entry.letterSpacing !== undefined) {
+          problems.push(`${key}.letterSpacing: CSS 无对应 token，frontmatter 却写了 ${String(entry.letterSpacing)}`)
+        }
+      } else if (mapping.letterSpacing !== undefined) {
         pairs.push(['letterSpacing' as TypeProp, mapping.letterSpacing])
       }
       for (const [prop, token] of pairs) {
@@ -460,6 +472,31 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
       }
     }
     expect(problems, `组件尺寸不符：\n${problems.join('\n')}`).toEqual([])
+  })
+
+
+  it('组件与 typography 不得携带白名单之外的属性（防塞任意编造属性）', () => {
+    // 这条是 S-1/S-2 的通用收口：前面各用例只**枚举**已知属性去校验值，
+    // 若 frontmatter 多塞一个 spec 不认识的属性（如 card.borderRadius、
+    // body-base.extraProp），没有任何用例会报错。这里把"允许的属性集合"显式化。
+    const ALLOWED_COMPONENT_PROPS = new Set([
+      'backgroundColor', 'textColor', 'typography', 'rounded', 'padding', 'size', 'height', 'width',
+    ])
+    const ALLOWED_TYPE_PROPS = new Set([
+      'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'fontFeature', 'fontVariation',
+    ])
+    const problems: string[] = []
+
+    for (const [name, comp] of Object.entries(components)) {
+      const extra = Object.keys(comp).filter((k) => !ALLOWED_COMPONENT_PROPS.has(k))
+      if (extra.length > 0) problems.push(`组件 ${name} 出现白名单外属性：${extra.join(', ')}`)
+    }
+    const typography = fm.data.typography as Record<string, Record<string, unknown>>
+    for (const [name, entry] of Object.entries(typography)) {
+      const extra = Object.keys(entry).filter((k) => !ALLOWED_TYPE_PROPS.has(k))
+      if (extra.length > 0) problems.push(`typography ${name} 出现白名单外属性：${extra.join(', ')}`)
+    }
+    expect(problems, `出现白名单外属性：\n${problems.join('\n')}`).toEqual([])
   })
 
   it('没有未登记的组件键（新增组件必须进 COMPONENT_BINDING 才被校验）', () => {

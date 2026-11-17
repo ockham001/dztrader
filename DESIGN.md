@@ -50,11 +50,13 @@ typography:
     fontSize: "22px"
     fontWeight: 600
     lineHeight: "32px"
+    letterSpacing: "0"
   title-sm:
     fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "17px"
     fontWeight: 600
     lineHeight: "26px"
+    letterSpacing: "0"
   body-base:
     fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "15px"
@@ -66,21 +68,25 @@ typography:
     fontSize: "12px"
     fontWeight: 400
     lineHeight: "18px"
+    letterSpacing: "0"
   body-xs:
     fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "11px"
     fontWeight: 400
     lineHeight: "16px"
+    letterSpacing: "0"
   label-md:
     fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "13px"
     fontWeight: 500
     lineHeight: "20px"
+    letterSpacing: "0"
   metric:
     fontFamily: "\"Inter\", \"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "11px"
     fontWeight: 400
     lineHeight: "16px"
+    letterSpacing: "0"
   code:
     fontFamily: "\"JetBrains Mono\", ui-monospace, \"SF Mono\", Menlo, Consolas, monospace"
     fontSize: "13px"
