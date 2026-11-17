@@ -23,7 +23,8 @@ import { join } from 'node:path'
 //      这是第一轮错误的实际形态，第一版恰好漏掉；
 //   4. 组存在性断言，防止整组被删后静默通过。
 //
-// 边界（有意不做）：不校验描述性文字；不校验 sidecar（需浏览器渲染，成本高）。
+// 边界（有意不做）：不校验描述性文字（散文措辞无法机械判定）；
+// sidecar 的**组件片段**需浏览器渲染才能验证，本 spec 只校验其 narrative 与正文一致。
 
 // 仓库根 = 本 spec 所在的 src/assets/css/__tests__ 往上 7 层：
 //   __tests__(1) → css(2) → assets(3) → src(4) → frontend(5) → webui(6) → apps(7) → <root>
@@ -158,16 +159,18 @@ const COLOR_TO_TOKEN: Record<string, { token: string; scope: 'light' | 'dark' | 
  */
 const COMPONENT_BINDING: Record<
   string,
-  { backgroundColor: string; textColor?: string }
+  { backgroundColor: string; textColor?: string; rounded?: string }
 > = {
-  'button-primary': { backgroundColor: 'invert-light', textColor: 'on-invert-light' },
-  'button-secondary': { backgroundColor: 'overlay-l1', textColor: 'ink-strongest' },
-  'button-brand': { backgroundColor: 'brand-violet', textColor: 'paper-base' },
-  'button-danger': { backgroundColor: 'status-error', textColor: 'paper-base' },
-  input: { backgroundColor: 'overlay-l1', textColor: 'ink-strongest' },
-  card: { backgroundColor: 'surface-card-light', textColor: 'ink-strongest' },
-  panel: { backgroundColor: 'surface-panel-light', textColor: 'ink-strongest' },
-  tag: { backgroundColor: 'overlay-l2', textColor: 'ink-secondary' },
+  // rounded 是「组件绑定了哪个圆角 token」——与 backgroundColor 同族，
+  // 绑错（如 8 写成 12）不会让任何页面报错，只会让新界面的圆角与既有系统不一致。
+  'button-primary': { backgroundColor: 'invert-light', textColor: 'on-invert-light', rounded: '8' },
+  'button-secondary': { backgroundColor: 'overlay-l1', textColor: 'ink-strongest', rounded: '8' },
+  'button-brand': { backgroundColor: 'brand-violet', textColor: 'paper-base', rounded: '8' },
+  'button-danger': { backgroundColor: 'status-error', textColor: 'paper-base', rounded: '8' },
+  input: { backgroundColor: 'overlay-l1', textColor: 'ink-strongest', rounded: '8' },
+  card: { backgroundColor: 'surface-card-light', textColor: 'ink-strongest', rounded: '12' },
+  panel: { backgroundColor: 'surface-panel-light', textColor: 'ink-strongest', rounded: '12' },
+  tag: { backgroundColor: 'overlay-l2', textColor: 'ink-secondary', rounded: '8' },
 }
 
 
@@ -178,7 +181,8 @@ const COMPONENT_BINDING: Record<
  * 未登记的键由下面的 completeness 用例拦住。
  */
 type TypeProp = 'fontSize' | 'fontWeight' | 'lineHeight' | 'fontFamily'
-type TypeMap = Record<TypeProp, string>
+/** letterSpacing 是可选校验项（只有部分条目声明）。 */
+type TypeMap = Record<TypeProp, string> & { letterSpacing?: string }
 
 const TYPE_TO_PREFIX: Record<string, TypeMap> = {
   display: {
@@ -186,6 +190,7 @@ const TYPE_TO_PREFIX: Record<string, TypeMap> = {
     fontWeight: 'heading-display-font-weight',
     lineHeight: 'heading-display-line-height',
     fontFamily: 'heading-display-font-family',
+    letterSpacing: 'heading-display-letter-spacing',
   },
   'headline-md': {
     fontSize: 'heading-md-font-size',
@@ -204,6 +209,7 @@ const TYPE_TO_PREFIX: Record<string, TypeMap> = {
     fontWeight: 'body-base-font-weight',
     lineHeight: 'body-base-line-height',
     fontFamily: 'body-base-font-family',
+    letterSpacing: 'body-base-letter-spacing',
   },
   'body-sm': {
     fontSize: 'body-sm-font-size',
@@ -242,13 +248,16 @@ const TYPE_TO_PREFIX: Record<string, TypeMap> = {
  * 组件键 → 必须与真实 CSS 相等的尺寸属性。
  * height / padding 是 Stitch 8-prop 里能表达的，且都是有据可查的实现值。
  */
-const COMPONENT_SIZE: Record<string, { height?: string; padding?: string }> = {
+// 有意的省略用 null 表示（card 无 height、panel 无 padding），不是漏登记：
+// 断言「frontmatter 里也不得多出这个属性」由下面的 extra-props 用例负责。
+const COMPONENT_SIZE: Record<string, { height?: string | null; padding?: string | null }> = {
   'button-primary': { height: '28px', padding: '0 14px' },
   'button-secondary': { height: '28px', padding: '0 14px' },
   'button-brand': { height: '28px', padding: '0 14px' },
   'button-danger': { height: '28px', padding: '0 14px' },
   input: { height: '32px', padding: '0 14px' },
-  card: { padding: '24px' },
+  card: { height: null, padding: '24px' },
+  panel: { height: null, padding: null },
   tag: { height: '22px', padding: '0 10px' },
 }
 
@@ -346,10 +355,41 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
           problems.push(`${name}.${prop}: 期望引用 {colors.${wantKey}}，实际 ${ref || '（缺失）'}`)
         }
       }
+      if (expected.rounded) {
+        const ref = comp.rounded ?? ''
+        const got = /\{rounded\.([\w-]+)\}/.exec(ref)?.[1]
+        if (got !== expected.rounded) {
+          problems.push(
+            `${name}.rounded: 期望引用 {rounded.${expected.rounded}}，实际 ${ref || '（缺失）'}`,
+          )
+        }
+      }
     }
     expect(problems, `组件绑错颜色：\n${problems.join('\n')}`).toEqual([])
   })
 
+
+  it('spacing / rounded 覆盖全部真实 token（反向：token 不得在 frontmatter 缺席）', () => {
+    const problems: string[] = []
+    const pairs: Array<[string, string, Record<string, string>]> = [
+      ['radius', 'rounded', fm.data.rounded as Record<string, string>],
+      ['spacer', 'spacing', fm.data.spacing as Record<string, string>],
+    ]
+    for (const [tokenPrefix, groupName, group] of pairs) {
+      const inCss = new Set(
+        [...designTokensCss.matchAll(new RegExp(`^\\s*--${tokenPrefix}-([\\w-]+):`, 'gm'))].map(
+          (m) => m[1],
+        ),
+      )
+      // 别名（--radius-xs: var(--radius-2)）也是真实 token，必须被覆盖
+      for (const key of inCss) {
+        if (!(key in group)) {
+          problems.push(`${groupName} 缺 "${key}"（design-tokens.css 有 --${tokenPrefix}-${key}）`)
+        }
+      }
+    }
+    expect(problems, `spacing/rounded 覆盖不全：\\n${problems.join('\\n')}`).toEqual([])
+  })
 
   it('typography 的字号/字重/行高与 token 相等（数据驱动）', () => {
     const typography = fm.data.typography as Record<string, Record<string, unknown>>
@@ -366,6 +406,9 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
         ['lineHeight', mapping.lineHeight],
         ['fontFamily', mapping.fontFamily],
       ]
+      if (mapping.letterSpacing !== undefined) {
+        pairs.push(['letterSpacing' as TypeProp, mapping.letterSpacing])
+      }
       for (const [prop, token] of pairs) {
         const raw = cssToken(designTokensCss, token)
         if (!raw) {
@@ -404,12 +447,43 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
       for (const prop of ['height', 'padding'] as const) {
         const want = expected[prop]
         if (want === undefined) continue
+        if (want === null) {
+          // null 表示实现里没有该属性 —— frontmatter 出现即属编造
+          if (comp[prop] !== undefined) {
+            problems.push(`${name}.${prop}: 实现中无该属性，frontmatter 却写了 ${comp[prop]}`)
+          }
+          continue
+        }
         if (comp[prop] !== want) {
           problems.push(`${name}.${prop}: frontmatter=${comp[prop] ?? '（缺失）'}，应为 ${want}`)
         }
       }
     }
     expect(problems, `组件尺寸不符：\n${problems.join('\n')}`).toEqual([])
+  })
+
+  it('没有未登记的组件键（新增组件必须进 COMPONENT_BINDING 才被校验）', () => {
+    const uncharted = Object.keys(components).filter((k) => !(k in COMPONENT_BINDING))
+    expect(
+      uncharted,
+      `以下组件键未纳入 COMPONENT_BINDING，等于绕过了绑定校验：${uncharted.join(', ')}`,
+    ).toEqual([])
+  })
+
+  it('组件不得携带编造的尺寸属性（未声明即不得出现）', () => {
+    const problems: string[] = []
+    for (const [name, expected] of Object.entries(COMPONENT_SIZE)) {
+      const comp = components[name]
+      if (!comp) continue
+      for (const prop of ['height', 'padding'] as const) {
+        const declared = comp[prop] !== undefined
+        const shouldExist = expected[prop] !== null && expected[prop] !== undefined
+        if (declared && !shouldExist) {
+          problems.push(`${name}.${prop}: 实现中无该属性，frontmatter 却写了 ${comp[prop]}`)
+        }
+      }
+    }
+    expect(problems, `组件出现编造属性：\n${problems.join('\n')}`).toEqual([])
   })
 
   it('深色档：card 与 panel 不得同值（--bg-base-secondary ≠ --bg-card）', () => {
@@ -455,15 +529,22 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
     const spacing = fm.data.spacing as Record<string, string>
     const problems: string[] = []
 
+    // 别名（--radius-xs: var(--radius-2)）解析后再比，frontmatter 写的是解析后的像素值
     for (const [key, val] of Object.entries(rounded)) {
       const token = cssToken(designTokensCss, `radius-${key}`)
       if (!token) problems.push(`rounded.${key}: 无 --radius-${key}`)
-      else if (token !== val) problems.push(`rounded.${key}: frontmatter=${val} 但 --radius-${key}=${token}`)
+      else {
+        const resolved = resolveVar(token, designTokensCss)
+        if (resolved !== val) problems.push(`rounded.${key}: frontmatter=${val} 但 --radius-${key}=${resolved}`)
+      }
     }
     for (const [key, val] of Object.entries(spacing)) {
       const token = cssToken(designTokensCss, `spacer-${key}`)
       if (!token) problems.push(`spacing.${key}: 无 --spacer-${key}`)
-      else if (token !== val) problems.push(`spacing.${key}: frontmatter=${val} 但 --spacer-${key}=${token}`)
+      else {
+        const resolved = resolveVar(token, designTokensCss)
+        if (resolved !== val) problems.push(`spacing.${key}: frontmatter=${val} 但 --spacer-${key}=${resolved}`)
+      }
     }
     expect(problems, `rounded/spacing 值不符：\n${problems.join('\n')}`).toEqual([])
   })
