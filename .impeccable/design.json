@@ -1,0 +1,437 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-17T07:55:00Z",
+  "title": "Design System: DZTrader",
+  "extensions": {
+    "colorMeta": {
+      "brand-violet": {
+        "role": "primary",
+        "displayName": "Brand Violet",
+        "canonical": "#4B3FE3",
+        "tonalRamp": [
+          "#1A1759",
+          "#2C2290",
+          "#3F31C6",
+          "#4B3FE3",
+          "#6A6FFF",
+          "#8894FF",
+          "#AAB7FF",
+          "#CFD8FF"
+        ]
+      },
+      "rise-crimson": {
+        "role": "secondary",
+        "displayName": "Rise Crimson",
+        "canonical": "#D4543E",
+        "tonalRamp": [
+          "#4D150E",
+          "#7A2418",
+          "#A63725",
+          "#D4543E",
+          "#E07361",
+          "#EA9384",
+          "#F2B5AA",
+          "#FAD8D2"
+        ]
+      },
+      "fall-jade": {
+        "role": "secondary",
+        "displayName": "Fall Jade",
+        "canonical": "#2A9D5C",
+        "tonalRamp": [
+          "#06301A",
+          "#0B4D2B",
+          "#15703E",
+          "#2A9D5C",
+          "#4FBA80",
+          "#7CCDA1",
+          "#ABDFC2",
+          "#D6F0E1"
+        ]
+      },
+      "status-success": {
+        "role": "tertiary",
+        "displayName": "Success",
+        "canonical": "#15A877"
+      },
+      "status-alert": {
+        "role": "tertiary",
+        "displayName": "Alert",
+        "canonical": "#FEA900"
+      },
+      "status-warning": {
+        "role": "tertiary",
+        "displayName": "Warning",
+        "canonical": "#E27900"
+      },
+      "status-error": {
+        "role": "tertiary",
+        "displayName": "Error",
+        "canonical": "#E8463A"
+      },
+      "status-primary": {
+        "role": "tertiary",
+        "displayName": "Process",
+        "canonical": "#2F74FF"
+      },
+      "contract-gold": {
+        "role": "tertiary",
+        "displayName": "Contract Gold",
+        "canonical": "#B8860B",
+        "note": "Light #B8860B, dark #D4A017. Main-contract badge only."
+      },
+      "ink-strongest": {
+        "role": "neutral",
+        "displayName": "Ink Strongest",
+        "canonical": "#171717",
+        "darkValue": "#E5E5E5"
+      },
+      "ink-secondary": {
+        "role": "neutral",
+        "displayName": "Ink Secondary",
+        "canonical": "#404040",
+        "darkValue": "#A1A1A1"
+      },
+      "ink-tertiary": {
+        "role": "neutral",
+        "displayName": "Ink Tertiary",
+        "canonical": "#737373",
+        "darkValue": "#737373"
+      },
+      "ink-disabled": {
+        "role": "neutral",
+        "displayName": "Ink Disabled",
+        "canonical": "#A1A1A1",
+        "darkValue": "#525252"
+      },
+      "paper-base": {
+        "role": "neutral",
+        "displayName": "Paper Base",
+        "canonical": "#FFFFFF",
+        "darkValue": "#171717"
+      },
+      "paper-secondary": {
+        "role": "neutral",
+        "displayName": "Paper Secondary",
+        "canonical": "#F5F5F5",
+        "darkValue": "#262626"
+      },
+      "paper-tertiary": {
+        "role": "neutral",
+        "displayName": "Paper Tertiary",
+        "canonical": "#E5E5E5",
+        "darkValue": "#404040"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Pre-authentication surfaces only (login title, about screen). Never inside the app shell."
+      },
+      "headline-md": {
+        "displayName": "Headline",
+        "purpose": "Page-level headings."
+      },
+      "title-sm": {
+        "displayName": "Title",
+        "purpose": "Panel, card, and dialog titles."
+      },
+      "body-base": {
+        "displayName": "Body",
+        "purpose": "Default reading size for dialogs, forms, and table cells."
+      },
+      "body-sm": {
+        "displayName": "Small Body",
+        "purpose": "Panel sub-labels, meta rows, compact tags."
+      },
+      "body-xs": {
+        "displayName": "Micro",
+        "purpose": "Topbar chrome, timestamps, status badges, count pills."
+      },
+      "label-md": {
+        "displayName": "Label",
+        "purpose": "Form labels, table headers, button text at body scale."
+      },
+      "metric": {
+        "displayName": "Metric",
+        "purpose": "Counts and percentages in narrow chrome. Always tabular."
+      },
+      "code": {
+        "displayName": "Mono",
+        "purpose": "Codes, IDs, prices, numeric table cells. Always tabular."
+      }
+    },
+    "shadows": [
+      {
+        "name": "edge",
+        "value": "0 1px 3px color-mix(in srgb, var(--text-default) 6%, transparent)",
+        "purpose": "Dashboard panels. Reads as a crisp edge, not lift."
+      },
+      {
+        "name": "popover",
+        "value": "0 12px 32px color-mix(in srgb, var(--text-default) 16%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent)",
+        "purpose": "Dropdowns, menus, tooltips."
+      },
+      {
+        "name": "dialog",
+        "value": "0 24px 64px color-mix(in srgb, var(--text-default) 14%, transparent), 0 4px 16px color-mix(in srgb, var(--text-default) 8%, transparent)",
+        "purpose": "Modals and drawers."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(.2,0,0,1)",
+        "purpose": "Default easing for sidebar and layout transitions."
+      },
+      {
+        "name": "duration-fast",
+        "value": "120ms",
+        "purpose": "Hover, focus, and state colour transitions — the system default."
+      },
+      {
+        "name": "duration-mid",
+        "value": "150ms",
+        "purpose": "Icon rotation and small positional transitions."
+      },
+      {
+        "name": "reduced",
+        "value": "0.01ms !important",
+        "purpose": "Global @media (prefers-reduced-motion: reduce) override on every transition and animation."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "base",
+        "value": "<640px",
+        "note": "Mobile; sidebar is an off-canvas drawer."
+      },
+      {
+        "name": "sm",
+        "value": ">=640px"
+      },
+      {
+        "name": "md",
+        "value": ">=768px",
+        "note": "Sidebar enters the grid as a 220px column."
+      },
+      {
+        "name": "lg",
+        "value": ">=1024px",
+        "note": "Topbar resource group stops collapsing."
+      },
+      {
+        "name": "xl",
+        "value": ">=1280px",
+        "note": "Monitor page goes to three columns."
+      }
+    ],
+    "layoutTokens": [
+      {
+        "name": "--sidebar-w",
+        "value": "220px"
+      },
+      {
+        "name": "--sidebar-w-collapsed",
+        "value": "56px"
+      },
+      {
+        "name": "--topbar-h",
+        "value": "32px"
+      },
+      {
+        "name": "--form-label-col-width",
+        "value": "122px"
+      },
+      {
+        "name": "--overlay-scrim",
+        "value": "rgb(0 0 0 / 40%)"
+      }
+    ],
+    "constraints": [
+      "Every colour, spacing, and radius value must be a CSS custom property reference; literal hex/px in component code is a lint error (dz/token-literal).",
+      "Template :style must not carry static styles; only per-instance computed values (dz/no-inline-style-literal).",
+      ".ds-* names must only be defined in assets/css/components.css; feature layers use their own prefix (dz/no-ds-namespace).",
+      "A theme-colour token must be added to all three blocks in theme.css (:root, .dark, and the prefers-color-scheme block) or one theme silently breaks.",
+      "Breakpoint width values are whitelisted to 640/768/1024/1280 and machine-enforced by a test."
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The confirmation action. Inverted ink, not brand violet.",
+      "html": "<button class=\"ds-btn ds-btn--primary\">保存更改</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:var(--spacer-6); height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; user-select:none; white-space:nowrap; font-family:var(--body-base-strong-font-family); font-size:var(--body-base-strong-font-size); line-height:var(--body-base-strong-line-height); font-weight:var(--body-base-strong-font-weight); letter-spacing:var(--body-base-strong-letter-spacing); transition:background .12s ease, color .12s ease, border-color .12s ease, opacity .12s ease; } .ds-btn--primary { background:var(--bg-invert); color:var(--bg-base-default); border-color:var(--bg-invert); } .ds-btn--primary:hover { background:var(--bg-invert-hover); border-color:var(--bg-invert-hover); } .ds-btn--primary:active { background:var(--bg-invert-active); border-color:var(--bg-invert-active); } .ds-btn--primary[disabled] { background:var(--bg-invert-disabled); color:var(--text-oninvert-disabled); border-color:transparent; cursor:not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Non-committal action on an overlay ground.",
+      "html": "<button class=\"ds-btn ds-btn--secondary\">取消</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:var(--spacer-6); height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; font-family:var(--body-base-strong-font-family); font-size:var(--body-base-strong-font-size); font-weight:var(--body-base-strong-font-weight); transition:background .12s ease, border-color .12s ease; } .ds-btn--secondary { background:var(--bg-overlay-l1); color:var(--text-default); border-color:var(--border-neutral-l1); } .ds-btn--secondary:hover { background:var(--bg-overlay-l2); border-color:var(--border-neutral-l2); } .ds-btn--secondary:active { background:var(--bg-overlay-l3); border-color:var(--border-neutral-l3); }"
+    },
+    {
+      "name": "Brand Button",
+      "kind": "button",
+      "refersTo": "button-brand",
+      "description": "Violet fill, reserved for the login submit at most.",
+      "html": "<button class=\"ds-btn ds-btn--brand ds-btn--lg\">登录</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:var(--spacer-6); height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; font-family:var(--body-base-strong-font-family); font-size:var(--body-base-strong-font-size); font-weight:var(--body-base-strong-font-weight); transition:background .12s ease, border-color .12s ease; } .ds-btn--lg { height:32px; padding:0 var(--spacer-16); border-radius:var(--radius-8); font-size:var(--body-base-font-size); } .ds-btn--brand { background:var(--bg-brand); color:var(--text-onbrand); border-color:var(--bg-brand); } .ds-btn--brand:hover { background:var(--bg-brand-hover); border-color:var(--bg-brand-hover); } .ds-btn--brand:active { background:var(--bg-brand-active); border-color:var(--bg-brand-active); }"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Destructive action. Solid error fill.",
+      "html": "<button class=\"ds-btn ds-btn--danger\">删除账户</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; gap:var(--spacer-6); height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; font-family:var(--body-base-strong-font-family); font-size:var(--body-base-strong-font-size); font-weight:var(--body-base-strong-font-weight); transition:background .12s ease, border-color .12s ease; } .ds-btn--danger { background:var(--status-error-default); color:var(--text-onaccent); border-color:var(--status-error-default); } .ds-btn--danger:hover { background:var(--status-error-hover); border-color:var(--status-error-hover); } .ds-btn--danger:active { background:var(--status-error-active); border-color:var(--status-error-active); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "32px field on an overlay ground. Focus thickens the border instead of changing the fill.",
+      "html": "<div class=\"ds-input\"><input type=\"text\" placeholder=\"请输入用户名\" /></div>",
+      "css": ".ds-input { display:flex; align-items:center; gap:var(--spacer-8); min-height:32px; padding:0 var(--spacer-12); background:var(--bg-overlay-l1); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-8); color:var(--text-default); width:100%; font-family:var(--body-base-font-family); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); } .ds-input:focus-within { border-color:var(--border-neutral-l3); background:var(--bg-overlay-l1); border-width:2px; } .ds-input input { flex:1; background:transparent; border:none; outline:none; color:var(--text-default); font:inherit; min-width:0; } .ds-input input::placeholder { color:var(--text-tertiary); } .ds-input.is-error { border-color:var(--status-error-default); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Generic content container, one tonal step off the page.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card__title\">账户概览</div><div class=\"ds-card__desc\">共 3 个已登记账户</div></div>",
+      "css": ".ds-card { background:var(--bg-base-secondary); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); padding:var(--spacer-20); color:var(--text-default); } .ds-card__title { font-size:var(--heading-sm-font-size); line-height:var(--heading-sm-line-height); font-weight:var(--heading-sm-font-weight); margin-bottom:var(--spacer-8); } .ds-card__desc { font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); color:var(--text-secondary); }"
+    },
+    {
+      "name": "Dashboard Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "The dashboard's structural unit: flat on the page, hairline border, distinct header band.",
+      "html": "<div class=\"panel\"><div class=\"panel__hd\"><span class=\"panel__title\">持仓</span><span class=\"panel__meta\">8/8</span></div><div class=\"panel__body\">内容区</div></div>",
+      "css": ".panel { display:flex; flex-direction:column; border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); background:var(--bg-card); box-shadow:0 1px 3px color-mix(in srgb, var(--text-default) 6%, transparent); overflow:hidden; min-height:80px; } .panel__hd { display:flex; align-items:center; justify-content:space-between; padding:var(--spacer-8) var(--spacer-16); background:var(--bg-card); border-bottom:1px solid var(--border-neutral-l1); flex-shrink:0; } .panel__title { font-size:var(--body-sm-font-size); font-weight:var(--font-weight-strong); color:var(--text-default); } .panel__meta { font-size:var(--font-size-10); color:var(--text-tertiary); } .panel__body { padding:var(--spacer-8) var(--spacer-16); color:var(--text-secondary); font-size:var(--body-base-font-size); }"
+    },
+    {
+      "name": "Status Tag",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "22px chip. Status variants pair a -surface ground with its matching -on-surface label.",
+      "html": "<div style=\"display:flex;gap:var(--spacer-8);flex-wrap:wrap\"><span class=\"ds-tag\">中性</span><span class=\"ds-tag ds-tag--success\">已登录</span><span class=\"ds-tag ds-tag--warning\">未登录</span><span class=\"ds-tag ds-tag--danger\">已停止</span><span class=\"ds-tag ds-tag--brand\">admin</span></div>",
+      "css": ".ds-tag { display:inline-flex; align-items:center; gap:var(--spacer-4); height:22px; padding:0 var(--spacer-8); border-radius:var(--radius-8); font-size:var(--body-sm-font-size); line-height:var(--body-sm-line-height); background:var(--bg-overlay-l2); color:var(--text-secondary); border:1px solid var(--border-neutral-l1); } .ds-tag--brand { background:var(--bg-brand-popup); color:var(--text-brand); } .ds-tag--success { background:var(--status-success-surface-l1); color:var(--status-success-on-surface); } .ds-tag--warning { background:var(--status-warning-surface-l1); color:var(--status-warning-on-surface); } .ds-tag--danger { background:var(--status-error-surface-l1); color:var(--status-error-on-surface); }"
+    },
+    {
+      "name": "Status Indicator",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Signature component: one inline chip for idle/loading/done/indeterminate, always carrying text so state survives greyscale.",
+      "html": "<div style=\"display:flex;gap:var(--spacer-8);flex-wrap:wrap;align-items:center\"><span class=\"st st--done\">已登录</span><span class=\"st st--idle\">未登录</span><span class=\"st st--busy\">登录中 <span class=\"st__bar\"><span class=\"st__fill\"></span></span></span></div>",
+      "css": ".st { display:inline-flex; align-items:center; gap:var(--spacer-6); font-size:var(--body-xs-font-size); line-height:1.6; padding:var(--spacer-1) var(--spacer-8); border-radius:var(--radius-8); white-space:nowrap; } .st--done { background:var(--status-success-surface-l1); color:var(--status-success-on-surface); } .st--idle { background:var(--status-error-surface-l1); color:var(--status-error-on-surface); } .st--busy { color:var(--status-primary-on-surface); } .st__bar { display:inline-block; width:56px; height:3px; border-radius:var(--radius-full); background:var(--bg-overlay-l2); overflow:hidden; } .st__fill { display:block; width:60%; height:100%; background:var(--status-primary-default); border-radius:var(--radius-full); }"
+    },
+    {
+      "name": "Data Table",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Dense table with hairline row separators; numeric columns right-aligned in tabular mono.",
+      "html": "<table class=\"tbl\"><thead><tr><th>合约</th><th class=\"num\">持仓</th><th class=\"num\">差异</th></tr></thead><tbody><tr><td>zz2601</td><td class=\"num\">5</td><td class=\"num rise\">+3</td></tr><tr><td>yy2601</td><td class=\"num\">-1</td><td class=\"num fall\">-2</td></tr></tbody></table>",
+      "css": ".tbl { width:100%; border-collapse:collapse; } .tbl th, .tbl td { text-align:left; vertical-align:middle; padding:var(--spacer-8) var(--spacer-8); border-bottom:1px solid var(--border-neutral-l1); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); white-space:nowrap; } .tbl th { color:var(--text-tertiary); font-weight:var(--font-weight-medium); font-size:var(--body-md-font-size); text-transform:uppercase; } .tbl td { color:var(--text-secondary); } .tbl td:first-child { color:var(--text-default); } .tbl tr:last-child td { border-bottom:none; } .tbl .num { text-align:right; font-family:var(--code-editor-font-family); font-variant-numeric:tabular-nums; } .tbl .rise { color:var(--color-rise); } .tbl .fall { color:var(--color-fall); }"
+    },
+    {
+      "name": "Dialog",
+      "kind": "custom",
+      "refersTo": null,
+      "description": "Modal on a blurred scrim; header and footer are separated by spacing, not rules.",
+      "html": "<div style=\"background:var(--bg-base-default);padding:12px;display:flex;justify-content:center;width:100%;box-sizing:border-box\"><div class=\"dlg\"><div class=\"dlg__hd\"><span class=\"dlg__title\">新建账户</span><button class=\"dlg__close\" aria-label=\"关闭\">×</button></div><div class=\"dlg__body\">填写账户信息后保存。</div><div class=\"dlg__foot\"><button class=\"ds-btn ds-btn--secondary\">取消</button><button class=\"ds-btn ds-btn--primary\">保存</button></div></div></div>",
+      "css": ".dlg { background:var(--bg-base-secondary); border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); width:100%; max-width:100%; display:flex; flex-direction:column; overflow:hidden; color:var(--text-default); box-shadow:0 24px 64px color-mix(in srgb, var(--text-default) 14%, transparent), 0 4px 16px color-mix(in srgb, var(--text-default) 8%, transparent); } .dlg__hd { padding:var(--spacer-16) var(--spacer-20); display:flex; align-items:center; justify-content:space-between; } .dlg__title { font-size:var(--heading-sm-font-size); font-weight:var(--heading-sm-font-weight); } .dlg__close { width:32px; height:32px; display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--icon-secondary); cursor:pointer; border-radius:var(--radius-8); font-size:18px; } .dlg__close:hover { background:var(--bg-overlay-l2); color:var(--icon-default); } .dlg__body { padding:var(--spacer-16) var(--spacer-20); color:var(--text-secondary); font-size:var(--body-base-font-size); } .dlg__foot { padding:var(--spacer-12) var(--spacer-20); display:flex; justify-content:flex-end; gap:var(--spacer-8); } .ds-btn { display:inline-flex; align-items:center; justify-content:center; height:28px; padding:0 var(--spacer-12); border-radius:var(--radius-8); border:1px solid transparent; cursor:pointer; font-size:var(--body-base-strong-font-size); font-weight:var(--body-base-strong-font-weight); } .ds-btn--primary { background:var(--bg-invert); color:var(--bg-base-default); border-color:var(--bg-invert); } .ds-btn--secondary { background:var(--bg-overlay-l1); color:var(--text-default); border-color:var(--border-neutral-l1); }"
+    },
+    {
+      "name": "Sidebar Navigation",
+      "kind": "nav",
+      "refersTo": null,
+      "description": "220px sticky column (56px collapsed rail). Active state is a filled overlay pill, not a left bar.",
+      "html": "<nav style=\"width:220px;background:var(--bg-base-default);border-right:1px solid var(--border-neutral-l1);padding:var(--spacer-10);display:flex;flex-direction:column;gap:var(--spacer-2)\"><a class=\"nav nav--active\" href=\"#\">仪表盘</a><a class=\"nav\" href=\"#\">行情源</a><a class=\"nav\" href=\"#\">交易账户</a><a class=\"nav\" href=\"#\">资源监控</a></nav>",
+      "css": ".nav { display:flex; align-items:center; gap:var(--spacer-10); min-height:32px; padding:0 var(--spacer-10); border-radius:var(--radius-8); color:var(--text-secondary); font-size:var(--body-base-font-size); line-height:var(--body-base-line-height); text-decoration:none; white-space:nowrap; transition:background .12s ease; } .nav:hover { background:var(--bg-overlay-l1); color:var(--text-default); } .nav--active { background:var(--bg-overlay-l2); color:var(--text-default); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Instrument Panel",
+    "overview": "This is a system built to be glanced at, not read. Every screen answers one question — is everything still running — and the visual language is engineered for that answer to arrive in under a second, at a distance, while the operator is also watching something else. The register is deliberately generic: neutral system UI, no brand gesture, no signature flourish. This is a tool surface that should get out of the way. Density is a feature here, not a compromise. Depth is nearly absent — panels sit flat on hairlines, and elevation is reserved for things that float. Colour is spent only on state, so the chrome stays achromatic and a single amber cell is unmissable.",
+    "keyCharacteristics": [
+      "Neutral system UI stack; no brand typeface, no expressive chrome",
+      "Density over breathing room; 11–15px body range, compact 32px control heights",
+      "Achromatic chrome; color reserved for state, never decoration",
+      "Flat panels, hairline separation, elevation only for overlay",
+      "Light and dark are peers, not modes — both are first-class, fully specified",
+      "Numerals get tabular figures and monospace faces; text never does"
+    ],
+    "rules": [
+      {
+        "name": "The One Job Rule",
+        "body": "Every chromatic family has exactly one meaning. Violet is identity, crimson/jade is direction, status hues are process state, gold is contract type. Nothing decorative is ever allowed to borrow a family.",
+        "section": "colors"
+      },
+      {
+        "name": "The Achromatic Chrome Rule",
+        "body": "Backgrounds, borders, text, icons, and every ordinary control are grey. If a surface needs to feel important, it gets weight or position — not hue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Paired-Step Rule",
+        "body": "Every status color exists in three coordinated forms: a solid -default, a transparent -surface for grounds, and a text -on-surface for labels. Use them as a set.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Numerals Rule",
+        "body": "Any figure that can change carries font-variant-numeric: tabular-nums and usually a mono or metric face. Without this, a row of updating prices jitters.",
+        "section": "typography"
+      },
+      {
+        "name": "The No Display Type In The Shell Rule",
+        "body": "The 40–52px display steps exist for pre-authentication surfaces. Inside the app shell the largest type is 32px, and most of the interface lives between 11 and 17px.",
+        "section": "typography"
+      },
+      {
+        "name": "The Elevation-Is-A-Promise Rule",
+        "body": "A shadow means the thing is above the document and can be dismissed. Nothing that stays put gets one. Panels are not cards floating over a background; they are the background.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Shift-Not-Scale Rule",
+        "body": "Interactive feedback is a background-alpha change or a border-color change at 120ms. Nothing grows, lifts, or bounces on hover.",
+        "section": "elevation"
+      },
+      {
+        "name": "The 8-And-12 Rule",
+        "body": "Controls are 8px, containers are 12px. A control inside a container aligns its radius to the control scale, never to the container's.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Hairline-Only Rule",
+        "body": "Separation is a 1px --border-neutral-l1 rule or a tonal step — never both at once, never a heavier divider to signal emphasis.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do spend colour on state and let chrome stay grey.",
+      "Do use tabular-nums and a mono face for every changing figure.",
+      "Do give every status a text label alongside its colour.",
+      "Do keep controls at 8px radius and containers at 12px.",
+      "Do pair a status -surface ground with its matching -on-surface label; the pairs are contrast-tested.",
+      "Do separate with a hairline or a tonal step — pick one.",
+      "Do specify light and dark together; both are first-class and a token added to one must be added to all three theme blocks.",
+      "Do reference tokens (var(--x)) for every colour, spacing, and radius value."
+    ],
+    "donts": [
+      "Don't use brand violet for ordinary buttons, switches, or tags — it is identity, not affordance.",
+      "Don't flip rise/fall to the Western convention. Red is up.",
+      "Don't add an icon or hue to a surface that is merely important; use weight or position.",
+      "Don't enlarge type past 32px inside the app shell to signal importance.",
+      "Don't animate scale, lift, or bounce on hover — 120ms colour and background transitions only.",
+      "Don't add a shadow to something that does not float and cannot be dismissed.",
+      "Don't write literal hex, px, or radius values in component code; a lint rule fails the build.",
+      "Don't introduce a breakpoint outside the whitelisted five.",
+      "Don't use the generic disabled ink on an inverted or coloured ground — use the paired disabled token."
+    ]
+  }
+}

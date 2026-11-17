@@ -1,0 +1,6 @@
+{
+  "files": ["apps/webui/frontend/index.html"],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}
