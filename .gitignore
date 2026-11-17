@@ -141,5 +141,17 @@ node_modules/
 # === Test/cache ===
 .cache/
 
+# Playwright MCP 的会话产物（页面快照 / 控制台日志 / 截图）落在这里，
+# 不是源码：浏览器工具每用一次就在仓库根生成一个新目录，不忽略即污染 git status。
+.playwright-mcp/
+
+# Impeccable 的运行时目录（问题种子 / 变体预览 / 审查截图 / 屏幕稿）。
+# questions/ 自带 .gitignore 自我忽略；review/ 与 mocks/ 是本地取证产物，
+# 每轮都会重写，提交只会制造噪音。**不要**整目录忽略 .impeccable/ —— PRODUCT.md、
+# DESIGN.md、design.json 与 live/config.json 必须能被协作者和 worktree 看到。
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/config.local.json
+
 # === Doxygen generated ===
 docs/api/

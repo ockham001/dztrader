@@ -9,6 +9,8 @@
 | [frame_contracts/](frame_contracts/README.md) | **帧协议与 frontend↔dzweb 协议的唯一语义真相源**（无编号；**先读 [general](frame_contracts/general.md) 总则**）。开发 IPC/UI 联动前必读 |
 | [development-checklist.md](development-checklist.md) | **新功能开发门禁清单**（P6）：A 前端/B 后台/C 提交前/D 策略 SDK 四段，每项映射到自动化检查 |
 | [unit-test-standard.md](unit-test-standard.md) | **单元测试判据的唯一来源**：有效性/覆盖/一致性/成本/基建五组条目，供撰写与审查逐条对照 |
+| 仓库根 [PRODUCT.md](../PRODUCT.md) | **产品真值与产品原则的唯一来源**（用户 / 场景 / 定位 / 约束 / 品牌承诺）。**不重复架构**——硬门禁指向根 `AGENTS.md`，帧协议指向 `frame_contracts/`，决策指向 `adr/` |
+| 仓库根 [DESIGN.md](../DESIGN.md) | **视觉系统的唯一来源**（色 / 字阶 / 间距 / 圆角 / 组件 / 具名规则），机器可读 token 在 YAML frontmatter，扩展在 `.impeccable/design.json`。实现真相源仍是 `apps/webui/frontend/src/assets/css/design-tokens.css` 与 `theme.css`，二者冲突以 token 文件为准 |
 | 仓库根 `README.md` | 构建/运行/部署指南 |
 
 ## 架构参考（蓝图级，方向性）
