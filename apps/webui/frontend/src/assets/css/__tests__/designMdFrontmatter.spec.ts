@@ -467,4 +467,52 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
     }
     expect(problems, `rounded/spacing 值不符：\n${problems.join('\n')}`).toEqual([])
   })
+
+  it('sidecar 的 narrative 与 DESIGN.md 正文不漂移（防两处事实分叉）', () => {
+    const sidecarPath = join(ROOT, '.impeccable/design.json')
+    if (!existsSync(sidecarPath)) return
+    const sidecar = JSON.parse(readFileSync(sidecarPath, 'utf8')) as {
+      narrative?: {
+        northStar?: string
+        rules?: Array<{ name: string; body: string }>
+        dos?: string[]
+        donts?: string[]
+      }
+    }
+    const n = sidecar.narrative
+    if (!n) return
+    const problems: string[] = []
+
+    // 北极星名必须出现在 DESIGN.md
+    if (n.northStar && !designMd.includes(`"${n.northStar}"`)) {
+      problems.push(`narrative.northStar「${n.northStar}」未出现在 DESIGN.md`)
+    }
+
+    // 每条具名规则：名字必须出现，正文必须逐字出现在 DESIGN.md（允许换行差异）
+    for (const rule of n.rules ?? []) {
+      if (!designMd.includes(rule.name)) {
+        problems.push(`规则「${rule.name}」未出现在 DESIGN.md`)
+        continue
+      }
+      // sidecar 的规则正文按既有风格不含行内反引号，故比对时统一去掉
+      const norm = (s: string) => s.replace(/`/g, '').replace(/\s+/g, ' ').trim()
+      if (!norm(designMd).includes(norm(rule.body))) {
+        problems.push(`规则「${rule.name}」的正文与 DESIGN.md 不一致（两处事实已分叉）`)
+      }
+    }
+
+    // Do / Don't 条目必须在 DESIGN.md 逐字出现（去掉列表记号与行内代码反引号后比对）
+    // 比对时统一去掉行内反引号、标点差异无关的空白，以及 "Do "/"Don't " 前缀
+    //（DESIGN.md 里前缀是 **Do** 加粗记号，sidecar 里是纯文本）
+    const normList = (s: string) =>
+      s.replace(/`/g, '').replace(/\s+/g, ' ').replace(/^(Do|Don't)\s+/i, '').trim()
+    const flatDesign = normList(designMd)
+    for (const item of [...(n.dos ?? []), ...(n.donts ?? [])]) {
+      if (!flatDesign.includes(normList(item))) {
+        problems.push(`Do/Don't 条目未在 DESIGN.md 逐字出现：「${item.slice(0, 60)}…」`)
+      }
+    }
+
+    expect(problems, `sidecar 与 DESIGN.md 漂移：\n${problems.join('\n')}`).toEqual([])
+  })
 })

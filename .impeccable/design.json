@@ -378,7 +378,7 @@
     "rules": [
       {
         "name": "The One Job Rule",
-        "body": "Every chromatic family has exactly one meaning. Violet is identity, crimson/jade is direction, status hues are process state, gold is contract type. Nothing decorative is ever allowed to borrow a family.",
+        "body": "Every chromatic family has exactly one meaning. Violet is identity, crimson/jade is direction, the five status hues are process state. Gold is reserved for main-contract instruments but is currently unassigned — no component consumes it. Nothing decorative is ever allowed to borrow a family — the moment amber can mean \"attention\" *or* \"accent\", the amber cell stops working.",
         "section": "colors"
       },
       {
@@ -388,17 +388,17 @@
       },
       {
         "name": "The Paired-Step Rule",
-        "body": "Every status color exists in three coordinated forms: a solid -default, a transparent -surface for grounds, and a text -on-surface for labels. Use them as a set.",
+        "body": "Every status color exists in three coordinated forms: a solid -default (dots, bars, icons), a transparent -surface (tag grounds), and a text -on-surface (tag labels). Use them as a set. Substituting one for another is what produced the contrast failures this system already had to repair.",
         "section": "colors"
       },
       {
         "name": "The Tabular Numerals Rule",
-        "body": "Any figure that can change carries font-variant-numeric: tabular-nums and usually a mono or metric face. Without this, a row of updating prices jitters.",
+        "body": "Any figure that can change — price, quantity, P&L, count, percentage — carries font-variant-numeric: tabular-nums and usually a mono or metric face. Text never switches faces to change weight; numbers never align to proportional widths. Without this, a row of updating prices jitters and the whole panel reads as broken.",
         "section": "typography"
       },
       {
         "name": "The No Display Type In The Shell Rule",
-        "body": "The 40–52px display steps exist for pre-authentication surfaces. Inside the app shell the largest type is 32px, and most of the interface lives between 11 and 17px.",
+        "body": "The 40–52px display steps are dead tokens today: nothing consumes them. The largest type actually rendered anywhere is the 48px About-dialog product name; the login title stops at 26px. Inside the app shell, treat 32px as the practical ceiling and keep the interface between 11 and 17px. Enlarging a number to make it important destroys the density the panel depends on.",
         "section": "typography"
       },
       {
@@ -408,17 +408,17 @@
       },
       {
         "name": "The Shift-Not-Scale Rule",
-        "body": "Interactive feedback is a background-alpha change or a border-color change at 120ms. Nothing grows, lifts, or bounces on hover.",
+        "body": "Interactive feedback is a background-alpha change or a border-color change at 120ms. Nothing grows, lifts, or bounces on hover. In a surface watched for hours, movement is a cost.",
         "section": "elevation"
       },
       {
         "name": "The 8-And-12 Rule",
-        "body": "Controls are 8px, containers are 12px. A control inside a container aligns its radius to the control scale, never to the container's.",
+        "body": "Controls are 8px, containers are 12px. A control inside a container aligns its radius to the control scale, never to the container's. This one decision is why the whole interface looks like one system even though it spans a hundred components.",
         "section": "shapes"
       },
       {
         "name": "The Hairline-Only Rule",
-        "body": "Separation is a 1px --border-neutral-l1 rule or a tonal step — never both at once, never a heavier divider to signal emphasis.",
+        "body": "Separation is a 1px --border-neutral-l1 rule or a tonal step — never both at once, never a heavier divider to signal emphasis. Emphasis comes from type weight and position.",
         "section": "shapes"
       }
     ],
