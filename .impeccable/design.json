@@ -75,10 +75,10 @@
         "canonical": "#2F74FF"
       },
       "contract-gold": {
-        "role": "tertiary",
+        "role": "unused",
         "displayName": "Contract Gold",
         "canonical": "#B8860B",
-        "note": "Light #B8860B, dark #D4A017. Main-contract badge only."
+        "note": "Light #B8860B, dark #D4A017. **No consumers** — the token pair --bg-contract-main/--text-on-contract-main is defined but nothing uses it and no main-contract badge exists. Do not treat as a live semantic color."
       },
       "ink-strongest": {
         "role": "neutral",
@@ -245,16 +245,17 @@
         "value": "56px"
       },
       {
-        "name": "--topbar-h",
-        "value": "32px"
-      },
-      {
         "name": "--form-label-col-width",
         "value": "122px"
       },
       {
         "name": "--overlay-scrim",
         "value": "rgb(0 0 0 / 40%)"
+      },
+      {
+        "name": ".topbar height",
+        "value": "32px",
+        "note": "Literal in layout.css:191, not a CSS custom property"
       }
     ],
     "constraints": [
@@ -318,7 +319,7 @@
       "name": "Dashboard Panel",
       "kind": "card",
       "refersTo": "panel",
-      "description": "The dashboard's structural unit: flat on the page, hairline border, distinct header band.",
+      "description": "The dashboard's structural unit: flat on the page, hairline border, distinct header band. NOTE: this snippet omits the layout-only properties (flex coefficient, min-height) that the real .dashboard-panel carries, since a static preview has no flex parent.",
       "html": "<div class=\"dashboard-panel\"><div class=\"dashboard-panel__hd\"><span class=\"dashboard-panel__title\"><span class=\"dashboard-panel__title-text\">持仓</span></span><span class=\"dashboard-panel__meta\">8/8</span></div><div class=\"dashboard-panel__tools\"></div></div>",
       "css": ".dashboard-panel { display:flex; flex-direction:column; border:1px solid var(--border-neutral-l1); border-radius:var(--radius-12); background:var(--bg-card); box-shadow:0 1px 3px color-mix(in srgb, var(--text-default) 6%, transparent); overflow:hidden; min-height:80px; box-sizing:border-box; } .dashboard-panel__hd { display:flex; align-items:center; justify-content:space-between; padding:var(--spacer-8) var(--spacer-16); background:var(--bg-card); border-bottom:1px solid var(--border-neutral-l1); flex-shrink:0; } .dashboard-panel__title { display:flex; align-items:center; gap:var(--spacer-6); } .dashboard-panel__title-text { font-size:var(--body-sm-font-size); font-weight:var(--font-weight-strong); color:var(--text-default); } .dashboard-panel__meta { font-size:var(--font-size-10); color:var(--text-tertiary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }"
     },
@@ -334,7 +335,7 @@
       "name": "Status Indicator",
       "kind": "custom",
       "refersTo": null,
-      "description": "Signature component: one inline chip for idle/loading/done/indeterminate, always carrying text so state survives greyscale.",
+      "description": "Signature component: one inline chip for idle/loading/done/indeterminate, always carrying a text label so state survives greyscale. NOTE: the bar-fill width is hardcoded to 60% for this static preview; the real implementation drives it via `var(--ds-status-fill, 0%)` and a 1.5s indeterminate keyframe.",
       "html": "<div style=\"display:flex;gap:var(--spacer-8);flex-wrap:wrap;align-items:center\"><span class=\"ds-status ds-status--done\"><span class=\"ds-status__text\">已登录</span></span><span class=\"ds-status ds-status--idle\"><span class=\"ds-status__text\">未登录</span></span><span class=\"ds-status ds-status--loading\"><span class=\"ds-status__progress\"><span class=\"ds-status__progress-text\">登录中</span><span class=\"ds-status__bar\"><span class=\"ds-status__bar-fill\"></span></span></span></span></div>",
       "css": ".ds-status { display:inline-flex; align-items:center; font-size:var(--body-xs-font-size); flex-shrink:0; box-sizing:border-box; } .ds-status__text { font-size:var(--body-xs-font-size); white-space:nowrap; padding:var(--spacer-1) var(--spacer-8); border-radius:var(--radius-8); line-height:1.6; } .ds-status--done .ds-status__text { color:var(--status-success-default); background:var(--status-success-surface-l1); } .ds-status--idle .ds-status__text { color:var(--status-error-default); background:var(--status-error-surface-l1); } .ds-status__progress { display:none; flex-direction:column; align-items:center; justify-content:center; gap:var(--spacer-2); } .ds-status--loading .ds-status__text { display:none; } .ds-status--loading .ds-status__progress { display:flex; } .ds-status__progress-text { font-size:var(--font-size-10); white-space:nowrap; color:var(--text-secondary); } .ds-status__bar { width:60px; height:4px; border-radius:var(--radius-2); background:var(--bg-base-secondary); overflow:hidden; } .ds-status__bar-fill { display:block; height:100%; border-radius:var(--radius-2); background:var(--status-warning-default); width:60%; }"
     },

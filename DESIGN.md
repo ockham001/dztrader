@@ -46,38 +46,38 @@ typography:
     lineHeight: "60px"
     letterSpacing: "-0.03em"
   headline-md:
-    fontFamily: "\"SF Pro\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"SF Pro\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "22px"
     fontWeight: 600
     lineHeight: "32px"
   title-sm:
-    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "17px"
     fontWeight: 600
     lineHeight: "26px"
   body-base:
-    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "15px"
     fontWeight: 400
     lineHeight: "22px"
     letterSpacing: "-0.02em"
   body-sm:
-    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "12px"
     fontWeight: 400
     lineHeight: "18px"
   body-xs:
-    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "11px"
     fontWeight: 400
     lineHeight: "16px"
   label-md:
-    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "13px"
     fontWeight: 500
     lineHeight: "20px"
   metric:
-    fontFamily: "\"Inter\", \"SF Pro Text\", \"PingFang SC\", system-ui, sans-serif"
+    fontFamily: "\"Inter\", \"SF Pro Text\", \"PingFang SC\", system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif"
     fontSize: "11px"
     fontWeight: 400
     lineHeight: "16px"
@@ -188,7 +188,7 @@ Color is spent carefully and only on state. The chrome is achromatic on purpose 
 
 ## Colors
 
-A near-achromatic grey spine, with four saturated families allowed to speak: brand violet, rise/fall, status, and one warm gold.
+A near-achromatic grey spine, with three chromatic families allowed to speak: brand violet (identity), rise/fall (direction), and the five status hues (process state). A fourth family, contract gold, exists in the token file but has no consumers — see below.
 
 ### Primary
 
@@ -208,7 +208,7 @@ A near-achromatic grey spine, with four saturated families allowed to speak: bra
 
 ### Named Rules
 
-**The One Job Rule.** Every chromatic family has exactly one meaning. Violet is identity, crimson/jade is direction, status hues are process state, gold is contract type. Nothing decorative is ever allowed to borrow a family — the moment amber can mean "attention" *or* "accent", the amber cell stops working.
+**The One Job Rule.** Every chromatic family has exactly one meaning. Violet is identity, crimson/jade is direction, the five status hues are process state. Gold is reserved for main-contract instruments but is currently unassigned — no component consumes it. Nothing decorative is ever allowed to borrow a family — the moment amber can mean "attention" *or* "accent", the amber cell stops working.
 
 **The Achromatic Chrome Rule.** Backgrounds, borders, text, icons, and every ordinary control are grey. If a surface needs to feel important, it gets weight or position — not hue.
 
@@ -245,7 +245,7 @@ The shell is a two-column grid: a sticky 220px sidebar (collapsing to a 56px ico
 
 Breakpoints are Tailwind-aligned and closed: `base <640`, `sm ≥640`, `md ≥768`, `lg ≥1024`, `xl ≥1280`. The width values are whitelisted and machine-enforced by a test, so a new arbitrary breakpoint is a build failure rather than a slow drift. Layout reflow lives in CSS media queries; behavioral branches (drawer versus rail) live in a `matchMedia` composable, so the two never disagree about the same width.
 
-The dashboard is a three-zone grid — left column, a 6px drag gutter, right column — with a bottom band. Panels are resizable via injected flex coefficients; the track sizing stays in CSS so media queries can still override it without `!important`. Panel gutters are 6px, internal panel padding 8–16px. The whole point is that the full status set fits on one laptop or tablet screen without scrolling.
+The dashboard is a three-zone grid — left column, a 6px drag gutter, right column — with a bottom band. Panels are resizable via injected flex coefficients; the track sizing stays in CSS so media queries can still override it without `!important`. Panel gutters are 6px; internal panel padding is drawn from {0, 1, 4, 6, 10, 14, 18}px, with region headers and footers at 10px/18px and table cells at 6px/14px. The whole point is that the full status set fits on one laptop or tablet screen without scrolling.
 
 Spacing is scale-free by design: the token names are pixel values (`--spacer-8` is 10px, `--spacer-16` is 18px), not t-shirt sizes. This looks wrong and is intentional — the values were inherited from a design tool export and renaming them would have silently re-bound hundreds of call sites.
 
@@ -307,7 +307,7 @@ The `1px → 2px` focus and the 8/12 pairing are the entire form language. There
 - **Background:** `--bg-base-secondary` for cards; dashboard panels use `--bg-card`, which differs from it (light `#F5F5F5` vs `#F5F5F5` — same; dark `#202020` vs `#262626` — panels are *darker* than cards).
 - **Shadow Strategy:** See Elevation — edge shadow on panels, none on static cards.
 - **Border:** 1px hairline.
-- **Internal Padding:** 24px for cards. Panels keep per-region padding of 7–18px and give the header row `padding: var(--spacer-8) var(--spacer-16)` — which resolves to **10px / 18px**, not 8/16 — followed by a hairline separator.
+- **Internal Padding:** 24px for cards. Panels draw per-region padding from {0, 1, 4, 6, 10, 14, 18}px; the header row is `padding: var(--spacer-8) var(--spacer-16)` — which resolves to **10px / 18px**, not 8/16 — followed by a hairline separator.
 
 ### Dialogs / Drawers
 
