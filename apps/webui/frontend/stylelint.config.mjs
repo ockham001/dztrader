@@ -82,26 +82,31 @@ export default {
       },
     },
     // token **定义**文件必须保留 `dz/token-literal` 豁免：这两个文件的正文就是 token 的
-    // `--x: <字面量>` 声明，字面量是它们的产物而非违规。规则的颜色检测是按 value 判定的
-    // （与属性名无关），一旦纳入就会把 589 条定义全部报成 hex/rgb 违禁。
+    // `--x: <字面量>` 声明，字面量是它们的产物而非违规。规则的颜色检测按 value 判定（与属性名
+    // 无关），一旦纳入实测报 357 条（design-tokens 175 + theme 182；一条声明最多报一次，
+    // 因为颜色命中后即 return），全部是 token 的字面量产物。
     //
-    // 判据是文件性质而不是目录：design-tokens.css 380 条声明**全部**是自定义属性、0 条普通
-    // 声明；theme.css 209 条自定义属性 + 3 条 `color-scheme`（无值字面量）。改这两个文件不会
-    // 引入裸色，所以豁免不降低护栏强度。反过来，components/dashboard/layout 三个**消费方**
-    // 文件（1345/386/366 条普通声明）不再豁免 —— 它们才是 #354 要关的那条旁路。
+    // 判据是文件性质而不是目录：design-tokens.css 382 条声明**全部**是自定义属性、0 条普通
+    // 声明；theme.css 209 条自定义属性 + 3 条 `color-scheme`（值不是字面量，不报）。改这两个
+    // 文件不会引入裸色，所以豁免不降低护栏强度。反过来，components/dashboard/layout 三个
+    // **消费方**文件（1345/386/366 条普通声明）不再豁免 —— 它们才是 #354 要关的那条旁路。
     //
     // 新增 token 文件时须逐个登记到本 glob；新增消费方 CSS 文件则自动落入红线。
     {
       files: ['src/assets/css/design-tokens.css', 'src/assets/css/theme.css'],
       rules: {
         'dz/token-literal': null,
-        // theme.css / design-tokens.css 只定义 `--*` 与 color-scheme，本就不可能定义 .ds-*；
-        // 恢复该规则只会让「在 theme.css 里写 .ds-*」这种越权多一道拦截。故一并恢复继承。
       },
     },
     // 组件三层（P4 T4）：只对 domain 业务组件目录强制「禁止定义 .ds-* 模式库类」。
-    // shared/(pattern 拥有者) 与 views/ 仍有存量 .ds-* 定义，属后续渐进迁移，暂豁免；
-    // assets/css 由上面 override 豁免。新 .ds-* 只准进 assets/css 或 shared/。
+    // shared/(pattern 拥有者) 与 views/ 仍有存量 .ds-* 定义，属后续渐进迁移，暂豁免。
+    // 新 .ds-* 只准进 assets/css 或 shared/。
+    //
+    // #354 更正：本 override 原先还写着 `assets/css 由上面 override 豁免` —— 但那只是
+    // `dz/no-ds-namespace: null` 的空声明：该规则**只在下面这条 override 里被启用**，
+    // 顶层 rules 并未开启，所以在 assets/css 下写 `.ds-*` 本来就不会报（实测探针
+    // `.ds-probe-x { color: red }` 只报 token-literal，no-ds-namespace 零命中）。
+    // 那行 null 已删除（纯空操作，删了行为不变）；真正的护栏是这条 override 本身。
     {
       files: ['src/components/marketSources/**/*.vue', 'src/components/logs/**/*.vue'],
       rules: {

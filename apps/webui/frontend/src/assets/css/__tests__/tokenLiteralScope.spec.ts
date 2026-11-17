@@ -116,13 +116,43 @@ describe('#354 env() 白名单：双向判定', () => {
     expect(warnings).toHaveLength(0)
   })
 
-  it('env() 里嵌套 var()/calc() 同样放行（括号配对正确，非贪婪正则在此会漏）', async () => {
+  it('env() 内嵌套 calc() 时括号配对正确（非贪婪正则会在此误报）', async () => {
+    // 这是**能区分实现**的 fixture：`env(a, calc(var(--x) 2px))` 里那个 `2px` 在 env() 内部，
+    // 必须放行。朴素实现 `replace(/env\([^)]*\)/g,'')` 会在第一个 `)` 停下，
+    // 留下 ` 2px))` → 误报 1 条。审查实测两种实现下本条分别得 0 和 1。
+    const warnings = await tokenLiteralWarnings(
+      '.x { padding: calc(env(safe-area-inset-top, calc(var(--spacer-0) 2px))); }\n',
+      'src/assets/css/__fixture_env_inner_calc.css',
+    )
+    expect(warnings).toHaveLength(0)
+  })
+
+  it('env() 里嵌套 var() 同样放行，且外层 calc 的 px 仍报出', async () => {
     const warnings = await tokenLiteralWarnings(
       '.x { padding: calc(env(safe-area-inset-top, var(--spacer-0, 0px)) + 2px); }\n',
       'src/assets/css/__fixture_env_nested.css',
     )
     // 外层 calc 里的 `2px` 是**真**字面量，必须仍被报出；env() 内的两个 px 放行。
     expect(warnings).toHaveLength(1)
+  })
+
+  it('标识符边界：`myenv(...)` 不算 env()，其中的 px 仍须报出', async () => {
+    // 审查实测的漏网方向：`indexOf('env(')` 会从 `myenv(` 的 `e` 起命中，把真字面量
+    // 整段吃掉——那是**静默放宽红线**，比误报危险得多。
+    const warnings = await tokenLiteralWarnings(
+      '.x { padding: myenv(safe-area-inset-bottom, 7px); }\n',
+      'src/assets/css/__fixture_env_prefix.css',
+    )
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('大小写无关：`ENV(...)` 是合法 CSS，其 fallback px 同样放行', async () => {
+    // CSS 函数名不区分大小写；只按小写找会误报。
+    const warnings = await tokenLiteralWarnings(
+      '.x { padding-bottom: calc(var(--spacer-16) + ENV(safe-area-inset-bottom, 0px)); }\n',
+      'src/assets/css/__fixture_ENV_upper.css',
+    )
+    expect(warnings).toHaveLength(0)
   })
 
   it('同一属性里 env() 之外的 px 仍报出（白名单不是整条豁免）', async () => {
