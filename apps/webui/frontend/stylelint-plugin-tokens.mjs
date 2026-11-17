@@ -27,6 +27,29 @@ const ruleTokenLiteral = {
       const RADIUS_PROPS = new Set(['border-radius', 'border-top-left-radius', 'border-top-right-radius',
         'border-bottom-left-radius', 'border-bottom-right-radius'])
       const NUMBER_PX = /\b\d+(?:\.\d+)?px\b/
+      // #354：`env()` 的 fallback 是 CSS 函数语法而**不是**设计间距字面量，典型形态
+      // `calc(var(--spacer-16) + env(safe-area-inset-bottom, 0px))`（iOS 安全区）。
+      // 其中的 0px 只能写成 px（env 的 fallback 不接受 token 之外的语义），且换成 token 没有
+      // 任何设计收益 —— 检测前先整段剥掉 `env(...)`（含嵌套括号），避免误报。
+      // 用「手写括号配对」而不是 `\([^)]*\)`：env() 里合法嵌套 var()/calc()，
+      // 非贪婪正则会在第一个 `)` 处停下。剥离后若还有 px，仍照常报出。
+      const stripEnvFunctions = (input) => {
+        let out = ''
+        let i = 0
+        while (i < input.length) {
+          const start = input.indexOf('env(', i)
+          if (start === -1) { out += input.slice(i); break }
+          out += input.slice(i, start)
+          let depth = 0
+          let j = start + 3 // 指向 '('
+          for (; j < input.length; j++) {
+            if (input[j] === '(') depth++
+            else if (input[j] === ')') { depth--; if (depth === 0) { j++; break } }
+          }
+          i = j
+        }
+        return out
+      }
 
       root.walkDecls((decl) => {
         const value = decl.value
@@ -57,7 +80,7 @@ const ruleTokenLiteral = {
         // 2) 间距/圆角 px 字面量
         const isSpacing = SPACING_PROPS.has(prop)
         const isRadius = RADIUS_PROPS.has(prop)
-        if ((isSpacing || isRadius) && NUMBER_PX.test(value)) {
+        if ((isSpacing || isRadius) && NUMBER_PX.test(stripEnvFunctions(value))) {
           utilsReport({
             result,
             ruleName: 'dz/token-literal',

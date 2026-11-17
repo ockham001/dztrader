@@ -61,22 +61,42 @@ export default {
       files: ['**/*.vue'],
       customSyntax: 'postcss-html',
     },
-    // 全局变量定义文件例外：token 值本身必须用字面量定义
+    // 资产 CSS 的**格式类**规则豁免（不含设计正确性规则，见下）。
+    //
+    // #354 收窄：本 override 原先把 `dz/token-literal` 一并关掉，理由是「资产 CSS 是存量
+    // 紧凑格式，实测 87 处噪音」—— 但那 87 处全部属于本段列举的**格式/写法偏好**，与设计
+    // 正确性无关。设计正确性规则被连带豁免，等价于 CSS 层留着一条与模板 `:style`（#346 已关）
+    // 同构的旁路：components/layout/dashboard.css 里写裸 px 与裸色不会被拦。
+    //
+    // 存量噪音构成（供将来接 Prettier 时核对，与红线无关）：alpha 38 + color-function 38 +
+    // custom-property 空行 8 + vendor 前缀 2 + :not 写法 1 = 87；修复前只报 51，因为
+    // theme.css 整文件解析失败被跳过（#198）。
     {
       files: ['src/assets/css/**'],
       rules: {
-        'dz/token-literal': null,
-        'dz/no-ds-namespace': null,
-        // 资产 CSS 是「存量紧凑格式」而非组件样式（#198 后 .css 首次真正被 lint）：
-        // 这几条纯格式/写法偏好规则在修复后实测报 87 处存量噪音（= alpha 38 +
-        // color-function 38 + custom-property 空行 8 + vendor 前缀 2 + :not 写法 1），
-        // 与主题正确性无关。修复前只报 51 处，因为 theme.css 整文件解析失败被跳过。
-        // 与顶部已关闭的 8 条同类规则同口径 —— 格式归 P4/Prettier，不进门禁。
         'alpha-value-notation': null,
         'color-function-notation': null,
         'value-no-vendor-prefix': null,
         'custom-property-empty-line-before': null,
         'selector-not-notation': null,
+      },
+    },
+    // token **定义**文件必须保留 `dz/token-literal` 豁免：这两个文件的正文就是 token 的
+    // `--x: <字面量>` 声明，字面量是它们的产物而非违规。规则的颜色检测是按 value 判定的
+    // （与属性名无关），一旦纳入就会把 589 条定义全部报成 hex/rgb 违禁。
+    //
+    // 判据是文件性质而不是目录：design-tokens.css 380 条声明**全部**是自定义属性、0 条普通
+    // 声明；theme.css 209 条自定义属性 + 3 条 `color-scheme`（无值字面量）。改这两个文件不会
+    // 引入裸色，所以豁免不降低护栏强度。反过来，components/dashboard/layout 三个**消费方**
+    // 文件（1345/386/366 条普通声明）不再豁免 —— 它们才是 #354 要关的那条旁路。
+    //
+    // 新增 token 文件时须逐个登记到本 glob；新增消费方 CSS 文件则自动落入红线。
+    {
+      files: ['src/assets/css/design-tokens.css', 'src/assets/css/theme.css'],
+      rules: {
+        'dz/token-literal': null,
+        // theme.css / design-tokens.css 只定义 `--*` 与 color-scheme，本就不可能定义 .ds-*；
+        // 恢复该规则只会让「在 theme.css 里写 .ds-*」这种越权多一道拦截。故一并恢复继承。
       },
     },
     // 组件三层（P4 T4）：只对 domain 业务组件目录强制「禁止定义 .ds-* 模式库类」。

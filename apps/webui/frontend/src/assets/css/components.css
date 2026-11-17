@@ -26,7 +26,7 @@
 /* 滚动条宽度恒定以避免布局抖动；thumb 默认透明，鼠标悬停容器时才显色 */
 *::-webkit-scrollbar { width: 6px; height: 6px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: transparent; border-radius: 3px; transition: background .15s ease; }
+*::-webkit-scrollbar-thumb { background: transparent; border-radius: var(--radius-3); transition: background .15s ease; }
 *:hover::-webkit-scrollbar-thumb { background: var(--border-neutral-l2); }
 *:hover::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
 * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
@@ -479,14 +479,14 @@ pre {
     /* ===== Login Status (3-state, ported from main.html) ===== */
     .login-status { display: inline-flex; align-items: center; font-size: var(--body-xs-font-size); flex-shrink: 0; }
     /* Text view — shown for offline/logged, hidden for logging */
-    .login-status__text { font-size: var(--body-xs-font-size); white-space: nowrap; padding: 1px var(--spacer-8); border-radius: var(--radius-8); line-height: 1.6; }
+    .login-status__text { font-size: var(--body-xs-font-size); white-space: nowrap; padding: var(--spacer-1) var(--spacer-8); border-radius: var(--radius-8); line-height: 1.6; }
     .login-status--logged .login-status__text { color: var(--status-success-default); background: var(--status-success-surface-l1); }
     .login-status--offline .login-status__text { color: var(--status-error-default); background: var(--status-error-surface-l1); }
     /* Progress view — shown only for logging, hidden otherwise */
-    .login-status__progress { display: none; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
-    .login-status__progress-text { font-size: 10px; white-space: nowrap; color: var(--text-secondary); }
-    .login-status__bar { width: 60px; height: 4px; border-radius: 2px; background: var(--bg-base-secondary); overflow: hidden; }
-    .login-status__bar-fill { display: block; height: 100%; border-radius: 2px; background: var(--status-warning-default, #e8890c); transition: width 0.3s ease; }
+    .login-status__progress { display: none; flex-direction: column; align-items: center; justify-content: center; gap: var(--spacer-2); }
+    .login-status__progress-text { font-size: var(--font-size-10); white-space: nowrap; color: var(--text-secondary); }
+    .login-status__bar { width: 60px; height: 4px; border-radius: var(--radius-2); background: var(--bg-base-secondary); overflow: hidden; }
+    .login-status__bar-fill { display: block; height: 100%; border-radius: var(--radius-2); background: var(--status-warning-default, #e8890c); transition: width 0.3s ease; }
     /* Logging state: show progress, hide text */
     .login-status--logging .login-status__text { display: none; }
     .login-status--logging .login-status__progress { display: flex; }
@@ -522,7 +522,7 @@ pre {
     .ds-check input:disabled + .ds-check__box { opacity: .5; cursor: not-allowed; }
     /* 全选 checkbox：部分选中时显示横线（indeterminate 状态由 Vue :indeterminate.prop 设置） */
     .ds-check input:indeterminate + .ds-check__box { background: var(--bg-brand); border-color: var(--bg-brand); }
-    .ds-check input:indeterminate + .ds-check__box::after { content: ''; width: 8px; height: 2px; background: var(--text-onbrand); border-radius: 1px; }
+    .ds-check input:indeterminate + .ds-check__box::after { content: ''; width: 8px; height: 2px; background: var(--text-onbrand); border-radius: var(--radius-1); }
     /* 全选行：减小高度让其与标题并列 */
     .ds-check--all { min-height: 0; }
     .ds-radio__dot { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-full); display: inline-flex; align-items: center; justify-content: center; transition: border-color .12s, background .12s; }
@@ -541,7 +541,7 @@ pre {
     .ds-switch input { display: none; }
     .ds-switch__track { position: relative; width: 100%; height: 100%; }
     .ds-switch__thumb { position: absolute; top: 50%; left: 1px; width: 16px; height: 16px; box-sizing: border-box; background: var(--bg-base-default); border-radius: var(--radius-full); transform: translateY(-50%); transition: left .15s, background .15s; }
-    .ds-switch:has(input:checked) .ds-switch__thumb { left: 17px; background: #FFFFFF; }
+    .ds-switch:has(input:checked) .ds-switch__thumb { left: 17px; background: var(--special-white); }
     .ds-switch:has(input:checked) { background: var(--status-success-default); border-color: var(--status-success-default); }
     .ds-switch--pending { pointer-events: none; }
     .ds-switch--pending .ds-switch__thumb { background: transparent; border: 2px solid var(--bg-overlay-l3); border-top-color: var(--icon-secondary); border-radius: 50%; animation: ds-switch-spin .6s linear infinite; }
@@ -595,15 +595,15 @@ pre {
       color: var(--text-default); user-select: none; font-variant-numeric: tabular-nums;
     }
     .ds-datepicker__weekdays {
-      display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: var(--spacer-2);
       margin-bottom: var(--spacer-4);
     }
     .ds-datepicker__weekday {
-      text-align: center; font-size: 11px; font-weight: var(--font-weight-medium);
+      text-align: center; font-size: var(--body-xs-font-size); font-weight: var(--font-weight-medium);
       color: var(--text-tertiary); padding: var(--spacer-2) 0; user-select: none;
     }
     .ds-datepicker__days {
-      display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: var(--spacer-2);
     }
     .ds-datepicker__day {
       display: flex; align-items: center; justify-content: center;
@@ -694,7 +694,7 @@ pre {
     .ds-status__text {
         font-size: var(--body-xs-font-size);
         white-space: nowrap;
-        padding: 1px var(--spacer-8);
+        padding: var(--spacer-1) var(--spacer-8);
         border-radius: var(--radius-8);
         line-height: 1.6;
     }
@@ -713,24 +713,24 @@ pre {
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 2px;
+        gap: var(--spacer-2);
     }
     .ds-status__progress-text {
-        font-size: 10px;
+        font-size: var(--font-size-10);
         white-space: nowrap;
         color: var(--text-secondary);
     }
     .ds-status__bar {
         width: 60px;
         height: 4px;
-        border-radius: 2px;
+        border-radius: var(--radius-2);
         background: var(--bg-base-secondary);
         overflow: hidden;
     }
     .ds-status__bar-fill {
         display: block;
         height: 100%;
-        border-radius: 2px;
+        border-radius: var(--radius-2);
         background: var(--status-warning-default, #e8890c);
         transition: width 0.3s ease;
     }
