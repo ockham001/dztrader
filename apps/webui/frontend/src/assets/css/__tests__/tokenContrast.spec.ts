@@ -251,6 +251,13 @@ const CONTRAST_PAIRS: readonly ContrastPair[] = [
   { id: 'tag-warning', usage: '警告标签（.ds-tag--warning：开发中/演示）', fg: '--status-warning-on-surface', bg: '--status-warning-surface-l1', base: '--bg-card', min: 4.5 },
   { id: 'tag-danger', usage: '危险标签（.ds-tag--danger：废单/已停止）', fg: '--status-error-on-surface', bg: '--status-error-surface-l1', base: '--bg-card', min: 4.5 },
   { id: 'tag-partial', usage: '「部分成交」标签（面板内 .ds-tag--alert，蓝色，历史类名）', fg: '--status-primary-on-surface', bg: '--status-primary-surface-l1', base: '--bg-card', min: 4.5 },
+  // #354：中性委托标签（无 ds-tag-- 修饰）的白叠底。原先这是 dashboard.css 里的裸写
+  // `rgba(255,255,255,.08)`，按 #354 的纯 token 化要求收敛为 `--tag-muted-surface`（同值）。
+  // 按 development-checklist A3「新增会承载文字的 token 要在 CONTRAST_PAIRS 加一行」，
+  // 此处显式登记：它承载 `--text-tertiary`。实测不达标（浅 4.38 / 深 2.71），但**值与原
+  // 裸写逐字相同，不是本票引入的回归**，故进 KNOWN_VIOLATIONS 而非改色（改色会违反
+  // #354 AC3 视觉零变化；该缺陷的修法与 tertiary 族同源，归 #324 专项）。
+  { id: 'tag-muted-on-card', usage: '中性委托标签文字（.ds-tag 无修饰）on 白叠底', fg: '--text-tertiary', bg: '--tag-muted-surface', base: '--bg-card', min: 4.5 },
 
   // 涨跌色（#349 收编进 token）：它们承载**表格里的数字**（11–12px 正文字号），按 4.5:1 要求。
   // 现状不达标（浅色 3.75 / 3.17、深色 rise 3.99）—— 达标必须重设涨跌色相，而本票 AC6
@@ -355,6 +362,22 @@ const KNOWN_VIOLATIONS: Record<string, KnownViolation> = {
     ratio: 3.44,
     ticket: 324,
     why: '#324 第 16 条已拍板：tertiary 影响全站 136 处，须独立专项',
+  },
+
+  // --- 中性委托标签底（#354 新增 token）---
+  // `--tag-muted-surface` = rgba(255,255,255,.08)，与它替代的裸写**逐字同值**，所以这两条
+  // 是既有缺陷被搬进 token 表后「现形」，不是 #354 引入的回归（#354 是纯 token 化，AC3
+  // 要求视觉零变化）。根因与上面的 tertiary 族同源：`--text-tertiary` 在浅色差 0.12、
+  // 深色差 1.79，修法（压暗 tertiary 或改白叠底）都会动观感，归 #324 专项。
+  'light/tag-muted-on-card': {
+    ratio: 4.38,
+    ticket: 324,
+    why: '白 8% 叠在 #F5F5F5 上承载 #737373；与 tertiary 族同源，须随 #324 一并收敛',
+  },
+  'dark/tag-muted-on-card': {
+    ratio: 2.71,
+    ticket: 324,
+    why: '白 8% 叠在 #202020 上承载 #737373；深色差 1.79，同上',
   },
 }
 

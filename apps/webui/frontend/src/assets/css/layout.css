@@ -278,13 +278,13 @@ body {
   line-height: 1.2;
 }
 .topbar__resource .res-label {
-  font-size: 9px;
+  font-size: var(--font-size-9);
   font-weight: 600;
   color: var(--text-secondary);
   line-height: 1.2;
 }
 .topbar__resource .res-value {
-  font-size: 9px;
+  font-size: var(--font-size-9);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -338,7 +338,7 @@ body {
   flex-direction: row;
   align-items: center;
   gap: var(--spacer-2);
-  font-size: 9px;
+  font-size: var(--font-size-9);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
@@ -465,7 +465,7 @@ body {
 .topbar__weekday { white-space: nowrap; }
 .topbar__time { white-space: nowrap; }
 
-.topbar__ntp { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; flex-shrink: 0; }
+.topbar__ntp { display: inline-flex; align-items: center; gap: var(--spacer-2); white-space: nowrap; flex-shrink: 0; }
 @keyframes ntp-warn {
   0%, 100% { color: var(--status-success-default); }
   50% { color: var(--status-alert-default); }

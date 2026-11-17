@@ -146,7 +146,7 @@
 .auto-scroll::-webkit-scrollbar-track { background: transparent; }
 .auto-scroll::-webkit-scrollbar-thumb {
   background: transparent;
-  border-radius: 3px;
+  border-radius: var(--radius-3);
   transition: background 200ms;
 }
 .auto-scroll:hover::-webkit-scrollbar-thumb {
@@ -263,7 +263,7 @@
 .cell-two-line {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: var(--spacer-1);
   line-height: var(--body-xs-line-height);
 }
 .cell-two-line .cell-main {
@@ -271,7 +271,7 @@
   color: var(--text-default);
 }
 .cell-two-line .cell-sub {
-  font-size: 10px;
+  font-size: var(--font-size-10);
   color: var(--text-tertiary);
 }
 
@@ -292,7 +292,7 @@
   justify-content: center;
   width: 12px;
   height: 12px;
-  font-size: 10px;
+  font-size: var(--font-size-10);
   line-height: 1;
   flex-shrink: 0;
 }
@@ -320,18 +320,18 @@
 /* #349：本段只留**形态**（尺寸/圆角/字重）；**状态色配色交给 components.css 的
    `.ds-tag--*`** —— 它们现在用 `-surface-l1` 底 + `-on-surface` 文字，浅深两套都过 4.5:1。
    原先这里裸写 #2a9d5c / #5b8def / #d4543e + 15% alpha 底，浅色段实测仅 2.56–3.12:1。
-   例外：下面「无 ds-tag-- 修饰」的中性药丸仍用 `rgba(255,255,255,.08)` 白叠底 ——
-   它不属于状态色族（票面范围只到 `.ds-tag--*`），且改成 `--bg-overlay-*` 会改变观感，
-   留待统一边框/叠层 token 时处理。 */
+   #354：下面「无 ds-tag-- 修饰」的中性药丸的白叠底已收敛为 `--tag-muted-surface`
+   （值与原裸写逐字一致，观感不变）。它仍不属于状态色族，改用 `--bg-overlay-*` 会转灰变暗，
+   属观感变化，故单开一个精确等值的 token 而不是复用叠层族。 */
 .dashboard-panel .ds-table .ds-tag {
   display: inline-block;
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-size: 10px;
+  padding: var(--spacer-1) var(--spacer-6);
+  border-radius: var(--radius-10);
+  font-size: var(--font-size-10);
   font-weight: var(--font-weight-medium);
   border: none;
   height: auto;
-  line-height: 16px;
+  line-height: var(--body-xs-line-height);
 }
 /* 「部分成交」蓝色标签：历史类名 `.ds-tag--alert`，语义是「进行中/部分成交」，#349 起
    改用 primary 蓝色族（底 --status-primary-surface-l1 + 文字 --status-primary-on-surface，
@@ -342,7 +342,7 @@
   color: var(--status-primary-on-surface);
 }
 .dashboard-panel .ds-table .ds-tag:not([class*="ds-tag--"]) {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--tag-muted-surface);
   color: var(--text-tertiary);
 }
 
@@ -352,7 +352,7 @@
   height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-  margin-top: 5px;
+  margin-top: var(--spacer-5);
 }
 .msg-level-icon--info { background: var(--status-primary-default); }
 .msg-level-icon--warning { background: var(--status-alert-default); }

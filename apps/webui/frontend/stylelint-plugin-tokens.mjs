@@ -27,6 +27,38 @@ const ruleTokenLiteral = {
       const RADIUS_PROPS = new Set(['border-radius', 'border-top-left-radius', 'border-top-right-radius',
         'border-bottom-left-radius', 'border-bottom-right-radius'])
       const NUMBER_PX = /\b\d+(?:\.\d+)?px\b/
+      // #354：`env()` 的 fallback 是 CSS 函数语法而**不是**设计间距字面量，典型形态
+      // `calc(var(--spacer-16) + env(safe-area-inset-bottom, 0px))`（iOS 安全区）。
+      // 其中的 0px 只能写成 px（env 的 fallback 不接受 token 之外的语义），且换成 token 没有
+      // 任何设计收益 —— 检测前先整段剥掉 `env(...)`（含嵌套括号），避免误报。
+      // 用「手写括号配对」而不是 `\([^)]*\)`：env() 里合法嵌套 var()/calc()，
+      // 非贪婪正则会在第一个 `)` 处停下。剥离后若还有 px，仍照常报出。
+      //
+      // 必须做**标识符边界**与**大小写**判断（审查实测的两个漏网方向）：
+      //   - `myenv(a, 0px)` 会从 `e` 起命中 `env(`，把真字面量整段吃掉 → 静默放宽红线；
+      //   - `ENV(...)` 是合法 CSS（函数名不区分大小写），不按小写找会误报。
+      // 故改用带 `(?<![\w-])` 前瞻边界的正则定位起点，并加 `i` 标志。
+      const ENV_CALL = /(?<![\w-])env\(/gi
+      const stripEnvFunctions = (input) => {
+        let out = ''
+        let i = 0
+        while (i < input.length) {
+          ENV_CALL.lastIndex = i
+          const hit = ENV_CALL.exec(input)
+          if (!hit) { out += input.slice(i); break }
+          const start = hit.index
+          // `(` 的位置 = 匹配起点 + 函数名长度（env 三字母，大小写无关）
+          let depth = 0
+          let j = hit.index + 3
+          for (; j < input.length; j++) {
+            if (input[j] === '(') depth++
+            else if (input[j] === ')') { depth--; if (depth === 0) { j++; break } }
+          }
+          out += input.slice(i, start)
+          i = j
+        }
+        return out
+      }
 
       root.walkDecls((decl) => {
         const value = decl.value
@@ -57,7 +89,7 @@ const ruleTokenLiteral = {
         // 2) 间距/圆角 px 字面量
         const isSpacing = SPACING_PROPS.has(prop)
         const isRadius = RADIUS_PROPS.has(prop)
-        if ((isSpacing || isRadius) && NUMBER_PX.test(value)) {
+        if ((isSpacing || isRadius) && NUMBER_PX.test(stripEnvFunctions(value))) {
           utilsReport({
             result,
             ruleName: 'dz/token-literal',
