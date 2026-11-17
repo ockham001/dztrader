@@ -479,6 +479,13 @@ describe('DESIGN.md frontmatter 与 token 源真实一致（#356）', () => {
     // 这条是 S-1/S-2 的通用收口：前面各用例只**枚举**已知属性去校验值，
     // 若 frontmatter 多塞一个 spec 不认识的属性（如 card.borderRadius、
     // body-base.extraProp），没有任何用例会报错。这里把"允许的属性集合"显式化。
+    //
+    // 白名单出处（勿凭感觉增删，需同步上游 schema）：
+    //   impeccable/reference/document.md:47  —— 组件 sub-token 限 8 个 prop
+    //   impeccable/reference/document.md:112 —— typography 的可选 prop 集合
+    // 注意：白名单只校验**属性名**是否合法，不校验值。其中 size / width /
+    // typography(组件) / fontFeature / fontVariation 五个当前在 frontmatter 中
+    // 零使用，故无值断言；将来若启用，需为它们补上对应的取值校验。
     const ALLOWED_COMPONENT_PROPS = new Set([
       'backgroundColor', 'textColor', 'typography', 'rounded', 'padding', 'size', 'height', 'width',
     ])
