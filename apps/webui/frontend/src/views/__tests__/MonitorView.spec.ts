@@ -77,8 +77,7 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     // 每张网卡的收发各占一行（平铺，不点开就能看见）
     const nicRows = wrapper.findAll('[data-test="monitor-network-row"]')
     expect(nicRows.map(row => row.attributes('data-direction'))).toEqual(['rx', 'tx'])
-    expect(nicRows[0].find('[data-test="monitor-memory-value"], [data-test="ledger-value"], .monitor-view__ledger-value').text())
-      .toBe('1.0 MiB/s')
+    expect(nicRows[0].find('.monitor-view__ledger-value').text()).toBe('1.0 MiB/s')
     expect(nicRows[1].find('.monitor-view__ledger-value').text()).toBe('2.0 MiB/s')
     expect(wrapper.find('[data-test="monitor-ledger"]').text()).not.toContain('不可用')
   })

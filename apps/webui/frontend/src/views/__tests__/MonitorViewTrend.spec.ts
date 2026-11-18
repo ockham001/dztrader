@@ -515,15 +515,20 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(source).not.toMatch(/clientWidth|getBoundingClientRect/)
   })
 
-  it('长 token 只在这一处开断行，其它 list-value 不被拦腰折断（#321）', () => {
-    // 共享内存目录路径可任意长度，需要 anywhere（它同时收窄 min-content）
-    expect(ruleBody('.monitor-view__list-value--wrap')).toContain('overflow-wrap: anywhere')
-    // 基础类不得开断行：那会把百分比 / 容量在极窄列里折成两行（实测 320 下 68.8% 被折断）
-    expect(ruleBody('.monitor-view__list-value')).not.toContain('overflow-wrap')
-    // 挂载点允许换行（窄列下显示全路径，不只靠 title）
-    const mount = ruleBody('.monitor-view__list-label--mount')
-    expect(mount).toContain('white-space: normal')
-    expect(mount).toContain('overflow-wrap: anywhere')
+  it('长 token 在台账里按列收口：名称 / 明细 / 展开值可断行，读数列不折（#321 / #363）', () => {
+    // 挂载点与契约键可任意长度：名称列开 anywhere（它同时收窄 min-content，避免窄屏横向溢出）
+    expect(ruleBody('.monitor-view__ledger-label')).toContain('overflow-wrap: anywhere')
+    expect(ruleBody('.monitor-view__ledger-key')).toContain('overflow-wrap: anywhere')
+    // 明细列（写吞吐 / 延迟 / 错误累计）与展开明细值同样允许断行
+    expect(ruleBody('.monitor-view__ledger-detail')).toContain('overflow-wrap: anywhere')
+    expect(ruleBody('.monitor-view__ledger-field-value')).toContain('overflow-wrap: anywhere')
+    // 读数与阈值列**不折**：百分比 / 容量在窄列里折成两行等于读错（实测 320 下 68.8% 被折断）
+    for (const selector of ['.monitor-view__ledger-value', '.monitor-view__ledger-threshold',
+      '.monitor-view__ledger-headroom']) {
+      const body = ruleBody(selector)
+      expect(body, selector).toContain('white-space: nowrap')
+      expect(body, selector).not.toContain('overflow-wrap')
+    }
   })
 
   it('不使用容器查询（既有白名单门禁只扫 @media，引入 @container 会绕过防野断点检查）', () => {

@@ -1602,26 +1602,6 @@ const cpuTrendAriaLabel = computed(
   }
 }
 
-/* 资源使用率色标（卷 / 内存 / 交换；#120 收口）：与顶栏徽章共用 useResourceLevel 的同一组
-   常量与设计 token（≥70% 黄、≥90% 红）；色标是独立展示规则，不是越限判定。 */
-.monitor-view__disk-row[data-level='normal'] .monitor-view__list-value,
-.monitor-view__metric-row[data-level='normal'] .monitor-view__metric,
-.monitor-view__list-row[data-level='normal'] .monitor-view__value-btn {
-  color: var(--status-success-default);
-}
-
-.monitor-view__disk-row[data-level='warn'] .monitor-view__list-value,
-.monitor-view__metric-row[data-level='warn'] .monitor-view__metric,
-.monitor-view__list-row[data-level='warn'] .monitor-view__value-btn {
-  color: var(--status-alert-default);
-}
-
-.monitor-view__disk-row[data-level='danger'] .monitor-view__list-value,
-.monitor-view__metric-row[data-level='danger'] .monitor-view__metric,
-.monitor-view__list-row[data-level='danger'] .monitor-view__value-btn {
-  color: var(--status-error-default);
-}
-
 .monitor-view__card--wide {
   grid-column: 1 / -1;
 }
@@ -1636,20 +1616,6 @@ const cpuTrendAriaLabel = computed(
   display: inline-flex;
   align-items: center;
   color: var(--icon-secondary);
-}
-
-/* 卡片头（标题 + 右侧操作，如网络区块的「显示全部网卡」开关） */
-.monitor-view__card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacer-12);
-  flex-wrap: wrap;
-  margin-bottom: var(--spacer-8);
-}
-
-.monitor-view__card-head .ds-card__title {
-  margin-bottom: 0;
 }
 
 .monitor-view__net-toggle {
@@ -1858,15 +1824,6 @@ const cpuTrendAriaLabel = computed(
   color: var(--text-tertiary);
 }
 
-/* 数值 + sparkline 同排（#127）：sparkline 是辅助信息，固定高度、宽度跟随卡片列宽（容器自适应，
-   不靠 JS 计算断点），不抢数字的主体地位 */
-.monitor-view__metric-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacer-12);
-  min-width: 0;
-}
-
 .monitor-view__sparkline {
   flex: 1;
   min-width: 48px;
@@ -1882,23 +1839,6 @@ const cpuTrendAriaLabel = computed(
   margin-top: var(--spacer-4);
 }
 
-.monitor-view__sparkline--inline {
-  flex: 0 1 96px;
-  align-self: center;
-  margin-left: auto;
-}
-
-/* 内存卡片内的交换子区块（#74）：与内存数值之间留白，复用面板标题 / 列表样式 */
-.monitor-view__subsection {
-  margin-top: var(--spacer-12);
-}
-
-/* 卷行（#75）：行内边距与圆角 */
-.monitor-view__disk-row {
-  padding: var(--spacer-2) var(--spacer-6);
-  border-radius: var(--radius-4);
-}
-
 /* 无容量挂载折叠组（#122）：正文之后、与列表之间留白（折叠按钮自带尺寸，不另设边框） */
 .monitor-view__zero-volumes {
   margin-top: var(--spacer-8);
@@ -1912,24 +1852,6 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* ---- 磁盘 I/O（#76）：每个物理盘一块，指标网格窄屏自动换行（auto-fit），全部走设计 token ---- */
-.monitor-view__io-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacer-8);
-}
-
-.monitor-view__io-row {
-  display: grid;
-  gap: var(--spacer-8);
-  min-width: 0;
-  padding: var(--spacer-8) var(--spacer-12);
-  border: 1px solid var(--border-neutral-l1);
-  border-radius: var(--radius-6);
-}
-
 .monitor-view__io-device {
   color: var(--text-default);
   font-size: var(--body-sm-font-size);
@@ -2198,7 +2120,17 @@ const cpuTrendAriaLabel = computed(
   color: var(--text-tertiary);
 }
 
-.monitor-view__ledger-threshold,
+/* 阈值与余量各自成条（不合并选择器）：两格在窄屏落到不同 grid-area，且都要能被单独定位 /
+   单独断言「不折行」——合并成一条会让按选择器取规则的检查失效。 */
+.monitor-view__ledger-threshold {
+  color: var(--text-secondary);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .monitor-view__ledger-headroom {
   color: var(--text-secondary);
   font-family: var(--font-family-metric);
@@ -2362,15 +2294,6 @@ const cpuTrendAriaLabel = computed(
 
 .monitor-view__panel-head .monitor-view__panel-title {
   margin-bottom: 0;
-}
-
-/* 维度明细的折叠条（#127）：左侧摘要、右侧展开/收起按钮，复用既有 tertiary 按钮，不新增折叠组件 */
-.monitor-view__detail-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacer-8);
-  margin-bottom: var(--spacer-8);
 }
 
 .monitor-view__panel-title {
@@ -2551,11 +2474,6 @@ const cpuTrendAriaLabel = computed(
   min-width: 158px;
 }
 
-/* 时钟卡片明细区（#302）：与主数值之间留白，复用面板标题 / 列表 / io-metrics 既有范式 */
-.monitor-view__clock-detail {
-  margin-top: var(--spacer-8);
-}
-
 .monitor-view__clock-servers {
   list-style: none;
   margin: 0;
@@ -2573,11 +2491,6 @@ const cpuTrendAriaLabel = computed(
   padding: var(--spacer-8) var(--spacer-12);
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-6);
-}
-
-/* 同步服务检测区：与明细区之间留白 */
-.monitor-view__clock-daemons {
-  margin-top: var(--spacer-12);
 }
 
 /* 服务运行状态色（#302）：运行中用成功色、未运行用中性色——未运行不是故障，不上告警色 */
@@ -2627,12 +2540,6 @@ const cpuTrendAriaLabel = computed(
   line-height: var(--body-sm-line-height);
   font-variant-numeric: tabular-nums;
   min-width: 0;
-}
-
-/* 只给可能含任意长度 token 的值（共享内存目录路径）开断行：anywhere 同时收窄 min-content；
-   不收进基础类，否则百分比 / 容量会在极窄列里被拦腰折断（#321）。 */
-.monitor-view__list-value--wrap {
-  overflow-wrap: anywhere;
 }
 
 .monitor-view__list-meta {
