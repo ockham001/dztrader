@@ -4,6 +4,7 @@ import {
   LEDGER_DEFAULT_SWAP_USED_PCT,
   LEDGER_DEFAULT_VOLUME_FREE_PCT,
   NO_THRESHOLD_TEXT,
+  UNRATED_LEVEL_TEXT,
   adaptiveAxisTicks,
   adaptiveTrendGeometry,
   buildMemoryComposition,
@@ -326,12 +327,14 @@ describe('buildMonitorLedger · 定档边界与「无法定档」', () => {
     expect(rowById(groups, 'volume:/d').levelText).toBe('危险')
   })
 
-  it('ratio 为 null → level 为 null 且 levelText 为空串（不得冒充 normal）', () => {
+  it('ratio 为 null → level 为 null，levelText 写「无阈值」（不得冒充 normal，也不留空）', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
     const shm = rowById(groups, 'shm_dir')
     expect(shm.ratio).toBeNull()
     expect(shm.level).toBeNull()
-    expect(shm.levelText).toBe('')
+    // 不留空串：没有文字的状态点在灰度截屏下等于没有状态（#363 AC3）
+    expect(shm.levelText).toBe(UNRATED_LEVEL_TEXT)
+    expect(shm.levelText).not.toBe('正常')
   })
 
   it('网卡行没有链路速率分母，ratio 恒为 null（不编造分母）', () => {
@@ -528,11 +531,25 @@ describe('buildMonitorLedger · 明细与展开字段', () => {
 })
 
 describe('ledgerLevelText', () => {
-  it('等级映射到中文，null 返回空串', () => {
+  it('等级映射到中文；null（没有判定基准）写「无阈值」而不是空串', () => {
     expect(ledgerLevelText('normal')).toBe('正常')
     expect(ledgerLevelText('warn')).toBe('警戒')
     expect(ledgerLevelText('danger')).toBe('危险')
-    expect(ledgerLevelText(null)).toBe('')
+    // 空串会让状态点旁只剩一个灰点：灰度截屏 / 色觉障碍下这一行的状态不可读（AC3）
+    expect(ledgerLevelText(null)).toBe(UNRATED_LEVEL_TEXT)
+    expect(UNRATED_LEVEL_TEXT).not.toBe('')
+  })
+
+  it('没有量程基准的行（网卡 / 共享内存目录）等级文字是「无阈值」，不是四类空态词', () => {
+    const groups = buildMonitorLedger(ledgerInput({ metrics: allAvailable() }))
+    for (const rowId of ['nic:eth0:rx', 'shm_dir']) {
+      const row = rowById(groups, rowId)
+      expect(row.state, rowId).toBe('ok')
+      expect(row.level, rowId).toBeNull()
+      expect(row.levelText, rowId).toBe(UNRATED_LEVEL_TEXT)
+      // 它 != 空态标签：读数在，只是没有判定基准
+      expect(row.stateLabel, rowId).toBe('')
+    }
   })
 })
 

@@ -565,18 +565,24 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       expect(columns![1], `列宽缺 ${token}`).toContain(`var(${token})`)
     }
 
-    // 中档（768–1279）：仍是七列，只换成 md 档的收缩宽度
-    const md = ruleInMedia('@media (min-width: 768px) and (max-width: 1279.98px)', '.monitor-view__ledger-row')
+    // 中档（1024–1279）：仍是七列，只换成 md 档的收缩宽度（并同时收起列间距）
+    const md = ruleInMedia('@media (min-width: 1024px) and (max-width: 1279.98px)', '.monitor-view__ledger-row')
     expect(md).toContain('var(--ledger-col-name-md)')
     expect(md).toContain('var(--ledger-col-track-md)')
     expect(md).toContain('var(--ledger-col-detail-md)')
+    expect(md).toContain('column-gap: var(--spacer-8)')
 
-    // 窄屏（<768）：三行堆叠（值 / 轨道 / 明细 + 阈值 + 余量），用 grid-template-areas 重排
-    const narrow = ruleInMedia('@media (max-width: 767.98px)', '.monitor-view__ledger-row')
+    // 窄屏（<1024，即侧栏常驻后容器不再够分七列）：三行堆叠，用 grid-template-areas 重排
+    const narrow = ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__ledger-row')
     expect(narrow).toContain('grid-template-areas')
     for (const area of ['track track', 'detail detail', 'threshold headroom']) {
       expect(narrow, `窄屏缺少 ${area} 行`).toContain(area)
     }
+    // 阈值与余量离开列位置后必须自带列名（否则「90%」与「12.8 GiB」是两个无主数字）
+    expect(ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__ledger-col-label'))
+      .toContain('display: inline')
+    // 桌面档列名隐藏（七列各有固定位置，列名是噪声）
+    expect(ruleBody('.monitor-view__ledger-col-label')).toContain('display: none')
   })
 
   it('轨道缺口只画在有契约阈值的行上：CSS 用属性选择器不做判断，判断在纯函数层', () => {

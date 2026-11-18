@@ -2087,9 +2087,13 @@ describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在
     expect(fillOf('memory')).toBe('50.0%')
     expect(fillOf('swap')).toBe('25.0%')
     expect(fillOf('volume:/')).toBe('40.0%')
-    // 磁盘有填充（本就忙碌占比），网卡没有量程分母 → 不注入（CSS 回退 0%）
+    // 磁盘有填充（本就忙碌占比）
     expect(fillOf('disk:nvme0n1')).toBe('72.0%')
-    expect(fillOf('nic:eth0:rx')).toBeNull()
+    // 网卡 / 时钟没有量程分母 → 根本不画轨道（画一条永远空的轨道等于说「0%」）
+    for (const rowId of ['nic:eth0:rx', 'clock']) {
+      expect(wrapper.find(`[data-row-id="${rowId}"] .monitor-view__ledger-track`).exists(), rowId).toBe(false)
+      expect(wrapper.find(`[data-row-id="${rowId}"] .monitor-view__ledger-track-empty`).exists(), rowId).toBe(true)
+    }
   })
 
   it('内存组成带四段与主数值并存：缓存 / 缓冲不可得时退化为两段并标注', async () => {

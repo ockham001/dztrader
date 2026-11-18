@@ -222,11 +222,22 @@ export function ledgerLevelText(level: ResourceLevel | null): string {
   if (level === 'danger') return '危险'
   if (level === 'warn') return '警戒'
   if (level === 'normal') return '正常'
-  return ''
+  // null = 这一行**没有可归一化的分母**（网卡没有链路速率字段、共享内存目录没有总容量），
+  // 因此「够不够用」无从判定。写成「正常」是编造结论，写成「不可用」是把有数据说成读不到；
+  // 状态点旁的文字必须说出这一事实，否则灰度截屏下这一行的状态就只剩一个灰点。
+  return UNRATED_LEVEL_TEXT
 }
 
 /** 阈值列在没有契约阈值时的占位（不是「不可用」——该指标本来就没有阈值） */
 export const NO_THRESHOLD_TEXT = '—'
+
+/**
+ * 有读数但没有判定基准时的等级文字（量程列 `ratio` 为 null）。
+ *
+ * 与四类空态**不同**：这四类是「没有这次读数」，而这里是「读数有、判定基准没有」。
+ * 二者若共用同一个词，读者会把「没法判」误读成「读不到」。
+ */
+export const UNRATED_LEVEL_TEXT = '无阈值'
 
 /**
  * 余量 → 文案：非负走原单位，负数表示已越线，改写为「已超 X」。
@@ -521,7 +532,7 @@ function shmRow(shm: SysmonShmDirInfo): LedgerRow {
     stateText: '',
     stateLabel: '',
     level: null,
-    levelText: '',
+    levelText: ledgerLevelText(null),
     ratio: null,
     value: formatBytes(shm.total_bytes),
     detail: `${formatCount(shm.page_files)} 页文件${
@@ -637,7 +648,7 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
     // 网卡没有链路速率字段（`SysmonNetworkInfo` 不提供），无法归一化到量程：
     // ratio 必须为 null 而不是拿一个编造的分母算百分比。
     level: null,
-    levelText: '',
+    levelText: ledgerLevelText(null),
     ratio: null,
     value: formatByteRate(rate),
     // 累计错误与丢弃是这张卡的风险信号，放在明细里让它不点开也可见（不是藏在展开里）。

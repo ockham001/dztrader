@@ -1182,13 +1182,17 @@ const cpuTrendAriaLabel = computed(
               <!-- ③ 量程轨道：填充比例由 `--ledger-fill` 注入（与 CPU 每核柱同一形态）。
                    缺口只在**有契约阈值**的行上出现，位置取 `useResourceLevel` 的两个展示分档常量
                    （70 / 90）：那是展示规则（ADR 0034），与「阈值」列是两个不同的东西。 -->
-              <span class="monitor-view__ledger-track" aria-hidden="true">
+              <!-- 无量程的行不画轨道：`ratio === null` 表示这个指标**没有可归一化的分母**
+                   （网卡没有链路速率字段、共享内存目录没有总容量）。画一条永远空着的轨道，
+                   读者会把它读成「0%」——那是一个凭空造出来的读数。空槽位只占位，不画任何东西。 -->
+              <span v-if="row.ratio !== null" class="monitor-view__ledger-track" aria-hidden="true">
                 <span class="monitor-view__ledger-track-fill" :style="trackFillStyle(row)"></span>
                 <template v-if="hasThreshold(row)">
                   <span class="monitor-view__ledger-gap" :style="gapStyle(RESOURCE_WARN_RATIO)"></span>
                   <span class="monitor-view__ledger-gap" :style="gapStyle(RESOURCE_DANGER_RATIO)"></span>
                 </template>
               </span>
+              <span v-else class="monitor-view__ledger-track-empty" aria-hidden="true"></span>
 
               <!-- ④ 当前值：有 historyKey 的行是按钮（跳历史视图并预选该指标，#325 的 title/aria 口径）；
                    空态行的值列是「—」——**不是 0**，四类空态的文字在明细列与状态点旁给出。 -->
@@ -1227,27 +1231,46 @@ const cpuTrendAriaLabel = computed(
               </span>
 
               <!-- ⑤ 明细：`ok` 行是一行明细；空态行是四类空态的说明（互不混淆，都不产出数字） -->
-              <span class="monitor-view__ledger-detail" :data-test="row.state === 'ok' ? 'ledger-detail' : 'row-state'">
-                <template v-if="row.state === 'ok'">
-                  <!-- 有分段形态的行（网卡：错误 / 丢弃各自可寻址）逐段渲染；其余行一句话。 -->
-                  <!-- 分段之间只用列间距分隔，不插入「·」标点：标点会进可读文本，
-                       让同一事实在无障碍朗读里多读一个符号。 -->
-                  <span
-                    v-for="part in row.detailParts"
-                    :key="part.id"
-                    class="monitor-view__ledger-detail-part"
-                    :data-test="`monitor-network-${directionTestId(row)}-${part.id}`"
-                  >{{ part.text }}</span>
-                  <template v-if="row.detailParts.length === 0">{{ row.detail }}</template>
-                </template>
-                <template v-else>{{ rowStateNote(row) }}</template>
+              <span class="monitor-view__ledger-detail">
+                <span class="monitor-view__ledger-detail-text" :data-test="row.state === 'ok' ? 'ledger-detail' : 'row-state'">
+                  <template v-if="row.state === 'ok'">
+                    <!-- 有分段形态的行（网卡：错误 / 丢弃各自可寻址）逐段渲染；其余行一句话。
+                         分段之间只用列间距分隔，不插入「·」标点：标点会进可读文本，
+                         让同一事实在无障碍朗读里多读一个符号。 -->
+                    <span
+                      v-for="part in row.detailParts"
+                      :key="part.id"
+                      class="monitor-view__ledger-detail-part"
+                      :data-test="`monitor-network-${directionTestId(row)}-${part.id}`"
+                    >{{ part.text }}</span>
+                    <template v-if="row.detailParts.length === 0">{{ row.detail }}</template>
+                  </template>
+                  <template v-else>{{ rowStateNote(row) }}</template>
+                </span>
+                <!-- 明细展开按钮挂在明细列内（不另占一整行）：语义上它是「这段话还有下文」，
+                     不是第八列，也不该把每行的行高翻倍。时钟行的按钮在它自己的结构化明细里。 -->
+                <button
+                  v-if="row.fields.length > 0 && row.id !== 'clock'"
+                  class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__ledger-expand-btn"
+                  type="button"
+                  :aria-expanded="isLedgerRowOpen(row.id)"
+                  :data-test="`ledger-expand-${row.id}`"
+                  @click="toggleLedgerRow(row.id)"
+                >{{ isLedgerRowOpen(row.id) ? '收起' : '明细' }}</button>
               </span>
 
-              <!-- ⑥ 阈值（只写契约里真实存在的阈值；没有就是 —） -->
-              <span class="monitor-view__ledger-threshold" data-test="ledger-threshold">{{ row.thresholdText }}</span>
+              <!-- ⑥ 阈值（只写契约里真实存在的阈值；没有就是 —）。列名只在窄屏出现（见 CSS），
+                   且列名**不进** data-test 元素：那是给「值」的锚点，不是给标签的。 -->
+              <span class="monitor-view__ledger-threshold">
+                <span class="monitor-view__ledger-col-label" aria-hidden="true">阈值</span>
+                <span data-test="ledger-threshold">{{ row.thresholdText }}</span>
+              </span>
 
               <!-- ⑦ 余量（与阈值同源，越线时写「已超 X」） -->
-              <span class="monitor-view__ledger-headroom" data-test="ledger-headroom">{{ row.headroomText }}</span>
+              <span class="monitor-view__ledger-headroom">
+                <span class="monitor-view__ledger-col-label" aria-hidden="true">余量</span>
+                <span data-test="ledger-headroom">{{ row.headroomText }}</span>
+              </span>
 
               <!-- 内存组成带（#363）：嵌在内存行下方。两个口径不合并——主数值是
                    `total − available` 的用量比率，组成带的「已用」段是 `total − free − cached − buffers`
@@ -1286,29 +1309,26 @@ const cpuTrendAriaLabel = computed(
                 >{{ memoryComposition.degradedText }}</p>
               </div>
 
-              <!-- 行明细展开（#363）：折叠状态不持久化，刷新回默认收起。空态行也允许展开
-                   （逐台失败原因等可诊断信息藏在展开里是可接受的，缩进后仍可见）。 -->
-              <div v-if="row.fields.length > 0 && row.id !== 'clock'" class="monitor-view__ledger-expand">
-                <button
-                  class="ds-btn ds-btn--tertiary ds-btn--sm"
-                  type="button"
-                  :aria-expanded="isLedgerRowOpen(row.id)"
-                  :data-test="`ledger-expand-${row.id}`"
-                  @click="toggleLedgerRow(row.id)"
-                >{{ isLedgerRowOpen(row.id) ? '收起明细' : '展开明细' }}</button>
-                <dl v-if="isLedgerRowOpen(row.id)" class="monitor-view__ledger-fields" data-test="ledger-fields">
-                  <div
-                    v-for="field in row.fields"
-                    :key="field.label"
-                    class="monitor-view__ledger-field"
-                    data-test="ledger-field"
-                    :data-label="field.label"
-                  >
-                    <dt class="monitor-view__ledger-field-label">{{ field.label }}</dt>
-                    <dd class="monitor-view__ledger-field-value" data-test="ledger-field-value">{{ field.value }}</dd>
-                  </div>
-                </dl>
-              </div>
+              <!-- 行明细（#363）：按钮在上面的明细列里（「明细」/「收起」），展开后整行宽度铺开
+                   完整字段表——按钮在格内、内容跨满行，因此行高只在真正展开时才长高。
+                   折叠状态不持久化，刷新回默认收起（空态行也允许展开：逐台失败原因等可诊断信息
+                   藏在展开里是可接受的，但它不是默认视图）。 -->
+              <dl
+                v-if="row.fields.length > 0 && row.id !== 'clock' && isLedgerRowOpen(row.id)"
+                class="monitor-view__ledger-fields"
+                data-test="ledger-fields"
+              >
+                <div
+                  v-for="field in row.fields"
+                  :key="field.label"
+                  class="monitor-view__ledger-field"
+                  data-test="ledger-field"
+                  :data-label="field.label"
+                >
+                  <dt class="monitor-view__ledger-field-label">{{ field.label }}</dt>
+                  <dd class="monitor-view__ledger-field-value" data-test="ledger-field-value">{{ field.value }}</dd>
+                </div>
+              </dl>
 
               <!-- 时钟行的辅助信息（#302）：方向说明 / 测量质量提示 / 同步服务检测。
                    偏差着色与质量提示是两个独立判定对象（契约 §2.8）：质量提示不改变着色。 -->
@@ -1570,18 +1590,6 @@ const cpuTrendAriaLabel = computed(
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-  }
-
-  /* 台账中档（#363）：七列保留，轨道与明细列收缩；明细列在窄列里换行而不是被截断。 */
-  .monitor-view__ledger-row {
-    grid-template-columns:
-      var(--ledger-col-state)
-      minmax(0, var(--ledger-col-name-md))
-      minmax(var(--ledger-col-track-md), 1fr)
-      var(--ledger-col-value)
-      minmax(var(--ledger-col-detail-md), 2fr)
-      var(--ledger-col-threshold)
-      var(--ledger-col-headroom);
   }
 }
 
@@ -1955,12 +1963,13 @@ const cpuTrendAriaLabel = computed(
    `column-gap` 是列间距（不是「间距字面量违规」——值走 token）。 */
 .monitor-view__ledger-row {
   display: grid;
-  /* 轨道与明细是弹性列（`… , 1fr` / `…, 2fr`）：它们吃掉剩余宽度，七列因此始终铺满整行；
-     其余五列是定宽（状态 / 名称 / 读数 / 阈值 / 余量），列基线不随内容漂移。 */
+  /* 名称 / 轨道 / 明细是不小于下限的弹性列：三者按 1 : 1.2 : 2 分掉剩余宽度，七列因此始终
+     铺满整行、且任意一列纵向可比。状态 / 读数 / 阈值 / 余量是定宽——数字列的宽度必须恒定，
+     否则「13 行的当前值」不会落在同一条基线上。 */
   grid-template-columns:
     var(--ledger-col-state)
-    minmax(0, var(--ledger-col-name))
-    minmax(var(--ledger-col-track), 1fr)
+    minmax(var(--ledger-col-name), 1fr)
+    minmax(var(--ledger-col-track), 1.2fr)
     var(--ledger-col-value)
     minmax(var(--ledger-col-detail), 2fr)
     var(--ledger-col-threshold)
@@ -2053,6 +2062,11 @@ const cpuTrendAriaLabel = computed(
   background: var(--bg-overlay-l2);
 }
 
+.monitor-view__ledger-track-empty {
+  align-self: center;
+  width: 100%;
+}
+
 .monitor-view__ledger-track-fill {
   display: block;
   width: var(--ledger-fill, 0%);
@@ -2108,6 +2122,7 @@ const cpuTrendAriaLabel = computed(
 }
 
 .monitor-view__ledger-detail {
+  display: block;
   min-width: 0;
   color: var(--text-tertiary);
   font-size: var(--body-xs-font-size);
@@ -2119,6 +2134,14 @@ const cpuTrendAriaLabel = computed(
 .monitor-view__ledger-row--empty .monitor-view__ledger-value,
 .monitor-view__ledger-row--empty .monitor-view__ledger-threshold,
 .monitor-view__ledger-row--empty .monitor-view__ledger-headroom {
+  color: var(--text-tertiary);
+}
+
+/* 列名只出现在窄屏：≥768 时七列各有固定位置，列名是噪声；<768 时每行拆成三行堆叠，
+   阈值与余量离开列位置后必须自带名字，否则「90%」与「12.8 GiB」就是两个无主数字。 */
+.monitor-view__ledger-col-label {
+  display: none;
+  margin-right: var(--spacer-4);
   color: var(--text-tertiary);
 }
 
@@ -2165,20 +2188,28 @@ const cpuTrendAriaLabel = computed(
   height: 100%;
 }
 
+/* 组成带四段用**中性色阶**而不是状态色：这一页的世界观是「只有状态才有颜色」，
+   给「缓存 / 缓冲」涂上琥珀与绿会让它们读成「警戒 / 正常」两个状态，而它们只是构成。
+   色阶从实到虚表达「这段离可用有多远」：已用最实、空闲最虚。 */
 .monitor-view__ledger-band-seg--used {
-  background: var(--status-primary-default);
+  background: var(--text-default);
 }
 
 .monitor-view__ledger-band-seg--cached {
-  background: var(--status-alert-default);
+  background: var(--text-secondary);
 }
 
 .monitor-view__ledger-band-seg--buffers {
-  background: var(--status-success-default);
+  background: var(--text-tertiary);
 }
 
 .monitor-view__ledger-band-seg--free {
   background: var(--bg-overlay-l3);
+}
+
+/* 段与段之间留一道底色缝：四段相邻时纯色阶的边界读不出来，而「哪一段占多少」正是这条带子的全部内容。 */
+.monitor-view__ledger-band-seg + .monitor-view__ledger-band-seg {
+  box-shadow: inset var(--border-width-default) 0 0 var(--bg-layout-1);
 }
 
 .monitor-view__ledger-legend {
@@ -2218,10 +2249,46 @@ const cpuTrendAriaLabel = computed(
   font-variant-numeric: tabular-nums;
 }
 
-/* 行明细展开：按钮与字段列表都跨满整行（七列之上），字段是两列自适应网格。 */
-.monitor-view__ledger-expand {
-  grid-column: 1 / -1;
-  min-width: 0;
+/* 中档（768–1279）：七列不降级，只把整组数字列一起收窄。容器在这一档约 700px，
+   而 ≥1280 那套列宽的下限之和已经超过它——只缩轨道与明细会把名称列压成 0。
+   必须写在这里（基础规则之后）：媒体查询不叠加优先级，靠前的同名规则会被后面的基础规则覆盖。 */
+@media (min-width: 1024px) and (max-width: 1279.98px) {
+  .monitor-view__ledger-row {
+    grid-template-columns:
+      var(--ledger-col-state-md)
+      minmax(var(--ledger-col-name-md), 1fr)
+      minmax(var(--ledger-col-track-md), 1fr)
+      var(--ledger-col-value-md)
+      minmax(var(--ledger-col-detail-md), 1.4fr)
+      var(--ledger-col-threshold-md)
+      var(--ledger-col-headroom-md);
+    column-gap: var(--spacer-8);
+  }
+
+  /* 中档的阈值列只有 64px：时钟行写「±100 / ±1000 ms」会顶进余量列。
+     这一档允许在分隔符后折成两行（仍然整词可读），而不是压到相邻格子上。 */
+  .monitor-view__ledger-threshold,
+  .monitor-view__ledger-headroom {
+    white-space: normal;
+  }
+}
+
+/* 行明细：字段表跨满整行（七列之上），字段是两列自适应网格；触发它的按钮在明细列里。 */
+.monitor-view__ledger-expand-btn {
+  margin-top: var(--spacer-2);
+  padding: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__ledger-expand-btn:hover {
+  color: var(--text-default);
+}
+
+/* 明细文字与展开按钮之间留出可辨认的间隔（否则读成「16.0 GiB / 32.0 GiB明细」） */
+.monitor-view__ledger-detail-text + .monitor-view__ledger-expand-btn {
+  margin-left: var(--spacer-8);
 }
 
 .monitor-view__ledger-fields {
@@ -2257,6 +2324,68 @@ const cpuTrendAriaLabel = computed(
   font-variant-numeric: tabular-nums;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+/* 台账 <1024 改三行堆叠（#363）：状态 + 当前值 / 名称 / 整行轨道 / 明细 + 阈值 + 余量。
+   为什么下界是 1024 而不是 768：768–1023 视口下 app-shell 的侧栏常驻 220px（layout.css
+   `@media (min-width: 768px)`），台账实际只剩 ~440px——七列在这个宽度里每个格都折成竖排单字
+   （实测 768 视口：名称列 43px、明细列 60px）。容器查询在本仓被白名单门禁禁止，
+   档位只能按「侧栏是否常驻」这个视口事实切。此时阈值与余量失去列位置，故给它们补上列名。 */
+@media (max-width: 1023.98px) {
+  .monitor-view__ledger-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'state value'
+      'name name'
+      'track track'
+      'detail detail'
+      'threshold headroom';
+    column-gap: var(--spacer-8);
+  }
+
+  .monitor-view__ledger-state {
+    grid-area: state;
+  }
+
+  .monitor-view__ledger-name {
+    grid-area: name;
+  }
+
+  .monitor-view__ledger-track {
+    grid-area: track;
+    margin: var(--spacer-2) 0;
+  }
+
+  .monitor-view__ledger-value {
+    grid-area: value;
+    justify-self: end;
+  }
+
+  .monitor-view__ledger-detail {
+    grid-area: detail;
+  }
+
+  .monitor-view__ledger-threshold {
+    grid-area: threshold;
+  }
+
+  .monitor-view__ledger-headroom {
+    grid-area: headroom;
+    justify-self: end;
+  }
+
+  .monitor-view__ledger-col-label {
+    display: inline;
+  }
+
+  .monitor-view__ledger-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .monitor-view__ledger-group-actions {
+    margin-left: 0;
+  }
 }
 
 /* 时钟行的辅助信息（#302）：方向说明 / 质量提示 / 同步服务检测，同样跨满整行。 */
@@ -2604,59 +2733,6 @@ const cpuTrendAriaLabel = computed(
 
   .monitor-view__cpu-panel--wide {
     grid-column: auto;
-  }
-
-  /* 台账窄屏（#363）：每行改三行——状态 + 当前值 / 名称 / 整行轨道 / 明细 + 阈值 + 余量。
-     组标题同样堆叠：标题与组注各占一行，组内操作（网络开关 / 立即查询）换到下一行。 */
-  .monitor-view__ledger-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'state value'
-      'name name'
-      'track track'
-      'detail detail'
-      'threshold headroom';
-    column-gap: var(--spacer-8);
-  }
-
-  .monitor-view__ledger-state {
-    grid-area: state;
-  }
-
-  .monitor-view__ledger-name {
-    grid-area: name;
-  }
-
-  .monitor-view__ledger-track {
-    grid-area: track;
-    margin: var(--spacer-2) 0;
-  }
-
-  .monitor-view__ledger-value {
-    grid-area: value;
-    justify-self: end;
-  }
-
-  .monitor-view__ledger-detail {
-    grid-area: detail;
-  }
-
-  .monitor-view__ledger-threshold {
-    grid-area: threshold;
-  }
-
-  .monitor-view__ledger-headroom {
-    grid-area: headroom;
-    justify-self: end;
-  }
-
-  .monitor-view__ledger-group-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .monitor-view__ledger-group-actions {
-    margin-left: 0;
   }
 }
 </style>
