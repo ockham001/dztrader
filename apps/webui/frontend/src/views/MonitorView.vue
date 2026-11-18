@@ -57,6 +57,7 @@ import {
   clockDomainState,
   clockFailureSummary,
   clockProbeAgeSec,
+  clockServerCells,
   resolveClockThresholds,
   sortClockDaemons,
 } from '@/composables/sysmonClock'
@@ -400,6 +401,25 @@ function rowValueTestId(row: LedgerRow): string {
   if (row.id === 'shm_dir') return 'monitor-shm-total'
   if (row.id === 'clock') return 'monitor-clock-offset'
   return 'ledger-value'
+}
+
+/**
+ * 值列是否存在「读数槽」。
+ *
+ * - `ok`：有读数 → 四列都渲染（含可选的历史入口）；
+ * - `unavailable`：**尝试过读但没读到** → 槽仍在，写「不可用」（不是 0、也不是空白）；
+ * - `empty` / `disabled` / `none`：**没有这次读数**（本帧未采集 / 被配置关掉 / 本机无此维度）→
+ *   值列写 `—`，且不提供读数槽（浏览器与测试都不该在这里找一个「当前值」）。
+ */
+function rowHasReading(row: LedgerRow): boolean {
+  return row.state === 'ok' || row.state === 'unavailable'
+}
+
+/** 值列的显示文本：有读数用读数，不可用写「不可用」，其余空态写 `—`（都不是 0） */
+function rowValueText(row: LedgerRow): string {
+  if (row.state === 'ok') return row.value
+  if (row.state === 'unavailable') return UNAVAILABLE_TEXT
+  return NO_THRESHOLD_TEXT
 }
 
 /** 行 id 的维度部分（`volume:<mount>` → 挂载点 / `disk:<device>` / `nic:<if>:<dir>`） */
@@ -1137,20 +1157,16 @@ const cpuTrendAriaLabel = computed(
 
               <!-- ④ 当前值：有 historyKey 的行是按钮（跳历史视图并预选该指标，#325 的 title/aria 口径）；
                    空态行的值列是「—」——**不是 0**，四类空态的文字在明细列与状态点旁给出。 -->
-              <span class="monitor-view__ledger-value" :data-test="rowValueTestId(row)">
-                <template v-if="row.state === 'ok'">
-                  <button
-                    v-if="row.historyKey !== null"
-                    type="button"
-                    class="monitor-view__value-btn"
-                    data-test="ledger-value"
-                    :title="rowHistoryTitle(row)"
-                    :aria-label="rowHistoryAriaLabel(row)"
-                    @click="openRowHistory(row)"
-                  >{{ row.value }}</button>
-                  <template v-else>{{ row.value }}</template>
-                </template>
-                <template v-else>{{ NO_THRESHOLD_TEXT }}</template>
+              <span class="monitor-view__ledger-value" :data-test="rowHasReading(row) ? rowValueTestId(row) : undefined">
+                <button
+                  v-if="row.state === 'ok' && row.historyKey !== null"
+                  type="button"
+                  class="monitor-view__value-btn"
+                  :title="rowHistoryTitle(row)"
+                  :aria-label="rowHistoryAriaLabel(row)"
+                  @click="openRowHistory(row)"
+                >{{ row.value }}</button>
+                <template v-else>{{ rowValueText(row) }}</template>
               </span>
 
               <!-- ⑤ 明细：`ok` 行是一行明细；空态行是四类空态的说明（互不混淆，都不产出数字） -->
@@ -1192,7 +1208,7 @@ const cpuTrendAriaLabel = computed(
                   >
                     <span class="monitor-view__ledger-legend-swatch" :class="`monitor-view__ledger-band-seg--${segment.id}`" aria-hidden="true"></span>
                     <span class="monitor-view__ledger-legend-label">{{ segment.label }}</span>
-                    <span class="monitor-view__ledger-legend-value">{{ segment.text ?? '不可得' }}</span>
+                    <span class="monitor-view__ledger-legend-value" data-test="ledger-legend-value">{{ segment.text ?? '不可得' }}</span>
                   </li>
                 </ul>
                 <p
@@ -1204,7 +1220,7 @@ const cpuTrendAriaLabel = computed(
 
               <!-- 行明细展开（#363）：折叠状态不持久化，刷新回默认收起。空态行也允许展开
                    （逐台失败原因等可诊断信息藏在展开里是可接受的，缩进后仍可见）。 -->
-              <div v-if="row.fields.length > 0" class="monitor-view__ledger-expand">
+              <div v-if="row.fields.length > 0 && row.id !== 'clock'" class="monitor-view__ledger-expand">
                 <button
                   class="ds-btn ds-btn--tertiary ds-btn--sm"
                   type="button"
@@ -1217,6 +1233,8 @@ const cpuTrendAriaLabel = computed(
                     v-for="field in row.fields"
                     :key="field.label"
                     class="monitor-view__ledger-field"
+                    data-test="ledger-field"
+                    :data-label="field.label"
                   >
                     <dt class="monitor-view__ledger-field-label">{{ field.label }}</dt>
                     <dd class="monitor-view__ledger-field-value">{{ field.value }}</dd>
@@ -1264,6 +1282,51 @@ const cpuTrendAriaLabel = computed(
                   class="monitor-view__hint monitor-view__hint--alert"
                   data-test="monitor-clock-quality"
                 >{{ CLOCK_QUALITY_HINT }}（阈值 {{ clockThresholds.bound_alarm_ms }} ms）</p>
+                <!-- 每台服务器的明细（契约 §2.9）：六列逐台给出，失败台的四项测量显示「不可用」
+                     而不是 0（失败样本不产出任何测量值）。开关是本行自己的「展开明细」。
+                     这里不复用通用字段列表：服务器是**一张小表**（每台一行、六列对齐），
+                     摊成「标签 / 值」会丢掉横向可比性。 -->
+                <div v-if="clockServers.length > 0" class="monitor-view__ledger-clock-detail">
+                  <button
+                    class="ds-btn ds-btn--tertiary ds-btn--sm"
+                    type="button"
+                    :aria-expanded="isLedgerRowOpen(row.id)"
+                    data-test="monitor-clock-detail-toggle"
+                    @click="toggleLedgerRow(row.id)"
+                  >{{ isLedgerRowOpen(row.id) ? '收起明细' : '展开服务器明细' }}</button>
+                  <ul v-if="isLedgerRowOpen(row.id)" class="monitor-view__clock-servers">
+                    <li
+                      v-for="server in clockServers"
+                      :key="server.host"
+                      class="monitor-view__clock-server"
+                      data-test="monitor-clock-server"
+                      :data-host="server.host"
+                      :data-ok="server.ok"
+                      :title="server.host"
+                    >
+                      <div class="monitor-view__io-device">
+                        {{ server.host }}
+                        <span class="ds-tag" :class="server.ok ? 'ds-tag--success' : 'ds-tag--danger'">
+                          {{ server.ok ? '成功' : '失败' }}
+                        </span>
+                      </div>
+                      <dl class="monitor-view__io-metrics">
+                        <div
+                          v-for="cell in clockServerCells(server)"
+                          :key="cell.key"
+                          class="monitor-view__io-metric"
+                        >
+                          <dt class="monitor-view__io-label">{{ cell.label }}</dt>
+                          <dd
+                            class="monitor-view__io-value"
+                            :data-test="`monitor-clock-server-${cell.key}`"
+                          >{{ cell.value }}</dd>
+                        </div>
+                      </dl>
+                    </li>
+                  </ul>
+                </div>
+
                 <!-- 同步服务检测（契约 §2.9 daemons[]）：空数组是「未检测到在运行的服务」这一事实，
                      不是能力不可用（§2.5）。尚未探测时不渲染：首轮探测前 daemons 是空数组，
                      把空数组当事实展示会凭空报出一个未做过的检测。 -->
@@ -1439,6 +1502,18 @@ const cpuTrendAriaLabel = computed(
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  /* 台账中档（#363）：七列保留，轨道与明细列收缩；明细列在窄列里换行而不是被截断。 */
+  .monitor-view__ledger-row {
+    grid-template-columns:
+      var(--ledger-col-state)
+      minmax(0, var(--ledger-col-name-md))
+      minmax(0, var(--ledger-col-track-md))
+      var(--ledger-col-value)
+      minmax(0, var(--ledger-col-detail-md))
+      var(--ledger-col-threshold)
+      var(--ledger-col-headroom);
   }
 }
 
@@ -2185,78 +2260,6 @@ const cpuTrendAriaLabel = computed(
   margin-top: var(--spacer-4);
 }
 
-/* 中档（768–1279）：七列保留，但轨道列宽收缩、明细列允许换行。
-   轨道仍是弹性列（minmax(0, …)），收缩的是列宽下限靠 `minmax` 自动完成；
-   明细列在窄容器里本就换行（基础规则 `overflow-wrap: anywhere`）。 */
-@media (min-width: 768px) and (max-width: 1279.98px) {
-  .monitor-view__ledger-row {
-    grid-template-columns:
-      var(--ledger-col-state)
-      minmax(0, var(--ledger-col-name-md))
-      minmax(0, var(--ledger-col-track-md))
-      var(--ledger-col-value)
-      minmax(0, var(--ledger-col-detail-md))
-      var(--ledger-col-threshold)
-      var(--ledger-col-headroom);
-  }
-}
-
-/* 窄屏（<768）：每行改三行——① 名称 + 当前值 ② 整行轨道 ③ 明细 + 阈值 + 余量。
-   组标题同样堆叠（标题 / 组注各占一行，操作换到下一行）。 */
-@media (max-width: 767.98px) {
-  .monitor-view__ledger-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'state value'
-      'name name'
-      'track track'
-      'detail detail'
-      'threshold headroom';
-    column-gap: var(--spacer-8);
-  }
-
-  .monitor-view__ledger-state {
-    grid-area: state;
-  }
-
-  .monitor-view__ledger-name {
-    grid-area: name;
-  }
-
-  .monitor-view__ledger-track {
-    grid-area: track;
-    margin: var(--spacer-2) 0;
-  }
-
-  .monitor-view__ledger-value {
-    grid-area: value;
-    justify-self: end;
-    font-size: var(--body-sm-font-size);
-  }
-
-  .monitor-view__ledger-detail {
-    grid-area: detail;
-  }
-
-  .monitor-view__ledger-threshold {
-    grid-area: threshold;
-  }
-
-  .monitor-view__ledger-headroom {
-    grid-area: headroom;
-    justify-self: end;
-  }
-
-  .monitor-view__ledger-group-head {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .monitor-view__ledger-group-actions {
-    margin-left: 0;
-  }
-}
-
 /* ---- CPU 宽卡（#362）：四数字 / 单序列趋势 / 每核条形三块内容纵向排布 ---- */
 /* 一块面里读完：三块都跨满整卡（`grid-column: 1 / -1`），因此这里只需单列——
    不再有「面板数 vs 列数一致」的问题（#321 的前提已随面板网格一并消失）。 */
@@ -2617,6 +2620,59 @@ const cpuTrendAriaLabel = computed(
 
   .monitor-view__cpu-panel--wide {
     grid-column: auto;
+  }
+
+  /* 台账窄屏（#363）：每行改三行——状态 + 当前值 / 名称 / 整行轨道 / 明细 + 阈值 + 余量。
+     组标题同样堆叠：标题与组注各占一行，组内操作（网络开关 / 立即查询）换到下一行。 */
+  .monitor-view__ledger-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'state value'
+      'name name'
+      'track track'
+      'detail detail'
+      'threshold headroom';
+    column-gap: var(--spacer-8);
+  }
+
+  .monitor-view__ledger-state {
+    grid-area: state;
+  }
+
+  .monitor-view__ledger-name {
+    grid-area: name;
+  }
+
+  .monitor-view__ledger-track {
+    grid-area: track;
+    margin: var(--spacer-2) 0;
+  }
+
+  .monitor-view__ledger-value {
+    grid-area: value;
+    justify-self: end;
+  }
+
+  .monitor-view__ledger-detail {
+    grid-area: detail;
+  }
+
+  .monitor-view__ledger-threshold {
+    grid-area: threshold;
+  }
+
+  .monitor-view__ledger-headroom {
+    grid-area: headroom;
+    justify-self: end;
+  }
+
+  .monitor-view__ledger-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .monitor-view__ledger-group-actions {
+    margin-left: 0;
   }
 }
 </style>
