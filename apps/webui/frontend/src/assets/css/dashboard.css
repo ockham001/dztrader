@@ -464,8 +464,38 @@
   font-size: var(--body-xs-font-size);
 }
 
-.dashboard-pos-empty,
-.dashboard-fund-empty {
+/* 未知态提示条（#358 AC2）：账户全集为空 = 无法确认持仓/资金，不是「暂无」。
+   中性色（不用 status 色族）：尚未配置账户也可能是初始态，染成告警色会让常绿告警失去
+   意义（#358 拍板记录）；可见性靠措辞与面板级位置保证。锁高面板内同样压成单行。 */
+.dashboard-pos-unknown,
+.dashboard-fund-unknown {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--spacer-8);
+  margin: var(--spacer-4) var(--spacer-8) 0;
+  padding: var(--spacer-4) var(--spacer-8);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  background: var(--bg-overlay-l1);
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+}
+
+.dashboard-pos-unknown__icon,
+.dashboard-fund-unknown__icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--icon-default);
+}
+
+/* 空态单元格：降级 / 加载 / 失败 / 未知 / 暂无五种文案共用同一槽位。
+   #358 AC7：全局 `.ds-table td:first-child`（0,2,1）会压掉下面的单类（0,1,0），空态 td
+   恰好是 first-child —— 属性错位会让「持仓未知」与数据行同形（默认 text-default），
+   等于把未知态伪装成数据。用 .dashboard-panel 作用域 + td 元素限定抬到 (0,3,1)，
+   与 FrontendTable / UserManagementView 的既有修法同源。 */
+.dashboard-panel .ds-table td.dashboard-pos-empty,
+.dashboard-panel .ds-table td.dashboard-fund-empty {
   padding: var(--spacer-16) var(--spacer-12);
   color: var(--text-tertiary);
   text-align: center;
