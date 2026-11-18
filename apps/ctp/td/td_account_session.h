@@ -176,6 +176,9 @@ public:
     /// 数据是否已完整 (持仓/资金双查询都成功). 供 TdApi 定时补查节流.
     bool data_query_ok() const noexcept { return data_query_ok_; }
 
+    /// 未知枚举累计计数 (按种类). TdApi 在拼状态帧 ext 时读取.
+    const UnknownEnumCounts& unknown_enum_counts() const noexcept { return unknown_enum_counts_; }
+
     /// 重推各追加流最后一条 (委托/成交, 原 seq 直接写帧, 不落库不过滤器,
     /// spec §4.2 "最后一条重推"). 由 TdApi 在 Ready 广播之后调用.
     void repush_last_records();
@@ -221,6 +224,10 @@ private:
 
     /// 持久化 OrderRecord (enqueue 到 PersistWriter, 含 CTP 扩展字段).
     void persist_order(const OrderRecord& r);
+
+    /// 上报一条回报里的未知枚举: 每个种类计一次数 + ERROR 日志 + notify_ui (popup=false).
+    /// 只记日志不猜值; 调用方已把对应字段落成 UNKNOWN.
+    void report_unknown_enums(const UnknownEnumSink& unknown);
 
     /// 持久化 TradeRecord.
     void persist_trade(const TradeRecord& r);
@@ -296,6 +303,8 @@ private:
     /// 账户级状态变更 seq 计数器 (spec §2.2: 主线程分配, 无需原子).
     /// 跨日累积单调, 同一事件 shm 帧与 DB 行带同一 seq.
     uint64_t seq_counter_ = 0;
+    /// 未知枚举累计计数 (按种类; 见 UnknownEnumCounts). 由 report_unknown_enums 递增.
+    UnknownEnumCounts unknown_enum_counts_;
     /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
     std::unique_ptr<ReportFilter> report_filter_;
     /// 每单成交累计 (委托成交均价的唯一累源; 登录日装载时由当日成交重建, 契约 §3).
@@ -337,6 +346,9 @@ private:
     /// 本轮是否已 enqueue PositionRebuild (幂等防御: 迟到的重复 is_last 不得用已消费的
     /// 空组再次重灌清空 DB).
     bool position_rebuild_consumed_ = false;
+    /// 本轮持仓查询出现过读不懂的方向: 整轮快照不可信, is_last 时按查询失败处置
+    /// (不改表、保留上次已知快照), 由补查重试覆盖.
+    bool position_query_unknown_direction_ = false;
     /// 登录收尾状态机 (spec §4.2): 双查询齐才可收尾, 失败降级不阻塞 Ready.
     LoginFinalizer finalizer_;
     /// 持仓/资金查询是否已成功 (供登录降级补查节流: 双查询都成功才置 true, spec §4.2).

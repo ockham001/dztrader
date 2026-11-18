@@ -177,6 +177,32 @@ describe('groupPositionRows（一行 = 账户 × 合约，用户确认口径）'
     expect(groups[0].short).toBeNull()
   })
 
+  // issue #367：未知方向的行**不计入净仓**（契约 rest §2.9.3「未知值不得映射到其他取值」）。
+  // 猜成多头/空头都会凭空造出敞口；猜成 Net 会把读不懂的量当成净持仓。
+  it('Unknown 方向不计入净仓，也不做多空拆分（只标记 hasUnknownDirection）', () => {
+    const groups = groupPositionRows([position({ direction: 'Unknown', volume: 4 })])
+    expect(groups[0].netVolume).toBe(0)
+    expect(groups[0].hasUnknownDirection).toBe(true)
+    expect(groups[0].hasNetDirection).toBe(false)
+    expect(groups[0].long).toBeNull()
+    expect(groups[0].short).toBeNull()
+  })
+
+  it('Unknown 与多空明细同时出现：净仓只由多空明细轧差，未知行不参与', () => {
+    const groups = groupPositionRows([
+      position({ direction: 'Long', volume: 5 }),
+      position({ direction: 'Short', volume: 2 }),
+      position({ direction: 'Unknown', volume: 9 }),
+    ])
+    expect(groups[0].netVolume).toBe(3)
+    expect(groups[0].hasUnknownDirection).toBe(true)
+  })
+
+  it('Unknown 方向文案显示「未知」，不冒充多/空/净', () => {
+    expect(tdPositionDirectionText('Unknown')).toBe('未知')
+    expect(['多', '空', '净']).not.toContain(tdPositionDirectionText('Unknown'))
+  })
+
   it('Net 与多空明细同时出现属异常数据：明细优先，不相加放大净仓', () => {
     const groups = groupPositionRows([
       position({ direction: 'Net', volume: 4 }),

@@ -63,7 +63,14 @@ JSON 示例：
   "progress_min": 0,
   "progress_max": 10,
   "progress_current": 10,
-  "ext": {"api_version": "v6.7.2", "sys_version": "v6.7.2_20240105"}
+  "ext": {
+    "api_version": "v6.7.2",
+    "sys_version": "v6.7.2_20240105",
+    "unknown_order_status": 0,
+    "unknown_direction": 0,
+    "unknown_price_type": 0,
+    "unknown_position_effect": 0
+  }
 }
 ```
 
@@ -93,6 +100,19 @@ JSON 示例：
 |---|---|---|
 | `api_version` | string | 接口库版本字符串，构造时设置一次 |
 | `sys_version` | string | 登录响应中的系统版本；未登录/进入 `Idle` 时为空串 |
+| `unknown_order_status` | int | 本会话累计收到的**不认识**的柜台委托状态次数 |
+| `unknown_direction` | int | 本会话累计收到的不认识的持仓方向次数 |
+| `unknown_price_type` | int | 本会话累计收到的不认识的委托价格类型次数 |
+| `unknown_position_effect` | int | 本会话累计收到的不认识的开平标志次数 |
+
+**未知枚举计数口径**（issue #367）：
+
+- 四类**分开计数**，不合并成一个总数：「我们没跟上柜台」与「柜台给了坏数据」原因不同、
+  处置也不同（前者补映射，后者查数据源）。
+- 计数是**会话生命周期累计值**，单调不减，日切与断线重连都不清零；`Idle` 期间保留
+  （与 `api_version` 同性质：诊断信息，不是会话业务数据）。
+- 计数只统计「读不懂」，不统计柜台自己上报的 `OrderStatus='a'(Unknown)`——后者是柜台
+  明确的暂态语义，不是我们的映射缺口。
 
 ### 2.4 清空与保留语义
 

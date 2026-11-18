@@ -446,3 +446,44 @@ TEST(TdStatusJsonTest, IdleClearsSessionFieldsInsideExt) {
     // api_version 是进程生命周期常量，Idle 时保留
     EXPECT_EQ(sm.status().ext.api_version, "v6.7.2");
 }
+
+// ============================================================================
+// RTN_TD_STATUS payload: 未知枚举计数进 ext（契约 td-status §2.3，issue #367）
+// ============================================================================
+
+TEST(TdStatusPayloadTest, AddsUnknownEnumCountersUnderExt) {
+    using namespace dztrader::ctp;
+    TdStatus status;
+    status.account_id = "acc1";
+    status.state = TdState::Ready;
+    status.ext.api_version = "v6.7.2";
+
+    UnknownEnumCounts counts;
+    counts.order_status = 3;
+    counts.direction = 1;
+    counts.price_type = 0;
+    counts.position_effect = 2;
+    EXPECT_EQ(counts.total(), 6u);
+
+    const nlohmann::json j = td_status_payload(status, counts);
+    // 按种类分开计数：合并成一个总数会让运维无法判断该补映射还是该查数据源。
+    EXPECT_EQ(j["ext"]["unknown_order_status"], 3);
+    EXPECT_EQ(j["ext"]["unknown_direction"], 1);
+    EXPECT_EQ(j["ext"]["unknown_price_type"], 0);
+    EXPECT_EQ(j["ext"]["unknown_position_effect"], 2);
+    // 既有字段不被覆盖
+    EXPECT_EQ(j["ext"]["api_version"], "v6.7.2");
+    EXPECT_EQ(j["state"], "Ready");
+    EXPECT_EQ(j["account_id"], "acc1");
+}
+
+TEST(TdStatusPayloadTest, ZeroCountsStillEmitted) {
+    using namespace dztrader::ctp;
+    // 计数为 0 也必须出现（前端与运维靠字段是否存在判断网关版本，缺失 = 老网关）。
+    const nlohmann::json j = td_status_payload(TdStatus{}, UnknownEnumCounts{});
+    ASSERT_TRUE(j.contains("ext"));
+    EXPECT_EQ(j["ext"]["unknown_order_status"], 0);
+    EXPECT_EQ(j["ext"]["unknown_direction"], 0);
+    EXPECT_EQ(j["ext"]["unknown_price_type"], 0);
+    EXPECT_EQ(j["ext"]["unknown_position_effect"], 0);
+}

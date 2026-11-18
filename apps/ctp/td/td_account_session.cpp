@@ -4,6 +4,7 @@
 #include <chrono>
 #include <format>
 #include <optional>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -448,7 +449,10 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
 
     try {
         // CTP OrderField -> OrderRecord (含 DzOrderReport base + CTP 扩展字段)
-        OrderRecord rpt = to_order_record(f.order, account_id_, trading_day_);
+        // 未知枚举落成对应 UNKNOWN 并把原始码登记, 随后统一上报 (不改写成本地拒单).
+        UnknownEnumSink unknown;
+        OrderRecord rpt = to_order_record(f.order, account_id_, trading_day_, &unknown);
+        report_unknown_enums(unknown);
 
         // ① 现有 order_ref_map_ 识别: 本地单/外部单, order_id 赋值, is_external 判定 (设计 §9.3).
         //    必须先于过滤器 check (过滤器按 order_id 定位基准; kSkip 命中时 replay_hit_order
@@ -557,7 +561,9 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
 
     try {
         // CTP TradeField -> TradeRecord (含 DzTradeReport base + 扩展字段)
-        TradeRecord rpt = to_trade_record(f.trade, account_id_, trading_day_);
+        UnknownEnumSink unknown;
+        TradeRecord rpt = to_trade_record(f.trade, account_id_, trading_day_, &unknown);
+        report_unknown_enums(unknown);
 
         // 通过 OrderRef 反查 DzOrderId, 填到 base.order_id
         const DzOrderId* local = order_ref_map_.find_by_order_ref(f.trade.OrderRef);
@@ -611,19 +617,52 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
 // ============================================================================
 
 void AccountSession::place_order(const DzOrderReq& req) {
-    if (!is_ready()) {
-        SPDLOG_WARN("td place_order rejected, not ready | account={} state={}", account_id_,
-                    magic_enum::enum_name(state_machine_.state()));
-        reject_order(req,
-                     std::format("交易未就绪: {}", magic_enum::enum_name(state_machine_.state())));
-        return;
-    }
     if (req.position_effect == DZ_POSITION_EFFECT_AUTO) {
         SPDLOG_WARN(
             "td place_order rejected: auto offset unimplemented | account={} order_id={} "
             "instrument={}",
             account_id_, req.order_id, req.instrument_id);
         reject_order(req, "AUTO 开平未实现");
+        return;
+    }
+    // 出账前枚举校验 (issue #367 §三): 不认识的枚举绝不能发往交易所. 兜底映射的
+    // 后果是「止损单变限价单 / 平仓单变开仓单」, 比拒单严重得多.
+    // 顺序刻意在就绪检查之前: 这些是「永远发不出去」的永久缺陷, 比「当前没连上」
+    // 这种暂态更有诊断价值, 也避免账号离线时把坏单只记成「未就绪」放过去。
+    if (req.price_type != DZ_PRICE_LIMIT && req.price_type != DZ_PRICE_MARKET &&
+        req.price_type != DZ_PRICE_FAK && req.price_type != DZ_PRICE_FOK) {
+        SPDLOG_WARN(
+            "td place_order rejected: unsupported price type | account={} order_id={} "
+            "price_type={}",
+            account_id_, req.order_id, static_cast<int>(req.price_type));
+        reject_order(req, std::format("不支持的价格类型: {}", static_cast<int>(req.price_type)));
+        return;
+    }
+    if (req.position_effect != DZ_POSITION_EFFECT_OPEN &&
+        req.position_effect != DZ_POSITION_EFFECT_CLOSE &&
+        req.position_effect != DZ_POSITION_EFFECT_CLOSE_TODAY &&
+        req.position_effect != DZ_POSITION_EFFECT_CLOSE_YESTDAY) {
+        SPDLOG_WARN(
+            "td place_order rejected: unsupported position effect | account={} "
+            "order_id={} position_effect={}",
+            account_id_, req.order_id, static_cast<int>(req.position_effect));
+        reject_order(req,
+                     std::format("不支持的开平标志: {}", static_cast<int>(req.position_effect)));
+        return;
+    }
+    if (req.direction != DZ_DIRECTION_LONG && req.direction != DZ_DIRECTION_SHORT) {
+        SPDLOG_WARN(
+            "td place_order rejected: unsupported direction | account={} order_id={} "
+            "direction={}",
+            account_id_, req.order_id, static_cast<int>(req.direction));
+        reject_order(req, std::format("不支持的方向: {}", static_cast<int>(req.direction)));
+        return;
+    }
+    if (!is_ready()) {
+        SPDLOG_WARN("td place_order rejected, not ready | account={} state={}", account_id_,
+                    magic_enum::enum_name(state_machine_.state()));
+        reject_order(req,
+                     std::format("交易未就绪: {}", magic_enum::enum_name(state_machine_.state())));
         return;
     }
     auto it = instrument_exchange_map_.find(req.instrument_id);
@@ -656,7 +695,20 @@ void AccountSession::place_order(const DzOrderReq& req) {
     build_ctx.request_id = ++request_id_;
     build_ctx.exchange_id = it->second.exchange_id;
 
-    CThostFtdcInputOrderField input = to_input_order_field(req, build_ctx);
+    CThostFtdcInputOrderField input{};
+    if (auto mapped = to_input_order_field(req, build_ctx); mapped.has_value()) {
+        input = *mapped;
+    } else {
+        // 前置校验已挡住不支持的枚举; 走到这里说明映射层与校验集合漂移了 —— 仍然拒单,
+        // 绝不退回「兜底成限价/开仓」把错误指令发给交易所.
+        SPDLOG_ERROR(
+            "td place_order rejected: unmappable order | account={} order_id={} "
+            "price_type={} position_effect={}",
+            account_id_, req.order_id, static_cast<int>(req.price_type),
+            static_cast<int>(req.position_effect));
+        reject_order(req, "无法映射为柜台委托");
+        return;
+    }
     // BrokerID 单独填 (CTP 要求, to_input_order_field 不填)
     copy_string(input.BrokerID, broker_id_.c_str(), true);
 
@@ -945,6 +997,7 @@ void AccountSession::req_qry_investor_position(bool login_chain) {
     position_query_agg_.clear();
     position_query_group_.clear();
     position_rebuild_consumed_ = false;
+    position_query_unknown_direction_ = false;
     position_query_in_flight_ = true;
     if (api_ == nullptr) {
         position_query_in_flight_ = false;
@@ -1144,6 +1197,45 @@ void AccountSession::write_order_rpt(const DzOrderReport& rpt) {
 void AccountSession::write_trade_rpt(const DzTradeReport& rpt) {
     // DZ_FRAME_TRADE_REPORT (2001), payload=DzTradeReport 通用字段
     platform::write_struct(event_writer_, DZ_FRAME_TRADE_REPORT, rpt);
+}
+
+void AccountSession::report_unknown_enums(const UnknownEnumSink& unknown) {
+    for (size_t i = 0; i < unknown.count; ++i) {
+        const UnknownEnumInfo& info = unknown.items[i];
+        // 按种类分开计数: 「我们没跟上柜台」与「柜台给了坏数据」处置不同 (issue #367 故事 8).
+        uint64_t count = 0;
+        std::string_view label_zh;
+        if (std::string_view(info.category) == kUnknownCategoryOrderStatus) {
+            count = ++unknown_enum_counts_.order_status;
+            label_zh = "委托状态";
+        } else if (std::string_view(info.category) == kUnknownCategoryDirection) {
+            count = ++unknown_enum_counts_.direction;
+            label_zh = "持仓方向";
+        } else if (std::string_view(info.category) == kUnknownCategoryPriceType) {
+            count = ++unknown_enum_counts_.price_type;
+            label_zh = "价格类型";
+        } else if (std::string_view(info.category) == kUnknownCategoryPositionEffect) {
+            count = ++unknown_enum_counts_.position_effect;
+            label_zh = "开平标志";
+        } else {
+            // 分类标签只由 td_ctp_mapping.h 的常量产出; 走到这里说明有新分类没接入.
+            continue;
+        }
+        // 原始值用数值码记录 (CTP 侧枚举是 char 字面量, 直接格式化不可打印字符会丢证据).
+        SPDLOG_ERROR("td unknown enum | account={} category={} raw_code={} count={}", account_id_,
+                     info.category, static_cast<int>(info.raw_char), count);
+        if (notify_) {
+            try {
+                notify_(DZ_NOTIFY_ERROR,
+                        std::format("收到未知{}（原始码 {}），已标记为未知并计数", label_zh,
+                                    static_cast<int>(info.raw_char)),
+                        /*popup=*/false);
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("td unknown enum notify failed | account={} error=\"{}\"", account_id_,
+                             e.what());
+            }
+        }
+    }
 }
 
 void AccountSession::reject_order(const DzOrderReq& req, const std::string& reason) {
@@ -1495,22 +1587,36 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
                 volume_multiple = ex->second.volume_multiple;
             }
             DzPositionInfo pos = to_dz_position(p, account_id_, trading_day_, volume_multiple);
-            PositionQueryKey key{std::string(pos.instrument_id),
-                                 static_cast<int8_t>(pos.direction)};
-            PositionQueryAgg& agg = position_query_agg_[key];
-            agg.volume += p.Position;
-            agg.yd += p.YdPosition;
-            agg.cost += p.PositionCost;
-            agg.volume_multiple = volume_multiple;
-            agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
-            if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
+            // 未知方向不能当多头写进持仓 (那会把空头写成多头, 净敞口反向), 也不能只把这一行
+            // 丢掉——那会让本轮快照看起来「这个合约空了」，apply_position_query 会把它的
+            // 已知持仓清零（幽灵空仓, ADR 0045 决策 3 判定的最危险形态）。读不懂的一行
+            // 等价于本轮快照不可信: 整轮不应用, 保留上次已知快照, 由补查重试。
+            if (pos.direction == DZ_DIRECTION_UNKNOWN) {
+                UnknownEnumSink unknown;
+                unknown.add(kUnknownCategoryDirection, p.PosiDirection);
+                report_unknown_enums(unknown);
+                position_query_unknown_direction_ = true;
+            } else {
+                PositionQueryKey key{std::string(pos.instrument_id),
+                                     static_cast<int8_t>(pos.direction)};
+                PositionQueryAgg& agg = position_query_agg_[key];
+                agg.volume += p.Position;
+                agg.yd += p.YdPosition;
+                agg.cost += p.PositionCost;
+                agg.volume_multiple = volume_multiple;
+                agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
+                if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
+            }
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             SPDLOG_ERROR("td qry position error | account={} error_id={} error=\"{}\"", account_id_,
                          f.rsp_info->ErrorID, dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg));
         }
         if (f.is_last) {
             position_query_in_flight_ = false;
-            position_query_ok_ = !(f.rsp_info && f.rsp_info->ErrorID != 0);
+            // 未知方向让整轮快照不可信 -> 按查询失败处理 (不改表, 由补查重试),
+            // 与 rsp_info 报错的处置同形。
+            position_query_ok_ =
+                !(f.rsp_info && f.rsp_info->ErrorID != 0) && !position_query_unknown_direction_;
             if (position_query_ok_ && !position_rebuild_consumed_) {
                 position_rebuild_consumed_ = true;
                 apply_position_query();

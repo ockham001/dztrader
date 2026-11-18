@@ -58,12 +58,13 @@ export function formatTdTime(seconds: number): string {
   return `${hh}:${mm}:${ss}`
 }
 
-/** 方向文案（契约 rest §2.9.3：Long / Short / Net） */
+/** 方向文案（契约 rest §2.9.3：Long / Short / Net / Unknown） */
 export function tdDirectionText(direction: TdOrderRow['direction']): string {
   switch (direction) {
     case 'Long': return '买'
     case 'Short': return '卖'
     case 'Net': return '净'
+    case 'Unknown': return '未知'
     default: return String(direction)
   }
 }
@@ -76,6 +77,7 @@ export function tdPositionEffectText(effect: TdOrderRow['position_effect']): str
     case 'Close': return '平仓'
     case 'CloseToday': return '平今'
     case 'CloseYesterday': return '平昨'
+    case 'Unknown': return '未知'
     default: return String(effect)
   }
 }
@@ -89,6 +91,7 @@ export function tdOrderStatusText(status: TdOrderRow['status']): string {
     case 'AllTraded': return '全部成交'
     case 'Cancelled': return '已撤单'
     case 'Rejected': return '已拒绝'
+    case 'Unknown': return '未知'
     default: return String(status)
   }
 }
@@ -102,6 +105,7 @@ export function tdPriceTypeText(priceType: TdOrderRow['price_type']): string {
     case 'Fak': return 'FAK'
     case 'Fok': return 'FOK'
     case 'Rfq': return '询价'
+    case 'Unknown': return '未知'
     default: return String(priceType)
   }
 }

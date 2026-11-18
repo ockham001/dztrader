@@ -17,11 +17,15 @@
 import { TD_UNAVAILABLE_TEXT, formatTdPrice } from './tdOrderView'
 import type { TdPositionRow } from '@/types/api'
 
-/** 方向在游标坐标里的全序（契约 rest §2.9.2）：Short(-1) < Net(0) < Long(1) */
+/**
+ * 方向在游标坐标里的全序（契约 rest §2.9.2）：Short(-1) < Net(0) < Long(1)，
+ * `Unknown` 排在最后（服务端的枚举码 INT8_MIN 也最小，契约 rest §2.9.3 的 Unknown 取值）。
+ */
 const DIRECTION_ORDER: Record<TdPositionRow['direction'], number> = {
   Short: -1,
   Net: 0,
   Long: 1,
+  Unknown: -2,
 }
 
 /**
@@ -121,12 +125,13 @@ export function reconcilePositionBaseline(
   return merged.sort(comparePositionRows)
 }
 
-/** 方向文案（契约 rest §2.9.3/§2.9.4：Long / Short / Net） */
+/** 方向文案（契约 rest §2.9.3/§2.9.4：Long / Short / Net / Unknown） */
 export function tdPositionDirectionText(direction: TdPositionRow['direction']): string {
   switch (direction) {
     case 'Long': return '多'
     case 'Short': return '空'
     case 'Net': return '净'
+    case 'Unknown': return '未知'
     default: return String(direction)
   }
 }
@@ -180,6 +185,11 @@ export interface TdPositionGroup {
    * 因此正常不会出现）。`Net` 行按其 volume 计入净仓，展示时不做多空拆分。
    */
   hasNetDirection: boolean
+  /**
+   * 存在 direction=Unknown 的行（网关没读懂柜台方向）。这类行**不计入净仓**——
+   * 契约 rest §2.9.3：未知值不得映射到其他取值，把它当多头或多空都会凭空造出敞口。
+   */
+  hasUnknownDirection: boolean
 }
 
 /** 取一条持仓行的方向明细 */
@@ -221,6 +231,7 @@ export function groupPositionRows(rows: readonly TdPositionRow[]): TdPositionGro
       long: null,
       short: null,
       hasNetDirection: false,
+      hasUnknownDirection: false,
     }
     if (!current) {
       byPair.set(key, group)
@@ -236,11 +247,15 @@ export function groupPositionRows(rows: readonly TdPositionRow[]): TdPositionGro
     seqBySide.set(sideKey, row.seq)
     if (row.direction === 'Long') group.long = toSide(row)
     else if (row.direction === 'Short') group.short = toSide(row)
-    else {
+    else if (row.direction === 'Net') {
       // Net 方向：按正值记为净仓。本仓 CTP 网关把净持仓映射成 Long，正常不会出现；
       // 保留它是为了契约完整性（其它柜台可能用 Net 口径）。
       group.hasNetDirection = true
       netDirectionVolume = row.volume
+    } else {
+      // Unknown 方向：不参与净仓（也不当 Net）。契约 rest §2.9.3 要求未知值原样显示，
+      // 猜成任一方向都会凭空造出敞口；这里只做标记，让界面能显示「未知」而不静默吞掉。
+      group.hasUnknownDirection = true
     }
     // 净仓口径：有多/空明细时用明细轧差（明细是权威）；只有 Net 行时用它的值。
     // 两种口径同时出现属柜台/数据异常——明细优先，且不让两者相加（相加会凭空放大净仓）。

@@ -197,10 +197,19 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 | 字段 | 取值 |
 |---|---|
-| direction | Long / Short / Net |
-| position_effect | Auto / Open / Close / CloseToday / CloseYesterday |
-| price_type | Limit / Market / Stop / Fak / Fok / Rfq |
-| status | Submitting / NotTraded / PartTraded / AllTraded / Cancelled / Rejected |
+| direction | Long / Short / Net / Unknown |
+| position_effect | Auto / Open / Close / CloseToday / CloseYesterday / Unknown |
+| price_type | Limit / Market / Stop / Fak / Fok / Rfq / Unknown |
+| status | Submitting / NotTraded / PartTraded / AllTraded / Cancelled / Rejected / Unknown |
+
+`Unknown` 表示**收到了不认识的柜台取值**（网关没跟上柜台，或柜台给了坏数据），不是「尚未确定」：
+
+- 未知值必须**原样显示为未知**，不得映射到其他取值，也不得在统计口径里被归入某个真实取值
+  （否则前端会把读不懂的数据当成可信数据）。
+- `Unknown` 只出现在回报方向（柜台 → 平台）。出账方向（平台 → 柜台）拒绝未知取值：
+  网关在发单前本地拒单，不会把不认识的价格类型/开平标志/方向发给交易所。
+- `Unknown` 的 `status` 不是终态，**不计入** §2.9.5 的 `unfilled_orders`；`Unknown` 的
+  `direction` 不参与持仓多空轧差与净仓计算。
 
 **委托行**：
 

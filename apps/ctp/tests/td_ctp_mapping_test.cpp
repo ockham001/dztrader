@@ -208,9 +208,32 @@ TEST(StatusCtp2VtTest, Map) {
 }
 
 TEST(StatusCtp2VtTest, UnknownDefault) {
-    EXPECT_EQ(STATUS_CTP2VT('z'), DZ_ORDER_SUBMITTING);
-    EXPECT_EQ(STATUS_CTP2VT('\0'), DZ_ORDER_SUBMITTING);
-    EXPECT_EQ(STATUS_CTP2VT('X'), DZ_ORDER_SUBMITTING);
+    // 未知状态必须暴露为 UNKNOWN, 不得猜成 SUBMITTING:
+    // 猜成「提交中」会让委托永久停在非终态, 冻结持仓不释放 (issue #367).
+    UnknownEnumSink unknown;
+    EXPECT_EQ(STATUS_CTP2VT('z', &unknown), DZ_ORDER_UNKNOWN);
+    EXPECT_EQ(STATUS_CTP2VT('\0'), DZ_ORDER_UNKNOWN);
+    EXPECT_EQ(STATUS_CTP2VT('X'), DZ_ORDER_UNKNOWN);
+    // 原始码被留下作证据 (不丢「对方到底发了什么」).
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryOrderStatus);
+    EXPECT_EQ(unknown.items[0].raw_char, 'z');
+}
+
+TEST(StatusCtp2VtTest, KnownCodesHaveNoUnknownEvidence) {
+    // 已知码路径不得登记任何未知取证 (否则计数器会被正常回报污染).
+    UnknownEnumSink unknown;
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_AllTraded, &unknown), DZ_ORDER_ALL_TRADED);
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Canceled, &unknown), DZ_ORDER_CANCELLED);
+    EXPECT_TRUE(unknown.empty());
+}
+
+TEST(StatusCtp2VtTest, CounterUnknownKeepsSubmittingSemantics) {
+    // 柜台自报 'a'(Unknown) 不是「我们读不懂」, 语义仍是等待下次回报 -> SUBMITTING,
+    // 且不计入未知枚举计数 (两类原因不同, 处置也不同).
+    UnknownEnumSink unknown;
+    EXPECT_EQ(STATUS_CTP2VT(THOST_FTDC_OST_Unknown, &unknown), DZ_ORDER_SUBMITTING);
+    EXPECT_TRUE(unknown.empty());
 }
 
 // ============================================================================
@@ -219,40 +242,45 @@ TEST(StatusCtp2VtTest, UnknownDefault) {
 
 TEST(OrderTypeVt2CtpTest, Limit) {
     auto t = ORDERTYPE_VT2CTP(DZ_PRICE_LIMIT);
-    EXPECT_EQ(t.limit_price_type, THOST_FTDC_OPT_LimitPrice);
-    EXPECT_EQ(t.time_condition, THOST_FTDC_TC_GFD);
-    EXPECT_EQ(t.volume_condition, THOST_FTDC_VC_MV);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_EQ(t->limit_price_type, THOST_FTDC_OPT_LimitPrice);
+    EXPECT_EQ(t->time_condition, THOST_FTDC_TC_GFD);
+    EXPECT_EQ(t->volume_condition, THOST_FTDC_VC_MV);
 }
 
 TEST(OrderTypeVt2CtpTest, Market) {
     auto t = ORDERTYPE_VT2CTP(DZ_PRICE_MARKET);
-    EXPECT_EQ(t.limit_price_type, THOST_FTDC_OPT_AnyPrice);
-    EXPECT_EQ(t.time_condition, THOST_FTDC_TC_IOC);
-    EXPECT_EQ(t.volume_condition, THOST_FTDC_VC_AV);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_EQ(t->limit_price_type, THOST_FTDC_OPT_AnyPrice);
+    EXPECT_EQ(t->time_condition, THOST_FTDC_TC_IOC);
+    EXPECT_EQ(t->volume_condition, THOST_FTDC_VC_AV);
 }
 
 TEST(OrderTypeVt2CtpTest, Fak) {
     auto t = ORDERTYPE_VT2CTP(DZ_PRICE_FAK);
-    EXPECT_EQ(t.limit_price_type, THOST_FTDC_OPT_LimitPrice);
-    EXPECT_EQ(t.time_condition, THOST_FTDC_TC_IOC);
-    EXPECT_EQ(t.volume_condition, THOST_FTDC_VC_MV);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_EQ(t->limit_price_type, THOST_FTDC_OPT_LimitPrice);
+    EXPECT_EQ(t->time_condition, THOST_FTDC_TC_IOC);
+    EXPECT_EQ(t->volume_condition, THOST_FTDC_VC_MV);
 }
 
 TEST(OrderTypeVt2CtpTest, Fok) {
     // CTP 无 FOK 时间条件, 用 IOC + CV 模拟 (MinVolume 由 to_input_order_field 设为 volume)
     auto t = ORDERTYPE_VT2CTP(DZ_PRICE_FOK);
-    EXPECT_EQ(t.limit_price_type, THOST_FTDC_OPT_LimitPrice);
-    EXPECT_EQ(t.time_condition, THOST_FTDC_TC_IOC);
-    EXPECT_EQ(t.volume_condition, THOST_FTDC_VC_CV);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_EQ(t->limit_price_type, THOST_FTDC_OPT_LimitPrice);
+    EXPECT_EQ(t->time_condition, THOST_FTDC_TC_IOC);
+    EXPECT_EQ(t->volume_condition, THOST_FTDC_VC_CV);
 }
 
-TEST(OrderTypeVt2CtpTest, UnsupportedFallback) {
-    // STOP/RFQ 期货不支持, 兜底返回 LimitPrice + GFD
-    auto t = ORDERTYPE_VT2CTP(DZ_PRICE_STOP);
-    EXPECT_EQ(t.limit_price_type, THOST_FTDC_OPT_LimitPrice);
-    EXPECT_EQ(t.time_condition, THOST_FTDC_TC_GFD);
-    auto t2 = ORDERTYPE_VT2CTP(DZ_PRICE_RFQ);
-    EXPECT_EQ(t2.limit_price_type, THOST_FTDC_OPT_LimitPrice);
+TEST(OrderTypeVt2CtpTest, UnsupportedReturnsNullopt) {
+    // STOP/RFQ 期货不支持 -> 失败. 反转旧断言「兜底返回 LimitPrice + GFD」:
+    // 兜底会把止损/询价单当普通限价单发到交易所 (issue #367 最严重的一类错误).
+    EXPECT_FALSE(ORDERTYPE_VT2CTP(DZ_PRICE_STOP).has_value());
+    EXPECT_FALSE(ORDERTYPE_VT2CTP(DZ_PRICE_RFQ).has_value());
+    // 未知取值同样失败, 不退化成限价.
+    EXPECT_FALSE(ORDERTYPE_VT2CTP(DZ_PRICE_UNKNOWN).has_value());
+    EXPECT_FALSE(ORDERTYPE_VT2CTP(static_cast<DzPriceType>(99)).has_value());
 }
 
 // ============================================================================
@@ -262,7 +290,9 @@ TEST(OrderTypeVt2CtpTest, UnsupportedFallback) {
 TEST(ToInputOrderFieldTest, LimitBuyOpen) {
     auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 5);
     OrderBuildContext ctx{"acc1", 123, 1, "CFFEX"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
+    const auto& f = *mapped;
 
     EXPECT_STREQ(f.InvestorID, "acc1");
     EXPECT_STREQ(f.InstrumentID, "IF2506");
@@ -283,7 +313,9 @@ TEST(ToInputOrderFieldTest, SellCloseToday) {
     auto req =
         make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE_TODAY, 3);
     OrderBuildContext ctx{"acc1", 999, 2, "SHFE"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
+    const auto& f = *mapped;
 
     EXPECT_EQ(f.Direction, THOST_FTDC_D_Sell);
     EXPECT_EQ(f.CombOffsetFlag[0], THOST_FTDC_OF_CloseToday);
@@ -294,25 +326,29 @@ TEST(ToInputOrderFieldTest, BuyCloseYesterday) {
     auto req =
         make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_CLOSE_YESTDAY, 2);
     OrderBuildContext ctx{"acc1", 1, 3, "SHFE"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
 
-    EXPECT_EQ(f.Direction, THOST_FTDC_D_Buy);
-    EXPECT_EQ(f.CombOffsetFlag[0], THOST_FTDC_OF_CloseYesterday);
+    EXPECT_EQ(mapped->Direction, THOST_FTDC_D_Buy);
+    EXPECT_EQ(mapped->CombOffsetFlag[0], THOST_FTDC_OF_CloseYesterday);
 }
 
 TEST(ToInputOrderFieldTest, Close) {
     auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 1);
     OrderBuildContext ctx{"acc1", 1, 4, "CFFEX"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
 
-    EXPECT_EQ(f.CombOffsetFlag[0], THOST_FTDC_OF_Close);
+    EXPECT_EQ(mapped->CombOffsetFlag[0], THOST_FTDC_OF_Close);
 }
 
 TEST(ToInputOrderFieldTest, FokMinVolume) {
     // FOK 模拟: MinVolume 应等于 volume
     auto req = make_order_req(DZ_PRICE_FOK, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 7);
     OrderBuildContext ctx{"acc1", 1, 5, "CFFEX"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
+    const auto& f = *mapped;
 
     EXPECT_EQ(f.TimeCondition, THOST_FTDC_TC_IOC);
     EXPECT_EQ(f.VolumeCondition, THOST_FTDC_VC_CV);
@@ -324,10 +360,11 @@ TEST(ToInputOrderFieldTest, FakMinVolume) {
     // FAK: MinVolume 保持 1 (允许部分成交)
     auto req = make_order_req(DZ_PRICE_FAK, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 7);
     OrderBuildContext ctx{"acc1", 1, 6, "CFFEX"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
 
-    EXPECT_EQ(f.TimeCondition, THOST_FTDC_TC_IOC);
-    EXPECT_EQ(f.MinVolume, 1);
+    EXPECT_EQ(mapped->TimeCondition, THOST_FTDC_TC_IOC);
+    EXPECT_EQ(mapped->MinVolume, 1);
 }
 
 TEST(ToInputOrderFieldTest, OrderRefFormat) {
@@ -336,21 +373,50 @@ TEST(ToInputOrderFieldTest, OrderRefFormat) {
 
     OrderBuildContext ctx1{"acc1", 0, 0, "CFFEX"};
     auto f1 = to_input_order_field(req, ctx1);
-    EXPECT_STREQ(f1.OrderRef, "000000000000");
+    ASSERT_TRUE(f1.has_value());
+    EXPECT_STREQ(f1->OrderRef, "000000000000");
 
     OrderBuildContext ctx2{"acc1", 999999999999LL, 0, "CFFEX"};
     auto f2 = to_input_order_field(req, ctx2);
-    EXPECT_STREQ(f2.OrderRef, "999999999999");
+    ASSERT_TRUE(f2.has_value());
+    EXPECT_STREQ(f2->OrderRef, "999999999999");
 }
 
 TEST(ToInputOrderFieldTest, MarketPriceIgnored) {
     // 市价单 LimitPrice 应被忽略, 但仍拷贝 req.price
     auto req = make_order_req(DZ_PRICE_MARKET, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 1, 0.0);
     OrderBuildContext ctx{"acc1", 1, 7, "CFFEX"};
-    auto f = to_input_order_field(req, ctx);
+    auto mapped = to_input_order_field(req, ctx);
+    ASSERT_TRUE(mapped.has_value());
 
-    EXPECT_EQ(f.OrderPriceType, THOST_FTDC_OPT_AnyPrice);
-    EXPECT_EQ(f.TimeCondition, THOST_FTDC_TC_IOC);
+    EXPECT_EQ(mapped->OrderPriceType, THOST_FTDC_OPT_AnyPrice);
+    EXPECT_EQ(mapped->TimeCondition, THOST_FTDC_TC_IOC);
+}
+
+TEST(ToInputOrderFieldTest, UnsupportedPriceTypeFails) {
+    // 出账方向绝不兜底: 止损/询价单不能变成普通限价单被发到交易所.
+    OrderBuildContext ctx{"acc1", 1, 8, "CFFEX"};
+    for (DzPriceType pt : {DZ_PRICE_STOP, DZ_PRICE_RFQ, DZ_PRICE_UNKNOWN}) {
+        auto req = make_order_req(pt, DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 1);
+        EXPECT_FALSE(to_input_order_field(req, ctx).has_value())
+            << "price_type=" << static_cast<int>(pt) << " must not be mapped silently";
+    }
+    auto req =
+        make_order_req(static_cast<DzPriceType>(99), DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_OPEN, 1);
+    EXPECT_FALSE(to_input_order_field(req, ctx).has_value());
+}
+
+TEST(ToInputOrderFieldTest, UnknownPositionEffectFails) {
+    // 未知开平不得兜成 OPEN: 平仓单变开仓单会凭空放大敞口.
+    OrderBuildContext ctx{"acc1", 1, 9, "CFFEX"};
+    for (DzPositionEffect pe : {DZ_POSITION_EFFECT_UNKNOWN, DZ_POSITION_EFFECT_AUTO}) {
+        auto req = make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, pe, 1);
+        EXPECT_FALSE(to_input_order_field(req, ctx).has_value())
+            << "position_effect=" << static_cast<int>(pe) << " must not be mapped silently";
+    }
+    auto req =
+        make_order_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, static_cast<DzPositionEffect>(99), 1);
+    EXPECT_FALSE(to_input_order_field(req, ctx).has_value());
 }
 
 // ============================================================================
@@ -489,6 +555,53 @@ TEST(ToOrderRecordTest, PriceTypeFak) {
     EXPECT_EQ(r.base.price_type, DZ_PRICE_LIMIT);
 }
 
+TEST(ToOrderRecordTest, UnknownStatusBecomesUnknown) {
+    // 反转旧行为: 未知状态不得兜成 SUBMITTING (委托永久停非终态, 冻结不释放).
+    auto of = make_order_field();
+    of.OrderStatus = 'Z';
+
+    UnknownEnumSink unknown;
+    auto r = to_order_record(of, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.status, DZ_ORDER_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryOrderStatus);
+    EXPECT_EQ(unknown.items[0].raw_char, 'Z');
+}
+
+TEST(ToOrderRecordTest, UnknownOffsetBecomesUnknown) {
+    auto of = make_order_field();
+    of.CombOffsetFlag[0] = 'Z';
+
+    UnknownEnumSink unknown;
+    auto r = to_order_record(of, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryPositionEffect);
+}
+
+TEST(ToOrderRecordTest, UnknownPriceTypeBecomesUnknown) {
+    // 反转旧行为: 未知 OrderPriceType 不得兜成 LIMIT.
+    auto of = make_order_field();
+    of.OrderPriceType = 'Z';
+
+    UnknownEnumSink unknown;
+    auto r = to_order_record(of, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.price_type, DZ_PRICE_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryPriceType);
+    EXPECT_EQ(unknown.items[0].raw_char, 'Z');
+}
+
+TEST(ToOrderRecordTest, KnownCodesHaveNoUnknownEvidence) {
+    auto of = make_order_field();
+    UnknownEnumSink unknown;
+    auto r = to_order_record(of, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_OPEN);
+    EXPECT_EQ(r.base.price_type, DZ_PRICE_LIMIT);
+    EXPECT_EQ(r.base.status, DZ_ORDER_PART_TRADED);
+    EXPECT_TRUE(unknown.empty());
+}
+
 // ============================================================================
 // to_trade_record
 // ============================================================================
@@ -542,6 +655,27 @@ TEST(ToTradeRecordTest, BuyCloseTodayMapping) {
     auto r = to_trade_record(tf, "acc1", kTradingDay);
     EXPECT_EQ(r.base.direction, DZ_DIRECTION_LONG);
     EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_CLOSE_TODAY);
+}
+
+TEST(ToTradeRecordTest, UnknownOffsetBecomesUnknownNotOpen) {
+    // 反转旧行为: 未知开平标志不得兜成 OPEN —— 平仓成交记成开仓会让持仓凭空放大.
+    auto tf = make_trade_field();
+    tf.OffsetFlag = 'Z';
+
+    UnknownEnumSink unknown;
+    auto r = to_trade_record(tf, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryPositionEffect);
+    EXPECT_EQ(unknown.items[0].raw_char, 'Z');
+}
+
+TEST(ToTradeRecordTest, KnownOffsetHasNoUnknownEvidence) {
+    auto tf = make_trade_field();
+    UnknownEnumSink unknown;
+    auto r = to_trade_record(tf, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_OPEN);
+    EXPECT_TRUE(unknown.empty());
 }
 
 // ============================================================================
@@ -760,4 +894,35 @@ TEST(ToDzPositionTest, ZeroPositionHasZeroPrice) {
     EXPECT_EQ(p.volume, 0);
     EXPECT_DOUBLE_EQ(p.price, 0.0);  // 避免除零
     EXPECT_EQ(p.today_volume, -6);   // 0 - YdPosition
+}
+
+TEST(ToDzPositionTest, UnknownPosiDirectionBecomesUnknown) {
+    // 反转旧行为: 未知方向不得兜成 LONG —— 空头被记成多头会让净敞口符号反向.
+    auto pf = make_position_field();
+    pf.PosiDirection = 'Z';
+
+    UnknownEnumSink unknown;
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0, &unknown);
+    EXPECT_EQ(p.direction, DZ_DIRECTION_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryDirection);
+    EXPECT_EQ(unknown.items[0].raw_char, 'Z');
+}
+
+TEST(ToDzPositionTest, KnownDirectionsHaveNoUnknownEvidence) {
+    UnknownEnumSink unknown;
+    auto long_field = make_position_field();  // 缺省 Long('2')
+    EXPECT_EQ(to_dz_position(long_field, "acc1", kTradingDay, 1.0, &unknown).direction,
+              DZ_DIRECTION_LONG);
+
+    auto net_field = make_position_field();
+    net_field.PosiDirection = THOST_FTDC_PD_Net;
+    EXPECT_EQ(to_dz_position(net_field, "acc1", kTradingDay, 1.0, &unknown).direction,
+              DZ_DIRECTION_LONG);
+
+    auto short_field = make_position_field();
+    short_field.PosiDirection = THOST_FTDC_PD_Short;
+    EXPECT_EQ(to_dz_position(short_field, "acc1", kTradingDay, 1.0, &unknown).direction,
+              DZ_DIRECTION_SHORT);
+    EXPECT_TRUE(unknown.empty());
 }
