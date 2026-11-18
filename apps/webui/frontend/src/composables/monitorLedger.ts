@@ -120,7 +120,10 @@ export interface LedgerRow {
    * 与交换的「无交换分区」是两种不同事实，各自给词，因此标签由构造处显式给。
    */
   stateLabel: string
-  /** 等级的文字形态：正常 / 警戒 / 危险；无等级可判时为空串（状态不得只靠颜色，契约随 DESIGN.md） */
+  /**
+   * 等级的文字形态：正常 / 警戒 / 危险；无判定基准时返回 {@link UNRATED_LEVEL_TEXT}（「无阈值」），
+   * 不冒充「正常」也不写成「不可用」（状态不得只靠颜色，契约随 DESIGN.md）。
+   */
   levelText: string
   /** 量程轨道的填充比例 [0,1]；null = 该行没有可比的分母（网卡 / 共享内存 / 时钟） */
   ratio: number | null
@@ -217,7 +220,13 @@ export function unavailableReasonText(reason: string | undefined, metric?: strin
   return reason
 }
 
-/** 等级 → 中文（状态不得只靠颜色；空等级返回空串，不冒充「正常」） */
+/**
+ * 等级 → 中文（状态不得只靠颜色）。
+ *
+ * `level === null` 返回 {@link UNRATED_LEVEL_TEXT}（「无阈值」）而**不是**空串：这一行有读数，
+ * 只是没有可归一化的分母，写成空串会让状态点旁一个字都没有，灰度截屏下这一行的状态就只剩一个灰点。
+ * 也不能写成「正常」（编造结论）或「不可用」（把有数据说成读不到）。
+ */
 export function ledgerLevelText(level: ResourceLevel | null): string {
   if (level === 'danger') return '危险'
   if (level === 'warn') return '警戒'
@@ -476,7 +485,6 @@ function volumeRow(volume: SysmonVolumeInfo, freePct: number): LedgerRow {
     historyKey: null,
     detailParts: [],
     fields: [
-      { label: '挂载点', value: volume.mount },
       { label: '总量', value: formatBytes(total) },
       { label: '已用', value: formatBytes(used) },
       { label: '可用', value: total === null || used === null ? UNAVAILABLE_TEXT : formatBytes(total - used) },
@@ -637,6 +645,13 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
   const bytesTotal = isRx ? nic.rx_bytes_total : nic.tx_bytes_total
   const packetsTotal = isRx ? nic.rx_packets_total : nic.tx_packets_total
   const dirLabel = isRx ? '接收' : '发送'
+  // 累计错误与丢弃是这张卡的风险信号，放在明细里让它不点开也可见（不是藏在展开里）。
+  // 速率与累计量并列：速率反映本窗口（0 是合法值），累计量反映是否曾经发生过。
+  // 段序固定 errors → drops；`detail` 由同一组分段拼出，同一句话不写两遍。
+  const detailParts: LedgerDetailPart[] = [
+    { id: 'errors', text: `错 ${formatCountPerSecOf(errorsPerSec)}（累计 ${formatCount(errorsTotal)}）` },
+    { id: 'drops', text: `丢 ${formatCountPerSecOf(dropsPerSec)}（累计 ${formatCount(dropsTotal)}）` },
+  ]
   return {
     id: `nic:${nic.interface}:${direction}`,
     group: 'network_clock',
@@ -651,14 +666,8 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
     levelText: ledgerLevelText(null),
     ratio: null,
     value: formatByteRate(rate),
-    // 累计错误与丢弃是这张卡的风险信号，放在明细里让它不点开也可见（不是藏在展开里）。
-    // 速率与累计量并列：速率反映本窗口（0 是合法值），累计量反映是否曾经发生过。
-    detail: `错 ${formatEventRate(errorsPerSec)}（累计 ${formatCount(errorsTotal)}）`
-      + ` · 丢 ${formatEventRate(dropsPerSec)}（累计 ${formatCount(dropsTotal)}）`,
-    detailParts: [
-      { id: 'errors', text: `错 ${formatEventRate(errorsPerSec)}（累计 ${formatCount(errorsTotal)}）` },
-      { id: 'drops', text: `丢 ${formatEventRate(dropsPerSec)}（累计 ${formatCount(dropsTotal)}）` },
-    ],
+    detail: detailParts.map(part => part.text).join(' · '),
+    detailParts,
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
@@ -676,18 +685,15 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
   }
 }
 
-/** 每秒事件数（1 位小数，与「错误/丢弃速率」口径一致） */
+/**
+ * 每秒事件数（1 位小数，与「错误/丢弃速率」口径一致）。
+ *
+ * null（首次采样 / 计数器重置）写「不可用」而不是 0：**0 是合法真实值**（本窗口确实没有增量），
+ * 因此不能把 null 折成 0。
+ */
 function formatCountPerSecOf(value: number | null): string {
   if (value === null) return UNAVAILABLE_TEXT
   return `${value.toFixed(1)}/s`
-}
-
-/**
- * 错误 / 丢弃的**速率**（不含累计量）：null（首次采样 / 计数器重置）写「不可用」而不是 0。
- * 0 是合法真实值（本窗口确实没有增量），因此不能把 null 折成 0。
- */
-function formatEventRate(value: number | null): string {
-  return formatCountPerSecOf(value)
 }
 
 /**

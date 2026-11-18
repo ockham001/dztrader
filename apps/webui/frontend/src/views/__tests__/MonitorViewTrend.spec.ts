@@ -285,7 +285,7 @@ describe('MonitorView 跳转历史（#127：点击 sparkline / 数值预选指�
   })
 })
 
-describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => {
+describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
@@ -445,9 +445,9 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
 
   /**
    * 取某选择器的**基础**规则内容（样式表内首次以「行首选择器 + {」出现的那个）。
-   * 必须锚定行首：`indexOf(selector)` 会命中复合选择器里的子串——
-   * 例如 `.monitor-view__list-value` 首次出现在 `[data-level='normal'] .monitor-view__list-value,`
-   * 这类色标规则里，断言的会是一条完全无关的规则（且恒真）。
+   * 必须锚定行首 + `{`：裸 `indexOf(selector)` 会命中模板里的 `class="…"` 或复合选择器里的
+   * 子串（如 `.monitor-view__ledger-row--empty .monitor-view__ledger-value`），
+   * 断言的会是一条完全无关的规则（且恒真）。
    */
   function ruleBody(selector: string): string {
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -490,18 +490,28 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   }
 
-  it('监控页列数：<md 单列、md–xl 双列、≥xl 三列', () => {
-    // 基础规则（md–xl）：双列（只认基础块本身，避免别处残留的 2 列让断言假绿）
-    expect(ruleBody('.monitor-view__grid')).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
-    // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
-    expect(ruleBody('.monitor-view__grid')).toContain('align-items: start')
-    // ≥xl（1280）：三列
-    expect(mediaRuleBody('@media (min-width: 1280px)', '.monitor-view__grid'))
-      .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
-    // <md（767.98）：单列；必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
+  it('监控页是单列纵向：三段都跨满整行，没有任何媒体规则为页面网格改列数（#363）', () => {
+    // 基础规则即单列。必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
-    expect(mediaRuleBody('@media (max-width: 767.98px)', '.monitor-view__grid'))
-      .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+    const grid = ruleBody('.monitor-view__grid')
+    expect(grid).toContain('grid-template-columns: minmax(0, 1fr)')
+    expect(grid).not.toContain('repeat(')
+    // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
+    expect(grid).toContain('align-items: start')
+
+    // 三个子元素都跨满整行：主机条与宽卡由 CSS 声明，台账 section 靠同一个修饰类
+    expect(ruleBody('.monitor-view__host')).toContain('grid-column: 1 / -1')
+    expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
+    expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
+
+    // 不存在为 `.monitor-view__grid` 单独改列数的媒体规则（列数不是版面变量了）。
+    // 媒体块按「行首 `}` 收尾」切分，与上面的 mediaRuleBody 同一假设。
+    const mediaBlocks = source.match(/@media[^{]*\{[\s\S]*?\n\}/g) ?? []
+    expect(mediaBlocks.length).toBeGreaterThan(0)
+    for (const block of mediaBlocks) {
+      if (!block.includes('.monitor-view__grid')) continue
+      expect(block, '媒体规则不得为页面网格改列数').not.toContain('grid-template-columns')
+    }
   })
 
   it('每核条形容器自适应：一条 auto-fit 规则覆盖 4–128 核，不写断点、不用 JS 测量（#362）', () => {

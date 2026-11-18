@@ -1196,9 +1196,8 @@ const cpuTrendAriaLabel = computed(
 
               <!-- ④ 当前值：有 historyKey 的行是按钮（跳历史视图并预选该指标，#325 的 title/aria 口径）；
                    空态行的值列是「—」——**不是 0**，四类空态的文字在明细列与状态点旁给出。 -->
-              <!-- 等级同时写在值槽上（行级 data-level 之外）：数值自身的着色锚点是这一个格，
-                   与旧卡片的 `.monitor-view__metric-row[data-level]` 同一口径（等级为 null 时
-                   属性被省略，不套任何状态色）。 -->
+              <!-- 等级同时写在值槽上（行级 data-level 之外）：数值自身的着色锚点是这一个格
+                    （等级为 null 时属性被省略，不套任何状态色）。 -->
               <span class="monitor-view__ledger-value" :data-level="row.level">
                 <button
                   v-if="row.state === 'ok' && row.historyKey !== null"
@@ -1593,21 +1592,16 @@ const cpuTrendAriaLabel = computed(
   }
 }
 
-/* 卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
+/* 实时视图是单列纵向（#363）：主机条 / CPU 宽卡 / 指标台账三段都跨满整行，
+   列数不再是版面变量——台账自身的七列（≥1024）/ 三行堆叠（<1024）才是分段的那一层。
+   沿用既有断点体系（xl=1280，#127 明确不使用容器查询），图表用容器自适应重排。
+   卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
    造成大片卡内留白（实测温度 326px / 内存 169px / 网络 140px，1280 下网络还有 140px；#325）。 */
 .monitor-view__grid {
   display: grid;
   align-items: start;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--spacer-16);
-}
-
-/* #127 列数断点：<md 单列（下方 max-width 块）、md–xl 双列（上方基础规则）、≥xl 三列。
-   沿用既有断点体系（xl=1280，#127 明确不使用容器查询），图表用容器自适应重排。 */
-@media (min-width: 1280px) {
-  .monitor-view__grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 .monitor-view__card--wide {
@@ -1845,6 +1839,13 @@ const cpuTrendAriaLabel = computed(
   width: 100%;
   max-width: 200px;
   margin-top: var(--spacer-4);
+}
+
+/* 台账值列内的 sparkline（#363）：值列是纵向 flex，基础规则的 `flex: 1` 会把 24px 辅助线
+   在主轴上拉伸；宽度跟随值列，不超出 `--ledger-col-value`。 */
+.monitor-view__sparkline--ledger {
+  flex: none;
+  margin-top: var(--spacer-2);
 }
 
 /* 无容量挂载折叠组（#122）：正文之后、与列表之间留白（折叠按钮自带尺寸，不另设边框） */
@@ -2258,7 +2259,7 @@ const cpuTrendAriaLabel = computed(
   font-variant-numeric: tabular-nums;
 }
 
-/* 中档（768–1279）：七列不降级，只把整组数字列一起收窄。容器在这一档约 700px，
+/* 中档（1024–1279）：七列不降级，只把整组数字列一起收窄。容器在这一档约 700px，
    而 ≥1280 那套列宽的下限之和已经超过它——只缩轨道与明细会把名称列压成 0。
    必须写在这里（基础规则之后）：媒体查询不叠加优先级，靠前的同名规则会被后面的基础规则覆盖。 */
 @media (min-width: 1024px) and (max-width: 1279.98px) {
@@ -2716,11 +2717,6 @@ const cpuTrendAriaLabel = computed(
     margin: 0 0 var(--spacer-16);
     padding: var(--spacer-8) 0;
     background: var(--bg-base-default);
-  }
-
-  /* 裸 1fr 的最小轨道是 auto，会被卡片内最长不可断行内容顶宽（#321）。 */
-  .monitor-view__grid {
-    grid-template-columns: minmax(0, 1fr);
   }
 
   .monitor-view__card--wide {
