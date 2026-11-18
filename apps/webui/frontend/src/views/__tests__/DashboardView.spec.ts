@@ -526,7 +526,7 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  // ---- #358：无法确认数据时不得渲染成「暂无」（四态互斥）----
+  // ---- #358：无法确认数据时不得渲染成「暂无」（五态互斥）----
 
   it('无已登记账户（持仓）时渲染「持仓未知」+ 面板级提示条，不渲染「暂无持仓」', async () => {
     vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([], { online_accounts: [] }))

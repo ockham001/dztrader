@@ -198,19 +198,22 @@ const fundAggregate = computed<string>(() => (
 // 评审实测（2026-11-18 仪表盘评审 P0-1）：`/api/td/accounts` 回 available:false 而
 // `/api/td/positions` 回 available:true + items:[] 时，屏幕渲染成「暂无持仓 + 绿 0/0」——
 // 「无法确认数据」被说成「空仓正常」。判定抽到 `composables/tdPanelState` 纯函数里，
-// 两个面板消费同一个状态机（四态互斥，优先级 degraded → loading → error → no-accounts → empty）。
+// 两个面板消费同一个状态机（五态互斥，优先级 degraded → loading → error → no-accounts → empty）。
 //
 // 「账户全集」的取法（各面板按其 store 的账户真相源）：
 // - 持仓：`accounts`（在线 ∪ 已返回行的 account_id，契约 webui-ws §5 第 11 条）；
 // - 资金：`rows`（一行 = 一个已登记账户，含离线与 has_data:false，契约 rest §2.9.4）。
 // 两者都并入 `onlineAccounts`：信封声明有在线账户时，即使行集为空也是「已知账户，无数据」。
+// 这个兜底在稳态下是冗余的（store 保证账户全集 ⊇ 在线集合），保留是为了覆盖基线翻页的
+// 中间窗口——`loadBaseline` 逐页 await 期间先写 `onlineAccounts`、翻完才重建账户全集，
+// 那一瞬「在线集合非空而账户全集还是空的」确实成立。
 
 /** 持仓面板是否已知账户（账户全集或在线集合非空） */
 const positionHasAccounts = computed<boolean>(
   () => positionsStore.accounts.length > 0 || positionsStore.onlineAccounts.length > 0,
 )
 
-/** 资金面板是否已知账户（资金行集合即账户全集，含离线；信封在线集合兜底） */
+/** 资金面板是否已知账户（资金行集合即账户全集，含离线；信封在线集合兜底，理由同上） */
 const fundHasAccounts = computed<boolean>(
   () => fundsStore.rows.length > 0 || fundsStore.onlineAccounts.length > 0,
 )
@@ -498,6 +501,11 @@ onUnmounted(() => {
                       @click="selectAllPositionAccounts"
                     >全选</button>
                   </div>
+                  <!-- 空文案的判据是**本列表的数据源** `accounts`（账户全集），不是面板态的
+                       `positionHasAccounts`：后者并入 `onlineAccounts` 兜底，用它会让
+                       「在线集合非空、账户全集尚未重建」的中间窗口渲染出一个空的选项列表。
+                       那类中间窗口处于 `loading` 态（面板显示「加载中...」），因此不会与
+                       面板的空态文案同时出现、不构成同一事实的相反说法。 -->
                   <p v-if="positionsStore.accounts.length === 0" class="dashboard-pos-filter__empty">暂无已登记账户</p>
                   <div v-else data-test="position-account-filter" class="dashboard-pos-filter__list">
                     <label v-for="account in positionsStore.accounts" :key="account" class="ds-check">
