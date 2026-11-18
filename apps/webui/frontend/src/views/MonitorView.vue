@@ -1577,9 +1577,9 @@ const cpuTrendAriaLabel = computed(
     grid-template-columns:
       var(--ledger-col-state)
       minmax(0, var(--ledger-col-name-md))
-      minmax(0, var(--ledger-col-track-md))
+      minmax(var(--ledger-col-track-md), 1fr)
       var(--ledger-col-value)
-      minmax(0, var(--ledger-col-detail-md))
+      minmax(var(--ledger-col-detail-md), 2fr)
       var(--ledger-col-threshold)
       var(--ledger-col-headroom);
   }
@@ -1955,12 +1955,14 @@ const cpuTrendAriaLabel = computed(
    `column-gap` 是列间距（不是「间距字面量违规」——值走 token）。 */
 .monitor-view__ledger-row {
   display: grid;
+  /* 轨道与明细是弹性列（`… , 1fr` / `…, 2fr`）：它们吃掉剩余宽度，七列因此始终铺满整行；
+     其余五列是定宽（状态 / 名称 / 读数 / 阈值 / 余量），列基线不随内容漂移。 */
   grid-template-columns:
     var(--ledger-col-state)
     minmax(0, var(--ledger-col-name))
-    minmax(0, var(--ledger-col-track))
+    minmax(var(--ledger-col-track), 1fr)
     var(--ledger-col-value)
-    minmax(0, var(--ledger-col-detail))
+    minmax(var(--ledger-col-detail), 2fr)
     var(--ledger-col-threshold)
     var(--ledger-col-headroom);
   align-items: baseline;

@@ -541,8 +541,22 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(base).toContain('display: grid')
     const columns = base.match(/grid-template-columns:\s*([^;]+);/)
     expect(columns, '台账行必须是网格').not.toBeNull()
-    // 七列：以空白分隔的列定义计数（minmax(...) 自身含空格，故按行折叠后数 minmax/var 片段）
-    const tracks = columns![1].replace(/minmax\([^)]*\)/g, 'X').trim().split(/\s+/)
+    // 七列：按括号配平把每个轨道折成一个占位符再计数（minmax 里还嵌着 var(...)，
+    // 只按正则截到第一个 ')' 会把一条轨道切成两半，让「七列」这条断言失去意义）
+    const tracks: string[] = []
+    let depth = 0
+    let current = ''
+    for (const char of columns![1]) {
+      if (char === '(') depth += 1
+      if (char === ')') depth -= 1
+      if (/\s/.test(char) && depth === 0) {
+        if (current.trim().length > 0) tracks.push(current.trim())
+        current = ''
+        continue
+      }
+      current += char
+    }
+    if (current.trim().length > 0) tracks.push(current.trim())
     expect(tracks).toHaveLength(7)
     // 列宽全部来自 token（列宽是版面几何量，直接写字面量会被 dz/token-literal 拦下；
     // 这里再断言一次，避免有人用 var(--spacer-*) 冒充列宽）
