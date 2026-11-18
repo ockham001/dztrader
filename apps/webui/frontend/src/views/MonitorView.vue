@@ -9,25 +9,28 @@ import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import {
+  NO_THRESHOLD_TEXT,
   adaptiveAxisTicks,
   adaptiveTrendGeometry,
+  buildMemoryComposition,
+  buildMonitorLedger,
   unavailableReasonText,
+  type LedgerGroup,
+  type LedgerRow,
+  type MemoryCompositionSegment,
 } from '@/composables/monitorLedger'
+import {
+  RESOURCE_DANGER_RATIO,
+  RESOURCE_WARN_RATIO,
+} from '@/composables/useResourceLevel'
 import {
   UNAVAILABLE_TEXT,
   formatAge,
-  formatByteRate,
-  formatBytes,
-  formatCount,
   formatCountPerSec,
   formatDecimal,
   formatFrequency,
-  formatIops,
-  formatLatency,
   formatMilliseconds,
-  formatPerSec,
   formatPercent,
-  formatSignedMilliseconds,
   formatTemperature,
 } from '@/composables/format'
 import {
@@ -53,19 +56,15 @@ import {
   clockBoundAlarm,
   clockDomainState,
   clockFailureSummary,
-  clockOffsetLevel,
   clockProbeAgeSec,
-  clockServerCells,
   resolveClockThresholds,
   sortClockDaemons,
 } from '@/composables/sysmonClock'
-import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
 import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
-import type { SysmonVolumeInfo } from '@/types/generated'
 
 // 资源监控页：主机条（主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数）、CPU 宽卡
 // （总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、内存与交换、
@@ -142,6 +141,21 @@ function historyTitle(metricKey: string): string {
 
 function historyAriaLabel(metricKey: string, visibleValue: string): string {
   return `${trendMetricLabel(metricKey)} ${visibleValue}，${historyTitle(metricKey)}`
+}
+
+/** 台账行可点数值的 title（有 `historyKey` 的行才有；口径与 #325 的标量完全一致） */
+function rowHistoryTitle(row: LedgerRow): string {
+  return row.historyKey === null ? '' : historyTitle(row.historyKey)
+}
+
+/** 台账行可点数值的 aria-label：**先带可见数值**（WCAG 2.5.3），再接同一个动作 */
+function rowHistoryAriaLabel(row: LedgerRow): string {
+  return row.historyKey === null ? '' : historyAriaLabel(row.historyKey, row.value)
+}
+
+/** 点击台账行数值：切到历史视图并预选该指标（查询由历史视图挂载时发起） */
+function openRowHistory(row: LedgerRow): void {
+  if (row.historyKey !== null) openHistory(row.historyKey)
 }
 
 // ---- 配置草稿守卫（#322）----
@@ -298,76 +312,131 @@ const temperatureGroups = computed(() =>
 const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
 const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
-// ---- 内存 / 交换（#74）/ 磁盘（#75：卷容量 / 共享内存目录）/ 网络 ----
-// 内存 / 交换 / 磁盘一律走 store 的净化 computed（可用性 + 数值防御），组件不直接读 payload 字段。
-const memoryAvailable = computed(() => isAvailable('memory'))
-const memory = computed(() => sysmon.memoryInfo)
-const swapAvailable = computed(() => isAvailable('swap'))
-const swapInfo = computed(() => sysmon.swapInfo)
-// 无交换分区是平台事实（契约 sysmon §2.5 的 unsupported），不是采集故障：给出明确文案，
-// 其余不可用原因仍按 unavailableDesc 展示。
-const swapUnavailableDesc = computed(() => {
-  if (sysmon.availabilityOf('swap')?.reason === 'unsupported') {
-    return '本机无交换分区/页面文件'
-  }
-  return unavailableDesc('swap')
-})
-const volumesAvailable = computed(() => isAvailable('volumes'))
-const volumes = computed(() => sysmon.volumes)
-// 卷列表分两池（#122）：正文只留容量可读且总量 > 0 的卷，无容量挂载折叠成组。
-// 折叠状态不持久化（刷新回到默认收起），与既有手风琴一致。
-const readableVolumes = computed(() => sysmon.readableVolumes)
+// ---- 指标台账（#363）：三组、每行七列，行数据全部来自 `buildMonitorLedger` ----
+// 视图**不写任何「该不该显示」的判断**：行是否存在、空态是哪一类、阈值与余量写什么、
+// 数值能不能点跳历史，全部由 `@/composables/monitorLedger` 决定（纯函数，可单测）。
+// 这里只把 store 已净化的 computed 与生效配置交给它，并把结果摆成七列。
+//
+// 台账之外的存量口径继续走 store 的净化 computed：内存 / 交换 / 卷 / 磁盘 I/O / 网络 / 时钟
+// 一律不直接读 payload 字段。
 const zeroCapacityVolumes = computed(() => sysmon.zeroCapacityVolumes)
 const zeroVolumesOpen = ref(false)
 
+/** 生效快照的时刻（服务端时间轴）：台账的「上次探测多久以前」用它，不用本机 Date.now() */
+const ledgerNowUnixMs = computed(() => {
+  const ts = snapshot.value?.timestamp
+  return typeof ts === 'number' ? ts : Date.now()
+})
+
+/** 台账三组（内存 / 存储 / 网络与时钟），行数由数据决定 */
+const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
+  memory: sysmon.memoryInfo,
+  swap: sysmon.swapInfo,
+  readableVolumes: sysmon.readableVolumes,
+  zeroCapacityVolumes: sysmon.zeroCapacityVolumes,
+  diskIo: sysmon.diskIo,
+  network: sysmon.network,
+  shmDir: sysmon.shmDirInfo,
+  clock: sysmon.clock,
+  thresholds: sysmon.config?.thresholds ?? null,
+  clockConfig: sysmon.config?.clock ?? null,
+  // 可用性映射直接传 store 的查询函数：台账按它区分「不可用」「配置关闭」「暂无数据」
+  availability: metric => sysmon.availabilityOf(metric),
+  nowUnixMs: ledgerNowUnixMs.value,
+  networkFilteredAll: sysmon.networkFilteredAll && sysmon.hideVirtual,
+}))
+
+/** 内存组成带（#363）：四段 + 图例；缓存/缓冲不可得时退化为两段并标注（不补 0） */
+const memoryComposition = computed(() => buildMemoryComposition(sysmon.memoryInfo))
+
 /**
- * 使用率色标等级（卷 / 内存 / 交换；#120 收口）：与顶栏徽章共用 `resourceLevel` 的同一组
- * 常量（≥70% 黄、≥90% 红）。`null`（不可用 / 本帧无值）不套任何状态色——不可用不是 0%，
- * 不得用 normal 冒充「一切正常」。
+ * 轨道填充比例 → CSS 变量（与 CPU 每核柱的 `--core-fill` 同一形态：值逐行不同，只能运行时注入）。
+ * `ratio === null`（网卡 / 共享内存 / 时钟：没有可比的分母）返回空对象 → 不注入变量，
+ * 样式里 `width: var(--ledger-fill, 0%)` 取兜底值，视觉上是一条空轨道。空轨道与「真的 0%」
+ * 的区别由当前值文字承担（台账的空态行根本没有 ratio，也不画填充）。
  */
-function usageLevel(ratio: number | null): ResourceLevel | null {
-  return ratio === null ? null : resourceLevel(ratio)
+function trackFillStyle(row: LedgerRow): Record<string, string> {
+  if (row.ratio === null) return {}
+  const clamped = Math.min(1, Math.max(0, row.ratio))
+  return { '--ledger-fill': formatPercent(clamped) }
+}
+
+/** 组成带某段占总量比例 → CSS 变量（`flex-basis`），不可得的段不画（不注入变量） */
+function compositionStyle(segment: MemoryCompositionSegment): Record<string, string> {
+  if (segment.ratio === null) return {}
+  return { '--ledger-seg': formatPercent(Math.min(1, Math.max(0, segment.ratio))) }
 }
 
 /**
- * 卷行的使用率展示等级（与顶栏卷徽章共用 `usageLevel` / `resourceLevel`）。
- * 正文卷列表由 store 的 `readableVolumes` 口径保证 `used_ratio` 非 null；这里仍显式处理 null
- * （不伪造 0 再套「正常」色）—— 真出现时不套任何状态色，该行本不该出现在正文。
+ * 轨道缺口位置 → CSS 变量。两个位置来自**展示分档常量**（`RESOURCE_WARN_RATIO` /
+ * `RESOURCE_DANGER_RATIO`，ADR 0034 明文是展示规则），不是契约阈值——因此缺口与「阈值」列
+ * 是两个不同的东西：缺口位置不随配置变化，阈值列随 `thresholds` 变化。
  */
-function volumeLevel(volume: SysmonVolumeInfo): ResourceLevel | null {
-  return usageLevel(volume.used_ratio)
+function gapStyle(ratio: number): Record<string, string> {
+  return { '--ledger-gap': formatPercent(ratio) }
 }
 
-const shmAvailable = computed(() => isAvailable('shm_dir'))
-const shmDir = computed(() => sysmon.shmDirInfo)
-// ---- 磁盘 I/O（#76）：每物理盘吞吐 / IOPS / 延迟 / 队列深度 / 利用率，按可用性映射渲染 ----
-// 只在 availability.metrics 上分支，不按 platform.family 分支；数值 null（首次采样/计数器重置）
-// 逐项显示「不可用」，绝不显示 0。
-const diskIoAvailable = computed(() => isAvailable('disk_io'))
-const diskIo = computed(() => sysmon.diskIo)
+/** 该行是否有契约阈值（只有有阈值的行才在轨道上开 70/90 缺口） */
+function hasThreshold(row: LedgerRow): boolean {
+  return row.thresholdText !== NO_THRESHOLD_TEXT
+}
+
+/** 行 id → data-test（稳定的按类选择器；行 id 由 #361 定义，这里不做语义判断） */
+function rowTestId(row: LedgerRow): string {
+  if (row.id.startsWith('volume:')) return 'monitor-disk-volume'
+  if (row.id.startsWith('disk:')) return 'monitor-disk-io-row'
+  if (row.id.startsWith('nic:')) return 'monitor-network-row'
+  if (row.id === 'memory') return 'monitor-memory-row'
+  if (row.id === 'swap') return 'monitor-swap-row'
+  if (row.id === 'shm_dir') return 'monitor-shm-row'
+  if (row.id === 'clock') return 'monitor-clock'
+  return `ledger-row-${row.id}`
+}
+
+/** 标量行的数值 data-test：四个既有可点标量沿用原选择器（#325 的入口不掉），其余行通用 */
+function rowValueTestId(row: LedgerRow): string {
+  if (row.id === 'memory') return 'monitor-memory-value'
+  if (row.id === 'swap') return 'monitor-memory-swap-usage'
+  if (row.id === 'shm_dir') return 'monitor-shm-total'
+  if (row.id === 'clock') return 'monitor-clock-offset'
+  return 'ledger-value'
+}
+
+/** 行 id 的维度部分（`volume:<mount>` → 挂载点 / `disk:<device>` / `nic:<if>:<dir>`） */
+function rowDimension(row: LedgerRow): string {
+  const [, ...rest] = row.id.split(':')
+  return rest.join(':')
+}
+
+/** 状态点旁的文字：正常/警戒/危险（`ok` 行）或四类空态各自的短标签——状态不得只靠颜色 */
+function rowStateTag(row: LedgerRow): string {
+  return row.state === 'ok' ? row.levelText : row.stateLabel
+}
+
+/** 空态行的说明文字（`ok` 行没有说明；值列为 `—`） */
+function rowStateNote(row: LedgerRow): string {
+  return row.state === 'ok' ? '' : row.stateText
+}
+
+// ---- 行明细展开（#363）：折叠状态只存组件本地 ref，**不持久化**（刷新回默认收起）----
+const openLedgerRows = ref<Record<string, boolean>>({})
+
+function toggleLedgerRow(rowId: string): void {
+  openLedgerRows.value = { ...openLedgerRows.value, [rowId]: !openLedgerRows.value[rowId] }
+}
+
+function isLedgerRowOpen(rowId: string): boolean {
+  return openLedgerRows.value[rowId] === true
+}
+
+// ---- 磁盘 I/O 语义提示（#207 B2）：稳定 key 映射中文，原文留在 tooltip ----
 const diskIoHintRaw = computed(() => sysmon.semanticHint('disk_io'))
-// 语义提示按稳定 key 映射中文（#207 B2）；发送方原文保留在 tooltip 里可对照
 const diskIoHint = computed(() => {
   const raw = diskIoHintRaw.value
   return raw === '' ? null : { text: semanticHintText('disk_io', raw), raw }
 })
-// 磁盘性能计数器最常见的不可用原因（Windows 非管理员 / 计数器未开启）给出可操作文案；
-// 其余 reason 走既有 unavailableDesc。
-const diskIoUnavailableDesc = computed(() => {
-  // no_permission 在磁盘 I/O 语境下是「性能计数器需特权/未开启」，给出可操作文案；
-  // 其余原因（disabled_by_config / collect_failed / 未知）统一走既有 unavailableDesc。
-  if (sysmon.availabilityOf('disk_io')?.reason === 'no_permission') {
-    return '磁盘性能计数器不可用（需管理员权限或性能计数器未开启）'
-  }
-  return unavailableDesc('disk_io')
-})
-// ---- 网络（#77）：每网卡收发速率 / 累计量 / 错误 / 丢弃，并按可用性映射渲染 ----
-// 与磁盘 I/O 同构：只在 availability.metrics 上分支，不按 platform.family 分支；
-// 六个速率字段 null（首次采样/本帧新出现/计数器重置）逐项显示「不可用」，绝不显示 0。
-// hide_virtual=true 时发送方已滤掉虚拟网卡；全部被滤掉时 payload 是空数组且 available=true，
-// 此时显示「已隐藏全部虚拟网卡」而不是「不可用」（契约 sysmon §2.5 明文要求区分）。
+// ---- 网络「显示全部网卡」开关（#77）：admin 才可操作，实际值取生效配置镜像 ----
 const networkAvailable = computed(() => isAvailable('network'))
-const network = computed(() => sysmon.network)
 // 「显示全部网卡」开关：admin 才可操作（复用 auth store 的 isAdmin）；实际值取生效配置镜像
 // （契约 sysmon §3.1 network.hide_virtual），切换后等 WS sysmon_config 回推才变更。
 const auth = useAuthStore()
@@ -376,10 +445,6 @@ const canToggleNetwork = computed(() => auth.isAdmin)
 const hideVirtual = computed(() => sysmon.hideVirtual)
 const showAllNics = computed(() => !hideVirtual.value)
 const hideVirtualPending = computed(() => sysmon.hideVirtualPending)
-// 可用但空数组 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5）。
-// 仅当 hideVirtual 为真时才能这么解释；hide_virtual=false 却为空数组 = 本机确实无网卡
-//（罕见，容器内可能），走「暂无数据」而不是「已隐藏」。
-const networkHiddenAll = computed(() => sysmon.networkFilteredAll && hideVirtual.value)
 
 // 开关语义是「显示全部网卡」(= hide_virtual 取反)，直接下发取反后的 hide_virtual 值。
 // 结果契约（对齐 settings/mdConfig 的配置类操作）：true = 已下发（等 WS sysmon_config 生效）、
@@ -402,9 +467,6 @@ const clock = computed(() => sysmon.clock)
 const clockState = computed(() => clockDomainState(clock.value))
 // 阈值取生效配置镜像（未到达时按契约 §3.1 默认值，避免卡片先按一套阈值着色、配置到达后跳变）
 const clockThresholds = computed(() => resolveClockThresholds(sysmon.config?.clock))
-const clockLevel = computed<ResourceLevel | null>(
-  () => clockOffsetLevel(clock.value?.offset_ms ?? null, clockThresholds.value),
-)
 const clockQualityAlarm = computed(
   () => clockBoundAlarm(clock.value?.bound_ms ?? null, clockThresholds.value),
 )
@@ -421,10 +483,6 @@ const clockProbeAge = computed(() => {
 const clockServers = computed(() => clock.value?.servers ?? [])
 const clockDaemons = computed(() => sortClockDaemons(clock.value?.daemons ?? []))
 const clockFailure = computed(() => clockFailureSummary(clockServers.value))
-const clockDetailOpen = ref(false)
-// sync_service 键（契约 §2.5）：服务枚举能力恒可用；配置关闭时该键不可用，此时空态已表达。
-// 另外**尚未探测**时不渲染本区：服务检测在「每轮探测开始时」执行（契约 §2.9），首轮探测前
-// `daemons` 是空数组并不代表「没查到服务」——此时把空数组当事实展示会凭空报出一个未做过的检测。
 const clockDaemonAvailable = computed(() => isAvailable('clock.sync_service'))
 const clockDaemonVisible = computed(
   () => clockDaemonAvailable.value && (clockState.value === 'live' || clockState.value === 'unavailable'),
@@ -466,8 +524,6 @@ async function onProbeClock(): Promise<void> {
 //（验收标准）。不可用 / 空数据的空态不进折叠——可用性事实不藏在展开按钮后面。
 const cpuDetailOpen = ref(false)
 const temperatureDetailOpen = ref(false)
-const diskIoDetailOpen = ref(false)
-const networkDetailOpen = ref(false)
 
 /** 一组可能缺失的数值中的最大值；全缺失时 null（缺失不是 0，不参与比较） */
 function peakOf(values: (number | null)[]): number | null {
@@ -514,17 +570,6 @@ const temperaturePeak = computed<TemperaturePeak | null>(() => {
 const temperatureDetailSummary = computed(
   () => `${temperatureReadings.value.length} 个传感器 · ${temperatureGroups.value.length} 个芯片`,
 )
-
-/** 磁盘 I/O 摘要（收起时显示）：盘数 + 最高利用率；全为 null 时只说盘数，不伪造 0 */
-const diskIoDetailSummary = computed(() => {
-  const parts = [`${diskIo.value.length} 块盘`]
-  const peak = peakOf(diskIo.value.map(device => device.utilization))
-  if (peak !== null) parts.push(`最高利用率 ${formatPercent(peak)}`)
-  return parts.join(' · ')
-})
-
-/** 网络摘要（收起时显示）：网卡数（虚拟网卡是否隐藏由发送方决定，这里只统计收到的条目） */
-const networkDetailSummary = computed(() => `${network.value.length} 块网卡`)
 
 // ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
 // 字段全部来自既有快照的 `system` / `platform_description`，不新增接口、不读 store 之外的东西。
@@ -627,16 +672,6 @@ const cpuTrendAriaLabel = computed(
   () => `${sparklineAriaLabel(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)}，${cpuTrendCaption.value}`,
 )
 
-// ---- 网卡累计量 / 速率格式化（#126：单位档与精度全部走共享模块）----
-/**
- * 错误 / 丢弃单元格：速率 + 累计量并列（速率反映当前窗口，累计量反映是否曾经发生过）。
- * 速率 null（首次采样/计数器重置）显示「不可用」而不是 0；累计量始终有效（累计计数器没有
- * 不可用语义），因此即便速率不可用仍能看到历史累计。
- * 错误/丢弃速率保留 1 位小数（可为 0 = 本窗口确实没有增量）。
- */
-function formatEventRateWithTotal(rate: number | null | undefined, total: number): string {
-  return `${formatPerSec(rate, 1)}（累计 ${formatCount(total)}）`
-}
 </script>
 
 <template>
@@ -1017,553 +1052,283 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
         </div>
       </section>
 
-      <!-- 内存 / 交换（#74）：内存数值 + 卡片内交换子区块；不可用一律显式空态，不得显示 0 -->
-      <section class="ds-card monitor-view__card" data-test="monitor-memory">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="MEM" :size="14" /></span>内存
-        </h2>
-        <template v-if="memory">
-          <div class="monitor-view__metric-row" :data-level="usageLevel(memory.used_ratio)">
-            <button
-              type="button"
-              class="monitor-view__metric monitor-view__value-btn"
-              data-test="monitor-memory-value"
-              :title="historyTitle('memory.used_ratio')"
-              :aria-label="historyAriaLabel('memory.used_ratio', formatPercent(memory.used_ratio))"
-              @click="openHistory('memory.used_ratio')"
-            >{{ formatPercent(memory.used_ratio) }}</button>
-            <SysmonSparkline
-              :points="trend.seriesOf('memory.used_ratio')"
-              :label="trendMetricLabel('memory.used_ratio')"
-              :window="trend.windowOf('memory.used_ratio')"
-              class="monitor-view__sparkline"
-              data-test="monitor-sparkline-memory"
-              @open="openHistory('memory.used_ratio')"
-            />
-          </div>
-          <div class="monitor-view__meta" data-test="monitor-memory-meta">{{ formatBytes(memory.used_bytes) }} / {{ formatBytes(memory.total_bytes) }}</div>
-          <ul class="monitor-view__list monitor-view__subsection">
-            <li class="monitor-view__list-row">
-              <span class="monitor-view__list-label">可用</span>
-              <span class="monitor-view__list-value" data-test="monitor-memory-available">{{ formatBytes(memory.available_bytes) }}</span>
-            </li>
-            <!-- 缓存 / 缓冲：null = 本平台不提供/本帧未读到，不渲染该行（Windows 恒无缓冲） -->
-            <li v-if="memory.cached_bytes != null" class="monitor-view__list-row">
-              <span class="monitor-view__list-label">缓存</span>
-              <span class="monitor-view__list-value" data-test="monitor-memory-cached">{{ formatBytes(memory.cached_bytes) }}</span>
-            </li>
-            <li v-if="memory.buffers_bytes != null" class="monitor-view__list-row">
-              <span class="monitor-view__list-label">缓冲</span>
-              <span class="monitor-view__list-value" data-test="monitor-memory-buffers">{{ formatBytes(memory.buffers_bytes) }}</span>
-            </li>
-          </ul>
-        </template>
-        <div v-else-if="memoryAvailable" class="ds-empty monitor-view__empty" data-test="monitor-memory-empty">
-          <div class="ds-empty__title">暂无数据</div>
-          <div class="ds-empty__desc">当前快照未提供内存数据</div>
-        </div>
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-          <div class="ds-empty__desc">{{ unavailableDesc('memory') }}</div>
-        </div>
-
-        <!-- 交换子区块：可用且总量 > 0 → 使用率 + 已用/总量；可用但总量 0 → 无交换分区；
-             可用但本帧无对象 → 暂无数据；不可用 → 不可用 + 原因（不得显示 0） -->
-        <div class="monitor-view__subsection" data-test="monitor-swap">
-          <h3 class="monitor-view__panel-title">交换</h3>
-          <ul v-if="swapInfo && swapInfo.total_bytes > 0" class="monitor-view__list" data-test="monitor-memory-swap">
-            <li class="monitor-view__list-row" :data-level="usageLevel(swapInfo.used_ratio)">
-              <span class="monitor-view__list-label">使用率</span>
-              <span class="monitor-view__list-value">
-                <button
-                  type="button"
-                  class="monitor-view__value-btn"
-                  data-test="monitor-memory-swap-usage"
-                  :title="historyTitle('swap.used_ratio')"
-                  :aria-label="historyAriaLabel('swap.used_ratio', formatPercent(swapInfo.used_ratio))"
-                  @click="openHistory('swap.used_ratio')"
-                >{{ formatPercent(swapInfo.used_ratio) }}</button>
-              </span>
-              <SysmonSparkline
-                :points="trend.seriesOf('swap.used_ratio')"
-                :label="trendMetricLabel('swap.used_ratio')"
-                :window="trend.windowOf('swap.used_ratio')"
-                class="monitor-view__sparkline monitor-view__sparkline--inline"
-                data-test="monitor-sparkline-swap"
-                @open="openHistory('swap.used_ratio')"
-              />
-            </li>
-            <li class="monitor-view__list-row">
-              <span class="monitor-view__list-label">已用 / 总量</span>
-              <span class="monitor-view__list-meta">{{ formatBytes(swapInfo.used_bytes) }} / {{ formatBytes(swapInfo.total_bytes) }}</span>
-            </li>
-          </ul>
-          <div
-            v-else-if="swapAvailable && swapInfo"
-            class="monitor-view__meta"
-            data-test="monitor-memory-swap-none"
-          >无交换分区</div>
-          <div v-else-if="swapAvailable" class="ds-empty monitor-view__empty" data-test="monitor-memory-swap-empty">
-            <div class="ds-empty__title">暂无数据</div>
-            <div class="ds-empty__desc">当前快照未提供交换数据</div>
-          </div>
-          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-swap-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-            <div class="ds-empty__desc">{{ swapUnavailableDesc }}</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 磁盘（#75：卷容量 / 共享内存目录），全部按 availability.metrics 渲染 -->
-      <section class="ds-card monitor-view__card" data-test="monitor-disk">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘
-        </h2>
-
-        <!-- 卷：正文只留容量可读且总量 > 0 的卷（#122），按固定顺序（ADR 0048：深度升序，store 已排好）；
-             available=false 与 total_bytes=0 的挂载折叠进「无容量挂载（N）」，绝不显示 0。
-             data-level 为使用率色标（与顶栏卷徽章共用 resourceLevel；色标是展示规则，不是越限判定） -->
-        <div class="monitor-view__subsection" data-test="monitor-disk-volumes">
-          <h3 class="monitor-view__panel-title">卷容量</h3>
-          <ul v-if="readableVolumes.length > 0" class="monitor-view__list">
-            <li
-              v-for="volume in readableVolumes"
-              :key="volume.mount"
-              class="monitor-view__list-row monitor-view__disk-row"
-              data-test="monitor-disk-volume"
-              :data-mount="volume.mount"
-              :data-level="volumeLevel(volume)"
-            >
-              <!-- 窄列下允许换行显示全路径 + title 兜底：768 双列下曾把 /mnt/nas/* 截成同一前缀且全页无处可查（#321）。 -->
-              <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
-              <span class="monitor-view__list-value">{{ formatPercent(volume.used_ratio) }}</span>
-              <span class="monitor-view__list-meta">{{ formatBytes(volume.used_bytes) }} / {{ formatBytes(volume.total_bytes) }}</span>
-            </li>
-          </ul>
-          <div v-else-if="volumes.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-disk-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-            <div class="ds-empty__desc">{{ volumesAvailable ? '当前快照未提供卷数据' : unavailableDesc('volumes') }}</div>
-          </div>
-
-          <!-- 无容量挂载（#122）：容量读不到 / 总量为 0 的挂载折叠在此，默认收起。
-               折叠是纯显示行为，不改变采集语义；展开后逐条给出挂载点与原因。 -->
-          <div v-if="zeroCapacityVolumes.length > 0" class="monitor-view__zero-volumes" data-test="monitor-disk-zero-volumes">
-            <button
-              class="ds-btn ds-btn--tertiary ds-btn--sm"
-              type="button"
-              :aria-expanded="zeroVolumesOpen"
-              data-test="monitor-disk-zero-toggle"
-              @click="zeroVolumesOpen = !zeroVolumesOpen"
-            >无容量挂载（{{ zeroCapacityVolumes.length }}）· {{ zeroVolumesOpen ? '收起' : '展开' }}</button>
-            <ul v-if="zeroVolumesOpen" class="monitor-view__list">
-              <li
-                v-for="volume in zeroCapacityVolumes"
-                :key="volume.mount"
-                class="monitor-view__list-row"
-                data-test="monitor-disk-zero-volume"
-                :data-mount="volume.mount"
-              >
-                <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
-                <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
-                <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE_TEXT }}</span>
-                <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
-                  {{ volume.available ? '总容量为 0' : volumeReasonDesc(volume.reason) }}
-                </span>
-              </li>
-            </ul>
-          </div>
-        </div>
-
-        <!-- 共享内存目录占用（页清理是否生效的可观测项）：不可用 / 可用但本帧未采集分别空态 -->
-        <div class="monitor-view__subsection" data-test="monitor-shm-dir">
-          <h3 class="monitor-view__panel-title">共享内存目录</h3>
-          <template v-if="shmDir">
-            <dl class="monitor-view__list">
-              <div class="monitor-view__list-row">
-                <dt class="monitor-view__list-label">路径</dt>
-                <dd class="monitor-view__list-value monitor-view__list-value--wrap" data-test="monitor-shm-path">{{ shmDir.path }}</dd>
-              </div>
-              <div class="monitor-view__list-row">
-                <dt class="monitor-view__list-label">占用</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-total">
-                  <button
-                    type="button"
-                    class="monitor-view__value-btn"
-                    :title="historyTitle('shm_dir.total_bytes')"
-                    :aria-label="historyAriaLabel('shm_dir.total_bytes', formatBytes(shmDir.total_bytes))"
-                    @click="openHistory('shm_dir.total_bytes')"
-                  >{{ formatBytes(shmDir.total_bytes) }}</button>
-                </dd>
-                <SysmonSparkline
-                  :points="trend.seriesOf('shm_dir.total_bytes')"
-                  :label="trendMetricLabel('shm_dir.total_bytes')"
-                  :window="trend.windowOf('shm_dir.total_bytes')"
-                  class="monitor-view__sparkline monitor-view__sparkline--inline"
-                  data-test="monitor-sparkline-shm"
-                  @open="openHistory('shm_dir.total_bytes')"
+      <!-- 指标台账（#363）：三组、每行七列，行数据全部来自 `buildMonitorLedger`。
+           组件不写任何「该不该显示」的判断——行的存在、空态类别、阈值与余量、能否点跳历史
+           全部由 `@/composables/monitorLedger` 决定。七列共用一条列基线（每行同一套
+           `grid-template-columns`），因此任意一列可纵向读下来。 -->
+      <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-ledger">
+        <div
+          v-for="group in ledger"
+          :key="group.id"
+          class="monitor-view__ledger-group"
+          :data-group="group.id"
+          :data-test="`monitor-ledger-group-${group.id}`"
+        >
+          <div class="monitor-view__ledger-group-head">
+            <h2 class="monitor-view__ledger-group-title">{{ group.title }}</h2>
+            <p class="monitor-view__ledger-group-note">{{ group.note }}</p>
+            <!-- 组内操作：网络组的「显示全部网卡」开关 + 时钟组的「立即查询」都随各自的组走，
+                 不另立卡片。两者都是 admin 才可操作，非 admin 渲染为 disabled（可见但不可点，
+                 避免隐藏造成「功能不存在」的误解）。 -->
+            <div v-if="group.id === 'network_clock'" class="monitor-view__ledger-group-actions">
+              <div v-if="networkAvailable" class="monitor-view__net-toggle" data-test="monitor-network-show-all">
+                <SyncSwitch
+                  :model-value="showAllNics"
+                  :pending="hideVirtualPending"
+                  :disabled="!canToggleNetwork"
+                  label="显示全部网卡"
+                  @change="onToggleShowAll"
                 />
+                <span class="monitor-view__net-toggle-label">显示全部网卡</span>
               </div>
-              <div class="monitor-view__list-row">
-                <dt class="monitor-view__list-label">页文件</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-page-files">{{ formatCount(shmDir.page_files) }}</dd>
+              <div class="monitor-view__clock-probe">
+                <button
+                  class="ds-btn ds-btn--secondary ds-btn--sm"
+                  type="button"
+                  data-test="monitor-clock-probe"
+                  :disabled="clockProbeDisabled"
+                  :title="canProbeClock ? '立即触发一轮时钟探测（结果随快照更新）' : '仅管理员可手动查询'"
+                  @click="onProbeClock"
+                ><Icon name="clock_time" :size="12" />{{ clockProbeLabel }}</button>
               </div>
-              <!-- 无页文件时 oldest_file_age_sec 为 null：不渲染该行（不是 0 秒） -->
-              <div v-if="shmDir.oldest_file_age_sec != null" class="monitor-view__list-row">
-                <dt class="monitor-view__list-label">最旧页文件</dt>
-                <dd class="monitor-view__list-value" data-test="monitor-shm-oldest-age">{{ formatAge(shmDir.oldest_file_age_sec) }}</dd>
-              </div>
-            </dl>
-          </template>
-          <div v-else-if="shmAvailable" class="ds-empty monitor-view__empty" data-test="monitor-shm-empty">
-            <div class="ds-empty__title">暂无数据</div>
-            <div class="ds-empty__desc">当前快照未提供共享内存目录占用</div>
-          </div>
-          <div v-else class="ds-empty monitor-view__empty" data-test="monitor-shm-unavailable">
-            <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-            <div class="ds-empty__desc">{{ unavailableDesc('shm_dir') }}</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- 磁盘 I/O（#76）：按 availability.metrics 渲染；每盘吞吐 / IOPS / 延迟 / 队列深度 /
-           利用率，任一数值 null 逐项显示「不可用」（首次采样/计数器重置，绝不显示 0） -->
-      <section class="ds-card monitor-view__card" data-test="monitor-disk-io">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="Disk" :size="14" /></span>磁盘 I/O
-        </h2>
-
-        <template v-if="diskIoAvailable">
-          <!-- #127：每盘七项指标属维度明细，默认收起；空数据 / 不可用空态不折叠 -->
-          <div v-if="diskIo.length > 0" class="monitor-view__detail-bar">
-            <span class="monitor-view__meta" data-test="monitor-disk-io-summary">{{ diskIoDetailSummary }}</span>
-            <button
-              class="ds-btn ds-btn--tertiary ds-btn--sm"
-              type="button"
-              :aria-expanded="diskIoDetailOpen"
-              data-test="monitor-disk-io-detail-toggle"
-              @click="diskIoDetailOpen = !diskIoDetailOpen"
-            >{{ diskIoDetailOpen ? '收起' : '展开明细' }}</button>
-          </div>
-          <ul v-if="diskIo.length > 0 && diskIoDetailOpen" class="monitor-view__io-list">
-            <li
-              v-for="device in diskIo"
-              :key="device.device"
-              class="monitor-view__io-row"
-              data-test="monitor-disk-io-row"
-              :data-device="device.device"
-            >
-              <div class="monitor-view__io-device">{{ device.device }}</div>
-              <dl class="monitor-view__io-metrics">
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">读吞吐</dt>
-                  <dd class="monitor-view__io-value">{{ formatByteRate(device.read_bytes_per_sec) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">写吞吐</dt>
-                  <dd class="monitor-view__io-value">{{ formatByteRate(device.write_bytes_per_sec) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">读 IOPS</dt>
-                  <dd class="monitor-view__io-value">{{ formatIops(device.read_iops) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">写 IOPS</dt>
-                  <dd class="monitor-view__io-value">{{ formatIops(device.write_iops) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">延迟</dt>
-                  <dd class="monitor-view__io-value">{{ formatLatency(device.latency_ms) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">队列深度</dt>
-                  <dd class="monitor-view__io-value">{{ formatDecimal(device.queue_depth) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">利用率</dt>
-                  <dd class="monitor-view__io-value">{{ formatPercent(device.utilization) }}</dd>
-                </div>
-              </dl>
-            </li>
-          </ul>
-          <div v-else-if="diskIo.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-disk-io-empty">
-            <div class="ds-empty__title">暂无数据</div>
-            <div class="ds-empty__desc">当前快照未提供磁盘 I/O 数据</div>
-          </div>
-          <!-- 语义提示（如 Windows 计数器口径说明）：非空时展示，参考系统负载 hint 的做法 -->
-          <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint" :title="diskIoHint.raw">语义提示：{{ diskIoHint.text }}</p>
-        </template>
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-disk-io-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-          <div class="ds-empty__desc">{{ diskIoUnavailableDesc }}</div>
-        </div>
-      </section>
-
-      <!-- 网络（#77）：每网卡收发速率 / 累计字节与包 / 错误 / 丢弃。
-           空数组 + 可用 = 发送方按 hide_virtual 滤掉全部虚拟网卡（契约 §2.5，不是不可用）；
-           开关走 REST 下发，以 WS sysmon_config 回推为生效信号（REST 只表示已下发）。 -->
-      <section class="ds-card monitor-view__card" data-test="monitor-network">
-        <div class="monitor-view__card-head">
-          <h2 class="ds-card__title monitor-view__card-title">
-            <span class="monitor-view__card-icon"><Icon name="network" :size="14" /></span>网络
-          </h2>
-          <!-- admin 才可操作；非 admin 渲染为 disabled（可见但不可点，避免隐藏造成"功能不存在"误解） -->
-          <div v-if="networkAvailable" class="monitor-view__net-toggle" data-test="monitor-network-show-all">
-            <SyncSwitch
-              :model-value="showAllNics"
-              :pending="hideVirtualPending"
-              :disabled="!canToggleNetwork"
-              label="显示全部网卡"
-              @change="onToggleShowAll"
-            />
-            <span class="monitor-view__net-toggle-label">显示全部网卡</span>
-          </div>
-        </div>
-
-        <template v-if="networkAvailable">
-          <!-- #127：每网卡十项指标属维度明细，默认收起；隐藏全部 / 空数据空态不折叠 -->
-          <div v-if="network.length > 0" class="monitor-view__detail-bar">
-            <span class="monitor-view__meta" data-test="monitor-network-summary">{{ networkDetailSummary }}</span>
-            <button
-              class="ds-btn ds-btn--tertiary ds-btn--sm"
-              type="button"
-              :aria-expanded="networkDetailOpen"
-              data-test="monitor-network-detail-toggle"
-              @click="networkDetailOpen = !networkDetailOpen"
-            >{{ networkDetailOpen ? '收起' : '展开明细' }}</button>
-          </div>
-          <ul v-if="network.length > 0 && networkDetailOpen" class="monitor-view__io-list">
-            <li
-              v-for="nic in network"
-              :key="nic.interface"
-              class="monitor-view__io-row"
-              data-test="monitor-network-row"
-              :data-interface="nic.interface"
-            >
-              <div class="monitor-view__io-device">
-                {{ nic.interface }}
-                <span v-if="nic.is_virtual" class="ds-tag" data-test="monitor-network-virtual">虚拟</span>
-              </div>
-              <dl class="monitor-view__io-metrics">
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">收速率</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-rate">{{ formatByteRate(nic.rx_bytes_per_sec) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">发速率</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-rate">{{ formatByteRate(nic.tx_bytes_per_sec) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">收字节</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-bytes">{{ formatBytes(nic.rx_bytes_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">发字节</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-bytes">{{ formatBytes(nic.tx_bytes_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">收包</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-packets">{{ formatCount(nic.rx_packets_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">发包</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-packets">{{ formatCount(nic.tx_packets_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">收错误</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-errors">{{ formatEventRateWithTotal(nic.rx_errors_per_sec, nic.rx_errors_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">发错误</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-errors">{{ formatEventRateWithTotal(nic.tx_errors_per_sec, nic.tx_errors_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">收丢弃</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-rx-drops">{{ formatEventRateWithTotal(nic.rx_drops_per_sec, nic.rx_drops_total) }}</dd>
-                </div>
-                <div class="monitor-view__io-metric">
-                  <dt class="monitor-view__io-label">发丢弃</dt>
-                  <dd class="monitor-view__io-value" data-test="monitor-network-tx-drops">{{ formatEventRateWithTotal(nic.tx_drops_per_sec, nic.tx_drops_total) }}</dd>
-                </div>
-              </dl>
-            </li>
-          </ul>
-          <!-- 可用但空数组：发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5），
-               与"采集失败/不可用"是不同事实，不得显示「不可用」 -->
-          <div
-            v-else-if="network.length === 0 && networkHiddenAll"
-            class="ds-empty monitor-view__empty"
-            data-test="monitor-network-hidden-all"
-          >
-            <div class="ds-empty__title">已隐藏全部虚拟网卡</div>
-            <div class="ds-empty__desc">本机只有虚拟/回环网卡；打开「显示全部网卡」查看</div>
-          </div>
-          <div
-            v-else-if="network.length === 0"
-            class="ds-empty monitor-view__empty"
-            data-test="monitor-network-empty"
-          >
-            <div class="ds-empty__title">暂无数据</div>
-            <div class="ds-empty__desc">当前快照未提供网卡数据</div>
-          </div>
-        </template>
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-network-unavailable">
-          <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-          <div class="ds-empty__desc">{{ unavailableDesc('network') }}</div>
-        </div>
-      </section>
-
-      <!-- 时间（#302，契约 sysmon §2.9）：偏差主数值 + 方向说明 + 误差界/来源/stratum/上次探测
-           相对时间；偏差按配置阈值着色（与资源类共用同一份定档实现），误差界越界另给「测量质量」提示
-           （独立于偏差着色，契约 §2.8）；展开后是每台服务器明细 + 同步服务检测。
-           三种空态都渲染这张卡（配置关闭也是明确空态而不是整块消失），且都不显示 0。
-           顶栏另有常驻 NTP 徽章（ADR 0048：只给状态色与偏差数字，明细仍在本卡片）。 -->
-      <section class="ds-card monitor-view__card" data-test="monitor-clock">
-        <div class="monitor-view__card-head">
-          <h2 class="ds-card__title monitor-view__card-title">
-            <span class="monitor-view__card-icon"><Icon name="clock_time" :size="14" /></span>时间
-          </h2>
-          <!-- 立即查询（admin）：置灰时长取配置 clock.manual_min_interval_sec；清除信号是随后的
-               WS sysmon_snapshot（last_probe_unix_ms 前进），不是 REST 200（契约 sysmon §1.1）。 -->
-          <div class="monitor-view__clock-probe">
-            <button
-              class="ds-btn ds-btn--secondary ds-btn--sm"
-              type="button"
-              data-test="monitor-clock-probe"
-              :disabled="clockProbeDisabled"
-              :title="canProbeClock ? '立即触发一轮时钟探测（结果随快照更新）' : '仅管理员可手动查询'"
-              @click="onProbeClock"
-            ><Icon name="clock_time" :size="12" />{{ clockProbeLabel }}</button>
-          </div>
-        </div>
-
-        <!-- 正常 / 不可用主线：主数值（偏差）、副信息（误差界 / 来源 / stratum / 上次探测） -->
-        <template v-if="clock && clockState !== 'unprobed'">
-          <div class="monitor-view__metric-row" :data-level="clockLevel">
-            <span class="monitor-view__metric" data-test="monitor-clock-offset">
-              {{ formatSignedMilliseconds(clock.offset_ms) }}
-            </span>
-            <button
-              v-if="clock.servers.length > 0"
-              class="ds-btn ds-btn--tertiary ds-btn--sm"
-              type="button"
-              :aria-expanded="clockDetailOpen"
-              data-test="monitor-clock-detail-toggle"
-              @click="clockDetailOpen = !clockDetailOpen"
-            >{{ clockDetailOpen ? '收起' : '展开明细' }}</button>
-          </div>
-          <!-- 有可用参考源：副信息 = 误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向
-               （#326：偏差是有符号量，界面必须给出「正 = 本地快于参考源」的方向说明，不能只靠
-              hover / 注释——触屏与键盘用户看不到注释） -->
-          <p v-if="clockState === 'live'" class="monitor-view__meta" data-test="monitor-clock-summary">
-            误差界 {{ formatMilliseconds(clock.bound_ms) }}
-            · 来源 {{ clock.source }}（stratum {{ clock.source_stratum ?? UNAVAILABLE_TEXT }}）
-            <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
-            · 正 = 本地快于参考源
-          </p>
-          <!-- 探测全部失败：偏差不可用，给出逐台原因（不得显示 0 或上一轮结果，契约 §2.9）；
-               此时没有「来源 / stratum」可写，只报事实与原因，不留空标签。 -->
-          <p v-else class="monitor-view__hint" data-test="monitor-clock-unavailable">
-            {{ UNAVAILABLE_TEXT }} · {{ clockFailure }}
-            <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
-          </p>
-          <!-- 测量质量提示：误差界 > bound_alarm_ms 才出现，**不改变**上面偏差的着色（契约 §2.8） -->
-          <p
-            v-if="clockQualityAlarm"
-            class="monitor-view__hint monitor-view__hint--alert"
-            data-test="monitor-clock-quality"
-          >{{ CLOCK_QUALITY_HINT }}（阈值 {{ clockThresholds.bound_alarm_ms }} ms）</p>
-
-          <!-- 展开明细：每台服务器单独结果（主机 / 偏差 / 误差界 / RTT / stratum / 失败原因） -->
-          <div v-if="clockDetailOpen" class="monitor-view__clock-detail">
-            <h3 class="monitor-view__panel-title">服务器明细</h3>
-            <ul v-if="clockServers.length > 0" class="monitor-view__clock-servers">
-              <li
-                v-for="server in clockServers"
-                :key="server.host"
-                class="monitor-view__clock-server"
-                data-test="monitor-clock-server"
-                :data-host="server.host"
-                :data-ok="server.ok"
-                :title="server.host"
-              >
-                <div class="monitor-view__io-device">
-                  {{ server.host }}
-                  <span class="ds-tag" :class="server.ok ? 'ds-tag--success' : 'ds-tag--danger'">
-                    {{ server.ok ? '成功' : '失败' }}
-                  </span>
-                </div>
-                <dl class="monitor-view__io-metrics">
-                  <div
-                    v-for="cell in clockServerCells(server)"
-                    :key="cell.key"
-                    class="monitor-view__io-metric"
-                  >
-                    <dt class="monitor-view__io-label">{{ cell.label }}</dt>
-                    <dd
-                      class="monitor-view__io-value"
-                      :data-test="`monitor-clock-server-${cell.key}`"
-                    >{{ cell.value }}</dd>
-                  </div>
-                </dl>
-              </li>
-            </ul>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-clock-servers-empty">
-              <div class="ds-empty__title">暂无服务器明细</div>
-              <div class="ds-empty__desc">最近一轮探测没有返回任何服务器结果</div>
             </div>
           </div>
-        </template>
 
-        <!-- 尚未探测（契约 §2.9：last_probe_unix_ms = 0）：明确文案，不是 0、也不是「不可用」 -->
-        <div
-          v-else-if="clockState === 'unprobed'"
-          class="ds-empty monitor-view__empty"
-          data-test="monitor-clock-unprobed"
-        >
-          <div class="ds-empty__title">{{ CLOCK_UNPROBED_TITLE }}</div>
-          <div class="ds-empty__desc">{{ CLOCK_UNPROBED_DESC }}</div>
-        </div>
-
-        <!-- 配置关闭（契约 §2.9：clock = null 的唯一含义）：明确空态 + 启用入口提示 -->
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-clock-disabled">
-          <div class="ds-empty__title">{{ CLOCK_DISABLED_TITLE }}</div>
-          <div class="ds-empty__desc">{{ CLOCK_DISABLED_DESC }}</div>
-        </div>
-
-        <!-- 同步服务检测（契约 §2.9 daemons[]）：空数组是「未检测到在运行的服务」这一事实，
-             不是能力不可用（§2.5）——因此显示明确文案并在卡片内标黄，不弹窗、不判故障。 -->
-        <div
-          v-if="clockDaemonVisible"
-          class="monitor-view__clock-daemons"
-          data-test="monitor-clock-daemons"
-        >
-          <h3 class="monitor-view__panel-title">时间同步服务</h3>
-          <ul v-if="clockDaemons.length > 0" class="monitor-view__list">
+          <ul class="monitor-view__ledger-rows">
             <li
-              v-for="daemon in clockDaemons"
-              :key="daemon.name"
-              class="monitor-view__list-row"
-              data-test="monitor-clock-daemon"
-              :data-name="daemon.name"
+              v-for="row in group.rows"
+              :key="row.id"
+              class="monitor-view__ledger-row"
+              :class="{
+                'monitor-view__ledger-row--empty': row.state !== 'ok',
+                'monitor-view__ledger-row--open': isLedgerRowOpen(row.id),
+              }"
+              :data-row-id="row.id"
+              :data-state="row.state"
+              :data-level="row.level"
+              :data-test="rowTestId(row)"
+              :data-mount="row.id.startsWith('volume:') ? rowDimension(row) : undefined"
+              :data-device="row.id.startsWith('disk:') ? rowDimension(row) : undefined"
+              :data-interface="row.id.startsWith('nic:') ? rowDimension(row).split(':')[0] : undefined"
+              :data-direction="row.id.startsWith('nic:') ? rowDimension(row).split(':')[1] : undefined"
             >
-              <span class="monitor-view__list-label">{{ daemon.name }}</span>
-              <span
-                class="monitor-view__list-value"
-                :class="daemon.running ? 'monitor-view__daemon--running' : 'monitor-view__daemon--stopped'"
-              >{{ daemon.running ? '运行中' : '未运行' }}</span>
+              <!-- ① 状态点 + 等级文字：状态不得只靠颜色（灰度截屏下判断不变） -->
+              <span class="monitor-view__ledger-state">
+                <span class="monitor-view__ledger-dot" aria-hidden="true"></span>
+                <span class="monitor-view__ledger-state-text">{{ rowStateTag(row) }}</span>
+              </span>
+
+              <!-- ② 指标名 + 契约键 -->
+              <span class="monitor-view__ledger-name">
+                <span class="monitor-view__ledger-label" :title="row.label">{{ row.label }}</span>
+                <span class="monitor-view__ledger-key">{{ row.contractKey }}</span>
+              </span>
+
+              <!-- ③ 量程轨道：填充比例由 `--ledger-fill` 注入（与 CPU 每核柱同一形态）。
+                   缺口只在**有契约阈值**的行上出现，位置取 `useResourceLevel` 的两个展示分档常量
+                   （70 / 90）：那是展示规则（ADR 0034），与「阈值」列是两个不同的东西。 -->
+              <span class="monitor-view__ledger-track" aria-hidden="true">
+                <span class="monitor-view__ledger-track-fill" :style="trackFillStyle(row)"></span>
+                <template v-if="hasThreshold(row)">
+                  <span class="monitor-view__ledger-gap" :style="gapStyle(RESOURCE_WARN_RATIO)"></span>
+                  <span class="monitor-view__ledger-gap" :style="gapStyle(RESOURCE_DANGER_RATIO)"></span>
+                </template>
+              </span>
+
+              <!-- ④ 当前值：有 historyKey 的行是按钮（跳历史视图并预选该指标，#325 的 title/aria 口径）；
+                   空态行的值列是「—」——**不是 0**，四类空态的文字在明细列与状态点旁给出。 -->
+              <span class="monitor-view__ledger-value" :data-test="rowValueTestId(row)">
+                <template v-if="row.state === 'ok'">
+                  <button
+                    v-if="row.historyKey !== null"
+                    type="button"
+                    class="monitor-view__value-btn"
+                    data-test="ledger-value"
+                    :title="rowHistoryTitle(row)"
+                    :aria-label="rowHistoryAriaLabel(row)"
+                    @click="openRowHistory(row)"
+                  >{{ row.value }}</button>
+                  <template v-else>{{ row.value }}</template>
+                </template>
+                <template v-else>{{ NO_THRESHOLD_TEXT }}</template>
+              </span>
+
+              <!-- ⑤ 明细：`ok` 行是一行明细；空态行是四类空态的说明（互不混淆，都不产出数字） -->
+              <span class="monitor-view__ledger-detail" :data-test="row.state === 'ok' ? 'ledger-detail' : 'row-state'">
+                <template v-if="row.state === 'ok'">{{ row.detail }}</template>
+                <template v-else>{{ rowStateNote(row) }}</template>
+              </span>
+
+              <!-- ⑥ 阈值（只写契约里真实存在的阈值；没有就是 —） -->
+              <span class="monitor-view__ledger-threshold" data-test="ledger-threshold">{{ row.thresholdText }}</span>
+
+              <!-- ⑦ 余量（与阈值同源，越线时写「已超 X」） -->
+              <span class="monitor-view__ledger-headroom" data-test="ledger-headroom">{{ row.headroomText }}</span>
+
+              <!-- 内存组成带（#363）：嵌在内存行下方。两个口径不合并——主数值是
+                   `total − available` 的用量比率，组成带的「已用」段是 `total − free − cached − buffers`
+                   的总量分解；`free` 由前三段派生。缓存/缓冲不可得时退化为两段并标注（不补 0）。 -->
+              <div
+                v-if="row.id === 'memory' && memoryComposition"
+                class="monitor-view__ledger-composition"
+                data-test="monitor-memory-composition"
+              >
+                <div class="monitor-view__ledger-band">
+                  <span
+                    v-for="segment in memoryComposition.segments"
+                    :key="segment.id"
+                    class="monitor-view__ledger-band-seg"
+                    :class="`monitor-view__ledger-band-seg--${segment.id}`"
+                    :style="compositionStyle(segment)"
+                    :data-segment="segment.id"
+                  ></span>
+                </div>
+                <ul class="monitor-view__ledger-legend">
+                  <li
+                    v-for="segment in memoryComposition.segments"
+                    :key="segment.id"
+                    class="monitor-view__ledger-legend-item"
+                    :data-segment="segment.id"
+                  >
+                    <span class="monitor-view__ledger-legend-swatch" :class="`monitor-view__ledger-band-seg--${segment.id}`" aria-hidden="true"></span>
+                    <span class="monitor-view__ledger-legend-label">{{ segment.label }}</span>
+                    <span class="monitor-view__ledger-legend-value">{{ segment.text ?? '不可得' }}</span>
+                  </li>
+                </ul>
+                <p
+                  v-if="memoryComposition.degraded"
+                  class="monitor-view__hint"
+                  data-test="monitor-memory-composition-degraded"
+                >{{ memoryComposition.degradedText }}</p>
+              </div>
+
+              <!-- 行明细展开（#363）：折叠状态不持久化，刷新回默认收起。空态行也允许展开
+                   （逐台失败原因等可诊断信息藏在展开里是可接受的，缩进后仍可见）。 -->
+              <div v-if="row.fields.length > 0" class="monitor-view__ledger-expand">
+                <button
+                  class="ds-btn ds-btn--tertiary ds-btn--sm"
+                  type="button"
+                  :aria-expanded="isLedgerRowOpen(row.id)"
+                  :data-test="`ledger-expand-${row.id}`"
+                  @click="toggleLedgerRow(row.id)"
+                >{{ isLedgerRowOpen(row.id) ? '收起明细' : '展开明细' }}</button>
+                <dl v-if="isLedgerRowOpen(row.id)" class="monitor-view__ledger-fields" data-test="ledger-fields">
+                  <div
+                    v-for="field in row.fields"
+                    :key="field.label"
+                    class="monitor-view__ledger-field"
+                  >
+                    <dt class="monitor-view__ledger-field-label">{{ field.label }}</dt>
+                    <dd class="monitor-view__ledger-field-value">{{ field.value }}</dd>
+                  </div>
+                </dl>
+              </div>
+
+              <!-- 时钟行的辅助信息（#302）：方向说明 / 测量质量提示 / 同步服务检测。
+                   偏差着色与质量提示是两个独立判定对象（契约 §2.8）：质量提示不改变着色。 -->
+              <div
+                v-if="row.id === 'clock'"
+                class="monitor-view__ledger-clock"
+                data-test="monitor-clock-aux"
+              >
+                <!-- 三空态各给一句彼此不同的文案（契约 §2.9）：尚未探测 ≠ 全部失败 ≠ 配置关闭。
+                     三者都是「没有偏差读数」，但只有「全部失败」是不可用；混用会让用户去查错方向。 -->
+                <div v-if="clockState === 'unprobed'" class="ds-empty monitor-view__empty" data-test="monitor-clock-unprobed">
+                  <div class="ds-empty__title">{{ CLOCK_UNPROBED_TITLE }}</div>
+                  <div class="ds-empty__desc">{{ CLOCK_UNPROBED_DESC }}</div>
+                </div>
+                <div v-else-if="clockState === 'disabled'" class="ds-empty monitor-view__empty" data-test="monitor-clock-disabled">
+                  <div class="ds-empty__title">{{ CLOCK_DISABLED_TITLE }}</div>
+                  <div class="ds-empty__desc">{{ CLOCK_DISABLED_DESC }}</div>
+                </div>
+                <p
+                  v-else-if="clockState === 'unavailable'"
+                  class="monitor-view__hint"
+                  data-test="monitor-clock-unavailable"
+                >
+                  {{ UNAVAILABLE_TEXT }} · {{ clockFailure }}
+                  <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
+                </p>
+                <p
+                  v-if="clockState === 'live'"
+                  class="monitor-view__meta"
+                  data-test="monitor-clock-summary"
+                >
+                  误差界 {{ formatMilliseconds(clock?.bound_ms ?? null) }}
+                  · 来源 {{ clock?.source }}（stratum {{ clock?.source_stratum ?? UNAVAILABLE_TEXT }}）
+                  <template v-if="clockProbeAge"> · 上次探测 {{ clockProbeAge }}前</template>
+                  · 正 = 本地快于参考源
+                </p>
+                <p
+                  v-if="clockQualityAlarm"
+                  class="monitor-view__hint monitor-view__hint--alert"
+                  data-test="monitor-clock-quality"
+                >{{ CLOCK_QUALITY_HINT }}（阈值 {{ clockThresholds.bound_alarm_ms }} ms）</p>
+                <!-- 同步服务检测（契约 §2.9 daemons[]）：空数组是「未检测到在运行的服务」这一事实，
+                     不是能力不可用（§2.5）。尚未探测时不渲染：首轮探测前 daemons 是空数组，
+                     把空数组当事实展示会凭空报出一个未做过的检测。 -->
+                <div v-if="clockDaemonVisible" class="monitor-view__ledger-daemons" data-test="monitor-clock-daemons">
+                  <ul v-if="clockDaemons.length > 0" class="monitor-view__list">
+                    <li
+                      v-for="daemon in clockDaemons"
+                      :key="daemon.name"
+                      class="monitor-view__list-row"
+                      data-test="monitor-clock-daemon"
+                      :data-name="daemon.name"
+                    >
+                      <span class="monitor-view__list-label">{{ daemon.name }}</span>
+                      <span
+                        class="monitor-view__list-value"
+                        :class="daemon.running ? 'monitor-view__daemon--running' : 'monitor-view__daemon--stopped'"
+                      >{{ daemon.running ? '运行中' : '未运行' }}</span>
+                    </li>
+                  </ul>
+                  <p
+                    v-else
+                    class="monitor-view__hint monitor-view__hint--alert"
+                    data-test="monitor-clock-daemon-none"
+                  >{{ CLOCK_NO_DAEMON_TEXT }} · {{ CLOCK_NO_DAEMON_DESC }}</p>
+                  <!-- 多服务同时运行：行内提示（契约 §2.9 明文「只写一条日志 + 卡片提示，不弹窗、不判故障」） -->
+                  <p
+                    v-if="clock?.daemon_conflict"
+                    class="monitor-view__hint monitor-view__hint--alert"
+                    data-test="monitor-clock-daemon-conflict"
+                  >{{ CLOCK_DAEMON_CONFLICT_TEXT }}</p>
+                </div>
+              </div>
             </li>
           </ul>
-          <p
-            v-else
-            class="monitor-view__hint monitor-view__hint--alert"
-            data-test="monitor-clock-daemon-none"
-          >{{ CLOCK_NO_DAEMON_TEXT }} · {{ CLOCK_NO_DAEMON_DESC }}</p>
-          <!-- 多服务同时运行：卡片内提示（契约 §2.9 明文「只写一条日志 + 卡片提示，不弹窗、不判故障」） -->
-          <p
-            v-if="clock?.daemon_conflict"
-            class="monitor-view__hint monitor-view__hint--alert"
-            data-test="monitor-clock-daemon-conflict"
-          >{{ CLOCK_DAEMON_CONFLICT_TEXT }}</p>
+
+          <!-- 存储组尾部：无容量挂载（#122）与磁盘 I/O 语义提示（#207 B2）。
+               都不进台账主列——前者不是「容量可读的卷」，后者是口径说明而非一行指标。 -->
+          <template v-if="group.id === 'storage'">
+            <div v-if="zeroCapacityVolumes.length > 0" class="monitor-view__zero-volumes" data-test="monitor-disk-zero-volumes">
+              <button
+                class="ds-btn ds-btn--tertiary ds-btn--sm"
+                type="button"
+                :aria-expanded="zeroVolumesOpen"
+                data-test="monitor-disk-zero-toggle"
+                @click="zeroVolumesOpen = !zeroVolumesOpen"
+              >无容量挂载（{{ zeroCapacityVolumes.length }}）· {{ zeroVolumesOpen ? '收起' : '展开' }}</button>
+              <ul v-if="zeroVolumesOpen" class="monitor-view__list">
+                <li
+                  v-for="volume in zeroCapacityVolumes"
+                  :key="volume.mount"
+                  class="monitor-view__list-row"
+                  data-test="monitor-disk-zero-volume"
+                  :data-mount="volume.mount"
+                >
+                  <span class="monitor-view__list-label monitor-view__list-label--mount" :title="volume.mount">{{ volume.mount }}</span>
+                  <!-- 读不到容量与「总量确实为 0」是两件事，原因列分别说明，都不用 0 冒充 -->
+                  <span class="monitor-view__list-value">{{ volume.available ? '—' : UNAVAILABLE_TEXT }}</span>
+                  <span class="monitor-view__list-meta" data-test="monitor-disk-zero-reason">
+                    {{ volume.available ? '总容量为 0' : volumeReasonDesc(volume.reason) }}
+                  </span>
+                </li>
+              </ul>
+            </div>
+            <p v-if="diskIoHint" class="monitor-view__hint" data-test="monitor-disk-io-hint" :title="diskIoHint.raw">语义提示：{{ diskIoHint.text }}</p>
+          </template>
         </div>
       </section>
     </div>
@@ -2068,6 +1833,428 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 
 .monitor-view__empty {
   padding: var(--spacer-20) var(--spacer-12);
+}
+
+/* ---- 指标台账（#363）：三组、每行七列、共用一条列基线 ----
+   列宽由 `--ledger-*` token 定义（列宽是版面几何量，不是间距，故不进 spacer 步进）。
+   七列在同一套 `grid-template-columns` 里定义：任意一列可纵向读下来比较，列永不随内容漂移。 */
+.monitor-view__ledger-group {
+  min-width: 0;
+}
+
+.monitor-view__ledger-group + .monitor-view__ledger-group {
+  margin-top: var(--spacer-16);
+}
+
+/* 组标题条：标题 + 组注 + 组内操作（网络开关 / 立即查询）。 */
+.monitor-view__ledger-group-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--spacer-4) var(--spacer-12);
+  padding: var(--spacer-4) 0;
+  border-bottom: 1px solid var(--border-neutral-l1);
+}
+
+.monitor-view__ledger-group-title {
+  margin: 0;
+  color: var(--text-default);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-weight: var(--heading-sm-font-weight);
+}
+
+.monitor-view__ledger-group-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__ledger-group-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacer-8) var(--spacer-16);
+  margin-left: auto;
+}
+
+.monitor-view__ledger-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* 一行 = 七列网格。列宽 token：状态点窄、名称弹性、轨道弹性、数值/阈值/余量按内容、
+   明细占剩余。`align-items: baseline` 让不同字号的列落在同一条文字基线上（纵向可读）。
+   `column-gap` 是列间距（不是「间距字面量违规」——值走 token）。 */
+.monitor-view__ledger-row {
+  display: grid;
+  grid-template-columns:
+    var(--ledger-col-state)
+    minmax(0, var(--ledger-col-name))
+    minmax(0, var(--ledger-col-track))
+    var(--ledger-col-value)
+    minmax(0, var(--ledger-col-detail))
+    var(--ledger-col-threshold)
+    var(--ledger-col-headroom);
+  align-items: baseline;
+  column-gap: var(--spacer-12);
+  row-gap: var(--spacer-4);
+  padding: var(--spacer-6) 0;
+  border-bottom: 1px solid var(--border-neutral-l1);
+}
+
+/* 状态点 + 等级文字：状态不得只靠颜色（灰度截屏与色觉障碍下判断不变）。 */
+.monitor-view__ledger-state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-6);
+  min-width: 0;
+}
+
+.monitor-view__ledger-dot {
+  flex-shrink: 0;
+  width: var(--ledger-dot-size);
+  height: var(--ledger-dot-size);
+  border-radius: var(--radius-full);
+  background: var(--border-neutral-l2);
+}
+
+/* 正常 / 警戒 / 危险三档色标：与顶栏徽章、卷行共用同一套等级 token。
+   等级为 null（无分母可判）时不套色——「没法判」与「一切正常」是两件事。 */
+.monitor-view__ledger-row[data-level='normal'] .monitor-view__ledger-dot {
+  background: var(--status-success-default);
+}
+
+.monitor-view__ledger-row[data-level='warn'] .monitor-view__ledger-dot {
+  background: var(--status-alert-default);
+}
+
+.monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-dot {
+  background: var(--status-error-default);
+}
+
+.monitor-view__ledger-state-text {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  white-space: nowrap;
+}
+
+.monitor-view__ledger-row[data-level='warn'] .monitor-view__ledger-state-text {
+  color: var(--status-alert-default);
+}
+
+.monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-state-text {
+  color: var(--status-error-default);
+}
+
+/* 名称 + 契约键：名称可换行（挂载点路径必须完整可读，#321 的教训），契约键是等宽小字。 */
+.monitor-view__ledger-name {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
+  min-width: 0;
+}
+
+.monitor-view__ledger-label {
+  color: var(--text-default);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  overflow-wrap: anywhere;
+}
+
+.monitor-view__ledger-key {
+  color: var(--text-tertiary);
+  font-family: var(--font-family-mono);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  overflow-wrap: anywhere;
+}
+
+/* 量程轨道：中性底色给出 0–100% 的参照，填充宽度由 `--ledger-fill` 注入（逐行不同，只能运行时定）。
+   缺口是**展示分档**（70 / 90，来自 useResourceLevel 的两个常量），只在有契约阈值的行上出现。 */
+.monitor-view__ledger-track {
+  position: relative;
+  align-self: center;
+  width: 100%;
+  height: var(--ledger-track-height);
+  overflow: hidden;
+  border-radius: var(--radius-2);
+  background: var(--bg-overlay-l2);
+}
+
+.monitor-view__ledger-track-fill {
+  display: block;
+  width: var(--ledger-fill, 0%);
+  height: 100%;
+  border-radius: var(--radius-2);
+  background: var(--status-primary-default);
+}
+
+.monitor-view__ledger-row[data-level='normal'] .monitor-view__ledger-track-fill {
+  background: var(--status-success-default);
+}
+
+.monitor-view__ledger-row[data-level='warn'] .monitor-view__ledger-track-fill {
+  background: var(--status-alert-default);
+}
+
+.monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-track-fill {
+  background: var(--status-error-default);
+}
+
+/* 缺口：一条 1px 的竖线，位置由 `--ledger-gap` 注入（两个常量，不是阈值）。 */
+.monitor-view__ledger-gap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--ledger-gap, 0%);
+  width: var(--border-width-default);
+  background: var(--text-tertiary);
+}
+
+.monitor-view__ledger-value {
+  color: var(--text-default);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.monitor-view__ledger-row[data-level='warn'] .monitor-view__ledger-value {
+  color: var(--status-alert-default);
+}
+
+.monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-value {
+  color: var(--status-error-default);
+}
+
+.monitor-view__ledger-detail {
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  overflow-wrap: anywhere;
+}
+
+/* 空态行：说明文字占两列（状态点之后到轨道列），仍是同一套网格——列基线不因空态而移动。 */
+.monitor-view__ledger-row--empty .monitor-view__ledger-value,
+.monitor-view__ledger-row--empty .monitor-view__ledger-threshold,
+.monitor-view__ledger-row--empty .monitor-view__ledger-headroom {
+  color: var(--text-tertiary);
+}
+
+.monitor-view__ledger-threshold,
+.monitor-view__ledger-headroom {
+  color: var(--text-secondary);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 内存组成带（#363）：四段横向堆叠，宽度按各自占总量比例（`--ledger-seg`），下方图例逐段标注。
+   与主数值是两个口径：主数值是「用量比率」，组成带是「总量分解」，因此各自标注自己的分母。 */
+.monitor-view__ledger-composition {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin-top: var(--spacer-4);
+}
+
+.monitor-view__ledger-band {
+  display: flex;
+  width: 100%;
+  height: var(--ledger-band-height);
+  overflow: hidden;
+  border-radius: var(--radius-2);
+  background: var(--bg-overlay-l1);
+}
+
+.monitor-view__ledger-band-seg {
+  display: block;
+  flex: 0 0 var(--ledger-seg, 0%);
+  height: 100%;
+}
+
+.monitor-view__ledger-band-seg--used {
+  background: var(--status-primary-default);
+}
+
+.monitor-view__ledger-band-seg--cached {
+  background: var(--status-alert-default);
+}
+
+.monitor-view__ledger-band-seg--buffers {
+  background: var(--status-success-default);
+}
+
+.monitor-view__ledger-band-seg--free {
+  background: var(--bg-overlay-l3);
+}
+
+.monitor-view__ledger-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacer-2) var(--spacer-16);
+  margin: var(--spacer-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.monitor-view__ledger-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacer-6);
+  min-width: 0;
+}
+
+.monitor-view__ledger-legend-swatch {
+  flex-shrink: 0;
+  width: var(--ledger-dot-size);
+  height: var(--ledger-dot-size);
+  border-radius: var(--radius-2);
+}
+
+.monitor-view__ledger-legend-label {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__ledger-legend-value {
+  color: var(--text-secondary);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 行明细展开：按钮与字段列表都跨满整行（七列之上），字段是两列自适应网格。 */
+.monitor-view__ledger-expand {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.monitor-view__ledger-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--ledger-field-min-width), 1fr));
+  gap: var(--spacer-4) var(--spacer-16);
+  margin: var(--spacer-8) 0 0;
+}
+
+.monitor-view__ledger-field {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+  min-width: 0;
+  padding: var(--spacer-2) 0;
+  border-bottom: 1px solid var(--border-neutral-l1);
+}
+
+.monitor-view__ledger-field-label {
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  overflow-wrap: anywhere;
+}
+
+.monitor-view__ledger-field-value {
+  margin: 0;
+  color: var(--text-default);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* 时钟行的辅助信息（#302）：方向说明 / 质量提示 / 同步服务检测，同样跨满整行。 */
+.monitor-view__ledger-clock {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.monitor-view__ledger-daemons {
+  margin-top: var(--spacer-4);
+}
+
+/* 中档（768–1279）：七列保留，但轨道列宽收缩、明细列允许换行。
+   轨道仍是弹性列（minmax(0, …)），收缩的是列宽下限靠 `minmax` 自动完成；
+   明细列在窄容器里本就换行（基础规则 `overflow-wrap: anywhere`）。 */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+  .monitor-view__ledger-row {
+    grid-template-columns:
+      var(--ledger-col-state)
+      minmax(0, var(--ledger-col-name-md))
+      minmax(0, var(--ledger-col-track-md))
+      var(--ledger-col-value)
+      minmax(0, var(--ledger-col-detail-md))
+      var(--ledger-col-threshold)
+      var(--ledger-col-headroom);
+  }
+}
+
+/* 窄屏（<768）：每行改三行——① 名称 + 当前值 ② 整行轨道 ③ 明细 + 阈值 + 余量。
+   组标题同样堆叠（标题 / 组注各占一行，操作换到下一行）。 */
+@media (max-width: 767.98px) {
+  .monitor-view__ledger-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'state value'
+      'name name'
+      'track track'
+      'detail detail'
+      'threshold headroom';
+    column-gap: var(--spacer-8);
+  }
+
+  .monitor-view__ledger-state {
+    grid-area: state;
+  }
+
+  .monitor-view__ledger-name {
+    grid-area: name;
+  }
+
+  .monitor-view__ledger-track {
+    grid-area: track;
+    margin: var(--spacer-2) 0;
+  }
+
+  .monitor-view__ledger-value {
+    grid-area: value;
+    justify-self: end;
+    font-size: var(--body-sm-font-size);
+  }
+
+  .monitor-view__ledger-detail {
+    grid-area: detail;
+  }
+
+  .monitor-view__ledger-threshold {
+    grid-area: threshold;
+  }
+
+  .monitor-view__ledger-headroom {
+    grid-area: headroom;
+    justify-self: end;
+  }
+
+  .monitor-view__ledger-group-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .monitor-view__ledger-group-actions {
+    margin-left: 0;
+  }
 }
 
 /* ---- CPU 宽卡（#362）：四数字 / 单序列趋势 / 每核条形三块内容纵向排布 ---- */

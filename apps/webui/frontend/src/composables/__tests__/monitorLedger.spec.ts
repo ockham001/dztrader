@@ -452,14 +452,16 @@ describe('buildMonitorLedger · 四类空态互不混淆且都不产出数字', 
 })
 
 describe('buildMonitorLedger · historyKey 只在标量行上有值', () => {
-  it('内存 / 交换有 historyKey，卷 / 盘 / 网卡 / shm / 时钟为 null', () => {
+  it('内存 / 交换 / 共享内存目录有 historyKey，卷 / 盘 / 网卡 / 时钟为 null', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable(), clock: SYSMON_CLOCK_LIVE })
     expect(rowById(groups, 'memory').historyKey).toBe('memory.used_ratio')
     expect(rowById(groups, 'swap').historyKey).toBe('swap.used_ratio')
     expect(rowById(groups, 'volume:/').historyKey).toBeNull()
     expect(rowById(groups, 'disk:sda').historyKey).toBeNull()
-    expect(rowById(groups, 'shm_dir').historyKey).toBeNull()
     expect(rowById(groups, 'clock').historyKey).toBeNull()
+    // #363：共享内存目录的数值保留跳历史入口（#127 / #325 的既有标量），它没有阈值但与
+    // 「能不能看历史」无关——旧卡片里这个数字就是可点的，台账不得把它降级成纯文本。
+    expect(rowById(groups, 'shm_dir').historyKey).toBe('shm_dir.total_bytes')
   })
 })
 
