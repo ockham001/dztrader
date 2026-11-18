@@ -2013,3 +2013,132 @@ function coreFillPercent(core: DOMWrapper<Element>): string | null {
   const match = /--core-fill:\s*([^;]+)/.exec(style)
   return match ? match[1].trim() : null
 }
+
+describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在有阈值的行）', () => {
+  const GIB = 1024 ** 3
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  /** 从内联样式里取注入的 CSS 变量值（没有则 null） */
+  function injectedVar(element: DOMWrapper<Element>, name: string): string | null {
+    const style = element.attributes('style') ?? ''
+    const match = new RegExp(`${name}:\\s*([^;]+)`).exec(style)
+    return match ? match[1].trim() : null
+  }
+
+  it('阈值列只出现契约里真实存在的值：内存 90% / 交换 50% / 卷「10% 空闲」，磁盘 / 网卡 / 共享内存为 —', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    const thresholdOf = (rowId: string) =>
+      wrapper.find(`[data-row-id="${rowId}"] [data-test="ledger-threshold"]`).text()
+    expect(thresholdOf('memory')).toBe('90%')
+    expect(thresholdOf('swap')).toBe('50%')
+    expect(thresholdOf('volume:/')).toBe('10% 空闲')
+    // 磁盘忙碌占比没有契约阈值（不是「忘了写」，是契约里没有这个值）
+    expect(thresholdOf('disk:nvme0n1')).toBe('—')
+    expect(thresholdOf('nic:eth0:rx')).toBe('—')
+    expect(thresholdOf('shm_dir')).toBe('—')
+  })
+
+  it('余量与阈值同源：把 memory_used_pct 改成 80 后阈值列与余量列同时变（前端不另定一套）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+    const memoryRow = () => wrapper.find('[data-row-id="memory"]')
+    // 32 GiB × 90% − 16 GiB 已用 = 12.8 GiB 余量
+    expect(memoryRow().find('[data-test="ledger-threshold"]').text()).toBe('90%')
+    expect(memoryRow().find('[data-test="ledger-headroom"]').text()).toBe('12.8 GiB')
+
+    useSysmonStore().applyConfig(makeSysmonConfig({ thresholds: { memory_used_pct: 80 } }))
+    await wrapper.vm.$nextTick()
+
+    // 阈值与余量一起变，且余量是「阈值对应的字节上限 − 已用」而不是另一套常量
+    expect(memoryRow().find('[data-test="ledger-threshold"]').text()).toBe('80%')
+    expect(memoryRow().find('[data-test="ledger-headroom"]').text()).toBe('9.6 GiB')
+  })
+
+  it('轨道缺口只在有契约阈值的行上：内存 / 交换 / 卷有 70 与 90 两道，磁盘 / 网卡 / 共享内存没有', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    const gapsOf = (rowId: string) => wrapper.findAll(`[data-row-id="${rowId}"] .monitor-view__ledger-gap`)
+    // 内存 / 交换 / 卷：两道缺口，位置就是 RESOURCE_WARN_RATIO / RESOURCE_DANGER_RATIO
+    for (const rowId of ['memory', 'swap', 'volume:/']) {
+      const gaps = gapsOf(rowId)
+      expect(gaps, rowId).toHaveLength(2)
+      // 位置来自 RESOURCE_WARN_RATIO / RESOURCE_DANGER_RATIO（0.7 / 0.9 → 百分比一位小数）
+      expect(injectedVar(gaps[0], '--ledger-gap'), rowId).toBe('70.0%')
+      expect(injectedVar(gaps[1], '--ledger-gap'), rowId).toBe('90.0%')
+    }
+    // 没有契约阈值的行：一道都不画（不是画了再藏）
+    for (const rowId of ['disk:nvme0n1', 'nic:eth0:rx', 'shm_dir']) {
+      expect(gapsOf(rowId), rowId).toHaveLength(0)
+    }
+  })
+
+  it('轨道填充宽度来自该行的量程比率；无量程的行（磁盘 / 网卡 / 时钟）不注入填充', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    const fillOf = (rowId: string) =>
+      injectedVar(wrapper.find(`[data-row-id="${rowId}"] .monitor-view__ledger-track-fill`), '--ledger-fill')
+    expect(fillOf('memory')).toBe('50.0%')
+    expect(fillOf('swap')).toBe('25.0%')
+    expect(fillOf('volume:/')).toBe('40.0%')
+    // 磁盘有填充（本就忙碌占比），网卡没有量程分母 → 不注入（CSS 回退 0%）
+    expect(fillOf('disk:nvme0n1')).toBe('72.0%')
+    expect(fillOf('nic:eth0:rx')).toBeNull()
+  })
+
+  it('内存组成带四段与主数值并存：缓存 / 缓冲不可得时退化为两段并标注', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      memory: {
+        total_bytes: 32 * GIB,
+        available_bytes: 16 * GIB,
+        used_bytes: 16 * GIB,
+        used_ratio: 0.5,
+        cached_bytes: 8 * GIB,
+        buffers_bytes: 1 * GIB,
+      },
+    }))
+    const wrapper = await mountView()
+
+    const segments = () => wrapper.findAll('[data-test="monitor-memory-composition"] .monitor-view__ledger-band-seg')
+    expect(segments().map(segment => segment.attributes('data-segment'))).toEqual(['used', 'cached', 'buffers', 'free'])
+    // 段宽按各自占总量比例注入：已用 16/32、缓存 8/32、缓冲 1/32、空闲 7/32
+    expect(injectedVar(segments()[0], '--ledger-seg')).toBe('50.0%')
+    expect(injectedVar(segments()[1], '--ledger-seg')).toBe('25.0%')
+    expect(injectedVar(segments()[3], '--ledger-seg')).toBe('21.9%')
+    // 主数值仍是 available 口径（50.0%），与组成带并存、不合并
+    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-composition-degraded"]').exists()).toBe(false)
+  })
+
+  it('四类空态在台账里分别可见且文案不同：不可用 / 暂无数据 / 已关闭 / 无此维度', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { memory: { available: false, reason: 'collect_failed' } },
+      swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
+      diskIo: null,
+      shmDir: null,
+    }))
+    const wrapper = await mountView()
+
+    // unavailable（采集失败）
+    expect(wrapper.find('[data-row-id="memory"] [data-test="row-state"]').text())
+      .toContain('采集失败，暂不可用')
+    // none（无交换分区）
+    expect(wrapper.find('[data-row-id="swap"] [data-test="row-state"]').text()).toBe('无交换分区')
+    // empty（本帧未采集）
+    expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text()).toContain('暂无数据')
+    expect(wrapper.find('[data-row-id="shm_dir"] [data-test="row-state"]').text()).toContain('暂无数据')
+    // 四类空态的值列都不是 0
+    for (const rowId of ['memory', 'swap', 'disk_io', 'shm_dir']) {
+      const value = wrapper.find(`[data-row-id="${rowId}"] .monitor-view__ledger-value`).text()
+      expect(value, rowId).not.toBe('0')
+      expect(value, rowId).not.toMatch(/^0(\.0)?%$/)
+    }
+  })
+})
