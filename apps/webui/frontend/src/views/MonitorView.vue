@@ -1878,6 +1878,10 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   line-height: var(--body-xs-line-height);
   font-variant-numeric: tabular-nums;
   text-align: right;
+  /* 刻度列是固定宽度的窄栏：标签在极端轴上会变长（`100.00%` 7 字符 ≈ 45px > 34px）。
+     不换行，宁可溢出到绘图区一侧（绘图区是透明的，覆盖不掉曲线）——换行会把三档的
+     vertical rhythm 打乱，比横向溢出更难读。 */
+  white-space: nowrap;
 }
 
 .monitor-view__chart-tick {
