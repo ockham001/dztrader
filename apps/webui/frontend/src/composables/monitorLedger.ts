@@ -87,6 +87,19 @@ export interface LedgerField {
   value: string
 }
 
+/**
+ * 明细列里可以被单独寻址的一段（目前只有网卡的「错误」与「丢弃」两项）。
+ *
+ * 为什么要拆段而不是只给一句 `detail`：网卡行的明细要**速率与累计量并列**
+ * （`0.0/s（累计 3）`：速率反映本窗口，累计量反映是否曾经发生过），而错误与丢弃是
+ * 两个独立事实。把它们拼成一句就无法分别断言/分别着色，也没法各自带 tooltip。
+ */
+export interface LedgerDetailPart {
+  /** 段标识（视图据此给 `data-test`），如 `errors` / `drops` */
+  id: string
+  text: string
+}
+
 /** 台账的一行：行内容即七列的取值，视图只负责摆放 */
 export interface LedgerRow {
   /** 稳定标识（`v-for` 的 `:key` 与测试断言用），形如 `memory` / `volume:/data` / `nic:eno1:rx` */
@@ -99,7 +112,18 @@ export interface LedgerRow {
   state: LedgerRowState
   /** 状态文案：`ok` 时为空串，其余四类各给一句（含 reason 的原文兜底） */
   stateText: string
-  /** 等级的文字形态：正常 / 警戒 / 危险；无等级可判时为空串（状态不得只靠颜色，契约随 DESIGN.md） */
+  /**
+   * 状态的**短标签**（状态点旁那两个字）：`ok` 时为空串。
+   *
+   * 与 {@link stateText} 的分工：短标签保证「状态不得只靠颜色」（点旁总有一词），
+   * 长文案放在明细列解释原因。`none` 一档不能统一写「无此维度」——时钟的「尚未探测」
+   * 与交换的「无交换分区」是两种不同事实，各自给词，因此标签由构造处显式给。
+   */
+  stateLabel: string
+  /**
+   * 等级的文字形态：正常 / 警戒 / 危险；无判定基准时返回 {@link UNRATED_LEVEL_TEXT}（「无阈值」），
+   * 不冒充「正常」也不写成「不可用」（状态不得只靠颜色，契约随 DESIGN.md）。
+   */
   levelText: string
   /** 量程轨道的填充比例 [0,1]；null = 该行没有可比的分母（网卡 / 共享内存 / 时钟） */
   ratio: number | null
@@ -115,8 +139,17 @@ export interface LedgerRow {
   headroomText: string
   /** 非 null 时该行数值可点，跳历史视图并预选此指标（契约 §6.1） */
   historyKey: string | null
+  /** 明细列的分段形态；空数组 = 明细列就是一句 {@link detail}（多数行如此） */
+  detailParts: LedgerDetailPart[]
   /** 展开后的完整明细 */
   fields: LedgerField[]
+  /**
+   * 行级标记（如虚拟网卡的「虚拟」）。空数组 = 无标记。
+   *
+   * 为什么放在纯函数层：标记来自 payload 字段（`network[].is_virtual`），而「这一行是不是
+   * 虚拟网卡」是一个关于数据的事实，不是排版决定。视图只负责把它渲染成标签，不重新判断。
+   */
+  badges: string[]
 }
 
 /** 台账的一个分组 */
@@ -151,6 +184,16 @@ export interface MonitorLedgerInput {
   clockConfig: SysmonClockConfigPayload | null
   availability: (metric: string) => SysmonAvailabilityEntry | undefined
   nowUnixMs: number
+  /**
+   * 网卡可用但本帧数组为空（store 的 `networkFilteredAll`）。
+   *
+   * 契约 sysmon §2.5 明文区分两种事实：`hide_virtual=true` 且数组为空 = **发送方按配置滤掉了
+   * 全部虚拟网卡**；数组为空且未被过滤 = 本机确实没有网卡。两者都「没有行」，但文案不同——
+   * 抹成同一句会让「我关掉了显示全部网卡」看起来像「采集失败了」。
+   *
+   * 可选：纯函数层的调用方（单测 / 未来的第二个消费方）不必关心这个字段，缺省按「未过滤」处理。
+   */
+  networkFilteredAll?: boolean
 }
 
 /**
@@ -161,25 +204,49 @@ export interface MonitorLedgerInput {
  * 不认识的原因原样显示而不是归并成「不可用」——把 `some_new_reason` 抹成「不可用」会让新增的
  * 采集失败原因永远不可见。
  */
-export function unavailableReasonText(reason: string | undefined): string {
+export function unavailableReasonText(reason: string | undefined, metric?: string): string {
   if (!reason) return '当前快照未提供该指标'
   if (reason === 'not_implemented') return '该指标将在后续版本接入'
   if (reason === 'collect_failed') return '采集失败，暂不可用'
   if (reason === 'disabled_by_config') return '已在配置中关闭'
-  if (reason === 'no_permission') return '权限不足，无法读取该指标'
+  // 磁盘 I/O 的 `no_permission` 有可操作的专属说明（Windows 性能计数器需特权或未开启）：
+  // 与通用的「权限不足」并列会让用户去查权限而不是去开计数器。这是**指标语境**下的文案细化，
+  // 通用映射仍是一份（本函数），视图不再另写 if 链。
+  if (reason === 'no_permission') {
+    return metric === 'disk_io'
+      ? '磁盘性能计数器不可用（需管理员权限或性能计数器未开启）'
+      : '权限不足，无法读取该指标'
+  }
   return reason
 }
 
-/** 等级 → 中文（状态不得只靠颜色；空等级返回空串，不冒充「正常」） */
+/**
+ * 等级 → 中文（状态不得只靠颜色）。
+ *
+ * `level === null` 返回 {@link UNRATED_LEVEL_TEXT}（「无阈值」）而**不是**空串：这一行有读数，
+ * 只是没有可归一化的分母，写成空串会让状态点旁一个字都没有，灰度截屏下这一行的状态就只剩一个灰点。
+ * 也不能写成「正常」（编造结论）或「不可用」（把有数据说成读不到）。
+ */
 export function ledgerLevelText(level: ResourceLevel | null): string {
   if (level === 'danger') return '危险'
   if (level === 'warn') return '警戒'
   if (level === 'normal') return '正常'
-  return ''
+  // null = 这一行**没有可归一化的分母**（网卡没有链路速率字段、共享内存目录没有总容量），
+  // 因此「够不够用」无从判定。写成「正常」是编造结论，写成「不可用」是把有数据说成读不到；
+  // 状态点旁的文字必须说出这一事实，否则灰度截屏下这一行的状态就只剩一个灰点。
+  return UNRATED_LEVEL_TEXT
 }
 
 /** 阈值列在没有契约阈值时的占位（不是「不可用」——该指标本来就没有阈值） */
 export const NO_THRESHOLD_TEXT = '—'
+
+/**
+ * 有读数但没有判定基准时的等级文字（量程列 `ratio` 为 null）。
+ *
+ * 与四类空态**不同**：这四类是「没有这次读数」，而这里是「读数有、判定基准没有」。
+ * 二者若共用同一个词，读者会把「没法判」误读成「读不到」。
+ */
+export const UNRATED_LEVEL_TEXT = '无阈值'
 
 /**
  * 余量 → 文案：非负走原单位，负数表示已越线，改写为「已超 X」。
@@ -231,16 +298,26 @@ function levelOf(ratio: number | null): ResourceLevel | null {
   return ratio === null ? null : resourceLevel(ratio)
 }
 
+/** 四类空态的默认短标签（`none` 与 `disabled` 的调用方常需按事实改写，见各构造处） */
+const STATE_LABEL_DEFAULT: Record<Exclude<LedgerRowState, 'ok'>, string> = {
+  unavailable: '不可用',
+  empty: '暂无数据',
+  disabled: '已关闭',
+  none: '无此项',
+}
+
 /** 空态行（`ok` 之外的统一构造：不产出 value / ratio / level，但保留标签与契约键） */
 function blankRow(
   base: Pick<LedgerRow, 'id' | 'group' | 'label' | 'contractKey'>,
   state: Exclude<LedgerRowState, 'ok'>,
   stateText: string,
+  stateLabel: string = STATE_LABEL_DEFAULT[state],
 ): LedgerRow {
   return {
     ...base,
     state,
     stateText,
+    stateLabel,
     levelText: '',
     ratio: null,
     level: null,
@@ -249,7 +326,9 @@ function blankRow(
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
+    detailParts: [],
     fields: [],
+    badges: [],
   }
 }
 
@@ -264,7 +343,8 @@ function unavailableRow(
 ): LedgerRow {
   const { reason } = availabilityState(input.availability, metric)
   const state = reason === 'disabled_by_config' ? 'disabled' : 'unavailable'
-  return blankRow(base, state, `${UNAVAILABLE_TEXT}：${unavailableReasonText(reason)}`)
+  // metric 一并传入：磁盘 I/O 的 no_permission 有可操作的专属文案（见 `unavailableReasonText`）
+  return blankRow(base, state, `${UNAVAILABLE_TEXT}：${unavailableReasonText(reason, metric)}`)
 }
 
 /** 内存组：内存已用 + 交换已用（两行都是可点跳历史的标量） */
@@ -295,6 +375,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       ...memoryBase,
       state: 'ok',
       stateText: '',
+      stateLabel: '',
       level: levelOf(ratio),
       levelText: ledgerLevelText(levelOf(ratio)),
       ratio,
@@ -303,6 +384,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       thresholdText: `${memoryPct}%`,
       headroomText: bytesHeadroomText(headroom),
       historyKey: 'memory.used_ratio',
+      detailParts: [],
       fields: [
         { label: '总量', value: formatBytes(memory.total_bytes) },
         { label: '已用（总量 − 可用）', value: formatBytes(memory.used_bytes) },
@@ -310,6 +392,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
         { label: '缓存（可回收）', value: formatBytes(memory.cached_bytes) },
         { label: '缓冲（内核元数据）', value: formatBytes(memory.buffers_bytes) },
       ],
+      badges: [],
     })
   }
 
@@ -324,7 +407,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
     // 无交换分区是平台事实（契约 §2 的 `unsupported`），不是采集故障：给专用文案而不是
     // 通用的「不可用」，否则用户会去查为什么采集失败。
     if (swapAvailability.reason === 'unsupported') {
-      rows.push(blankRow(swapBase, 'none', '本机无交换分区/页面文件'))
+      rows.push(blankRow(swapBase, 'none', '本机无交换分区/页面文件', '无交换'))
     } else {
       rows.push(unavailableRow(swapBase, 'swap', input))
     }
@@ -332,7 +415,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
     rows.push(blankRow(swapBase, 'empty', '暂无数据：本帧未采集到交换分区'))
   } else if (input.swap.total_bytes === 0) {
     // 总量 0 是**合法事实**，不是 0% 的使用率：显示 0% 会被读成「有 swap 但一点没用」。
-    rows.push(blankRow(swapBase, 'none', '无交换分区'))
+    rows.push(blankRow(swapBase, 'none', '无交换分区', '无交换'))
   } else {
     const swap = input.swap
     const ratio = swap.used_ratio
@@ -342,6 +425,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       ...swapBase,
       state: 'ok',
       stateText: '',
+      stateLabel: '',
       level: levelOf(ratio),
       levelText: ledgerLevelText(levelOf(ratio)),
       ratio,
@@ -350,11 +434,13 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       thresholdText: `${swapPct}%`,
       headroomText: bytesHeadroomText(headroom),
       historyKey: 'swap.used_ratio',
+      detailParts: [],
       fields: [
         { label: '总量', value: formatBytes(swap.total_bytes) },
         { label: '已用', value: formatBytes(swap.used_bytes) },
         { label: '剩余', value: formatBytes(Math.max(0, swap.total_bytes - swap.used_bytes)) },
       ],
+      badges: [],
     })
   }
 
@@ -386,6 +472,7 @@ function volumeRow(volume: SysmonVolumeInfo, freePct: number): LedgerRow {
     contractKey: 'volumes',
     state: 'ok',
     stateText: '',
+    stateLabel: '',
     level: levelOf(ratio),
     levelText: ledgerLevelText(levelOf(ratio)),
     ratio,
@@ -396,12 +483,13 @@ function volumeRow(volume: SysmonVolumeInfo, freePct: number): LedgerRow {
     thresholdText: `${freePct}% 空闲`,
     headroomText: pointsHeadroomText(headroom),
     historyKey: null,
+    detailParts: [],
     fields: [
-      { label: '挂载点', value: volume.mount },
       { label: '总量', value: formatBytes(total) },
       { label: '已用', value: formatBytes(used) },
       { label: '可用', value: total === null || used === null ? UNAVAILABLE_TEXT : formatBytes(total - used) },
     ],
+    badges: [],
   }
 }
 
@@ -418,6 +506,7 @@ function diskRow(disk: SysmonDiskIoInfo): LedgerRow {
     contractKey: 'disk_io',
     state: 'ok',
     stateText: '',
+    stateLabel: '',
     level,
     levelText: ledgerLevelText(level),
     ratio,
@@ -426,6 +515,7 @@ function diskRow(disk: SysmonDiskIoInfo): LedgerRow {
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
+    detailParts: [],
     fields: [
       { label: '读吞吐', value: formatByteRate(disk.read_bytes_per_sec) },
       { label: '写吞吐', value: formatByteRate(disk.write_bytes_per_sec) },
@@ -435,6 +525,7 @@ function diskRow(disk: SysmonDiskIoInfo): LedgerRow {
       { label: '队列深度', value: formatDecimal(disk.queue_depth) },
       { label: '忙碌占比', value: formatPercent(ratio) },
     ],
+    badges: [],
   }
 }
 
@@ -447,8 +538,9 @@ function shmRow(shm: SysmonShmDirInfo): LedgerRow {
     contractKey: 'shm_dir',
     state: 'ok',
     stateText: '',
+    stateLabel: '',
     level: null,
-    levelText: '',
+    levelText: ledgerLevelText(null),
     ratio: null,
     value: formatBytes(shm.total_bytes),
     detail: `${formatCount(shm.page_files)} 页文件${
@@ -456,13 +548,21 @@ function shmRow(shm: SysmonShmDirInfo): LedgerRow {
     }`,
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
-    historyKey: null,
+    // 共享内存目录的内存值本身是可点跳历史的标量（#127 / #325 的既有入口，历史视图支持
+    // `shm_dir.total_bytes`）。它没有**阈值**（没有总容量分母），但「可看历史」与「有阈值」
+    // 是两件事，不能因为前者缺失就把历史入口一并删掉。
+    historyKey: 'shm_dir.total_bytes',
+    detailParts: [],
     fields: [
       { label: '路径', value: shm.path },
       { label: '占用', value: formatBytes(shm.total_bytes) },
       { label: '页文件数', value: formatCount(shm.page_files) },
-      { label: '最旧页文件年龄', value: formatAge(shm.oldest_file_age_sec) },
+      // 无页文件时 `oldest_file_age_sec` 为 null：该行不渲染（不是「0 秒」，也不是「不可用」）
+      ...(shm.oldest_file_age_sec === null
+        ? []
+        : [{ label: '最旧页文件年龄', value: formatAge(shm.oldest_file_age_sec) }]),
     ],
+    badges: [],
   }
 }
 
@@ -545,6 +645,13 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
   const bytesTotal = isRx ? nic.rx_bytes_total : nic.tx_bytes_total
   const packetsTotal = isRx ? nic.rx_packets_total : nic.tx_packets_total
   const dirLabel = isRx ? '接收' : '发送'
+  // 累计错误与丢弃是这张卡的风险信号，放在明细里让它不点开也可见（不是藏在展开里）。
+  // 速率与累计量并列：速率反映本窗口（0 是合法值），累计量反映是否曾经发生过。
+  // 段序固定 errors → drops；`detail` 由同一组分段拼出，同一句话不写两遍。
+  const detailParts: LedgerDetailPart[] = [
+    { id: 'errors', text: `错 ${formatCountPerSecOf(errorsPerSec)}（累计 ${formatCount(errorsTotal)}）` },
+    { id: 'drops', text: `丢 ${formatCountPerSecOf(dropsPerSec)}（累计 ${formatCount(dropsTotal)}）` },
+  ]
   return {
     id: `nic:${nic.interface}:${direction}`,
     group: 'network_clock',
@@ -552,14 +659,15 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
     contractKey: 'network',
     state: 'ok',
     stateText: '',
+    stateLabel: '',
     // 网卡没有链路速率字段（`SysmonNetworkInfo` 不提供），无法归一化到量程：
     // ratio 必须为 null 而不是拿一个编造的分母算百分比。
     level: null,
-    levelText: '',
+    levelText: ledgerLevelText(null),
     ratio: null,
     value: formatByteRate(rate),
-    // 累计错误与丢弃是这张卡的风险信号，放在明细里让它不点开也可见（不是藏在展开里）。
-    detail: `错 ${formatCount(errorsTotal)} 累计 · 丢 ${formatCount(dropsTotal)} 累计`,
+    detail: detailParts.map(part => part.text).join(' · '),
+    detailParts,
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
@@ -567,16 +675,22 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
       { label: `${dirLabel}速率`, value: formatByteRate(rate) },
       { label: `${dirLabel}错误速率`, value: formatCountPerSecOf(errorsPerSec) },
       { label: `${dirLabel}丢弃速率`, value: formatCountPerSecOf(dropsPerSec) },
-      { label: `${dirLabel}字节（累计）`, value: formatCount(bytesTotal) },
+      { label: `${dirLabel}字节（累计）`, value: formatBytes(bytesTotal) },
       { label: `${dirLabel}包数（累计）`, value: formatCount(packetsTotal) },
       { label: `${dirLabel}错误（累计）`, value: formatCount(errorsTotal) },
       { label: `${dirLabel}丢弃（累计）`, value: formatCount(dropsTotal) },
       { label: '虚拟网卡', value: nic.is_virtual ? '是（不由硬件设备支撑）' : '否' },
     ],
+    badges: nic.is_virtual ? ['虚拟'] : [],
   }
 }
 
-/** 每秒事件数（1 位小数，与「错误/丢弃速率」口径一致） */
+/**
+ * 每秒事件数（1 位小数，与「错误/丢弃速率」口径一致）。
+ *
+ * null（首次采样 / 计数器重置）写「不可用」而不是 0：**0 是合法真实值**（本窗口确实没有增量），
+ * 因此不能把 null 折成 0。
+ */
 function formatCountPerSecOf(value: number | null): string {
   if (value === null) return UNAVAILABLE_TEXT
   return `${value.toFixed(1)}/s`
@@ -596,7 +710,7 @@ function clockRow(clock: SysmonClockInfo | null, input: MonitorLedgerInput): Led
   }
   const domain = clockDomainState(clock)
   if (domain === 'disabled') return blankRow(base, 'disabled', `${UNAVAILABLE_TEXT}：${unavailableReasonText('disabled_by_config')}`)
-  if (domain === 'unprobed') return blankRow(base, 'none', '尚未探测')
+  if (domain === 'unprobed') return blankRow(base, 'none', '尚未探测', '尚未探测')
   if (domain === 'unavailable' || clock === null) {
     return blankRow(base, 'unavailable', `${UNAVAILABLE_TEXT}：本轮探测无可用参考源`)
   }
@@ -622,6 +736,7 @@ function clockRow(clock: SysmonClockInfo | null, input: MonitorLedgerInput): Led
     ...base,
     state: 'ok',
     stateText: '',
+    stateLabel: '',
     level,
     levelText: ledgerLevelText(level),
     ratio: null,
@@ -633,7 +748,9 @@ function clockRow(clock: SysmonClockInfo | null, input: MonitorLedgerInput): Led
     thresholdText: `±${thresholds.warn_ms} / ±${thresholds.error_ms} ms`,
     headroomText: errorHeadroom === null ? NO_THRESHOLD_TEXT : `${errorHeadroom.toFixed(1)} ms`,
     historyKey: null,
+    detailParts: [],
     fields,
+    badges: [],
   }
 }
 
@@ -654,10 +771,14 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
       input,
     ))
   } else if (input.network.length === 0) {
+    // 空数组的两种事实（契约 §2.5）：被 hide_virtual 滤掉全部 vs 本机确实没有网卡。
+    // 只有隐藏态可自助恢复，文案必须点明开关，不能与「暂无数据」混为一谈。
     rows.push(blankRow(
       { id: 'network', group: 'network_clock', label: '网卡', contractKey: 'network' },
       'empty',
-      '暂无数据：本帧没有网卡读数（可能已被「显示全部网卡」过滤）',
+      input.networkFilteredAll === true
+        ? '已隐藏全部虚拟网卡：本机只有虚拟/回环网卡，打开「显示全部网卡」查看'
+        : '暂无数据：本帧没有网卡读数',
     ))
   } else {
     for (const nic of [...input.network].sort((a, b) => a.interface.localeCompare(b.interface))) {
@@ -685,6 +806,94 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
  */
 export function buildMonitorLedger(input: MonitorLedgerInput): LedgerGroup[] {
   return [memoryGroup(input), storageGroup(input), networkClockGroup(input)]
+}
+
+// ---- 内存组成带（#363）----
+
+/** 组成带的一段：`ratio` 是占**总量**的比例（所有可画段之和 + 空闲 = 1） */
+export interface MemoryCompositionSegment {
+  id: 'used' | 'cached' | 'buffers' | 'free'
+  label: string
+  /** 该段的字节数（不可得时为 null，**不得**补 0） */
+  bytes: number | null
+  /** 该段占总量比例 [0,1]；null = 不可得（不画这一段） */
+  ratio: number | null
+  /** 该段的可读字节标注（不可得时为 null，由视图显示「不可得」注记） */
+  text: string | null
+}
+
+/** 组成带的完整结果：分段 + 是否退化为两段（缓存 / 缓冲不可得时的标注口径） */
+export interface MemoryComposition {
+  segments: MemoryCompositionSegment[]
+  /** 缓存或缓冲不可得 → 组成带只画「已用 + 可用」两段，视图须给出注记（不得静默补 0） */
+  degraded: boolean
+  /** 退化原因的可读文案（完整时为空串） */
+  degradedText: string
+}
+
+/**
+ * 内存组成带（#363；契约 sysmon §2.4 / ADR 0024）。
+ *
+ * **两个口径不合并**（这是本函数存在的唯一理由）：
+ * - 台账主数值是 `used_ratio = (total − available) / total`（ADR 0024 的唯一口径，
+ *   `available` 含**可回收**的缓存与缓冲）；
+ * - 组成带要回答的是「这 32 GiB 被谁占着」，因此逐段必须相加回到 `total`：
+ *   `已用 = total − free − cached − buffers`，其中 `free` **不是快照字段**，
+ *   由 `free = total − used − cached − buffers` 派生（钳到 ≥0）。
+ *
+ * 两段数字在数值上必然自洽（把派生的 `free` 代回即得 `used`），但它们**不是同一个量**：
+ * 主数值是「用量比率」，组成带是「总量分解」，视图必须分别标注分母，不得把同一个数字渲染两次
+ * 而声称一个是「已用」另一个是「可用」。
+ *
+ * 缓存或缓冲为 null（Windows 恒无缓冲 / 本帧未读到）时**不补 0**：退化为「已用 + 可用」两段
+ * （`used = total − available`、`available` 原样），并以 {@link MemoryComposition.degraded}
+ * 标注——补 0 会把「不知道」画成「没有」。
+ *
+ * @returns 内存对象为 null（或总量非正）时返回 null（调用方不渲染组成带）
+ */
+export function buildMemoryComposition(memory: SysmonMemoryInfo | null): MemoryComposition | null {
+  if (memory === null) return null
+  const total = memory.total_bytes
+  if (!(total > 0)) return null
+  const cached = typeof memory.cached_bytes === 'number' ? memory.cached_bytes : null
+  const buffers = typeof memory.buffers_bytes === 'number' ? memory.buffers_bytes : null
+  const segment = (
+    id: MemoryCompositionSegment['id'],
+    label: string,
+    bytes: number | null,
+  ): MemoryCompositionSegment => ({
+    id,
+    label,
+    bytes,
+    ratio: bytes === null ? null : Math.min(1, Math.max(0, bytes / total)),
+    text: bytes === null ? null : formatBytes(bytes),
+  })
+
+  if (cached === null || buffers === null) {
+    // 退化形态：`available` 是契约里唯一可信的「可用」字段（含可回收），把它当空闲段并标注
+    return {
+      segments: [
+        segment('used', '已用', Math.max(0, total - memory.available_bytes)),
+        segment('free', '可用（含缓存/缓冲）', memory.available_bytes),
+      ],
+      degraded: true,
+      degradedText: cached === null && buffers === null
+        ? '缓存与缓冲不可得，组成带只画已用与可用两段'
+        : (cached === null ? '缓存不可得' : '缓冲不可得') + '，组成带只画已用与可用两段',
+    }
+  }
+
+  const free = Math.max(0, total - memory.used_bytes - cached - buffers)
+  return {
+    segments: [
+      segment('used', '已用', Math.max(0, total - free - cached - buffers)),
+      segment('cached', '缓存', cached),
+      segment('buffers', '缓冲', buffers),
+      segment('free', '空闲', free),
+    ],
+    degraded: false,
+    degradedText: '',
+  }
 }
 
 // ---- CPU 趋势的自适应纵轴 ----
