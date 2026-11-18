@@ -1254,6 +1254,8 @@ const cpuTrendAriaLabel = computed(
                   class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__ledger-expand-btn"
                   type="button"
                   :aria-expanded="isLedgerRowOpen(row.id)"
+                  :aria-label="`${isLedgerRowOpen(row.id) ? '收起' : '明细'} · ${row.label}`"
+                  :aria-controls="isLedgerRowOpen(row.id) ? `ledger-fields-${row.id}` : undefined"
                   :data-test="`ledger-expand-${row.id}`"
                   @click="toggleLedgerRow(row.id)"
                 >{{ isLedgerRowOpen(row.id) ? '收起' : '明细' }}</button>
@@ -1315,6 +1317,7 @@ const cpuTrendAriaLabel = computed(
                    藏在展开里是可接受的，但它不是默认视图）。 -->
               <dl
                 v-if="row.fields.length > 0 && row.id !== 'clock' && isLedgerRowOpen(row.id)"
+                :id="`ledger-fields-${row.id}`"
                 class="monitor-view__ledger-fields"
                 data-test="ledger-fields"
               >
@@ -1379,6 +1382,7 @@ const cpuTrendAriaLabel = computed(
                     class="ds-btn ds-btn--tertiary ds-btn--sm"
                     type="button"
                     :aria-expanded="isLedgerRowOpen(row.id)"
+                    :aria-label="`${isLedgerRowOpen(row.id) ? '收起明细' : '展开服务器明细'} · ${row.label}`"
                     data-test="monitor-clock-detail-toggle"
                     @click="toggleLedgerRow(row.id)"
                   >{{ isLedgerRowOpen(row.id) ? '收起明细' : '展开服务器明细' }}</button>
@@ -1941,7 +1945,7 @@ const cpuTrendAriaLabel = computed(
 
 .monitor-view__ledger-group-note {
   margin: 0;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
 }
@@ -2016,18 +2020,23 @@ const cpuTrendAriaLabel = computed(
 
 .monitor-view__ledger-state-text {
   min-width: 0;
-  color: var(--text-tertiary);
+  /* 11px 正文：tertiary 在深/浅两套下分别只有 3.19 / 4.35，够不到 4.5 —— 台账内承载信息的
+     小字统一用 secondary（深 5.86 / 浅 9.51）。装饰性字仍走 tertiary。 */
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   white-space: nowrap;
 }
 
+/* 等级文字用**配对档** -on-surface（DESIGN.md:229 的 Paired-Step Rule：实体 -default 只给点/条/
+   图标，文字走 -on-surface）。浅色 warn 实体 #FEA900 在卡片底上只有 1.77:1；点与轨道填充仍保持
+   -default —— 这条规则只约束文字。 */
 .monitor-view__ledger-row[data-level='warn'] .monitor-view__ledger-state-text {
-  color: var(--status-alert-default);
+  color: var(--status-warning-on-surface);
 }
 
 .monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-state-text {
-  color: var(--status-error-default);
+  color: var(--status-error-on-surface);
 }
 
 /* 名称 + 契约键：名称可换行（挂载点路径必须完整可读，#321 的教训），契约键是等宽小字。 */
@@ -2046,7 +2055,9 @@ const cpuTrendAriaLabel = computed(
 }
 
 .monitor-view__ledger-key {
-  color: var(--text-tertiary);
+  /* 契约键是 11px 的**信息**文字（不是装饰）：tertiary 深/浅只有 3.19 / 4.35，不够 4.5 的
+     正文口径，台账内承载信息的小字统一升到 secondary。 */
+  color: var(--text-secondary);
   font-family: var(--font-family-mono);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
@@ -2103,21 +2114,24 @@ const cpuTrendAriaLabel = computed(
 .monitor-view__ledger-value {
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: var(--spacer-2);
   color: var(--text-default);
   font-family: var(--font-family-metric);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
+/* 等级色同样走配对档（Paired-Step Rule）：-default 是点/条/图标的实体色，文字用 -on-surface。 */
 .monitor-view__ledger-row[data-level='warn'] .monitor-view__ledger-value {
-  color: var(--status-alert-default);
+  color: var(--status-warning-on-surface);
 }
 
 .monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-value {
-  color: var(--status-error-default);
+  color: var(--status-error-on-surface);
 }
 
 .monitor-view__ledger-detail-part + .monitor-view__ledger-detail-part {
@@ -2138,6 +2152,9 @@ const cpuTrendAriaLabel = computed(
 
 .monitor-view__ledger-detail-text {
   min-width: 0;
+  /* 明细列是台账里的**信息**文字（不是装饰性小字）：tertiary 在两套主题下都够不到 11px
+     正文的 4.5:1，故升到 secondary。 */
+  color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
 
@@ -2153,17 +2170,23 @@ const cpuTrendAriaLabel = computed(
 .monitor-view__ledger-col-label {
   display: none;
   margin-right: var(--spacer-4);
-  color: var(--text-tertiary);
+  /* 列名只在窄屏出现，是「90%」与「12.8 GiB」的归属说明 —— 属信息文字，不是装饰。 */
+  color: var(--text-secondary);
 }
 
 /* 阈值与余量各自成条（不合并选择器）：两格在窄屏落到不同 grid-area，且都要能被单独定位 /
-   单独断言「不折行」——合并成一条会让按选择器取规则的检查失效。 */
+   单独断言「不折行」——合并成一条会让按选择器取规则的检查失效。
+   `text-align: right` 是 DESIGN.md:354 的表口径（Numeric columns right-align with tabular
+   figures）。窄屏（<1024）两格落在 `threshold headroom` 这一行的左右两端 —— 阈值在行首左对齐
+   正好贴住行内容区，余量右端贴住行尾，右对齐在两侧都成立；不另加媒体查询（那会让「七列右对齐」
+   这件事在代码里有两种说法）。 */
 .monitor-view__ledger-threshold {
   color: var(--text-secondary);
   font-family: var(--font-family-metric);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -2173,6 +2196,7 @@ const cpuTrendAriaLabel = computed(
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   font-variant-numeric: tabular-nums;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -2199,15 +2223,21 @@ const cpuTrendAriaLabel = computed(
   height: 100%;
 }
 
-/* 组成带四段用**中性色阶**而不是状态色：这一页的世界观是「只有状态才有颜色」，
+/* 组成带四段用**中性色阶**而不是状态色：这一页的世界观「只有状态才有颜色」，
    给「缓存 / 缓冲」涂上琥珀与绿会让它们读成「警戒 / 正常」两个状态，而它们只是构成。
-   色阶从实到虚表达「这段离可用有多远」：已用最实、空闲最虚。 */
+   色阶从实到虚表达「这段离可用有多远」：已用最实、空闲最虚。
+   #363：已用与缓存原先相邻只差 1.73:1（浅）/ 2.05:1（深），46% 的用量读成 93%
+   —— 缓存**可回收**，它离「空闲」比离「已用」近得多，故降到叠色阶最低一档
+   （--bg-overlay-l4：浅 #dbdbdb / 深 #3b3b3b），已用再加一圈 1px 内描边把它钉成「实心块」。
+   实测边界（浅 / 深）：已用|缓存 12.95 / 8.89，缓存|缓冲 3.42 / 2.36，缓冲|空闲 3.59 / 2.63。 */
 .monitor-view__ledger-band-seg--used {
   background: var(--text-default);
+  /* 内描边用既有底色 token（与段间缝隙同色）：把「已用」圈成一块，边界不依赖相邻段的色差。 */
+  box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1);
 }
 
 .monitor-view__ledger-band-seg--cached {
-  background: var(--text-secondary);
+  background: var(--bg-overlay-l4);
 }
 
 .monitor-view__ledger-band-seg--buffers {
@@ -2372,6 +2402,10 @@ const cpuTrendAriaLabel = computed(
 
   .monitor-view__ledger-threshold {
     grid-area: threshold;
+    /* 右对齐是**七列表格**的列口径（基础规则）。堆叠后这一行成了「阈值 90% + 余量 12.8 GiB」
+       一行的左右两端：左格若也右对齐会贴住右格，两个数读起来像一对。故窄屏改回左对齐；
+       余量格本身 `justify-self: end`，文字左右对齐的差别为零，不另加覆盖。 */
+    text-align: start;
   }
 
   .monitor-view__ledger-headroom {
@@ -2733,6 +2767,18 @@ const cpuTrendAriaLabel = computed(
 
   .monitor-view__cpu-panel--wide {
     grid-column: auto;
+  }
+}
+
+/* ═══ 触摸下限（P5-T3，见 components.css:384 的触摸规范）═══
+   台账值列里的可点读数是**自绘按钮**（`.monitor-view__value-btn`），不在 `.ds-btn` 族里，
+   因此拿不到 `@media (pointer: coarse)` 的 44px 下限：桌面实测 96×18，手指按上去只有一条线。
+   触摸优先设备上补纵向点击区——`min-height` 撑开命中区，字号 / 颜色 / 行高不变（视觉零变化）。
+   桌面 pointer: fine 不受影响（保持台账的紧凑密度）。 */
+@media (pointer: coarse) {
+  .monitor-view__value-btn {
+    /* --spacer-40 = 44px，与 `.ds-btn` 的触摸下限同值（不新造 token，也不写裸 px） */
+    min-height: var(--spacer-40);
   }
 }
 </style>

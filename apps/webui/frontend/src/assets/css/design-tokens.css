@@ -439,17 +439,24 @@
   --ledger-col-track: 150px;       /* 量程轨道下限（弹性列：吃掉剩余宽度，两行轨道宽度才可比） */
   --ledger-col-value: 96px;        /* 当前值：`999.9 MiB/s` 级别的最宽读数 */
   --ledger-col-detail: 170px;      /* 明细下限（弹性列：写吞吐 + 延迟一行放得下，窄了换行） */
-  --ledger-col-threshold: 84px;    /* 阈值：`±100 / ±1000 ms` 放得下的上限 */
+  /* 1440 下实测：`±100 / ±1000 ms` 的文本宽 85px，84 差 1px 就会把「±1000 ms」压出列外
+     （与相邻的余量列叠印），故取 88。 */
+  --ledger-col-threshold: 88px;    /* 阈值：`±100 / ±1000 ms` 放得下的上限（实测 85px + 3px 取整余量） */
   --ledger-col-headroom: 92px;     /* 余量：`已超 12.3 点` 同宽 */
   /* 1024–1279（容器约 700px，≥1280 那套列宽的下限之和装不下）：因此整组列宽重算，
-     而不是「主档列宽 × 0.8」。这一档的 6 个列间距同时降到 spacer-8。 */
+     而不是「主档列宽 × 0.8」。这一档的 6 个列间距同时降到 spacer-8。
+     阈值/余量两列与其他档同源同字（11px 等宽数字），**不能跟着收窄**：#363 曾把阈值收到
+     44px，实测文本仍要 85px，1024–1279 下溢出 41px 并与余量叠印（`±100 / ±1000980.2ms`）。
+     定宽列 48 + 76 + 88 + 64 = 276，六条 10px 列间距 60，容器 700 时弹性三列分得 364
+     （1 : 1 : 1.4 → 名 107 / 轨 107 / 明细 150），七个下限全部满足（实测 maxOver=0；
+     容器 804/880/960/1059 同）。因此 fr 比例不需要改，弹性列自己吃掉剩余宽度。 */
   --ledger-col-state-md: 48px;
   --ledger-col-name-md: 72px;
   --ledger-col-track-md: 64px;
   --ledger-col-value-md: 76px;
   --ledger-col-detail-md: 60px;
-  --ledger-col-threshold-md: 44px;
-  --ledger-col-headroom-md: 56px;
+  --ledger-col-threshold-md: 88px;
+  --ledger-col-headroom-md: 64px;
   --ledger-dot-size: 6px;          /* 状态点直径：与顶栏快照状态点同一视觉尺寸 */
   --ledger-track-height: 6px;      /* 量程轨道高度：容纳 1px 缺口线且不遮住读数 */
   --ledger-band-height: 10px;      /* 内存组成带高度：四段颜色可辨的最小高度 */

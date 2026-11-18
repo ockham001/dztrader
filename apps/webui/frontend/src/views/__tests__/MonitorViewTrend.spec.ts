@@ -9,7 +9,7 @@ import { sysmonApi } from '@/api/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
 import { SYSMON_TREND_METRIC_KEYS } from '@/stores/sysmonTrend'
-import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
+import { SYSMON_CLOCK_LIVE, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable } from '@/types/api'
 
 // #127：内联趋势 / 卡片折叠 / 响应式布局。
@@ -359,6 +359,42 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     expect(labels).toEqual(['读吞吐', '写吞吐', '读 IOPS', '写 IOPS', '平均延迟', '队列深度', '忙碌占比'])
   })
 
+  it('每个展开按钮的可访问名各不相同，且都以可见文本开头（#363 C6：WCAG 2.5.3 + 4.1.2）', async () => {
+    const wrapper = await mountView()
+
+    const buttons = wrapper.findAll('[data-test^="ledger-expand-"]')
+    expect(buttons.length).toBeGreaterThan(1)
+    const names = buttons.map(button => button.attributes('aria-label') ?? '')
+    // 唯一：原先 15 个按钮的可访问名全是「明细」，读屏里无法区分展开的是哪一行
+    expect(new Set(names).size).toBe(names.length)
+    for (const button of buttons) {
+      const label = button.attributes('aria-label') ?? ''
+      // 以可见文本开头（Label in Name）：可见文字就是「明细」/「收起」
+      expect(label, button.attributes('data-test')).toMatch(/^(明细|收起) · .+/)
+      expect(label, button.attributes('data-test')).toContain(button.text())
+    }
+
+    // 收起时不指向不存在的元素（aria-controls 条件绑定），展开后指向真实存在的字段表 id
+    const first = buttons[0]
+    const rowId = (first.attributes('data-test') ?? '').replace('ledger-expand-', '')
+    expect(first.attributes('aria-controls')).toBeUndefined()
+    await toggle(wrapper, `ledger-expand-${rowId}`)
+    expect(first.attributes('aria-controls')).toBe(`ledger-fields-${rowId}`)
+    const fields = wrapper.find(`[data-test="ledger-fields"]`)
+    expect(fields.attributes('id')).toBe(`ledger-fields-${rowId}`)
+  })
+
+  it('时钟行的展开按钮同样带唯一的可访问名（#363 C6）', async () => {
+    const wrapper = await mountView(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+
+    const toggleBtn = wrapper.find('[data-test="monitor-clock-detail-toggle"]')
+    expect(toggleBtn.exists()).toBe(true)
+    const label = toggleBtn.attributes('aria-label') ?? ''
+    expect(label).toContain('展开服务器明细')
+    // 与其他展开按钮不重名：带上了行名（时钟偏差）
+    expect(label).toContain('时钟偏差')
+  })
+
   it('每网卡十项明细默认收起：收发各占一行平铺，展开给出完整八项', async () => {
     const wrapper = await mountView()
 
@@ -595,6 +631,75 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toContain('display: inline')
     // 桌面档列名隐藏（七列各有固定位置，列名是噪声）
     expect(ruleBody('.monitor-view__ledger-col-label')).toContain('display: none')
+  })
+
+  it('数值列右对齐（DESIGN.md:354）：阈值 / 余量 / 值槽；值槽是 flex 列，还要给 alignItems', () => {
+    // 表格口径：数值列右对齐 + 等宽数字。阈值 / 余量是纯文字格 → text-align: right
+    for (const selector of ['.monitor-view__ledger-threshold', '.monitor-view__ledger-headroom']) {
+      const body = ruleBody(selector)
+      expect(body, selector).toContain('text-align: right')
+      expect(body, selector).toContain('font-variant-numeric: tabular-nums')
+    }
+    // 值槽是纵向 flex（值 + sparkline 两层）：`text-align` 管不到 flex 项，必须 align-items
+    const value = ruleBody('.monitor-view__ledger-value')
+    expect(value).toContain('align-items: flex-end')
+    expect(value).toContain('text-align: right')
+    // 窄屏堆叠时阈值格回到左对齐（它此时在「阈值 headroom」一行的左端，右对齐会贴住余量）
+    expect(ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__ledger-threshold'))
+      .toContain('text-align: start')
+  })
+
+  it('台账元信息文字用 --text-secondary（tertiary 在两套主题下都够不到 11px 正文的 4.5:1）', () => {
+    // 承载**信息**的小字（不是装饰）：状态文字 / 契约键 / 明细列 / 组注 / 窄屏列名
+    for (const selector of ['.monitor-view__ledger-state-text', '.monitor-view__ledger-key',
+      '.monitor-view__ledger-detail-text', '.monitor-view__ledger-group-note',
+      '.monitor-view__ledger-col-label']) {
+      expect(ruleBody(selector), selector).toContain('color: var(--text-secondary)')
+    }
+    // 等级文字与等级数值走**配对档** -on-surface（Paired-Step Rule，DESIGN.md:229）；
+    // 点 / 轨道填充仍保持实体 -default —— 这条重启只约束文字。
+    const tokens = [
+      ['.monitor-view__ledger-row[data-level=\'warn\'] .monitor-view__ledger-state-text',
+        'var(--status-warning-on-surface)'],
+      ['.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-state-text',
+        'var(--status-error-on-surface)'],
+      ['.monitor-view__ledger-row[data-level=\'warn\'] .monitor-view__ledger-value',
+        'var(--status-warning-on-surface)'],
+      ['.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-value',
+        'var(--status-error-on-surface)'],
+    ] as const
+    for (const [selector, token] of tokens) {
+      expect(ruleBody(selector), selector).toContain(`color: ${token}`)
+    }
+    // 点与轨道填充不动（它们是 -default 的正当归属：实体色只给点/条/图标）
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'warn\'] .monitor-view__ledger-dot'))
+      .toContain('background: var(--status-alert-default)')
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-track-fill'))
+      .toContain('background: var(--status-error-default)')
+  })
+
+  it('组成带的「已用」与「缓存」分得开：缓存降到叠色阶最低档，已用加内描边（#363 C7）', () => {
+    // 已用：保持最实的中性色 + 一圈底色内描边（用既有 token，不引入新 token / 新纹理）
+    const used = ruleBody('.monitor-view__ledger-band-seg--used')
+    expect(used).toContain('background: var(--text-default)')
+    expect(used).toContain('box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1)')
+    // 缓存：可回收 → 降到离「空闲」近的那一档，与已用拉开距离
+    expect(ruleBody('.monitor-view__ledger-band-seg--cached'))
+      .toContain('background: var(--bg-overlay-l4)')
+    // 缓冲保持 tertiary、空闲保持 overlay-l3 —— 四段仍是「实 → 虚」的单调阶梯
+    expect(ruleBody('.monitor-view__ledger-band-seg--buffers'))
+      .toContain('background: var(--text-tertiary)')
+    expect(ruleBody('.monitor-view__ledger-band-seg--free'))
+      .toContain('background: var(--bg-overlay-l3)')
+  })
+
+  it('值按钮在触摸设备上有 44px 下限（.ds-btn 的 P5-T3 规则管不到自绘按钮，#363 C8）', () => {
+    // 必须在 `@media (pointer: coarse)` 里（桌面 pointer: fine 保持台账紧凑密度）
+    const coarse = source.slice(source.indexOf('@media (pointer: coarse)'))
+    expect(coarse, '缺少 @media (pointer: coarse) 块').not.toBe('')
+    expect(coarse).toContain('.monitor-view__value-btn')
+    // 44px 走 token（--spacer-40），不写裸 px
+    expect(coarse).toMatch(/\.monitor-view__value-btn\s*\{[^}]*min-height:\s*var\(--spacer-40\)/)
   })
 
   it('轨道缺口只画在有契约阈值的行上：CSS 用属性选择器不做判断，判断在纯函数层', () => {
