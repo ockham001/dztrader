@@ -519,8 +519,10 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 挂载点与契约键可任意长度：名称列开 anywhere（它同时收窄 min-content，避免窄屏横向溢出）
     expect(ruleBody('.monitor-view__ledger-label')).toContain('overflow-wrap: anywhere')
     expect(ruleBody('.monitor-view__ledger-key')).toContain('overflow-wrap: anywhere')
-    // 明细列（写吞吐 / 延迟 / 错误累计）与展开明细值同样允许断行
-    expect(ruleBody('.monitor-view__ledger-detail')).toContain('overflow-wrap: anywhere')
+    // 明细列的**文字**允许断行（列本身是 flex：文字 + 右端按钮，按钮不压缩）
+    expect(ruleBody('.monitor-view__ledger-detail-text')).toContain('overflow-wrap: anywhere')
+    expect(ruleBody('.monitor-view__ledger-detail')).toContain('display: flex')
+    expect(ruleBody('.monitor-view__ledger-expand-btn')).toContain('flex: none')
     expect(ruleBody('.monitor-view__ledger-field-value')).toContain('overflow-wrap: anywhere')
     // 读数与阈值列**不折**：百分比 / 容量在窄列里折成两行等于读错（实测 320 下 68.8% 被折断）
     for (const selector of ['.monitor-view__ledger-value', '.monitor-view__ledger-threshold',

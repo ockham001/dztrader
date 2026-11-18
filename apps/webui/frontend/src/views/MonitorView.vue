@@ -1963,15 +1963,16 @@ const cpuTrendAriaLabel = computed(
    `column-gap` 是列间距（不是「间距字面量违规」——值走 token）。 */
 .monitor-view__ledger-row {
   display: grid;
-  /* 名称 / 轨道 / 明细是不小于下限的弹性列：三者按 1 : 1.2 : 2 分掉剩余宽度，七列因此始终
-     铺满整行、且任意一列纵向可比。状态 / 读数 / 阈值 / 余量是定宽——数字列的宽度必须恒定，
-     否则「13 行的当前值」不会落在同一条基线上。 */
+  /* 名称 / 轨道 / 明细是弹性列，剩余宽度按 1 : 1.8 : 2.2 分：轨道要够长（两行差多少全靠它比），
+     明细也要够长（网卡行的「错 … / 丢 …」是一句话，压窄就折成两行 → 行高不齐）。
+     七列因此始终铺满整行、任意一列纵向可比。状态 / 读数 / 阈值 / 余量是定宽——
+     数字列的宽度必须恒定，否则 13 行的当前值不会落在同一条基线上。 */
   grid-template-columns:
     var(--ledger-col-state)
     minmax(var(--ledger-col-name), 1fr)
-    minmax(var(--ledger-col-track), 1.2fr)
+    minmax(var(--ledger-col-track), 1.8fr)
     var(--ledger-col-value)
-    minmax(var(--ledger-col-detail), 2fr)
+    minmax(var(--ledger-col-detail), 2.2fr)
     var(--ledger-col-threshold)
     var(--ledger-col-headroom);
   align-items: baseline;
@@ -2121,12 +2122,20 @@ const cpuTrendAriaLabel = computed(
   margin-left: var(--spacer-8);
 }
 
+/* 明细列 = 一句话 + 右端一个「明细」按钮。用 flex 而不是自然流：
+   自然流下长明细会把按钮挤到第二行，导致有的行一行高、有的两行高，13 行的行高节奏就散了。 */
 .monitor-view__ledger-detail {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacer-8);
   min-width: 0;
   color: var(--text-tertiary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
+}
+
+.monitor-view__ledger-detail-text {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
@@ -2265,34 +2274,28 @@ const cpuTrendAriaLabel = computed(
     column-gap: var(--spacer-8);
   }
 
-  /* 中档的阈值列只有 64px：时钟行写「±100 / ±1000 ms」会顶进余量列。
-     这一档允许在分隔符后折成两行（仍然整词可读），而不是压到相邻格子上。 */
-  .monitor-view__ledger-threshold,
-  .monitor-view__ledger-headroom {
-    white-space: normal;
-  }
 }
 
 /* 行明细：字段表跨满整行（七列之上），字段是两列自适应网格；触发它的按钮在明细列里。 */
+/* 展开按钮：不参与压缩（列再窄也保持可点，被压扁的是它左边那句话），
+   字号跟明细一致——它是明细列的一部分，不是独立的操作区。 */
 .monitor-view__ledger-expand-btn {
-  margin-top: var(--spacer-2);
+  flex: none;
   padding: 0;
   color: var(--text-tertiary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
+  white-space: nowrap;
 }
 
 .monitor-view__ledger-expand-btn:hover {
   color: var(--text-default);
 }
 
-/* 明细文字与展开按钮之间留出可辨认的间隔（否则读成「16.0 GiB / 32.0 GiB明细」） */
-.monitor-view__ledger-detail-text + .monitor-view__ledger-expand-btn {
-  margin-left: var(--spacer-8);
-}
-
+/* 展开后的字段表跨满整行（它是行内的第二层内容，不是第八列）；auto-fit 让它随宽度自己分栏。 */
 .monitor-view__ledger-fields {
   display: grid;
+  grid-column: 1 / -1;
   grid-template-columns: repeat(auto-fit, minmax(var(--ledger-field-min-width), 1fr));
   gap: var(--spacer-4) var(--spacer-16);
   margin: var(--spacer-8) 0 0;
