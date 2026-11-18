@@ -6,6 +6,7 @@ import {
   NO_THRESHOLD_TEXT,
   adaptiveAxisTicks,
   adaptiveTrendGeometry,
+  buildMemoryComposition,
   buildMonitorLedger,
   ledgerLevelText,
   unavailableReasonText,
@@ -649,5 +650,232 @@ describe('adaptiveAxisTicks · CPU 趋势的自适应纵轴', () => {
     expect(adaptiveTrendGeometry([], axis)).toBeNull()
     expect(adaptiveTrendGeometry([{ ts: 0, value: 0.5 }], axis)).toBeNull()
     expect(adaptiveTrendGeometry([{ ts: 0, value: 0.1 }, { ts: 1, value: 0.2 }], null)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #363：内存组成带（两个口径不合并）、空态短标签、网卡明细分段
+// ---------------------------------------------------------------------------
+
+describe('buildMemoryComposition · 组成带（已用 / 缓存 / 缓冲 / 空闲）', () => {
+  const GIB = 1024 ** 3
+
+  /** 四段齐全的组成带：段序固定 used → cached → buffers → free，宽度按各段占总量比例 */
+  it('四段齐全：free 由前三段派生，四段之和等于总量', () => {
+    const composition = buildMemoryComposition({
+      total_bytes: 32 * GIB,
+      available_bytes: 16 * GIB,
+      used_bytes: 16 * GIB,
+      used_ratio: 0.5,
+      cached_bytes: 8 * GIB,
+      buffers_bytes: 1 * GIB,
+    })!
+
+    expect(composition.degraded).toBe(false)
+    expect(composition.segments.map(segment => segment.id)).toEqual(['used', 'cached', 'buffers', 'free'])
+    expect(composition.segments.map(segment => segment.bytes)).toEqual([
+      // 「已用」= total − free − cached − buffers = 32 − 7 − 8 − 1 = 16 GiB
+      16 * GIB,
+      8 * GIB,
+      1 * GIB,
+      // free 不是快照字段：32 − 16 − 8 − 1 = 7 GiB
+      7 * GIB,
+    ])
+    const sum = composition.segments.reduce((total, segment) => total + (segment.bytes ?? 0), 0)
+    expect(sum).toBe(32 * GIB)
+    // 比例合计 1（截断误差在浮点范围内）
+    expect(composition.segments.reduce((total, segment) => total + (segment.ratio ?? 0), 0)).toBeCloseTo(1, 6)
+  })
+
+  it('组成带的「已用」按 total − free − cached − buffers 派生，与主数值的 available 口径各自独立', () => {
+    // 夹具：总计 32 GiB、已用 12 GiB、缓存 5 GiB、缓冲 1 GiB → 派生空闲 = 32 − 12 − 5 − 1 = 14 GiB。
+    // 组成带的「已用」= 32 − 14 − 5 − 1 = 12 GiB，与快照的 used_bytes 一致（自洽复算）。
+    const composition = buildMemoryComposition({
+      total_bytes: 32 * GIB,
+      available_bytes: 20 * GIB,
+      used_bytes: 12 * GIB,
+      used_ratio: 12 / 32,
+      cached_bytes: 5 * GIB,
+      buffers_bytes: 1 * GIB,
+    })!
+    const used = composition.segments.find(segment => segment.id === 'used')!
+    expect(used.bytes).toBe(12 * GIB)
+    expect(composition.segments.find(segment => segment.id === 'free')!.bytes).toBe(14 * GIB)
+    // 主数值口径（total − available = 12 GiB）与组成带的已用段是两套算法：
+    // 前者用 available 一个字段，后者扣掉 cached / buffers 并派生 free，两者本帧恰好相等
+    // 只是因为夹具的 used_bytes 与 total − available 一致——真实 Linux 上 available 含缓存，
+    // 两者会不等，这正是「不得合并」的原因。
+    expect(32 * GIB - 20 * GIB).toBe(used.bytes)
+  })
+
+  it('缓存 / 缓冲为 null：退化为两段并标注，不补 0', () => {
+    const composition = buildMemoryComposition({
+      total_bytes: 32 * GIB,
+      available_bytes: 16 * GIB,
+      used_bytes: 16 * GIB,
+      used_ratio: 0.5,
+      cached_bytes: null,
+      buffers_bytes: null,
+    })!
+
+    expect(composition.degraded).toBe(true)
+    expect(composition.segments.map(segment => segment.id)).toEqual(['used', 'free'])
+    // 退化态的两段之和仍是总量（已用 = total − available）
+    expect(composition.segments.reduce((total, segment) => total + (segment.bytes ?? 0), 0)).toBe(32 * GIB)
+    // 标注说明为什么只有两段——不静默丢段
+    expect(composition.degradedText).toContain('缓存与缓冲不可得')
+  })
+
+  it('缓存可得以缓冲为 null：同样退化两段，不把缓冲当 0 画一段', () => {
+    const composition = buildMemoryComposition({
+      total_bytes: 32 * GIB,
+      available_bytes: 16 * GIB,
+      used_bytes: 16 * GIB,
+      used_ratio: 0.5,
+      cached_bytes: 8 * GIB,
+      buffers_bytes: null,
+    })!
+    expect(composition.degraded).toBe(true)
+    expect(composition.segments.map(segment => segment.id)).toEqual(['used', 'free'])
+    // 缓存 8 GiB 不可丢：退化态把它并入「可用（含缓存/缓冲）」段而不是静默消失
+    expect(composition.segments.some(segment => segment.id === 'cached')).toBe(false)
+    expect(composition.segments.find(segment => segment.id === 'free')!.bytes).toBe(16 * GIB)
+  })
+
+  it('内存对象缺失或总量非正：返回 null（调用方据此不渲染组成带）', () => {
+    expect(buildMemoryComposition(null)).toBeNull()
+    expect(buildMemoryComposition({
+      total_bytes: 0,
+      available_bytes: 0,
+      used_bytes: 0,
+      used_ratio: null,
+      cached_bytes: 0,
+      buffers_bytes: 0,
+    })).toBeNull()
+  })
+
+  it('脏数据（可用 > 总量）：段宽不为负，已用段钳到 0', () => {
+    const composition = buildMemoryComposition({
+      total_bytes: 16 * GIB,
+      available_bytes: 32 * GIB,
+      used_bytes: 0,
+      used_ratio: 0,
+      cached_bytes: 32 * GIB,
+      buffers_bytes: 32 * GIB,
+    })!
+    for (const segment of composition.segments) {
+      expect(segment.bytes).toBeGreaterThanOrEqual(0)
+      expect(segment.ratio).toBeGreaterThanOrEqual(0)
+    }
+  })
+})
+
+describe('LedgerRow.stateLabel · 四类空态各给短标签（状态不得只靠颜色）', () => {
+  it('ok 行的标签为空（等级文字在 levelText 里）；空态行的标签非空且各不相同', () => {
+    const groups = buildMonitorLedger(ledgerInput({ metrics: allAvailable() }))
+    const memoryRow = rowById(groups, 'memory')
+    expect(memoryRow.state).toBe('ok')
+    expect(memoryRow.stateLabel).toBe('')
+    expect(memoryRow.levelText).toBe('正常')
+
+    // 四类空态：unavailable / empty / disabled / none 的标签互不相同
+    const unavailable = buildMonitorLedger(ledgerInput({
+      metrics: { ...allAvailable(), memory: { available: false, reason: 'collect_failed' } },
+    }))
+    expect(rowById(unavailable, 'memory').stateLabel).toBe('不可用')
+
+    const empty = buildMonitorLedger(ledgerInput({ memory: null }))
+    expect(rowById(empty, 'memory').stateLabel).toBe('暂无数据')
+
+    const disabled = buildMonitorLedger(ledgerInput({
+      metrics: { ...allAvailable(), memory: { available: false, reason: 'disabled_by_config' } },
+    }))
+    expect(rowById(disabled, 'memory').stateLabel).toBe('已关闭')
+
+    const none = buildMonitorLedger(ledgerInput({ swap: { total_bytes: 0, used_bytes: 0, used_ratio: null } }))
+    // 「无交换」不是「无此维度」：交换这一类事实各有各的词
+    expect(rowById(none, 'swap').stateLabel).toBe('无交换')
+  })
+
+  it('时钟「尚未探测」的短标签就是「尚未探测」，不混进任何空态类别词', () => {
+    const groups = buildMonitorLedger(ledgerInput({ clock: SYSMON_CLOCK_UNPROBED }))
+    const row = rowById(groups, 'clock')
+    expect(row.state).toBe('none')
+    expect(row.stateLabel).toBe('尚未探测')
+    expect(row.stateText).toBe('尚未探测')
+  })
+
+  it('ok 行没有 stateText（长文案只属于空态）', () => {
+    const groups = buildMonitorLedger(ledgerInput({ metrics: allAvailable() }))
+    for (const group of groups) {
+      for (const row of group.rows) {
+        if (row.state === 'ok') expect(row.stateText).toBe('')
+        else expect(row.stateText.length).toBeGreaterThan(0)
+      }
+    }
+  })
+})
+
+describe('网卡元的明细分段（错误 / 丢弃各自可寻址）', () => {
+  it('收发两行各自给 errors / drops 两段，速率与累计量并列', () => {
+    const groups = buildMonitorLedger(ledgerInput({ metrics: allAvailable() }))
+    const rx = rowById(groups, 'nic:eth0:rx')
+    expect(rx.detailParts.map(part => part.id)).toEqual(['errors', 'drops'])
+    for (const part of rx.detailParts) {
+      // 速率（可为 0）+ 累计量（始终有效）都在同一段里
+      expect(part.text).toContain('/s')
+      expect(part.text).toContain('累计')
+    }
+  })
+
+  it('速率 null 时该段写「不可用」但仍给累计量（累计计数器没有不可用语义）', () => {
+    const groups = buildMonitorLedger(ledgerInput({
+      metrics: allAvailable(),
+      network: [{
+        ...makeSysmonSnapshot({ resourceData: true }).network![0]!,
+        rx_errors_per_sec: null,
+        rx_drops_per_sec: null,
+      }],
+    }))
+    const rx = rowById(groups, 'nic:eth0:rx')
+    expect(rx.detailParts[0].text).toContain('不可用')
+    expect(rx.detailParts[0].text).toContain('累计 3')
+    expect(rx.detailParts[0].text).not.toContain('0.0/s')
+  })
+
+  it('非网卡行没有分段（明细列就是一句话）', () => {
+    const groups = buildMonitorLedger(ledgerInput({ metrics: allAvailable() }))
+    for (const group of groups) {
+      for (const row of group.rows) {
+        if (!row.id.startsWith('nic:')) expect(row.detailParts).toEqual([])
+      }
+    }
+  })
+})
+
+describe('网卡全被过滤 vs 本机确实无网卡：文案不同（都不是「不可用」）', () => {
+  it('networkFilteredAll=true：空态行说明「已隐藏全部虚拟网卡」', () => {
+    const groups = buildMonitorLedger(ledgerInput({ network: [] }, {}, { networkFilteredAll: true }))
+    const row = rowById(groups, 'network')
+    expect(row.state).toBe('empty')
+    expect(row.stateText).toContain('已隐藏全部虚拟网卡')
+    expect(row.stateText).not.toContain('暂无数据')
+  })
+
+  it('networkFilteredAll 缺省 / false：写「暂无数据」，不臆测是过滤造成的', () => {
+    for (const input of [
+      ledgerInput({ network: [] }),
+      ledgerInput({ network: [] }, {}, { networkFilteredAll: false }),
+    ]) {
+      const row = rowById(buildMonitorLedger(input), 'network')
+      expect(row.stateText).toContain('暂无数据')
+      expect(row.stateText).not.toContain('已隐藏全部虚拟网卡')
+    }
+  })
+
+  it('network=null（本帧未采集）与空数组走同一档空态，都不说成「不可用」', () => {
+    const row = rowById(buildMonitorLedger(ledgerInput({ network: null })), 'network')
+    expect(row.state).toBe('empty')
+    expect(row.stateText).not.toContain('不可用')
   })
 })
