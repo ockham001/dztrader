@@ -706,23 +706,25 @@ describe('buildMemoryComposition · 组成带（已用 / 缓存 / 缓冲 / 空�
 
   it('组成带的「已用」按 total − free − cached − buffers 派生，与主数值的 available 口径各自独立', () => {
     // 夹具：总计 32 GiB、已用 12 GiB、缓存 5 GiB、缓冲 1 GiB → 派生空闲 = 32 − 12 − 5 − 1 = 14 GiB。
-    // 组成带的「已用」= 32 − 14 − 5 − 1 = 12 GiB，与快照的 used_bytes 一致（自洽复算）。
+    // `available` 取 18 GiB 而非 20 GiB：真实 Linux 上 available 含可回收的缓存/缓冲，
+    // 因此 available 必大于「总量 − 已用」。这样两个口径**本帧不相等**，夹具才具备鉴别力。
     const composition = buildMemoryComposition({
       total_bytes: 32 * GIB,
-      available_bytes: 20 * GIB,
+      available_bytes: 18 * GIB,
       used_bytes: 12 * GIB,
       used_ratio: 12 / 32,
       cached_bytes: 5 * GIB,
       buffers_bytes: 1 * GIB,
     })!
     const used = composition.segments.find(segment => segment.id === 'used')!
+    // 组成带口径：已用 = total − free − cached − buffers = 32 − 14 − 5 − 1 = 12 GiB
     expect(used.bytes).toBe(12 * GIB)
     expect(composition.segments.find(segment => segment.id === 'free')!.bytes).toBe(14 * GIB)
-    // 主数值口径（total − available = 12 GiB）与组成带的已用段是两套算法：
-    // 前者用 available 一个字段，后者扣掉 cached / buffers 并派生 free，两者本帧恰好相等
-    // 只是因为夹具的 used_bytes 与 total − available 一致——真实 Linux 上 available 含缓存，
-    // 两者会不等，这正是「不得合并」的原因。
-    expect(32 * GIB - 20 * GIB).toBe(used.bytes)
+    // 主数值口径是 total − available = 14 GiB，与上面的 12 GiB 是两个量。
+    // 两条断言一起看：谁也不许被「合并」成另一个——把 used 段改写成 total − available 会让
+    // 第一条变红，把主数值改写成派生口径会让第二条变红。
+    expect(32 * GIB - 18 * GIB).toBe(14 * GIB)
+    expect(used.bytes).not.toBe(32 * GIB - 18 * GIB)
   })
 
   it('缓存 / 缓冲为 null：退化为两段并标注，不补 0', () => {
@@ -780,10 +782,18 @@ describe('buildMemoryComposition · 组成带（已用 / 缓存 / 缓冲 / 空�
       cached_bytes: 32 * GIB,
       buffers_bytes: 32 * GIB,
     })!
-    for (const segment of composition.segments) {
-      expect(segment.bytes).toBeGreaterThanOrEqual(0)
-      expect(segment.ratio).toBeGreaterThanOrEqual(0)
-    }
+    // 派生空闲 = max(0, 16 − 0 − 32 − 32) = 0，已用段 = max(0, 16 − 0 − 32 − 32) = 0：
+    // 钳位把两个负值都折到 0（不是「随便一个非负数」），比 >= 0 更能锁住 `Math.max(0, …)`
+    const byId = new Map(composition.segments.map(segment => [segment.id, segment]))
+    expect(byId.get('used')!.bytes).toBe(0)
+    expect(byId.get('free')!.bytes).toBe(0)
+    expect(byId.get('used')!.ratio).toBe(0)
+    expect(byId.get('free')!.ratio).toBe(0)
+    // 缓存 / 缓冲是快照原值，段宽不被截断：超量部分的 ratio 由 `Math.min(1, …)` 钳到 1
+    expect(byId.get('cached')!.bytes).toBe(32 * GIB)
+    expect(byId.get('buffers')!.bytes).toBe(32 * GIB)
+    expect(byId.get('cached')!.ratio).toBe(1)
+    expect(byId.get('buffers')!.ratio).toBe(1)
   })
 })
 
