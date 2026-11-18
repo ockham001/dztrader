@@ -746,3 +746,58 @@ export function adaptiveAxisTicks(points: readonly { ts: number; value: number }
     labels: [lo, mid, safeHi].map(value => ({ value, text: `${Math.round(value * 100)}%` })),
   }
 }
+
+/** 自适应趋势折线的几何：`points` 可直接给 `<polyline points="...">` */
+export interface AdaptiveTrendGeometry {
+  points: string
+  /** 末点值（与旁边的当前数字同源，供末点断言） */
+  lastValue: number
+}
+
+/** 趋势绘图区的 viewBox：横向 100 单位由 CSS 拉伸到容器宽度，纵向 34 单位 */
+const TREND_SVG_WIDTH = 100
+const TREND_SVG_HEIGHT = 34
+/** 上下留白：折线不贴上下边框（上下各 2 单位） */
+const TREND_PAD = 2
+const TREND_PLOT_HEIGHT = TREND_SVG_HEIGHT - TREND_PAD * 2
+
+/**
+ * 序列 + 自适应纵轴 → SVG 折线（#362）。
+ *
+ * 与 `sysmonSparkline.sparklineGeometry` 的关键区别：**y 由传入的轴范围决定**，不是按序列
+ * 自身 min/max 拉满。轴标签与曲线必须来自同一份范围，否则「纵轴 19–21%」旁边画着一条
+ * 贴满上下的曲线，读者会把外扩留白读成真实波动。
+ *
+ * x 仍按时间比例（混合桶距 / 采集缺口如实反映为横向疏密）；时间跨度为零时退回序号等距。
+ * 有效点少于 2 个（或轴不可用）时返回 null —— 一个点画不出趋势，调用方据此不渲染。
+ */
+export function adaptiveTrendGeometry(
+  points: readonly { ts: number; value: number }[],
+  axis: AdaptiveAxis | null,
+): AdaptiveTrendGeometry | null {
+  if (!axis) return null
+  const valid = points.filter(point => Number.isFinite(point?.ts) && Number.isFinite(point?.value))
+  if (valid.length < 2) return null
+
+  const span = axis.hi - axis.lo
+  const firstTs = valid[0].ts
+  const timeSpan = valid[valid.length - 1].ts - firstTs
+  const indexWidth = valid.length - 1
+  const round2 = (value: number): number => Math.round(value * 100) / 100
+
+  const coordinates = valid.map((point, index) => {
+    const x = timeSpan > 0
+      ? ((point.ts - firstTs) / timeSpan) * TREND_SVG_WIDTH
+      : (index / indexWidth) * TREND_SVG_WIDTH
+    // span 为 0 只可能出现在轴上下文异常时（adaptiveAxisTicks 保底给 AXIS_MIN_PADDING），等值落中线
+    const ratio = span === 0 ? 0.5 : (point.value - axis.lo) / span
+    const clamped = Math.min(1, Math.max(0, ratio))
+    const y = TREND_PAD + TREND_PLOT_HEIGHT * (1 - clamped)
+    return `${round2(x)},${round2(y)}`
+  })
+
+  return {
+    points: coordinates.join(' '),
+    lastValue: valid[valid.length - 1].value,
+  }
+}

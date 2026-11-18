@@ -62,13 +62,13 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     )
     const wrapper = await mountView()
 
-    // 系统信息接真实数据
-    expect(wrapper.find('[data-test="monitor-system"]').text()).toContain('trade-01')
-    expect(wrapper.find('[data-test="monitor-system"]').text()).toContain('AMD Ryzen 9 7950X 16-Core Processor')
-    expect(wrapper.find('[data-test="monitor-system"]').text()).toContain('01:01:01')  // 运行时长
-    // CPU 总使用率接真实数据（含进度条）
+    // 主机条（#362：取代原「系统信息」卡）接真实数据
+    const host = wrapper.find('[data-test="monitor-host"]')
+    expect(host.text()).toContain('trade-01')
+    expect(host.text()).toContain('AMD Ryzen 9 7950X 16-Core Processor')
+    expect(host.text()).toContain('01:01:01')  // 运行时长
+    // CPU 总使用率接真实数据
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
-    expect(wrapper.find('[role="progressbar"]').attributes('aria-valuenow')).toBe('19')
     // 内存 / 磁盘 / 网络按可用性渲染真实数据
     expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
     expect(wrapper.find('[data-test="monitor-memory-meta"]').text()).toBe('16.0 GiB / 32.0 GiB')
@@ -107,8 +107,8 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     expect(wrapper.find('[data-test="monitor-disk-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-disk"]').text()).toContain('该指标将在后续版本接入')
-    // 系统信息仍可用
-    expect(wrapper.find('[data-test="monitor-system"]').text()).toContain('trade-01')
+    // 主机条仍可用（#362：原「系统信息」卡 → 主机条）
+    expect(wrapper.find('[data-test="monitor-host"]').text()).toContain('trade-01')
     // 不得用 0 冒充 CPU 数值
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('0.0%')
   })
@@ -119,7 +119,7 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
 
     expect(wrapper.find('[data-test="monitor-waiting"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-waiting"]').text()).toContain('等待系统监控数据')
-    expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-host"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-cpu"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('%')
   })
@@ -290,22 +290,28 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ sensorData: true }))
     const wrapper = await mountView()
 
-    const temperatureCard = wrapper.find('[data-test="monitor-temperature"]')
-    expect(temperatureCard.exists()).toBe(true)
+    // #362：温度不再是一张独立卡片，而是 CPU 宽卡内「最高温度」那格 + 可展开的明细区
+    const temperatureCell = wrapper.find('[data-test="monitor-temperature"]')
+    expect(temperatureCell.exists()).toBe(true)
+    expect(wrapper.find('.ds-card [data-test="monitor-temperature"]').exists()).toBe(true)
     // #126：芯片名做友好映射（coretemp → CPU），组内逐通道显示 label 与温度
     const groups = wrapper.findAll('[data-test="monitor-temperature-group"]')
     expect(groups).toHaveLength(1)
     expect(groups[0].attributes('data-chip')).toBe('coretemp')
     expect(wrapper.find('[data-test="monitor-temperature-group-name"]').text()).toBe('CPU')
-    expect(temperatureCard.text()).toContain('45.5 °C')
-    expect(temperatureCard.text()).toContain('41.5 °C')
+    // 主数值（最高温）在那格里，逐传感器读数在展开的明细区里
+    expect(temperatureCell.text()).toContain('45.5 °C')
+    const detail = wrapper.find('[data-test="monitor-temperature-detail"]')
+    expect(detail.exists()).toBe(true)
+    expect(detail.text()).toContain('45.5 °C')
+    expect(detail.text()).toContain('41.5 °C')
     const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
     expect(sensors).toHaveLength(2)
     // 行内展示的是 label（组内按 label 字典序），组的友好名取代了原始标识；
     // 原始 sensor 标识降级到 title（tooltip），仍可查到。
     const rows = sensors.map(sensor => sensor.text())
     expect(rows).toEqual(['Core 041.5 °C', 'Package id 045.5 °C'])
-    expect(temperatureCard.text()).not.toContain('coretemp#hwmon3')
+    expect(detail.text()).not.toContain('coretemp#hwmon3')
     expect(sensors[0].attributes('title')).toBe('coretemp#hwmon3:Core 0')
     expect(sensors[1].attributes('title')).toBe('coretemp#hwmon3:Package id 0')
 
@@ -1383,12 +1389,12 @@ describe('MonitorView 配置 tab（#81 展示生效配置 + admin 编辑入口�
     expect(wrapper.find('[data-test="sysmon-config-tab"]').exists(), '找不到配置面板').toBe(true)
     expect(configPanel().style.display).toBe('')
     // 切换只换渲染来源：实时网格不再渲染（store 未卸载，镜像与 WS 连接保持）
-    expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-host"]').exists()).toBe(false)
 
     // 切回实时恢复正常渲染：元素仍在 DOM 里，但被 display:none 隐藏
     await wrapper.find('[data-test="monitor-tab-realtime"]').trigger('click')
     expect(configPanel().style.display).toBe('none')
-    expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-host"]').exists()).toBe(true)
   })
 
   it('init 经 GET /api/sysmon/config 补拉配置镜像：配置 tab 直接展示生效值', async () => {
@@ -1769,5 +1775,103 @@ describe('MonitorView 响应式页头结构（#328）', () => {
     expect(wrapper.find('.monitor-view__header [data-test="monitor-view-switch"]').exists()).toBe(false)
     // 标题组仍在 header 内
     expect(wrapper.find('.monitor-view__header .monitor-view__heading').exists()).toBe(true)
+  })
+})
+
+describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('主机条字段与快照一一对应：主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    const host = wrapper.find('[data-test="monitor-host"]')
+    expect(host.exists()).toBe(true)
+    const text = host.text()
+    expect(text).toContain('trade-01')
+    // 发行版来自平台的 platform_description（夹具 = Ubuntu 24.04.1 LTS (kernel …)）
+    expect(text).toContain('Ubuntu 24.04.1 LTS')
+    expect(text).toContain('6.8.0-45-generic')   // platform.kernel
+    expect(text).toContain('01:01:01')            // uptime_sec = 3661
+    expect(text).toContain('AMD Ryzen 9 7950X 16-Core Processor')
+    expect(text).toContain('16 逻辑核')
+    expect(text).toContain('实时')
+    // 系统信息卡已从实时视图消失（其内容并入主机条）
+    expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
+    // 温度卡同样消失：温度只在 CPU 宽卡内占一格（本夹具无传感器，故该格整块不渲染）
+    expect(wrapper.findAll('.ds-card [data-test="monitor-temperature"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-temperature"]').exists()).toBe(false)
+  })
+
+  it('主机条无可显示值的字段显示 — 而不是空白（平台描述 / 内核为空串）', async () => {
+    const snapshot = makeSysmonSnapshot({ resourceData: true })
+    snapshot.availability.platform_description = ''
+    snapshot.platform.kernel = ''
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const wrapper = await mountView()
+
+    const fields = wrapper.findAll('[data-test="monitor-host"] .monitor-view__host-field')
+    // 发行版与内核各自退化为 —（不是空串撑出的空白字段）
+    expect(fields[0].text()).toBe('—')
+    expect(fields[1].text()).toBe('内核 —')
+    // 有值的字段照常（不因某一项缺失而整行占位）
+    expect(wrapper.find('[data-test="monitor-host"]').text()).toContain('trade-01')
+  })
+
+  it('四数字各带一行小字上下文：逻辑核 / 5 分 15 分量程 / 型号标注 / 芯片与传感器数', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ sensorData: true }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
+    expect(wrapper.find('[data-test="monitor-cpu-context"]').text()).toBe('16 逻辑核 · 无核饱和')
+
+    expect(wrapper.find('[data-test="monitor-load-context"]').text()).toBe('5 分 0.51 · 15 分 0.63（16 逻辑核量程）')
+
+    // 型号字符串里没有 GHz 标注时退回「—」，不拿当前频率冒充型号标注
+    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 — · 16 核同步')
+    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('5100 MHz')
+
+    // 温度卡不再是独立卡片：它的主数值与明细都收进 CPU 宽卡内的那一格
+    const temperature = wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-temperature"]')
+    expect(temperature.exists()).toBe(true)
+    expect(temperature.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
+    expect(temperature.find('[data-test="monitor-temperature-summary"]').text())
+      .toContain('2 个传感器 · 1 个芯片')
+  })
+
+  it('饱和核计数进入占用率上下文（饱和是快照事实，不在前端重新判定）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ saturatedCores: [2, 5] }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-cpu-context"]').text()).toBe('16 逻辑核 · 2 核饱和')
+  })
+
+  it('每核条形数量跟随快照（16 → 8 → 4），不受折叠影响', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuCores: makeSysmonCpuCores(16) }))
+    const wrapper = await mountView()
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuCores: makeSysmonCpuCores(8) }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(8)
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuCores: makeSysmonCpuCores(4) }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(4)
+  })
+
+  it('饱和核除颜色外还有文字差异（灰度截屏可辨）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ saturatedCores: [3] }))
+    const wrapper = await mountView()
+
+    const cores = wrapper.findAll('[data-test="monitor-core"]')
+    const saturated = cores.find(core => core.attributes('data-core-index') === '3')
+    expect(saturated?.find('[data-test="monitor-core-saturated"]').text()).toBe('饱和')
+    // 填充色的状态也不只靠颜色：data-level 是两个状态 token 的分支点
+    expect(saturated?.find('.monitor-view__core-bar-fill').attributes('data-level')).toBe('saturated')
+    expect(cores[0].find('.monitor-view__core-bar-fill').attributes('data-level')).toBe('normal')
   })
 })
