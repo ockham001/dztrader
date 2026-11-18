@@ -370,8 +370,8 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
       network: [],
     }))
 
-    // 不需要展开就能看到「不可用」空态与原因
-    expect(wrapper.find('[data-test="monitor-cores-empty"]').text()).toContain('no_permission')
+    // 不需要展开就能看到「不可用」空态与原因（no_permission 由共享映射给出可读文案）
+    expect(wrapper.find('[data-test="monitor-cores-empty"]').text()).toContain('权限不足，无法读取该指标')
     // 磁盘 I/O 的 no_permission 给出可操作文案（不是裸 reason，与既有行为一致）
     expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').text()).toContain('磁盘性能计数器不可用')
     expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(true)

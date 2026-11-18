@@ -209,7 +209,9 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
 
     const panel = wrapper.find('[data-test="monitor-cpu-cores"]')
     expect(panel.text()).toContain('不可用')
-    expect(panel.text()).toContain('no_permission')
+    // 文案映射已收口到 composables/monitorLedger.unavailableReasonText（与台账共用）：
+    // no_permission 现在给可读文案，不再是裸 reason
+    expect(panel.text()).toContain('权限不足，无法读取该指标')
     expect(wrapper.find('[data-test="monitor-cores-empty"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
   })
@@ -843,7 +845,8 @@ describe('MonitorView 磁盘（#75：卷容量 / 共享内存目录，可用性�
     const unavailable = wrapper.find('[data-test="monitor-shm-unavailable"]')
     expect(unavailable.exists()).toBe(true)
     expect(unavailable.text()).toContain('不可用')
-    expect(unavailable.text()).toContain('no_permission')
+    // 同上：no_permission 由共享映射给出可读文案
+    expect(unavailable.text()).toContain('权限不足，无法读取该指标')
     expect(wrapper.find('[data-test="monitor-shm-path"]').exists()).toBe(false)
 
     // 能力粘性可用但本帧对象缺失 → 「暂无数据」而不是「不可用」
