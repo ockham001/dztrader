@@ -678,17 +678,18 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toContain('background: var(--status-error-default)')
   })
 
-  it('组成带的「已用」与「缓存」分得开：缓存降到叠色阶最低档，已用加内描边（#363 C7）', () => {
+  it('组成带的「已用」与「缓存」分得开：阶梯整体往「虚」侧挪一格（#363 C7）', () => {
     // 已用：保持最实的中性色 + 一圈底色内描边（用既有 token，不引入新 token / 新纹理）
     const used = ruleBody('.monitor-view__ledger-band-seg--used')
     expect(used).toContain('background: var(--text-default)')
     expect(used).toContain('box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1)')
-    // 缓存：可回收 → 降到离「空闲」近的那一档，与已用拉开距离
+    // 缓存 / 缓冲各接过下一档：整条阶梯往「虚」侧挪一格，让弱边界从「已用|缓存」
+    // （压力 / 可回收的分界，必须看清）挪到「缓存|缓冲」（两者都属可回收）。
     expect(ruleBody('.monitor-view__ledger-band-seg--cached'))
-      .toContain('background: var(--bg-overlay-l4)')
-    // 缓冲保持 tertiary、空闲保持 overlay-l3 —— 四段仍是「实 → 虚」的单调阶梯
-    expect(ruleBody('.monitor-view__ledger-band-seg--buffers'))
       .toContain('background: var(--text-tertiary)')
+    expect(ruleBody('.monitor-view__ledger-band-seg--buffers'))
+      .toContain('background: var(--text-disabled)')
+    // 空闲仍是最虚的叠色阶
     expect(ruleBody('.monitor-view__ledger-band-seg--free'))
       .toContain('background: var(--bg-overlay-l3)')
   })

@@ -2226,10 +2226,14 @@ const cpuTrendAriaLabel = computed(
 /* 组成带四段用**中性色阶**而不是状态色：这一页的世界观「只有状态才有颜色」，
    给「缓存 / 缓冲」涂上琥珀与绿会让它们读成「警戒 / 正常」两个状态，而它们只是构成。
    色阶从实到虚表达「这段离可用有多远」：已用最实、空闲最虚。
-   #363：已用与缓存原先相邻只差 1.73:1（浅）/ 2.05:1（深），46% 的用量读成 93%
-   —— 缓存**可回收**，它离「空闲」比离「已用」近得多，故降到叠色阶最低一档
-   （--bg-overlay-l4：浅 #dbdbdb / 深 #3b3b3b），已用再加一圈 1px 内描边把它钉成「实心块」。
-   实测边界（浅 / 深）：已用|缓存 12.95 / 8.89，缓存|缓冲 3.42 / 2.36，缓冲|空闲 3.59 / 2.63。 */
+   #363：原色阶（default / secondary / tertiary / overlay-l3）里最重的那条边界恰好是最要紧的
+   那条 —— 已用|缓存只有 1.73:1（浅）/ 2.05:1（深），46% 的用量整块读成 93%。
+   改法是把整条阶梯往「虚」的一侧挪一格（cached 接过 tertiary、buffers 接过 disabled），
+   让弱边界从**已用|缓存**（压力 / 可回收的分界，必须看清）挪到 **缓存|缓冲**
+   （两者都是可回收，语义上本就该接近）。
+   实测相邻比（浅 / 深）：已用|缓存 3.78 / 3.76，缓存|缓冲 1.84 / 1.65，缓冲|空闲 2.31 / 1.59。
+   四段严格单调（实→虚），且已用额外加一圈 1px 内描边把它钉成「实心块」，
+   边界不单独依赖色差。 */
 .monitor-view__ledger-band-seg--used {
   background: var(--text-default);
   /* 内描边用既有底色 token（与段间缝隙同色）：把「已用」圈成一块，边界不依赖相邻段的色差。 */
@@ -2237,11 +2241,11 @@ const cpuTrendAriaLabel = computed(
 }
 
 .monitor-view__ledger-band-seg--cached {
-  background: var(--bg-overlay-l4);
+  background: var(--text-tertiary);
 }
 
 .monitor-view__ledger-band-seg--buffers {
-  background: var(--text-tertiary);
+  background: var(--text-disabled);
 }
 
 .monitor-view__ledger-band-seg--free {
