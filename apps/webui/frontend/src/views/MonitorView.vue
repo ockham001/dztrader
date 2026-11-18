@@ -1262,15 +1262,18 @@ const cpuTrendAriaLabel = computed(
               </span>
 
               <!-- ⑥ 阈值（只写契约里真实存在的阈值；没有就是 —）。列名只在窄屏出现（见 CSS），
-                   且列名**不进** data-test 元素：那是给「值」的锚点，不是给标签的。 -->
+                   且列名**不进** data-test 元素：那是给「值」的锚点，不是给标签的。
+                   列名**不能** `aria-hidden`（#363 audit A3）：<1024 时它是「10% 空闲」唯一的归属说明，
+                   藏掉之后读屏只剩一个没有主语的数字。≥1024 它是 `display: none`，本就不进无障碍树，
+                   所以宽屏不会重复朗读。 -->
               <span class="monitor-view__ledger-threshold">
-                <span class="monitor-view__ledger-col-label" aria-hidden="true">阈值</span>
+                <span class="monitor-view__ledger-col-label">阈值</span>
                 <span data-test="ledger-threshold">{{ row.thresholdText }}</span>
               </span>
 
               <!-- ⑦ 余量（与阈值同源，越线时写「已超 X」） -->
               <span class="monitor-view__ledger-headroom">
-                <span class="monitor-view__ledger-col-label" aria-hidden="true">余量</span>
+                <span class="monitor-view__ledger-col-label">余量</span>
                 <span data-test="ledger-headroom">{{ row.headroomText }}</span>
               </span>
 
@@ -1383,10 +1386,15 @@ const cpuTrendAriaLabel = computed(
                     type="button"
                     :aria-expanded="isLedgerRowOpen(row.id)"
                     :aria-label="`${isLedgerRowOpen(row.id) ? '收起明细' : '展开服务器明细'} · ${row.label}`"
+                    :aria-controls="isLedgerRowOpen(row.id) ? `ledger-clock-servers-${row.id}` : undefined"
                     data-test="monitor-clock-detail-toggle"
                     @click="toggleLedgerRow(row.id)"
                   >{{ isLedgerRowOpen(row.id) ? '收起明细' : '展开服务器明细' }}</button>
-                  <ul v-if="isLedgerRowOpen(row.id)" class="monitor-view__clock-servers">
+                  <ul
+                    v-if="isLedgerRowOpen(row.id)"
+                    :id="`ledger-clock-servers-${row.id}`"
+                    class="monitor-view__clock-servers"
+                  >
                     <li
                       v-for="server in clockServers"
                       :key="server.host"
@@ -2074,6 +2082,10 @@ const cpuTrendAriaLabel = computed(
   overflow: hidden;
   border-radius: var(--radius-2);
   background: var(--bg-overlay-l2);
+  /* forced-colors 下背景被统一成 Canvas、填充也被统一成同一个色，轨道整条消失（#363 audit A5）。
+     用 `outline` 而非 `border`：不占盒模型，`overflow: hidden` 与缺口定位都不受影响。 */
+  outline: var(--border-width-default) solid var(--border-neutral-l2);
+  outline-offset: 0;
 }
 
 .monitor-view__ledger-track-empty {
@@ -2101,7 +2113,10 @@ const cpuTrendAriaLabel = computed(
   background: var(--status-error-default);
 }
 
-/* 缺口：一条 1px 的竖线，位置由 `--ledger-gap` 注入（两个常量，不是阈值）。 */
+/* 缺口：一条 1px 的竖线，位置由 `--ledger-gap` 注入（两个常量，不是阈值）。
+   `outline` 与 `background` 双写（#363 audit A5）：forced-colors（Windows 高对比度）下
+   `background-color` 被系统统一成 Canvas，缺口会与填充同色而消失；`outline-color` 走
+   `CanvasText`，因此缺口位置在任何配色下都可读。 */
 .monitor-view__ledger-gap {
   position: absolute;
   top: 0;
@@ -2109,6 +2124,8 @@ const cpuTrendAriaLabel = computed(
   left: var(--ledger-gap, 0%);
   width: var(--border-width-default);
   background: var(--text-tertiary);
+  outline: var(--border-width-default) solid var(--text-tertiary);
+  outline-offset: 0;
 }
 
 .monitor-view__ledger-value {
@@ -2252,9 +2269,13 @@ const cpuTrendAriaLabel = computed(
   background: var(--bg-overlay-l3);
 }
 
-/* 段与段之间留一道底色缝：四段相邻时纯色阶的边界读不出来，而「哪一段占多少」正是这条带子的全部内容。 */
+/* 段与段之间留一道底色缝：四段相邻时纯色阶的边界读不出来，而「哪一段占多少」正是这条带子的全部内容。
+   缝必须是 `border` 而不是 `box-shadow`（#363 audit A5）：forced-colors（Windows 高对比度）下
+   `box-shadow` 被系统强制为 `none`、`background-color` 被统一成 Canvas/ButtonFace ——
+   四段会糊成一片白、整条带子消失。`border` 在 forced-colors 下保留并自动取 `CanvasText`，
+   段间边界因此仍然可读。 */
 .monitor-view__ledger-band-seg + .monitor-view__ledger-band-seg {
-  box-shadow: inset var(--border-width-default) 0 0 var(--bg-layout-1);
+  border-inline-start: var(--border-width-default) solid var(--bg-layout-1);
 }
 
 .monitor-view__ledger-legend {
@@ -2281,7 +2302,8 @@ const cpuTrendAriaLabel = computed(
 }
 
 .monitor-view__ledger-legend-label {
-  color: var(--text-tertiary);
+  /* 图例是「这一段多少 GiB」的归属说明 —— 信息文字，不是装饰。 */
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
 }
@@ -2318,7 +2340,9 @@ const cpuTrendAriaLabel = computed(
 .monitor-view__ledger-expand-btn {
   flex: none;
   padding: 0;
-  color: var(--text-tertiary);
+  /* 11px 且是**控件文字**（点它展开）：tertiary 在两套主题下都够不到 4.5:1（4.35 / 3.19），
+     而它不属于 #324 的装饰性小字豁免（浮层提示、图表刻度那类）。升 secondary（9.51 / 5.86）。 */
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   white-space: nowrap;
@@ -2348,7 +2372,8 @@ const cpuTrendAriaLabel = computed(
 }
 
 .monitor-view__ledger-field-label {
-  color: var(--text-tertiary);
+  /* 展开明细里的字段名（「读吞吐」「队列深度」）是信息文字。 */
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   overflow-wrap: anywhere;
