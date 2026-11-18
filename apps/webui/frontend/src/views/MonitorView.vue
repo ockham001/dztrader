@@ -67,8 +67,9 @@ import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 import type { SysmonVolumeInfo } from '@/types/generated'
 
-// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
-// 温度、内存与交换、磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
+// 资源监控页：主机条（主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数）、CPU 宽卡
+// （总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、内存与交换、
+// 磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
 // 网络区块（#77）接每网卡收发速率与累计量，并提供「显示全部网卡」开关。
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
@@ -537,18 +538,18 @@ function displayOrDash(value: string | number | null | undefined): string {
 const hostName = computed(() => displayOrDash(system.value?.hostname))
 const hostKernel = computed(() => displayOrDash(snapshot.value?.platform?.kernel))
 const hostUptime = computed(() => (system.value ? formatUptime(system.value.uptime_sec) : '—'))
+/** 逻辑核数文案（主机条与四数字的小字上下文共用这一份口径：
+ * 优先 `system.logical_cores`，缺失按每核数组长度；0 核视同「没有这个值」显示 `—`） */
+const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
+const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
+
 /** CPU 型号 · 逻辑核数（型号为空串时只显示核数；两者都缺才整段 `—`） */
 const hostCpuLine = computed(() => {
   const model = system.value?.cpu_model?.trim() ?? ''
-  const cores = system.value?.logical_cores
-  const coreText = cores === undefined ? '—' : `${cores} 逻辑核`
-  return model === '' ? coreText : `${model} · ${coreText}`
+  return model === '' ? logicalCoreText.value : `${model} · ${logicalCoreText.value}`
 })
 
 // ---- CPU 宽卡（#362）：四数字 + 单序列自适应趋势 + 每核条形 ----
-/** 逻辑核数文案（四数字的小字上下文共用一份口径：优先 system.logical_cores，缺失按每核数组长度） */
-const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
-const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
 
 /** 饱和核数（快照的 `saturated` 标记就是唯一判据，不在视图里另算阈值） */
 const saturatedCoreCount = computed(() => cpuCores.value.filter(core => core.saturated).length)
@@ -588,22 +589,31 @@ const usageGeometry = computed(() => adaptiveTrendGeometry(usageSeries.value, us
 
 /**
  * 每核条形填充的是「占用率」而不是固定满格：柱高 = 该核使用率（自底向上），
- * 轨道中性底色给出 100% 的参照。值经 CSS 变量传给样式，避免在模板里写静态样式；
- * `null`（首次采样未就绪）退回空对象 —— 不画 0，也不画满。
+ * 轨道中性底色给出 100% 的参照。值经 CSS 变量传给样式，避免在模板里写静态样式。
+ *
+ * `null`（首次采样未就绪）返回空对象：变量不注入，样式里的 `height: var(--core-fill, 0%)`
+ * 于是取兜底值 0% —— 视觉上是一条空轨道，与「真的 0%」同形。两者的区别不在柱子上，只由
+ * 旁边的读数文字承担（`formatPercent(null)` 显示「不可用」）：本格不画任何数字，也不编造 0。
+ *
+ * 百分比字符串走共享格式化器（#126：本文件不得再写 toFixed），与旁边的读数文字同源同精度。
  */
 function coreBarStyle(ratio: number | null): Record<string, string> {
   if (ratio === null || !Number.isFinite(ratio)) return {}
   const clamped = Math.min(1, Math.max(0, ratio))
-  return { '--core-fill': `${(clamped * 100).toFixed(1)}%` }
+  return { '--core-fill': formatPercent(clamped) }
 }
 /** 是否覆盖满整个时间窗（data 属性供测试断言，与 SysmonSparkline 同口径） */
 const usageWindowComplete = computed(() => sparklineWindowComplete(usageWindow.value))
 
-/** 轴范围说明：显式写「自适应，不是 0–100」——刻度不是从 0 起的轴，读者必须先知道这件事 */
+/** 轴范围说明：显式写「自适应，不是 0–100」——刻度不是从 0 起的轴，读者必须先知道这件事。
+ * 上下界直接取三档刻度的**首末标签**（同一份精度）：窄轴上 `Math.round(lo*100)` 会写出
+ * 「纵轴 19–19%」这种与刻度列自相矛盾的范围。 */
 const usageAxisText = computed(() => {
-  const axis = usageAxis.value
-  if (!axis) return ''
-  return `纵轴 ${Math.round(axis.lo * 100)}–${Math.round(axis.hi * 100)}%（自适应，不是 0–100）`
+  const labels = usageAxis.value?.labels
+  if (!labels || labels.length < 2) return ''
+  const low = labels[0].text.replace('%', '')
+  const high = labels[labels.length - 1].text.replace('%', '')
+  return `纵轴 ${low}–${high}%（自适应，不是 0–100）`
 })
 
 /** 趋势下方说明：时间窗 + 轴范围（两件事都必须如实写在图上，不能只靠刻度暗示） */
@@ -898,8 +908,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
           </div>
 
           <!-- 每核条形（#362）：容器自适应网格，柱在上、号在下，一条规则覆盖 4–128 核
-               （不写断点、不用 JS 测量）。饱和核用 error 色并带「饱和」文字（灰度截屏下
-               颜色之外仍有形状/文字差异）；正常核用 success 色。 -->
+               （不写断点、不用 JS 测量）。饱和核用 error 色；柱的形状不随状态变化，灰度截屏下
+               靠旁边的「饱和」文字区分状态（颜色之外只有文字这一层差异）。正常核用 success 色。
+               柱数与顺序取 `cpuCores`（即快照 `cpu.cores`）：契约 sysmon §2.3 保证可用时数组长度
+               等于 `system.logical_cores`；两者不一致时以**数组**为准——逐核读数的唯一事实源是数组，
+               按 `logical_cores` 补齐或截断都会凭空造出没有读数的核。 -->
           <div class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-cpu-cores">
             <div class="monitor-view__panel-head">
               <h3 class="monitor-view__panel-title">每核使用率</h3>

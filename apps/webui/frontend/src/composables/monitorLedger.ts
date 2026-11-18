@@ -703,6 +703,15 @@ export interface AdaptiveAxis {
 const AXIS_PADDING_RATIO = 0.1
 /** 等值序列的最小外扩（比率口径 0.1 个百分点）：防止「一直 19%」把轴压成一条线 */
 const AXIS_MIN_PADDING = 0.001
+/**
+ * 窄轴判据（比率口径 2 个百分点）：跨度小于此值时三档标签改用 1 位小数。
+ *
+ * 刻度列的三档必须互相可区分；轴越窄，整数标签越容易撞成同一个数——等值 19% 的轴
+ * （19.0 ± 0.1）三档全写 `19%`，19.0→19.2 的轴同样三档全写 `19%`，读者看到的是一个
+ * 有三条刻度却没有任何信息量的轴。1 位小数的分辨率是 0.1 个百分点，恰是
+ * {@link AXIS_MIN_PADDING} 撑出的最小轴宽，因此最窄的轴也不会撞号。
+ */
+const AXIS_TIGHT_LABEL_SPAN = 0.02
 
 /**
  * 计算 CPU 使用率趋势的自适应纵轴（#361）。
@@ -743,8 +752,26 @@ export function adaptiveAxisTicks(points: readonly { ts: number; value: number }
   return {
     lo,
     hi: safeHi,
-    labels: [lo, mid, safeHi].map(value => ({ value, text: `${Math.round(value * 100)}%` })),
+    labels: axisTickLabels(lo, mid, safeHi),
   }
+}
+
+/**
+ * 三档刻度标签：**精度随轴跨度自适应**，宽轴用整数、窄轴用 1 位小数（见
+ * {@link AXIS_TIGHT_LABEL_SPAN}）。
+ *
+ * 1 位小数仍撞号的只有一种情形：轴被 0 或 1 夹到极窄（如恒在 99.95%，轴是 99.9–100.0，
+ * 下界与中点都落到 `99.9%`）。此时再进一位到 2 位小数，保证「可区分」这条不变量恒成立。
+ */
+function axisTickLabels(lo: number, mid: number, hi: number): { value: number; text: string }[] {
+  const values = [lo, mid, hi]
+  const tight = hi - lo < AXIS_TIGHT_LABEL_SPAN
+  const texts = values.map(value => (tight ? formatPercent(value) : `${Math.round(value * 100)}%`))
+  const distinct = new Set(texts).size === texts.length
+  return values.map((value, position) => ({
+    value,
+    text: distinct ? texts[position] : `${formatDecimal(value * 100)}%`,
+  }))
 }
 
 /** 自适应趋势折线的几何：`points` 可直接给 `<polyline points="...">` */

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, type DOMWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
@@ -1873,8 +1873,60 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     // 着色也不只靠颜色：饱和修饰类是两个状态 token 的分支点
     expect(saturated?.find('.monitor-view__core-bar-fill--saturated').exists()).toBe(true)
     expect(cores[0].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(false)
-    // 柱高 = 该核占用率（不是固定满格）：用内联 CSS 变量驱动，两核的高度不同
-    expect(saturated?.find('.monitor-view__core-bar-fill').attributes('style')).toContain('--core-fill')
-    expect(cores[0].find('.monitor-view__core-bar-fill').attributes('style')).toContain('--core-fill')
+
+    // 柱高 = 该核占用率（不是固定满格）：断言**具体数值**，而不是「变量名出现过」——
+    // 后者对任何有限 ratio 都成立，等于什么都没验证。默认夹具 usage_ratio = 0.05 + index*0.031：
+    // 核 0 → 5.0%、核 3 → 14.3%（两位均由共享 formatPercent 产出，与旁边读数同源）。
+    expect(coreFillPercent(cores[0])).toBe('5.0%')
+    expect(coreFillPercent(saturated!)).toBe('14.3%')
+    // 两核的填充必须真的不同（恒等值会让上面两条同时通过而柱形全一样）
+    expect(coreFillPercent(cores[0])).not.toBe(coreFillPercent(saturated!))
+  })
+
+  it('ratio 为 null 的核不注入 --core-fill（缺失不是 0%，读数显示不可用）', async () => {
+    const cores = makeSysmonCpuCores(4)
+    cores[1].usage_ratio = null
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuCores: cores }))
+    const wrapper = await mountView()
+
+    const items = wrapper.findAll('[data-test="monitor-core"]')
+    // 有读数的核照常注入（用数值区分「注入过」与「没注入」）
+    expect(coreFillPercent(items[0])).toBe('5.0%')
+    // 无读数的核：变量缺席，样式里的 `var(--core-fill, 0%)` 取兜底 0%（空轨道）；
+    // 与「真的 0%」的区别由读数文字承担（不可用，不画数字）
+    expect(items[1].find('.monitor-view__core-bar-fill').attributes('style') ?? '').not.toContain('--core-fill')
+    expect(items[1].text()).toContain('不可用')
+    // 真的 0% 仍会注入 `0.0%`：缺席与 0 在内联样式层面可区分
+    cores[2].usage_ratio = 0
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuCores: cores }))
+    await wrapper.vm.$nextTick()
+    expect(coreFillPercent(wrapper.findAll('[data-test="monitor-core"]')[2])).toBe('0.0%')
+  })
+
+  it('柱数以 cpu.cores 数组为准：logical_cores 与数组不一致时也不补齐 / 不截断', async () => {
+    // 契约 sysmon §2.3 保证「可用时 cores 长度 == system.logical_cores」，但这里**故意**造不一致
+    // 的夹具（logical_cores=8、数组 16 项）：逐核读数的事实源是数组，按 logical_cores 补齐会凭空
+    // 造出没有读数的核、截断会丢掉真实读数。AC「柱数 == logical_cores」由此成为可证伪的条件：
+    // 若实现改成按 logical_cores 渲染，本条立刻失败（8 ≠ 16）。
+    const snapshot = makeSysmonSnapshot({ cpuCores: makeSysmonCpuCores(16) })
+    snapshot.system.logical_cores = 8
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const wrapper = await mountView()
+
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+    // 四数字的上下文仍读 logical_cores（那是「这台机器有几核」的字段），两处口径各自如实
+    expect(wrapper.find('[data-test="monitor-cpu-context"]').text()).toContain('8 逻辑核')
   })
 })
+
+/**
+ * 从每核条形的内联样式里取 `--core-fill` 的值（没有则返回 null）。
+ *
+ * 直接断言 `toContain('--core-fill')` 对任何有限 ratio 都成立，守不住「柱高 = 该核占用率」，
+ * 所以这里取出变量值做精确比较。
+ */
+function coreFillPercent(core: DOMWrapper<Element>): string | null {
+  const style = core.find('.monitor-view__core-bar-fill').attributes('style') ?? ''
+  const match = /--core-fill:\s*([^;]+)/.exec(style)
+  return match ? match[1].trim() : null
+}
