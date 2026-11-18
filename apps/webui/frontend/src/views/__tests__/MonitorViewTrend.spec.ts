@@ -406,6 +406,23 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     expect(wrapper.find('[data-test="ledger-expand-network"]').exists()).toBe(false)
   })
 
+  it('台账行明细展开状态不持久化：重新挂载（等价刷新）回到收起', async () => {
+    const wrapper = await mountView()
+    // 展开内存行明细
+    await toggle(wrapper, 'ledger-expand-memory')
+    expect(wrapper.find('[data-test="ledger-fields"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ledger-expand-memory"]').attributes('aria-expanded')).toBe('true')
+
+    // 重新挂载 = 刷新的组件生命周期：不读写 localStorage / sessionStorage，必须回到默认收起
+    wrapper.unmount()
+    const refreshed = await mountView()
+
+    expect(refreshed.find('[data-test="ledger-fields"]').exists()).toBe(false)
+    expect(refreshed.find('[data-test="ledger-expand-memory"]').attributes('aria-expanded')).toBe('false')
+    // 也没有把展开态写进任何持久化存储
+    expect(Object.keys(localStorage).filter(key => key.includes('ledger'))).toEqual([])
+  })
+
   it('折叠状态不持久化：重新挂载（等价刷新）回到默认收起', async () => {
     const wrapper = await mountView()
     await toggle(wrapper, 'monitor-cpu-detail-toggle')
@@ -511,6 +528,45 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
 
   it('不使用容器查询（既有白名单门禁只扫 @media，引入 @container 会绕过防野断点检查）', () => {
     expect(source).not.toContain('@container')
+  })
+
+  it('台账七列共用一条列基线：一条 grid-template-columns 定义七列，三档只改列宽不改列数', () => {
+    // 基础规则（≥1280）：七列，状态点 / 名称 / 轨道 / 当前值 / 明细 / 阈值 / 余量
+    const base = ruleBody('.monitor-view__ledger-row')
+    expect(base).toContain('display: grid')
+    const columns = base.match(/grid-template-columns:\s*([^;]+);/)
+    expect(columns, '台账行必须是网格').not.toBeNull()
+    // 七列：以空白分隔的列定义计数（minmax(...) 自身含空格，故按行折叠后数 minmax/var 片段）
+    const tracks = columns![1].replace(/minmax\([^)]*\)/g, 'X').trim().split(/\s+/)
+    expect(tracks).toHaveLength(7)
+    // 列宽全部来自 token（列宽是版面几何量，直接写字面量会被 dz/token-literal 拦下；
+    // 这里再断言一次，避免有人用 var(--spacer-*) 冒充列宽）
+    for (const token of ['--ledger-col-state', '--ledger-col-name', '--ledger-col-track',
+      '--ledger-col-value', '--ledger-col-detail', '--ledger-col-threshold', '--ledger-col-headroom']) {
+      expect(columns![1], `列宽缺 ${token}`).toContain(`var(${token})`)
+    }
+
+    // 中档（768–1279）：仍是七列，只换成 md 档的收缩宽度
+    const md = ruleInMedia('@media (min-width: 768px) and (max-width: 1279.98px)', '.monitor-view__ledger-row')
+    expect(md).toContain('var(--ledger-col-name-md)')
+    expect(md).toContain('var(--ledger-col-track-md)')
+    expect(md).toContain('var(--ledger-col-detail-md)')
+
+    // 窄屏（<768）：三行堆叠（值 / 轨道 / 明细 + 阈值 + 余量），用 grid-template-areas 重排
+    const narrow = ruleInMedia('@media (max-width: 767.98px)', '.monitor-view__ledger-row')
+    expect(narrow).toContain('grid-template-areas')
+    for (const area of ['track track', 'detail detail', 'threshold headroom']) {
+      expect(narrow, `窄屏缺少 ${area} 行`).toContain(area)
+    }
+  })
+
+  it('轨道缺口只画在有契约阈值的行上：CSS 用属性选择器不做判断，判断在纯函数层', () => {
+    // 缺口是展示分档（70 / 90），位置由 JS 注入；CSS 侧只定义位置与形状
+    expect(ruleBody('.monitor-view__ledger-gap')).toContain('left: var(--ledger-gap, 0%)')
+    // 轨道填充同理：逐行不同，只能运行时注入（未注入时退回 0%，不闪一条满格轨道）
+    expect(ruleBody('.monitor-view__ledger-track-fill')).toContain('width: var(--ledger-fill, 0%)')
+    // 组成带各段宽度按各自占比注入
+    expect(ruleBody('.monitor-view__ledger-band-seg')).toContain('var(--ledger-seg, 0%)')
   })
 
   it('「立即查询」按钮按最长冷却文案预留宽度，倒计时不引起跳动（#326）', () => {
