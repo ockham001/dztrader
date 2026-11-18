@@ -2131,7 +2131,9 @@ const cpuTrendAriaLabel = computed(
 .monitor-view__ledger-value {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  /* 不写 `align-items: flex-end`：值列里的可点读数（`.monitor-view__value-btn`）要铺满整列
+     才有 96px 的命中区，`flex-end` 会把它压成文字宽（实测 96 → 34–41px）。右对齐只需
+     `text-align: right`，它已经能把数字贴到列的右缘。 */
   gap: var(--spacer-2);
   color: var(--text-default);
   font-family: var(--font-family-metric);
@@ -2248,7 +2250,8 @@ const cpuTrendAriaLabel = computed(
    改法是把整条阶梯往「虚」的一侧挪一格（cached 接过 tertiary、buffers 接过 disabled），
    让弱边界从**已用|缓存**（压力 / 可回收的分界，必须看清）挪到 **缓存|缓冲**
    （两者都是可回收，语义上本就该接近）。
-   实测相邻比（浅 / 深）：已用|缓存 3.78 / 3.76，缓存|缓冲 1.84 / 1.65，缓冲|空闲 2.31 / 1.59。
+   实测相邻比（浅 / 深）：已用|缓存 3.78 / 3.76，缓存|缓冲 1.84 / 1.65，缓冲|空闲 1.80 / 1.45
+   （末两对接近，因为「缓存 / 缓冲 / 空闲」三者都是可回收或未用，本就不该互相争抢注意力）。
    四段严格单调（实→虚），且已用额外加一圈 1px 内描边把它钉成「实心块」，
    边界不单独依赖色差。 */
 .monitor-view__ledger-band-seg--used {
