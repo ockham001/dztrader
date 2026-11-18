@@ -288,6 +288,16 @@ private:
     /// 周期定时器到期: 基线就绪且无在途查询时发起周期重查, 并安排下一轮.
     void on_position_poll_timer();
 
+    /// 排定一次数据补查重试 (指数退避, 见 resync_retry_delay_s). 已排定时先取消再重排.
+    /// issue #367 增量复核 B1: 进程级 60s 补查定时器只在「仍有未完整账户」时自续,
+    /// 已经停过的定时器不会因为运行期一次 force 重查失败而复活 —— 失败的重试责任归会话,
+    /// 否则 data_query_ok_ 恒 false 会让周期持仓轮询永久关闭且无任何日志.
+    void schedule_resync_retry();
+    /// 取消待定重试并清零退避计数 (补查成功/断连/登出时调用).
+    void cancel_resync_retry();
+    /// 重试定时器到期: 无并发冲突时发起补查; 已有查询链在途则继续按退避等待.
+    void on_resync_retry_timer();
+
     // === 成员 ===
     std::string account_id_;
     shm::OrderIdMeta& order_id_meta_;
@@ -370,6 +380,10 @@ private:
     bool position_query_ok_ = false;
     bool account_query_ok_ = false;
     bool data_query_ok_ = false;
+    /// 补查重试链 (issue #367 B1): 待定重试的定时器 id (0 = 无挂起) 与已失败次数.
+    /// 已失败次数只由重试链自身递增, 成功/断连时清零 (退避回到初值).
+    dztrader::core::TimerQueue::TimerId resync_retry_timer_id_ = 0;
+    int resync_retry_attempt_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 登录日装载用, 可空则装载失败).
     std::function<SQLite::Database*()> read_db_provider_;
     /// 无会话拒单 seq 分配器 (可空; 登录日装载据此抬高 seq 计数器).

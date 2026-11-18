@@ -26,8 +26,14 @@ namespace {
 constexpr const char* kPositionsEndpoint = "GET /api/td/positions";
 
 /// 持仓游标坐标（契约 rest §2.9.2）：`(account_id, instrument_id, direction)` **升序**元组，
-/// 下一页从该元组之后继续。`direction` 全序 Short(-1) < Net(0) < Long(1)（数值即全序，
-/// 所以 SQL 直接按 `direction` 整数列升序即可）。
+/// 下一页从该元组之后继续。
+/// `direction` 的**全序是存储文本序**（`positions.direction` 是 TEXT affinity 列，见
+/// `libs/tdstore/src/schema_catalog.cpp`）：`Short("-1") < Unknown("-128") < Net("0") <
+/// Long("1")`——`"-128"` 在字典序上排在 `"-1"` **之后**，与枚举数值序
+/// （Unknown(-128) < Short(-1) < Net(0) < Long(1)）不同。游标比较与 `ORDER BY` 走同一序
+/// （绑定 int 后由列亲和性转文本比较，两边一致），所以分页仍无重复、无遗漏；**读端不得
+/// 假定 direction 的排序等于枚举数值序**，也不要改成 `CAST(... AS INTEGER)` 或按整数列
+/// 处理——那会让游标与 ORDER BY 分家（翻页重复/遗漏）。
 struct PositionsCursor {
     std::string account_id;
     std::string instrument_id;
@@ -35,7 +41,8 @@ struct PositionsCursor {
 };
 
 /// 坐标文本 = `"<hex(account)>\x1f<hex(instrument)>\x1f<direction>"`。
-/// 业务键两段用 hex 编码保证定界安全；direction 是整数，定宽无需编码。
+/// 业务键两段用 hex 编码保证定界安全；direction 以十进制文本存放（定界直接靠 `\x1f`），
+/// 它只是坐标取值，排序由 SQL 侧的列亲和性决定（见 PositionsCursor 的说明）。
 std::string encode_positions_coord(const PositionsCursor& cursor) {
     return std::format("{}\x1f{}\x1f{}", td_hex_encode(cursor.account_id),
                        td_hex_encode(cursor.instrument_id), cursor.direction);

@@ -122,4 +122,32 @@ bool unknown_enum_report_due(int64_t now_s, int64_t last_report_s, int64_t inter
     return now_s - last_report_s >= interval_s;
 }
 
+int64_t resync_retry_delay_s(int attempt) noexcept {
+    // 60s 起, 逐次翻倍 (60/120/240), 封顶 300s (issue #367 增量复核 B1).
+    // 封顶与未知枚举上报限频同量级: 柜台持续失败时 5 分钟内最多试一次, 不刷日志不刷流控.
+    constexpr int64_t kBase = 60;
+    constexpr int64_t kCap = 300;
+    if (attempt <= 1) {
+        return kBase;
+    }
+    int64_t delay = kBase;
+    for (int64_t i = 1; i < attempt && delay < kCap; ++i) {
+        delay *= 2;
+    }
+    return delay < kCap ? delay : kCap;
+}
+
+ResyncRetryAction decide_resync_retry(bool is_ready,
+                                      bool data_query_ok,
+                                      bool query_chain_busy) noexcept {
+    // 顺序即优先级: 先看还需不需要补 (未就绪 / 已完整都收链), 再看能不能补 (在途就等).
+    if (!is_ready || data_query_ok) {
+        return ResyncRetryAction::kStop;
+    }
+    if (query_chain_busy) {
+        return ResyncRetryAction::kWait;
+    }
+    return ResyncRetryAction::kResync;
+}
+
 }  // namespace dztrader::ctp

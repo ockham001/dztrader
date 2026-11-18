@@ -10,8 +10,10 @@
  * - **账户范围不是「在线集合求交」**：持仓覆盖**全部已登记账户（含离线）**，按各账户
  *   锚点日取最新行（`td_account_scope.h`）；委托/成交才是「在线 + 当前交易日」。
  * - **没有时间序与 sort_key**：`positions` 表无 `time` 列，契约 rest §2.9.2 规定游标坐标 =
- *   `(account_id, instrument_id, direction)` **升序**元组，`direction` 全序
- *   Short(-1) < Net(0) < Long(1)。列表顺序即服务端返回顺序。
+ *   `(account_id, instrument_id, direction)` **升序**元组，`direction` 的全序是**存储文本序**
+ *   `Short("-1") < Unknown("-128") < Net("0") < Long("1")`（`positions.direction` 是 TEXT
+ *   affinity 列），不是枚举数值序 `Unknown(-128) < Short(-1) < Net(0) < Long(1)`。
+ *   列表顺序即服务端返回顺序。
  * - **`volume = 0` 的行不返回**（契约 rest §2.9.1 空语义）：库里可能残留绝对态清零帧，
  *   那不是持仓事实。过滤在 SQL 层做，否则分页计数会虚高。
  *

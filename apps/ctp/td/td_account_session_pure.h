@@ -80,6 +80,32 @@ int64_t parse_max_order_ref(const char* max_order_ref) noexcept;
 /// @return true = 本次应当通知并触发一次资金/持仓重查
 bool unknown_enum_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept;
 
+/// 数据补查重试链的退避间隔 (秒, issue #367 增量复核 B1).
+/// 补查失败必须自带重试: 进程级 60s 补查定时器只在「仍有未完整账户」时自续, 一旦停过,
+/// 运行期的 force 重查失败就再没有别人来救 —— `data_query_ok_` 恒 false 会永久关闭
+/// 周期持仓轮询 (无任何日志). 退避初值 60s (与既有补查同量级), 逐次翻倍, 封顶 5 分钟
+/// (与未知枚举上报限频同量级), 避免柜台持续异常时刷日志与刷查询.
+/// @param attempt 已失败次数 (从 1 开始; <=1 视为首次)
+/// @return 下次重试前应等待的秒数
+int64_t resync_retry_delay_s(int attempt) noexcept;
+
+/// 补查重试定时器到期时的三选一 (issue #367 增量复核 B1, 纯判定便于断言).
+enum class ResyncRetryAction : uint8_t {
+    kResync,  ///< 无冲突且数据仍不完整: 发起补查
+    kWait,    ///< 已有查询链在途: 本轮不并发, 继续按退避等待
+    kStop,    ///< 未就绪或数据已完整: 收链 (不再排定)
+};
+
+/// 补查重试定时器到期的处置判定.
+/// @param is_ready 会话是否 Ready (非 Ready 时补查 no-op, 继续排队只是空转)
+/// @param data_query_ok 数据是否已完整 (期间可能已被别的路径补全)
+/// @param query_chain_busy 是否有查询链在途 (position_query_in_flight_ 或收尾状态机未到 kDone)
+/// @return 见 ResyncRetryAction. query_chain_busy 优先于 kResync —— CTP 在途查询流控只有
+///   1 笔, 并发双查询链会污染累加器与冻结对账.
+ResyncRetryAction decide_resync_retry(bool is_ready,
+                                      bool data_query_ok,
+                                      bool query_chain_busy) noexcept;
+
 }  // namespace dztrader::ctp
 
 #endif  // DZTRADER_CTP_TD_ACCOUNT_SESSION_PURE_H_

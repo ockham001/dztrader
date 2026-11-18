@@ -457,6 +457,44 @@ TEST_F(TdPositionsQueryTest, DirectionOrderFollowsStorageTextNotEnumNumericOrder
         << "text-affinity column sorts '-128' after '-1'; the contract says so explicitly";
 }
 
+TEST_F(TdPositionsQueryTest, CursorPaginatesAcrossTextVsNumericOrderDivergence) {
+    // 游标分页 × 文本序的交叉面（issue #367 增量复核 minor）：默认用例只用了 direction=1，
+    // 文本序与枚举数值序在这一列上恰好同序，测不出分歧。真正的分歧点是
+    // Unknown("-128") 与 Short("-1")：数值序 Unknown < Short，文本序 Short < Unknown
+    // （`"-1"` 是 `"-128"` 的前缀，"较短的相等前缀" 排前）。若有人把游标比较改成
+    // `CAST(direction AS INTEGER)` 或按整数绑定，游标与 ORDER BY 分家 → 这两行翻页时
+    // 重复或遗漏，而单页排序用例仍然全绿。
+    //
+    // 布局：同一 (account, instrument) 下 4 个方向，每页 1 行 → 每一对相邻行都过一次游标。
+    create_db();
+    insert_position({.instrument_id = "rb2601", .direction = 1, .seq = 1});     // Long
+    insert_position({.instrument_id = "rb2601", .direction = 0, .seq = 2});     // Net
+    insert_position({.instrument_id = "rb2601", .direction = -1, .seq = 3});    // Short
+    insert_position({.instrument_id = "rb2601", .direction = -128, .seq = 4});  // Unknown
+
+    std::vector<std::string> seen;
+    std::optional<std::string> cursor;
+    for (int page = 0; page < 10; ++page) {
+        std::map<std::string, std::string> raw{{"limit", "1"}};
+        if (cursor.has_value()) {
+            raw["cursor"] = *cursor;
+        }
+        const auto body = run(raw);
+        ASSERT_TRUE(body.has_value());
+        for (const auto& item : body->at("items")) {
+            seen.push_back(item.at("direction").get<std::string>());
+        }
+        if (body->at("next_cursor").is_null()) {
+            break;
+        }
+        cursor = body->at("next_cursor").get<std::string>();
+    }
+    // 完整序列（含每页边界）：Short → Unknown 这一跳正是文本序与数值序分歧点。
+    EXPECT_EQ(seen, (std::vector<std::string>{"Short", "Unknown", "Net", "Long"}))
+        << "cursor comparison must use the same order as ORDER BY (text affinity), so the "
+           "'-1' -> '-128' boundary must not repeat or skip a row";
+}
+
 TEST_F(TdPositionsQueryTest, CursorPaginatesWithoutGapsOrDuplicates) {
     create_db();
     for (int i = 0; i < 5; ++i) {

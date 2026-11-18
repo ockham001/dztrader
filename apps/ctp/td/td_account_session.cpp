@@ -268,6 +268,7 @@ void AccountSession::disconnect() {
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
+    cancel_resync_retry();
     if (position_poll_timer_id_ != 0) {
         timer_queue_.cancel(position_poll_timer_id_);
         position_poll_timer_id_ = 0;
@@ -310,6 +311,7 @@ void AccountSession::on_front_disconnected(int reason) {
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
+    cancel_resync_retry();  // 断连即作废补查重试链 (重连后由新登录链重新判定)
     if (position_poll_timer_id_ != 0) {
         timer_queue_.cancel(position_poll_timer_id_);
         position_poll_timer_id_ = 0;
@@ -881,6 +883,58 @@ void AccountSession::resync_account_data(bool force) {
     req_qry_investor_position();
 }
 
+void AccountSession::schedule_resync_retry() {
+    // issue #367 增量复核 B1: 进程级 60s 补查定时器只在「仍有未完整账户」时自续,
+    // 首次成功后即不再排定 —— 之后运行期 (未知枚举 force 重查) 失败没人来救,
+    // data_query_ok_ 恒 false 会把周期持仓轮询永久关闭且不留日志. 因此失败的重试
+    // 责任落在会话自己身上: 指数退避, 成功后由 cancel_resync_retry 收链.
+    if (!is_ready()) {
+        return;
+    }
+    ++resync_retry_attempt_;
+    const int64_t delay_s = resync_retry_delay_s(resync_retry_attempt_);
+    uint64_t gen = generation_;
+    std::weak_ptr<void> weak = alive_token_;
+    // tag 带账户维度: TimerQueue 为进程级共享 (多账户同进程), 固定 tag 会互相 replace.
+    resync_retry_timer_id_ =
+        timer_queue_.schedule_after_replace(std::format("td_data_resync_retry:{}", account_id_),
+                                            std::chrono::seconds(delay_s), [this, weak, gen]() {
+                                                if (weak.expired()) return;  // logout/erase
+                                                if (gen != generation_) return;
+                                                resync_retry_timer_id_ = 0;
+                                                on_resync_retry_timer();
+                                            });
+    SPDLOG_WARN("td data resync retry scheduled | account={} attempt={} delay_s={}", account_id_,
+                resync_retry_attempt_, delay_s);
+}
+
+void AccountSession::cancel_resync_retry() {
+    if (resync_retry_timer_id_ != 0) {
+        timer_queue_.cancel(resync_retry_timer_id_);
+        resync_retry_timer_id_ = 0;
+    }
+    resync_retry_attempt_ = 0;
+}
+
+void AccountSession::on_resync_retry_timer() {
+    resync_retry_timer_id_ = 0;
+    const bool chain_busy = position_query_in_flight_ || finalizer_.phase() != Phase::kDone;
+    switch (decide_resync_retry(is_ready(), data_query_ok_, chain_busy)) {
+        case ResyncRetryAction::kStop:
+            // 未就绪 (断连/登出) 或期间已被别的路径补全 (进程级定时器 / 重新登录): 收链.
+            resync_retry_attempt_ = 0;
+            return;
+        case ResyncRetryAction::kWait:
+            // 已有查询链在途 (登录收尾 / 上一轮补查 / 周期查询): 本轮不并发, 继续退避等待.
+            // 双查询链会污染累加器与冻结对账, CTP 侧在途查询流控也只有 1 笔.
+            schedule_resync_retry();
+            return;
+        case ResyncRetryAction::kResync:
+            resync_account_data();
+            return;
+    }
+}
+
 void AccountSession::set_position_poll_interval(int seconds) {
     position_poll_interval_s_ = seconds > 0 ? seconds : 60;
     if (is_ready()) schedule_position_poll();
@@ -1191,6 +1245,19 @@ void AccountSession::drive_finalizer() {
     // 查询阶段由 SPI 回调驱动: 资金 is_last 处 on_account_done 已使 phase 进入
     // kReplay, 随后 finalize_login() 由此推进 replay -> flush -> ready.
     while (finalizer_.phase() != Phase::kDone) {
+        // issue #367 增量复核 M1: 运行期补查 (state 已 Ready) 跳过 flush 屏障.
+        // 屏障的作用是「登录广播 Ready 之前把重放回报的库行提交掉」; 运行期补查没有这个
+        // 语义要求 —— 它的写入走与 60s 周期查询完全相同的异步 persist 管道, Ready 语义本来
+        // 就不承诺 DB 稳定 (ADR 0042 §5). 跳过它才有意义: wait_flush 是同步阻塞等待,
+        // 最长 5s, 而这个回调跑在 td 主线程 (CTP SPI 事件循环) 上.
+        // 判定依据 = is_ready(): 登录链在 kReady 之前状态一直是 LoadingInstruments
+        // (on_instruments_loaded 在 kReady 分支里才调), 只有运行期补查能在这里就是 Ready.
+        // kReplay 不跳过: 缓冲只在 LoadingInstruments 期间写入, 此刻必为空 —— 该阶段是
+        // 早退 no-op, 且万一有残留则照常补处理, 不静默丢弃回报.
+        if (is_ready() && finalizer_.phase() == Phase::kFlush) {
+            (void)finalizer_.next();
+            continue;
+        }
         switch (finalizer_.phase()) {
             case Phase::kQueryPosition:
             case Phase::kQueryAccount:
@@ -1232,9 +1299,23 @@ void AccountSession::finalize_login() {
     if (!finalizer_.can_reach_ready()) {
         return;
     }
+    // 是否运行期补查链 (进入时已 Ready). 登录链在收尾过程中才翻 Ready, 故此处必为 false.
+    const bool runtime_resync = is_ready();
     // 两查询都成功才算数据完整 (供补查节流); 任一失败则由定时补查重试 (spec §4.2).
     data_query_ok_ = position_query_ok_ && account_query_ok_;
     drive_finalizer();
+    if (data_query_ok_) {
+        cancel_resync_retry();
+        return;
+    }
+    // issue #367 增量复核 B1: 运行期补查失败必须自带重试. 进程级 60s 补查定时器只在
+    // 「仍有未完整账户」时自续 (首次成功后不再排), 因此运行期一次 force 重查失败会让
+    // data_query_ok_ 恒 false、周期持仓轮询永久关闭且无日志.
+    // 登录链失败**不**在这里重排 —— 那条链失败时进程级定时器必然还在跑 (它自续直到成功),
+    // 再加一条会话级重试只会变成两个来源. 只有运行期补查 (定时器早已停摆) 才需要自救.
+    if (runtime_resync) {
+        schedule_resync_retry();
+    }
 }
 
 void AccountSession::cancel_login_timer() {
@@ -1325,10 +1406,18 @@ void AccountSession::report_unknown_enums(const UnknownEnumSink& unknown) {
         return;
     }
     // 上报口径 (#367): 触发一次资金/持仓重查, 用柜台权威数据覆盖本地不确定状态.
-    // 未知枚举恰恰发生在正常运行时 (data_query_ok_ 为真), 所以必须走 force 绕过那道门;
-    // 查询是异步的 (只发请求), 不阻塞主线程. 若此刻已有查询在途 (或收尾链未到 kDone),
-    // resync 内部互斥会跳过 —— 那意味着柜台权威数据**正在路上** (或在途登录链稍后会查),
-    // 无需重复发起, 也仍然按一次上报计 (节流窗口照常推进, 避免在途窗口里反复尝试).
+    // 未知枚举恰恰发生在正常运行时 (data_query_ok_ 为真), 所以必须走 force 绕过那道门.
+    //
+    // 耗时边界 (增量复核 M1 更正): **发起**是异步的 (只发 ReqQryInvestorPosition),
+    // 但**响应到达**后会走完整登录收尾链 drive_finalizer() —— 登录路径的 kFlush 会同步
+    // 调 persist_writer_.wait_flush(token, 5s), 在 td 主线程 (CTP SPI 事件循环) 上最长阻塞
+    // 5 秒 (正常 ms 级). 这是既有登录路径的同款行为 (非本票引入), 本票只把它搬到了运行期;
+    // 运行期补查已改为跳过该屏障 (见 drive_finalizer 里 is_ready() 分支), 因此实际不再阻塞.
+    // 频率由下面这行限频收住 (5 分钟最多一次), 不会变成每秒一次的阻塞源.
+    //
+    // 若此刻已有查询在途 (或收尾链未到 kDone), resync 内部互斥会跳过 —— 那意味着柜台
+    // 权威数据**正在路上** (或在途登录链稍后会查), 无需重复发起, 也仍然按一次上报计
+    // (节流窗口照常推进, 避免在途窗口里反复尝试).
     unknown_enum_last_report_s_ = now_s;
     resync_account_data(/*force=*/true);
 }

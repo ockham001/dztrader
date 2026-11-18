@@ -415,6 +415,11 @@ TEST_F(TdPlaceOrderValidationTest, UnknownOrderStatusKeepsOrderActiveAndFrozen) 
     EXPECT_EQ(scalar_int("SELECT status FROM orders"), DZ_ORDER_UNKNOWN);
     EXPECT_EQ(session_->unknown_enum_counts().order_status, 1u);
     // 未知状态不是终态：该结论是「冻结不释放」的判据，两侧都断言才算钉住。
+    // 这句只钉**常量语义**——它读一个纯谓词，不会因为会话行为写错而红（只有人改
+    // `is_terminal_order_status` 才会）。真正的可证伪判据是紧随其后的 `frozen_volume == 1`：
+    // 谓词若把 UNKNOWN 算成终态，那条断言会回 0。保留本句的理由是补上谓词对 UNKNOWN 的
+    // 直接覆盖（`td_position_test.cpp` 的 TerminalStatusTest.Classify 没列 UNKNOWN），
+    // 两条一起看才既钉谓词又钉行为。
     EXPECT_FALSE(is_terminal_order_status(DZ_ORDER_UNKNOWN))
         << "unknown status must never be terminal, otherwise the frozen position is released";
     // 活动委托仍在 -> 平多 1 手仍冻结 long（若被当终态处理，这里会回 0 = 凭空释放冻结）。
