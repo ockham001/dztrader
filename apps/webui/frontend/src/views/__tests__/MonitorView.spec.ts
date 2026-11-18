@@ -1870,8 +1870,11 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     const cores = wrapper.findAll('[data-test="monitor-core"]')
     const saturated = cores.find(core => core.attributes('data-core-index') === '3')
     expect(saturated?.find('[data-test="monitor-core-saturated"]').text()).toBe('饱和')
-    // 填充色的状态也不只靠颜色：data-level 是两个状态 token 的分支点
-    expect(saturated?.find('.monitor-view__core-bar-fill').attributes('data-level')).toBe('saturated')
-    expect(cores[0].find('.monitor-view__core-bar-fill').attributes('data-level')).toBe('normal')
+    // 着色也不只靠颜色：饱和修饰类是两个状态 token 的分支点
+    expect(saturated?.find('.monitor-view__core-bar-fill--saturated').exists()).toBe(true)
+    expect(cores[0].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(false)
+    // 柱高 = 该核占用率（不是固定满格）：用内联 CSS 变量驱动，两核的高度不同
+    expect(saturated?.find('.monitor-view__core-bar-fill').attributes('style')).toContain('--core-fill')
+    expect(cores[0].find('.monitor-view__core-bar-fill').attributes('style')).toContain('--core-fill')
   })
 })

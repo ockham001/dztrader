@@ -585,6 +585,17 @@ const usageAxis = computed(() => adaptiveAxisTicks(usageSeries.value))
 const usageAxisLabels = computed(() => (usageAxis.value ? [...usageAxis.value.labels].reverse() : []))
 /** 折线几何：按轴范围投影（不是按序列自身 min/max），否则轴标签与曲线对不上 */
 const usageGeometry = computed(() => adaptiveTrendGeometry(usageSeries.value, usageAxis.value))
+
+/**
+ * 每核条形填充的是「占用率」而不是固定满格：柱高 = 该核使用率（自底向上），
+ * 轨道中性底色给出 100% 的参照。值经 CSS 变量传给样式，避免在模板里写静态样式；
+ * `null`（首次采样未就绪）退回空对象 —— 不画 0，也不画满。
+ */
+function coreBarStyle(ratio: number | null): Record<string, string> {
+  if (ratio === null || !Number.isFinite(ratio)) return {}
+  const clamped = Math.min(1, Math.max(0, ratio))
+  return { '--core-fill': `${(clamped * 100).toFixed(1)}%` }
+}
 /** 是否覆盖满整个时间窗（data 属性供测试断言，与 SysmonSparkline 同口径） */
 const usageWindowComplete = computed(() => sparklineWindowComplete(usageWindow.value))
 
@@ -904,7 +915,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 :data-core-index="core.index"
               >
                 <span class="monitor-view__core-bar" aria-hidden="true">
-                  <span class="monitor-view__core-bar-fill" :data-level="core.saturated ? 'saturated' : 'normal'"></span>
+                  <span
+                    class="monitor-view__core-bar-fill"
+                    :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
+                    :style="coreBarStyle(core.usage_ratio)"
+                  ></span>
                 </span>
                 <span class="monitor-view__core-label">
                   <span class="monitor-view__core-index">核 {{ core.index }}</span>
@@ -2113,26 +2128,31 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   background: var(--status-error-surface-l1);
 }
 
-/* 柱：横向短条（格窄时仍是一条可读的长度差异），底色是中性轨道 */
+/* 柱：竖向轨道，自底向上按占用率填充——长度差异一眼可读，核号在下方。
+   轨道高度走 `--core-bar-height` token（不是间距，不进 spacer 步进）。
+   flex + `justify-content: flex-end` 是填充贴底的必要条件：块级容器里 `margin-top: auto`
+   会解析成 0，填充会挂在轨道顶部（实测踩过）。 */
 .monitor-view__core-bar {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
   width: 100%;
-  height: var(--spacer-4);
-  border-radius: var(--radius-full);
+  height: var(--core-bar-height);
+  border-radius: var(--radius-2);
   background: var(--bg-overlay-l2);
   overflow: hidden;
 }
 
-/* 柱的填充：饱和核 error 色、正常核 success 色（两个状态 token，深浅主题各自成立） */
+/* 柱的填充：高度由 `--core-fill`（占用率）驱动，颜色区分饱和 / 正常两个状态 token */
 .monitor-view__core-bar-fill {
   display: block;
   width: 100%;
-  height: 100%;
-  border-radius: var(--radius-full);
+  height: var(--core-fill, 0%);
+  border-radius: var(--radius-2);
   background: var(--status-success-default);
 }
 
-.monitor-view__core-bar-fill[data-level='saturated'] {
+.monitor-view__core-bar-fill--saturated {
   background: var(--status-error-default);
 }
 
