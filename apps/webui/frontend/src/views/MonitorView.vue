@@ -38,6 +38,7 @@ import {
   normalizeTemperatureReadings,
 } from '@/composables/sysmonTemperature'
 import {
+  type SparklinePoint,
   sparklineAriaLabel,
   sparklineTitle,
   sparklineWindowComplete,
@@ -68,20 +69,26 @@ import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：主机条（主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数）、CPU 宽卡
-// （总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、内存与交换、
-// 磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
-// 网络区块（#77）接每网卡收发速率与累计量，并提供「显示全部网卡」开关。
-// 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
-// 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
-// 温度 / 每核频率（B 组）按可用性映射渲染：不可用时整块不渲染（不是显示 0 / 不可用占位）。
-// 磁盘（#75）按可用性映射渲染：卷按固定顺序排列（ADR 0048：挂载深度升序，根挂载点恒在最前）；正文只列容量可读且
-// 总量 > 0 的卷，其余折叠进「无容量挂载（N）」，绝不显示 0；shm_dir 展示共享内存目录占用
-//（页清理是否生效的可观测项）。
-// 磁盘 I/O（#76）按可用性映射渲染：每物理盘的吞吐 / IOPS / 延迟 / 队列深度 / 利用率，
-// 数值 null（首次采样/计数器重置）逐项显示「不可用」，能力不可用时整块显示原因。
-// 网络（#77）：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
-// **不是**不可用），显示「已隐藏全部虚拟网卡」+ 切换提示；开关走 REST 下发、以 WS sysmon_config
-// 回推为生效信号。
+//（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、指标台账（#363）。
+//
+// 台账是**纯渲染层**：三组（内存 / 存储 / 网络与时钟）× 七列（状态点 · 指标名 + 契约键 ·
+// 量程轨道 · 当前值 · 明细 · 阈值 · 余量）的行数据全部来自 `@/composables/monitorLedger` 的
+// `buildMonitorLedger`——本组件不判断「该不该显示这一行」「空态是哪一类」「阈值是多少」。
+// 行的四类空态（不可用 / 暂无数据 / 已在配置中关闭 / 无此维度）与阈值、余量都在纯函数层决定，
+// 组件只把 `state` / `thresholdText` / `headroomText` 原样铺进对应的格子。
+//
+// 两个口径不得合并（本页最容易做错的地方）：
+// - 内存主数值的比率是 `used / total`，其中 `used = total − available`（ADR 0024）；
+// - 内存组成带的「已用」段是 `total − free − cached − buffers` 的总量分解，`free` 不是快照字段
+//   必须派生（`buildMemoryComposition`）；缓存或缓冲为 null 时组成带只画可得的两段并标注，不补 0。
+//
+// 轨道缺口只在**有契约阈值**的行上出现，位置取 `useResourceLevel` 的两个展示分档常量（70 / 90）：
+// 那是显示规则（ADR 0034），与「阈值」列的契约值（`memory_used_pct` 等）是两个不同的东西。
+// 磁盘 `disk_io.utilization` 有填充但无缺口——它没有契约阈值，且它是设备忙时间占比，
+// 中文一律叫「忙碌占比」不叫「利用率」。
+// 网络：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
+// **不是**不可用），台账里的空态行给出「已隐藏全部虚拟网卡」；开关走 REST 下发、
+// 以 WS sysmon_config 回推为生效信号，位置随「网络与时钟」组走。
 // 历史视图（#79）为独立视图：切换只影响渲染来源，不卸载/不重建实时 store，
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 配置视图（#81）：展示生效配置镜像（WS sysmon_config，首次挂载经 GET /api/sysmon/config 补拉）；
@@ -91,7 +98,9 @@ import { useToastStore } from '@/stores/toast'
 // 时间窗按实际覆盖标注（#142）：只有覆盖满 15 分钟才写「最近 15 分钟」，历史范围内无桶 /
 // 被 max_points 截断时标注真实覆盖时长，截断与历史视图同口径；补拉降级保留上一轮曲线并标未刷新。
 // 点击 sparkline 或数值切到历史视图并预选该指标（契约 sysmon §6.1，不新增接口）。
-// 卡片折叠（#127）：每核明细 / 每传感器明细 / 每盘七项指标 / 每网卡十项指标默认收起、展开显示全部；
+// 明细展开（#363）：每个台账行可展开完整明细（卷 / 盘 / 网卡 / 时钟各一套），折叠状态不持久化。
+// CPU 卡内的每核频率与每传感器明细仍是卡片级折叠（#127 的既有语义，未变）。
+// 卡片折叠（#127）：每核频率明细 / 每传感器明细默认收起、展开显示全部；
 // 折叠状态不持久化；可用性空态不进折叠。列数 <md 单列、md–xl 双列、≥xl 三列（沿用既有断点，
 // 不使用容器查询），图表用容器自适应重排。
 // 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
@@ -426,6 +435,19 @@ function rowValueText(row: LedgerRow): string {
 function rowDimension(row: LedgerRow): string {
   const [, ...rest] = row.id.split(':')
   return rest.join(':')
+}
+
+/** 标量行的趋势序列（数据在 `stores/sysmonTrend`，末点即当前值） */
+function rowSparklinePoints(row: LedgerRow): SparklinePoint[] {
+  return row.historyKey === null ? [] : trend.seriesOf(row.historyKey)
+}
+
+/** 趋势 sparkline 的 data-test 后缀：沿用 #127 的既有选择器名（memory / swap / shm） */
+function rowSparklineTestSuffix(row: LedgerRow): string {
+  if (row.id === 'memory') return 'memory'
+  if (row.id === 'swap') return 'swap'
+  if (row.id === 'shm_dir') return 'shm'
+  return row.id
 }
 
 /** 网卡行的方向（`rx` / `tx`）：明细段的 data-test 用它拼出 `monitor-network-rx-errors` 等 */
@@ -1190,6 +1212,18 @@ const cpuTrendAriaLabel = computed(
                   :data-test="rowValueTestId(row)"
                 >{{ rowValueText(row) }}</span>
                 <template v-else>{{ rowValueText(row) }}</template>
+                <!-- 标量行的内联趋势（#127）：与当前值同源同刷新时刻（末点 == 当前值），点击跳历史。
+                     它挂在**值列内部**而不是新开一列——七列是这一页的结构承诺，趋势是读数的一部分。
+                     维度行（卷 / 盘 / 网卡）没有归一化分母，不做趋势。 -->
+                <SysmonSparkline
+                  v-if="row.historyKey !== null && rowSparklinePoints(row).length > 0"
+                  :points="rowSparklinePoints(row)"
+                  :label="trendMetricLabel(row.historyKey)"
+                  :window="trend.windowOf(row.historyKey)"
+                  class="monitor-view__sparkline monitor-view__sparkline--ledger"
+                  :data-test="`monitor-sparkline-${rowSparklineTestSuffix(row)}`"
+                  @open="openRowHistory(row)"
+                />
               </span>
 
               <!-- ⑤ 明细：`ok` 行是一行明细；空态行是四类空态的说明（互不混淆，都不产出数字） -->
@@ -2126,6 +2160,9 @@ const cpuTrendAriaLabel = computed(
 }
 
 .monitor-view__ledger-value {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
   color: var(--text-default);
   font-family: var(--font-family-metric);
   font-size: var(--body-sm-font-size);

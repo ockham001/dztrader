@@ -343,26 +343,43 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     expect(wrapper.findAll('[data-test="monitor-temperature-group"]')).toHaveLength(2)
   })
 
-  it('每盘七项指标默认收起：只显示盘数与最高利用率', async () => {
+  it('每盘七项明细默认收起：行本身平铺可见，「展开明细」给出完整七项', async () => {
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(0)
-    const summary = wrapper.find('[data-test="monitor-disk-io-summary"]')
-    // 夹具两块盘利用率 0.35 / 0.72：摘要给出盘数与最高值
-    expect(summary.text()).toBe('2 块盘 · 最高利用率 72.0%')
+    // #363：盘行平铺（不点开就能看见盘名 / 忙碌占比 / 关键明细），收起的是**完整明细**
+    const rows = wrapper.findAll('[data-test="monitor-disk-io-row"]')
+    expect(rows).toHaveLength(2)
+    // 夹具两块盘忙碌占比 0.35 / 0.72：行内直接给读数（不是摘要里的「最高」）
+    expect(rows.map(row => row.find('.monitor-view__ledger-value').text())).toEqual(['72.0%', '35.0%'])
+    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(0)
 
-    await toggle(wrapper, 'monitor-disk-io-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(2)
+    await toggle(wrapper, 'ledger-expand-disk:nvme0n1')
+    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(1)
+    const labels = rows[0].findAll('[data-test="ledger-field"]').map(field => field.attributes('data-label'))
+    expect(labels).toEqual(['读吞吐', '写吞吐', '读 IOPS', '写 IOPS', '平均延迟', '队列深度', '忙碌占比'])
   })
 
-  it('每网卡十项指标默认收起：只显示网卡数', async () => {
+  it('每网卡十项明细默认收起：收发各占一行平铺，展开给出完整八项', async () => {
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('[data-test="monitor-network-row"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="monitor-network-summary"]').text()).toContain('1 块网卡')
+    // 一张网卡 = 接收 + 发送两行，都平铺可见
+    const rows = wrapper.findAll('[data-test="monitor-network-row"]')
+    expect(rows).toHaveLength(2)
+    expect(rows.map(row => row.attributes('data-direction'))).toEqual(['rx', 'tx'])
+    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(0)
 
-    await toggle(wrapper, 'monitor-network-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-network-row"]')).toHaveLength(1)
+    await toggle(wrapper, 'ledger-expand-nic:eth0:rx')
+    const labels = rows[0].findAll('[data-test="ledger-field"]').map(field => field.attributes('data-label'))
+    expect(labels).toEqual([
+      '接收速率',
+      '接收错误速率',
+      '接收丢弃速率',
+      '接收字节（累计）',
+      '接收包数（累计）',
+      '接收错误（累计）',
+      '接收丢弃（累计）',
+      '虚拟网卡',
+    ])
   })
 
   it('可用性空态不藏在折叠后面（不可用 / 无数据事实照常可见）', async () => {
@@ -379,14 +396,14 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
 
     // 不需要展开就能看到「不可用」空态与原因（no_permission 由共享映射给出可读文案）
     expect(wrapper.find('[data-test="monitor-cores-empty"]').text()).toContain('权限不足，无法读取该指标')
-    // 磁盘 I/O 的 no_permission 给出可操作文案（不是裸 reason，与既有行为一致）
-    expect(wrapper.find('[data-test="monitor-disk-io-unavailable"]').text()).toContain('磁盘性能计数器不可用')
-    expect(wrapper.find('[data-test="monitor-network-unavailable"]').exists()).toBe(true)
+    // #363：磁盘 I/O 与网卡的不可用是台账行上的说明文字，行本身平铺可见
+    expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text())
+      .toContain('磁盘性能计数器不可用')
+    expect(wrapper.find('[data-row-id="network"] [data-test="row-state"]').text()).toContain('采集失败')
     expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(false)
-    // 没有数据的区块不出现折叠按钮（没有可展开的明细）
-    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-disk-io-detail-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-network-detail-toggle"]').exists()).toBe(false)
+    // 不可用的行没有完整明细可展开（没有 fields 就不渲染展开按钮）
+    expect(wrapper.find('[data-test="ledger-expand-disk_io"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="ledger-expand-network"]').exists()).toBe(false)
   })
 
   it('折叠状态不持久化：重新挂载（等价刷新）回到默认收起', async () => {
