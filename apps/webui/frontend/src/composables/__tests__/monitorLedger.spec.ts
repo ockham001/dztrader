@@ -5,6 +5,7 @@ import {
   LEDGER_DEFAULT_VOLUME_FREE_PCT,
   NO_THRESHOLD_TEXT,
   adaptiveAxisTicks,
+  adaptiveTrendGeometry,
   buildMonitorLedger,
   ledgerLevelText,
   unavailableReasonText,
@@ -553,6 +554,42 @@ describe('adaptiveAxisTicks · CPU 趋势的自适应纵轴', () => {
     expect(axis!.hi - axis!.lo).toBeGreaterThan(0)
   })
 
+  /**
+   * 三档刻度必须互相可区分：轴越窄，整数标签越容易撞成同一个数。只断言 `hi - lo > 0`
+   * 放过了「轴有宽度但三档都写 19%」——那时读者面对的是三条无信息量的刻度。
+   */
+  it('等值 19% 序列的三档标签互不相同（窄轴改用 1 位小数）', () => {
+    const axis = adaptiveAxisTicks([
+      { ts: 0, value: 0.19 }, { ts: 1, value: 0.19 }, { ts: 2, value: 0.19 },
+    ])
+    const texts = axis!.labels.map(label => label.text)
+    expect(texts).toHaveLength(3)
+    expect(new Set(texts).size).toBe(3)
+    // 轴宽 0.2 个百分点（最小外扩上下各 0.1），整数标签必然撞号：这里是 18.9 / 19.0 / 19.1
+    expect(texts).toEqual(['18.9%', '19.0%', '19.1%'])
+  })
+
+  it('19.0%→19.2% 的窄轴三档标签也互不相同', () => {
+    const axis = adaptiveAxisTicks([
+      { ts: 0, value: 0.19 }, { ts: 1, value: 0.191 }, { ts: 2, value: 0.192 },
+    ])
+    const texts = axis!.labels.map(label => label.text)
+    // 轴 18.9–19.3（外扩 10% of 0.2 个百分点）：整数化会把三档全写成 19%
+    expect(new Set(texts).size).toBe(3)
+    expect(texts).toEqual(['18.9%', '19.1%', '19.3%'])
+  })
+
+  it('12.5% 恒定序列不被整成重复值（窄轴判据不依赖具体数值）', () => {
+    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.125 }, { ts: 1, value: 0.125 }])
+    const texts = axis!.labels.map(label => label.text)
+    expect(new Set(texts).size).toBe(3)
+  })
+
+  it('宽轴仍用整数百分比（精度只随跨度放宽，不全局改）', () => {
+    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.19 }, { ts: 1, value: 0.21 }])
+    expect(axis!.labels.map(label => label.text)).toEqual(['19%', '20%', '21%'])
+  })
+
   it('下界不被压到负数、上界不超过 1', () => {
     const axis = adaptiveAxisTicks([{ ts: 0, value: 0 }, { ts: 1, value: 1 }])
     expect(axis!.lo).toBeGreaterThanOrEqual(0)
@@ -568,5 +605,47 @@ describe('adaptiveAxisTicks · CPU 趋势的自适应纵轴', () => {
     const axis = adaptiveAxisTicks([{ ts: 0, value: 0.5 }])
     expect(axis).not.toBeNull()
     expect(axis!.hi).toBeGreaterThan(axis!.lo)
+  })
+  it('y 按传入的轴范围投影（不是按序列自身 min/max）：轴内的平段落在中线附近', () => {
+    // 轴 18%–22%（外扩自 19/21），序列两端贴轴边界：20% 落在 0–34 的绘图区中线
+    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.19 }, { ts: 2, value: 0.21 }])
+    const geometry = adaptiveTrendGeometry(
+      [{ ts: 0, value: axis!.lo }, { ts: 1, value: (axis!.lo + axis!.hi) / 2 }, { ts: 2, value: axis!.hi }],
+      axis,
+    )
+    expect(geometry).not.toBeNull()
+    const ys = geometry!.points.split(' ').map(pair => Number(pair.split(',')[1]))
+    // SVG 的 y 向下增大：下界 → 底部留白（32），中点 → 中线（17），上界 → 顶部留白（2）
+    expect(ys[0]).toBeCloseTo(32, 1)
+    expect(ys[1]).toBeCloseTo(17, 1)
+    expect(ys[2]).toBeCloseTo(2, 1)
+    expect(geometry!.lastValue).toBe(axis!.hi)
+  })
+
+  it('轴外的值被钳制在绘图区内（不画出容器）', () => {
+    const axis = { lo: 0.2, hi: 0.3, labels: [] }
+    const geometry = adaptiveTrendGeometry(
+      [{ ts: 0, value: 0.05 }, { ts: 1, value: 0.9 }],
+      axis,
+    )
+    const ys = geometry!.points.split(' ').map(pair => Number(pair.split(',')[1]))
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(2)
+    expect(Math.max(...ys)).toBeLessThanOrEqual(32)
+  })
+
+  it('x 按时间比例（桶距不均如实反映），时间跨度为 0 时退回序号等距', () => {
+    const axis = { lo: 0, hi: 1, labels: [] }
+    const spaced = adaptiveTrendGeometry([{ ts: 0, value: 0.5 }, { ts: 90, value: 0.5 }], axis)
+    expect(spaced!.points.split(' ')[1].split(',')[0]).toBe('100')
+
+    const sameTs = adaptiveTrendGeometry([{ ts: 5, value: 0.1 }, { ts: 5, value: 0.2 }, { ts: 5, value: 0.3 }], axis)
+    expect(sameTs!.points.split(' ').map(pair => pair.split(',')[0])).toEqual(['0', '50', '100'])
+  })
+
+  it('有效点少于 2 个或轴为 null 时返回 null（调用方据此不渲染）', () => {
+    const axis = { lo: 0, hi: 1, labels: [] }
+    expect(adaptiveTrendGeometry([], axis)).toBeNull()
+    expect(adaptiveTrendGeometry([{ ts: 0, value: 0.5 }], axis)).toBeNull()
+    expect(adaptiveTrendGeometry([{ ts: 0, value: 0.1 }, { ts: 1, value: 0.2 }], null)).toBeNull()
   })
 })

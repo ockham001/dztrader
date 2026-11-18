@@ -8,7 +8,11 @@ import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
-import { unavailableReasonText } from '@/composables/monitorLedger'
+import {
+  adaptiveAxisTicks,
+  adaptiveTrendGeometry,
+  unavailableReasonText,
+} from '@/composables/monitorLedger'
 import {
   UNAVAILABLE_TEXT,
   formatAge,
@@ -30,6 +34,12 @@ import {
   groupTemperatures,
   normalizeTemperatureReadings,
 } from '@/composables/sysmonTemperature'
+import {
+  sparklineAriaLabel,
+  sparklineTitle,
+  sparklineWindowComplete,
+  sparklineWindowText,
+} from '@/composables/sysmonSparkline'
 import { semanticHintText } from '@/composables/sysmonSemanticHint'
 import {
   CLOCK_DAEMON_CONFLICT_TEXT,
@@ -57,8 +67,9 @@ import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 import type { SysmonVolumeInfo } from '@/types/generated'
 
-// 资源监控页：系统信息与 CPU 区块（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率）、
-// 温度、内存与交换、磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
+// 资源监控页：主机条（主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数）、CPU 宽卡
+// （总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、内存与交换、
+// 磁盘（卷容量 / 共享内存目录）接契约 sysmon 实时快照；
 // 网络区块（#77）接每网卡收发速率与累计量，并提供「显示全部网卡」开关。
 // 内存 / 交换（#74）按可用性映射渲染：不可用显示「不可用」+ 原因，可用但本帧无数据
 // 显示「暂无数据」；交换在可用且总容量为 0 时显示「无交换分区」。
@@ -242,13 +253,6 @@ function unavailableDesc(metric: string): string {
 const cpuAvailable = computed(() => isAvailable('cpu.total'))
 const cpuRatio = computed(() => sysmon.cpuUsageRatio)
 const cpuPercent = computed(() => formatPercent(cpuRatio.value))
-const cpuBarWidth = computed(() => {
-  const ratio = cpuRatio.value
-  if (ratio === null) return '0%'
-  // 进度条宽度是 CSS 值，仍需钳制到 [0,1]（异常比率不得把条画出容器）；
-  // 输出形态与文字百分比同源（formatPercent），避免条宽与旁边数字精度不一致。
-  return formatPercent(Math.min(1, Math.max(0, ratio)))
-})
 const cpuEmptyDesc = computed(() => cpuAvailable.value
   ? '暂无可用采样（首次采样未完成或计数器重置）'
   : unavailableDesc('cpu.total'))
@@ -275,6 +279,9 @@ const loadEmptyDesc = computed(() => loadAvailable.value ? '当前快照未提�
 const PROCESSOR_QUEUE_SEMANTIC = 'processor_queue'
 const loadIsProcessorQueue = computed(() => loadAverage.value?.semantic === PROCESSOR_QUEUE_SEMANTIC)
 
+// ---- 上下文切换 / 中断（#72）：两者共用可用性键 cpu.context_switches ----
+// #362 重排后不再占一格面板，降级为 CPU 卡内的一行小字（读数照旧按 nullable 渲染「不可用」，
+// 不显示 0；不可用时另给一行原因）。
 const ratesAvailable = computed(() => isAvailable('cpu.context_switches'))
 const contextSwitches = computed(() => sysmon.cpuContextSwitchesPerSec)
 const interrupts = computed(() => sysmon.cpuInterruptsPerSec)
@@ -472,11 +479,7 @@ function peakOf(values: (number | null)[]): number | null {
   return peak
 }
 
-/** 每核明细是否有内容可展开（使用率或频率任一有数据；频率可用但使用率读不到时仍能查看频率） */
-const cpuHasDetail = computed(() => cpuCores.value.length > 0
-  || (frequencyAvailable.value && coreFrequencies.value.length > 0))
-
-/** 每核明细摘要（收起时显示）：核数 + 最高使用率；没有数据就是没有，不伪造 0 */
+/** 每核明细摘要：核数 + 最高使用率；没有数据就是没有，不伪造 0 */
 const cpuDetailSummary = computed(() => {
   const parts: string[] = []
   if (cpuCores.value.length > 0) parts.push(`${cpuCores.value.length} 核`)
@@ -522,6 +525,107 @@ const diskIoDetailSummary = computed(() => {
 
 /** 网络摘要（收起时显示）：网卡数（虚拟网卡是否隐藏由发送方决定，这里只统计收到的条目） */
 const networkDetailSummary = computed(() => `${network.value.length} 块网卡`)
+
+// ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
+// 字段全部来自既有快照的 `system` / `platform_description`，不新增接口、不读 store 之外的东西。
+// 无可显示值的字段统一 `—`（不是空白、不是 0）：空串与 null 都算「没有这个值」。
+function displayOrDash(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return '—'
+  if (typeof value === 'string' && value.trim() === '') return '—'
+  return String(value)
+}
+
+const hostName = computed(() => displayOrDash(system.value?.hostname))
+const hostKernel = computed(() => displayOrDash(snapshot.value?.platform?.kernel))
+const hostUptime = computed(() => (system.value ? formatUptime(system.value.uptime_sec) : '—'))
+/** 逻辑核数文案（主机条与四数字的小字上下文共用这一份口径：
+ * 优先 `system.logical_cores`，缺失按每核数组长度；0 核视同「没有这个值」显示 `—`） */
+const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
+const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
+
+/** CPU 型号 · 逻辑核数（型号为空串时只显示核数；两者都缺才整段 `—`） */
+const hostCpuLine = computed(() => {
+  const model = system.value?.cpu_model?.trim() ?? ''
+  return model === '' ? logicalCoreText.value : `${model} · ${logicalCoreText.value}`
+})
+
+// ---- CPU 宽卡（#362）：四数字 + 单序列自适应趋势 + 每核条形 ----
+
+/** 饱和核数（快照的 `saturated` 标记就是唯一判据，不在视图里另算阈值） */
+const saturatedCoreCount = computed(() => cpuCores.value.filter(core => core.saturated).length)
+
+/** 占用率的小字上下文：N 逻辑核 · 无核饱和 / N 核饱和（饱和是快照事实，不在前端重判） */
+const coresContextText = computed(() => {
+  if (logicalCoreCount.value <= 0) return '—'
+  if (saturatedCoreCount.value === 0) return `${logicalCoreCount.value} 逻辑核 · 无核饱和`
+  return `${logicalCoreCount.value} 逻辑核 · ${saturatedCoreCount.value} 核饱和`
+})
+
+/**
+ * CPU 型号里标注的基准频率：**型号字符串的一部分**（如 `... @ 3.40GHz`），不是实测读数。
+ * 取不到时退回「—」——不拿当前频率冒充型号标注（那是两件事）。
+ */
+const cpuModelFrequency = computed(() => {
+  const model = system.value?.cpu_model ?? ''
+  const match = /@\s*([\d.]+)\s*GHz/i.exec(model)
+  return match ? `${match[1]} GHz` : '—'
+})
+
+/** 当前频率（主数值）：多核频率取最高值——「当前频率」问的是 CPU 跑在哪一档，
+ * 取最高比取均值更接近「最快的那颗核在跑多少」；无读数时 null（不伪造 0 MHz）。 */
+const frequencyPeak = computed(() => peakOf(coreFrequencies.value.map(core => core.mhz)))
+const frequencyPeakCount = computed(() => coreFrequencies.value.length)
+
+/** 趋势序列：既有 `cpu.usage_ratio` 窗口（15 分钟 / 60 点 / 15 秒桶），不新增窗口、不改 store */
+const usageSeries = computed(() => trend.seriesOf('cpu.usage_ratio'))
+/** 时间窗的如实口径（#142）：满 15 分钟才写「最近 15 分钟」，否则写实际跨度 */
+const usageWindow = computed(() => trend.windowOf('cpu.usage_ratio'))
+/** 趋势纵轴（#361 的 `adaptiveAxisTicks`）：轴范围随序列变化，等值序列也不会被压成一条线 */
+const usageAxis = computed(() => adaptiveAxisTicks(usageSeries.value))
+/** 三档刻度按上→下渲染（SVG 的 y=0 在顶部）：labels 本身是 下界/中点/上界 升序 */
+const usageAxisLabels = computed(() => (usageAxis.value ? [...usageAxis.value.labels].reverse() : []))
+/** 折线几何：按轴范围投影（不是按序列自身 min/max），否则轴标签与曲线对不上 */
+const usageGeometry = computed(() => adaptiveTrendGeometry(usageSeries.value, usageAxis.value))
+
+/**
+ * 每核条形填充的是「占用率」而不是固定满格：柱高 = 该核使用率（自底向上），
+ * 轨道中性底色给出 100% 的参照。值经 CSS 变量传给样式，避免在模板里写静态样式。
+ *
+ * `null`（首次采样未就绪）返回空对象：变量不注入，样式里的 `height: var(--core-fill, 0%)`
+ * 于是取兜底值 0% —— 视觉上是一条空轨道，与「真的 0%」同形。两者的区别不在柱子上，只由
+ * 旁边的读数文字承担（`formatPercent(null)` 显示「不可用」）：本格不画任何数字，也不编造 0。
+ *
+ * 百分比字符串走共享格式化器（#126：本文件不得再写 toFixed），与旁边的读数文字同源同精度。
+ */
+function coreBarStyle(ratio: number | null): Record<string, string> {
+  if (ratio === null || !Number.isFinite(ratio)) return {}
+  const clamped = Math.min(1, Math.max(0, ratio))
+  return { '--core-fill': formatPercent(clamped) }
+}
+/** 是否覆盖满整个时间窗（data 属性供测试断言，与 SysmonSparkline 同口径） */
+const usageWindowComplete = computed(() => sparklineWindowComplete(usageWindow.value))
+
+/** 轴范围说明：显式写「自适应，不是 0–100」——刻度不是从 0 起的轴，读者必须先知道这件事。
+ * 上下界直接取三档刻度的**首末标签**（同一份精度）：窄轴上 `Math.round(lo*100)` 会写出
+ * 「纵轴 19–19%」这种与刻度列自相矛盾的范围。 */
+const usageAxisText = computed(() => {
+  const labels = usageAxis.value?.labels
+  if (!labels || labels.length < 2) return ''
+  const low = labels[0].text.replace('%', '')
+  const high = labels[labels.length - 1].text.replace('%', '')
+  return `纵轴 ${low}–${high}%（自适应，不是 0–100）`
+})
+
+/** 趋势下方说明：时间窗 + 轴范围（两件事都必须如实写在图上，不能只靠刻度暗示） */
+const cpuTrendCaption = computed(() => `${sparklineWindowText(usageWindow.value)} · ${usageAxisText.value}`)
+
+/** 趋势 title / aria：指标名 + 时间窗 + 限定说明 + 轴范围 + 查看历史（与 SysmonSparkline 同口径） */
+const cpuTrendTitle = computed(
+  () => `${sparklineTitle(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)} · ${usageAxisText.value}`,
+)
+const cpuTrendAriaLabel = computed(
+  () => `${sparklineAriaLabel(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)}，${cpuTrendCaption.value}`,
+)
 
 // ---- 网卡累计量 / 速率格式化（#126：单位档与精度全部走共享模块）----
 /**
@@ -621,51 +725,32 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     </div>
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
-      <!-- 系统信息 -->
-      <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-system">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="system" :size="14" /></span>系统信息
-        </h2>
-        <dl class="monitor-view__info">
-          <div class="monitor-view__info-row">
-            <dt>主机名</dt>
-            <dd>{{ system?.hostname ?? '—' }}</dd>
-          </div>
-          <div class="monitor-view__info-row">
-            <dt>平台</dt>
-            <dd>{{ platformDescription || '—' }}</dd>
-          </div>
-          <div class="monitor-view__info-row">
-            <dt>CPU 型号</dt>
-            <dd>{{ system?.cpu_model || '—' }}</dd>
-          </div>
-          <div class="monitor-view__info-row">
-            <dt>逻辑核数</dt>
-            <dd>{{ system?.logical_cores ?? '—' }}</dd>
-          </div>
-          <div class="monitor-view__info-row">
-            <dt>启动时间</dt>
-            <dd>{{ system ? formatDateTime(system.boot_time_unix_sec * 1000) : '—' }}</dd>
-          </div>
-          <div class="monitor-view__info-row">
-            <dt>运行时长</dt>
-            <dd>{{ system ? formatUptime(system.uptime_sec) : '—' }}</dd>
-          </div>
-        </dl>
+      <!-- 主机条（#362）：取代原「系统信息」整张卡——一条紧凑的行，字段全部来自既有快照，
+           无可显示值的字段显示 `—`。脉冲点 + 右端「实时」表达快照在推进（本区只在有快照时渲染）。 -->
+      <section class="monitor-view__host" data-test="monitor-host" aria-label="主机">
+        <span class="monitor-view__host-dot" aria-hidden="true"></span>
+        <span class="monitor-view__host-name">{{ hostName }}</span>
+        <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
+        <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
+        <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
+        <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
+        <span class="monitor-view__host-live">实时</span>
       </section>
 
-      <!-- CPU（#72 完整化）：总使用率 / 每核（含饱和标记）/ 系统负载 / 上下文切换与中断 -->
+      <!-- CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
+           每核使用率条形常驻（一眼看形态）；每核频率与每传感器读数收进各自的可展开区——
+           「不可用就不渲染」「可用但本帧无数据要空态」的既有语义不变。 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-cpu">
         <h2 class="ds-card__title monitor-view__card-title">
           <span class="monitor-view__card-icon"><Icon name="CPU" :size="14" /></span>CPU
         </h2>
         <div class="monitor-view__cpu">
-          <!-- 总使用率 -->
-          <div class="monitor-view__cpu-panel">
-            <h3 class="monitor-view__panel-title">总使用率</h3>
-            <template v-if="cpuRatio !== null">
-              <!-- 数值与 sparkline 都可点：跳转历史视图并预选该指标（#127）；sparkline 末点即本数值 -->
-              <div class="monitor-view__metric-row">
+          <div class="monitor-view__stats">
+            <!-- 占用率 -->
+            <div class="monitor-view__stat">
+              <p class="monitor-view__stat-label">占用率</p>
+              <template v-if="cpuRatio !== null">
+                <!-- 数值可点：跳转历史视图并预选该指标（#127）；上面的趋势末点即本数值 -->
                 <button
                   type="button"
                   class="monitor-view__metric monitor-view__value-btn"
@@ -674,129 +759,166 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                   :aria-label="historyAriaLabel('cpu.usage_ratio', cpuPercent)"
                   @click="openHistory('cpu.usage_ratio')"
                 >{{ cpuPercent }}</button>
-                <SysmonSparkline
-                  :points="trend.seriesOf('cpu.usage_ratio')"
-                  :label="trendMetricLabel('cpu.usage_ratio')"
-                  :window="trend.windowOf('cpu.usage_ratio')"
-                  class="monitor-view__sparkline"
-                  data-test="monitor-sparkline-cpu"
-                  @open="openHistory('cpu.usage_ratio')"
-                />
+                <p class="monitor-view__stat-context" data-test="monitor-cpu-context">{{ coresContextText }}</p>
+              </template>
+              <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cpu-unavailable">
+                <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
+                <div class="ds-empty__desc">{{ cpuEmptyDesc }}</div>
               </div>
-              <div
-                class="monitor-view__bar"
-                role="progressbar"
-                :aria-valuenow="Math.round(cpuRatio * 100)"
-                aria-valuemin="0"
-                aria-valuemax="100"
-              >
-                <div class="monitor-view__bar-fill" :style="{ width: cpuBarWidth }"></div>
-              </div>
-              <div class="monitor-view__meta">{{ system?.logical_cores ?? '—' }} 逻辑核</div>
-            </template>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cpu-unavailable">
-              <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-              <div class="ds-empty__desc">{{ cpuEmptyDesc }}</div>
             </div>
-          </div>
 
-          <!-- 系统负载：语义由 semantic 字段 + semantic_hints 承载，不与另一口径同轴比较 -->
-          <div class="monitor-view__cpu-panel" data-test="monitor-load">
-            <h3 class="monitor-view__panel-title">系统负载</h3>
-            <template v-if="loadAverage">
-              <dl class="monitor-view__load">
-                <div v-if="loadIsProcessorQueue" class="monitor-view__load-item">
-                  <dt class="monitor-view__load-label">处理器队列长度</dt>
-                  <dd class="monitor-view__load-value">
-                    <button
-                      type="button"
-                      class="monitor-view__value-btn"
-                      data-test="monitor-load-queue"
-                      :title="historyTitle('cpu.load_average.one')"
-                      :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
-                      @click="openHistory('cpu.load_average.one')"
-                    >{{ formatDecimal(loadAverage.one) }}</button>
-                  </dd>
+            <!-- 系统负载：语义由 semantic 字段 + semantic_hints 承载，不与另一口径同轴比较 -->
+            <div class="monitor-view__stat" data-test="monitor-load">
+              <p class="monitor-view__stat-label">系统负载</p>
+              <template v-if="loadAverage">
+                <div v-if="loadIsProcessorQueue" class="monitor-view__metric">
+                  <button
+                    type="button"
+                    class="monitor-view__value-btn"
+                    data-test="monitor-load-queue"
+                    :title="historyTitle('cpu.load_average.one')"
+                    :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
+                    @click="openHistory('cpu.load_average.one')"
+                  >{{ formatDecimal(loadAverage.one) }}</button>
                 </div>
-                <template v-else>
-                  <div class="monitor-view__load-item">
-                    <dt class="monitor-view__load-label">1 分钟</dt>
-                    <dd class="monitor-view__load-value">
-                      <button
-                        type="button"
-                        class="monitor-view__value-btn"
-                        data-test="monitor-load-one"
-                        :title="historyTitle('cpu.load_average.one')"
-                        :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
-                        @click="openHistory('cpu.load_average.one')"
-                      >{{ formatDecimal(loadAverage.one) }}</button>
-                    </dd>
-                  </div>
-                  <div class="monitor-view__load-item">
-                    <dt class="monitor-view__load-label">5 分钟</dt>
-                    <dd class="monitor-view__load-value" data-test="monitor-load-five">{{ formatDecimal(loadAverage.five) }}</dd>
-                  </div>
-                  <div class="monitor-view__load-item">
-                    <dt class="monitor-view__load-label">15 分钟</dt>
-                    <dd class="monitor-view__load-value" data-test="monitor-load-fifteen">{{ formatDecimal(loadAverage.fifteen) }}</dd>
-                  </div>
-                </template>
-              </dl>
-              <!-- 系统负载趋势（#127）：取历史库的 1 分钟列（Windows 上同一列是处理器队列代理量，
-                   语义提示仍由 available.semantic_hints 承载，sparkline 不另做口径判断） -->
-              <SysmonSparkline
-                v-if="loadAverage.one !== null"
-                :points="trend.seriesOf('cpu.load_average.one')"
-                :label="trendMetricLabel('cpu.load_average.one')"
-                :window="trend.windowOf('cpu.load_average.one')"
-                class="monitor-view__sparkline monitor-view__sparkline--block"
-                data-test="monitor-sparkline-load"
-                @open="openHistory('cpu.load_average.one')"
-              />
-              <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint" :title="loadHint.raw">语义提示：{{ loadHint.text }}</p>
-            </template>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
-              <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
-              <div class="ds-empty__desc">{{ loadEmptyDesc }}</div>
+                <div v-else class="monitor-view__metric">
+                  <button
+                    type="button"
+                    class="monitor-view__value-btn"
+                    data-test="monitor-load-one"
+                    :title="historyTitle('cpu.load_average.one')"
+                    :aria-label="historyAriaLabel('cpu.load_average.one', formatDecimal(loadAverage.one))"
+                    @click="openHistory('cpu.load_average.one')"
+                  >{{ formatDecimal(loadAverage.one) }}</button>
+                </div>
+                <!-- 小字上下文：处理器队列口径不冒充 1/5/15 分钟（文本里也不出现「1 分钟」） -->
+                <p class="monitor-view__stat-context" data-test="monitor-load-context">
+                  <template v-if="loadIsProcessorQueue">处理器队列长度 · {{ logicalCoreText }}</template>
+                  <template v-else>5 分 <span data-test="monitor-load-five">{{ formatDecimal(loadAverage.five) }}</span> · 15 分 <span data-test="monitor-load-fifteen">{{ formatDecimal(loadAverage.fifteen) }}</span>（{{ logicalCoreText }}量程）</template>
+                </p>
+                <!-- 系统负载趋势（#127）：取历史库的 1 分钟列（Windows 上同一列是处理器队列代理量） -->
+                <SysmonSparkline
+                  v-if="loadAverage.one !== null"
+                  :points="trend.seriesOf('cpu.load_average.one')"
+                  :label="trendMetricLabel('cpu.load_average.one')"
+                  :window="trend.windowOf('cpu.load_average.one')"
+                  class="monitor-view__sparkline monitor-view__sparkline--stat"
+                  data-test="monitor-sparkline-load"
+                  @open="openHistory('cpu.load_average.one')"
+                />
+                <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint" :title="loadHint.raw">语义提示：{{ loadHint.text }}</p>
+              </template>
+              <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
+                <div class="ds-empty__title">{{ UNAVAILABLE_TEXT }}</div>
+                <div class="ds-empty__desc">{{ loadEmptyDesc }}</div>
+              </div>
+            </div>
+
+            <!-- 当前频率（#73）：cpu.frequency 不可用时整块不渲染（不是显示 0）；
+                 每核频率明细收在本格的可展开区里 -->
+            <div v-if="frequencyAvailable" class="monitor-view__stat" data-test="monitor-frequency">
+              <p class="monitor-view__stat-label">当前频率</p>
+              <template v-if="coreFrequencies.length > 0">
+                <div class="monitor-view__metric" data-test="monitor-frequency-value">{{ formatFrequency(frequencyPeak) }}</div>
+                <p class="monitor-view__stat-context" data-test="monitor-frequency-context">
+                  型号标注 {{ cpuModelFrequency }} · {{ frequencyPeakCount }} 核同步
+                </p>
+                <!-- 明细在下方以整卡宽展开（128 核的列表塞进 1/4 格会挤成一列窄条） -->
+                <button
+                  class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__detail-toggle"
+                  type="button"
+                  :aria-expanded="cpuDetailOpen"
+                  data-test="monitor-cpu-detail-toggle"
+                  @click="cpuDetailOpen = !cpuDetailOpen"
+                >{{ cpuDetailOpen ? '收起每核频率' : '展开每核频率' }}</button>
+              </template>
+              <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
+                <div class="ds-empty__title">暂无数据</div>
+                <div class="ds-empty__desc">当前快照未提供每核频率</div>
+              </div>
+            </div>
+
+            <!-- 最高温度（#73）：temperature 不可用时整块不渲染（不是显示 0）；
+                 按芯片分组的每传感器读数收在本格的可展开区里 -->
+            <div v-if="temperatureAvailable" class="monitor-view__stat" data-test="monitor-temperature">
+              <p class="monitor-view__stat-label">最高温度</p>
+              <template v-if="temperatureGroups.length > 0">
+                <div class="monitor-view__metric" data-test="monitor-temperature-max">
+                  {{ formatTemperature(temperaturePeak?.celsius ?? null) }}
+                </div>
+                <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
+                <p class="monitor-view__stat-context" data-test="monitor-temperature-summary">
+                  最高温度 · {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
+                </p>
+                <!-- 明细在下方以整卡宽展开（分组逐传感器读数，塞进 1/4 格会挤成窄条） -->
+                <button
+                  class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__detail-toggle"
+                  type="button"
+                  :aria-expanded="temperatureDetailOpen"
+                  data-test="monitor-temperature-detail-toggle"
+                  @click="temperatureDetailOpen = !temperatureDetailOpen"
+                >{{ temperatureDetailOpen ? '收起明细' : '展开明细' }}</button>
+              </template>
+              <div v-else class="ds-empty monitor-view__empty" data-test="monitor-temperature-empty">
+                <div class="ds-empty__title">暂无数据</div>
+                <div class="ds-empty__desc">当前快照未提供温度读数</div>
+              </div>
             </div>
           </div>
 
-          <!-- 上下文切换 / 中断（两者共用可用性键 cpu.context_switches） -->
-          <div class="monitor-view__cpu-panel" data-test="monitor-cpu-rates">
-            <h3 class="monitor-view__panel-title">上下文切换 / 中断</h3>
-            <dl class="monitor-view__rates">
-              <div class="monitor-view__rate-item">
-                <dt class="monitor-view__rate-label">上下文切换</dt>
-                <dd class="monitor-view__rate-value" data-test="monitor-context-switches">{{ formatCountPerSec(contextSwitches) }}</dd>
+          <!-- 单序列趋势（#362）：数据源仍是 #127 的 `cpu.usage_ratio` 序列（历史补齐 + WS 推进），
+               不新增窗口、不改 store。纵轴取 #361 的 `adaptiveAxisTicks`——固定 0–100% 会把
+               10–25% 的日常波动压成一条直线，等于删掉「趋势」本身。左侧刻度列独立成列（三档标签），
+               下方如实标注覆盖时长（满 15 分钟才写「最近 15 分钟」）。 -->
+          <div v-if="cpuRatio !== null && usageAxis && usageGeometry" class="monitor-view__trend" data-test="monitor-cpu-trend">
+            <div class="monitor-view__chart">
+              <div class="monitor-view__chart-axis" aria-hidden="true">
+                <span
+                  v-for="tick in usageAxisLabels"
+                  :key="tick.value"
+                  class="monitor-view__chart-tick"
+                >{{ tick.text }}</span>
               </div>
-              <div class="monitor-view__rate-item">
-                <dt class="monitor-view__rate-label">中断</dt>
-                <dd class="monitor-view__rate-value" data-test="monitor-interrupts">{{ formatCountPerSec(interrupts) }}</dd>
-              </div>
-            </dl>
-            <p v-if="!ratesAvailable" class="monitor-view__hint">{{ unavailableDesc('cpu.context_switches') }}</p>
+              <button
+                type="button"
+                class="monitor-view__chart-plot monitor-view__value-btn"
+                :title="cpuTrendTitle"
+                :aria-label="cpuTrendAriaLabel"
+                :data-last-value="usageGeometry.lastValue"
+                :data-window-complete="usageWindowComplete"
+                :data-window-truncated="usageWindow.truncated"
+                :data-window-stale="usageWindow.stale"
+                data-test="monitor-sparkline-cpu"
+                @click="openHistory('cpu.usage_ratio')"
+              >
+                <svg
+                  class="monitor-view__chart-svg"
+                  viewBox="0 0 100 34"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <polyline class="monitor-view__chart-line" :points="usageGeometry.points" vector-effect="non-scaling-stroke" />
+                </svg>
+              </button>
+            </div>
+            <p class="monitor-view__meta monitor-view__chart-caption" data-test="monitor-cpu-trend-caption">
+              {{ cpuTrendCaption }}
+            </p>
           </div>
 
-          <!-- 每核明细（#127）：每核使用率 + 每核频率同属维度明细，默认收起、展开后显示全部；
-               不可用 / 空数据的空态不折叠（可用性事实不藏起来）。核数随快照变化。 -->
+          <!-- 每核条形（#362）：容器自适应网格，柱在上、号在下，一条规则覆盖 4–128 核
+               （不写断点、不用 JS 测量）。饱和核用 error 色；柱的形状不随状态变化，灰度截屏下
+               靠旁边的「饱和」文字区分状态（颜色之外只有文字这一层差异）。正常核用 success 色。
+               柱数与顺序取 `cpuCores`（即快照 `cpu.cores`）：契约 sysmon §2.3 保证可用时数组长度
+               等于 `system.logical_cores`；两者不一致时以**数组**为准——逐核读数的唯一事实源是数组，
+               按 `logical_cores` 补齐或截断都会凭空造出没有读数的核。 -->
           <div class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-cpu-cores">
             <div class="monitor-view__panel-head">
               <h3 class="monitor-view__panel-title">每核使用率</h3>
-              <button
-                v-if="cpuHasDetail"
-                class="ds-btn ds-btn--tertiary ds-btn--sm"
-                type="button"
-                :aria-expanded="cpuDetailOpen"
-                data-test="monitor-cpu-detail-toggle"
-                @click="cpuDetailOpen = !cpuDetailOpen"
-              >{{ cpuDetailOpen ? '收起' : '展开' }}</button>
+              <p v-if="cpuCores.length > 0" class="monitor-view__meta" data-test="monitor-cpu-detail-summary">{{ cpuDetailSummary }}</p>
             </div>
-            <p
-              v-if="cpuHasDetail && !cpuDetailOpen"
-              class="monitor-view__meta"
-              data-test="monitor-cpu-detail-summary"
-            >{{ cpuDetailSummary }}</p>
-            <ul v-if="cpuCores.length > 0 && cpuDetailOpen" class="monitor-view__cores">
+            <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
               <li
                 v-for="core in cpuCores"
                 :key="core.index"
@@ -805,76 +927,52 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
                 data-test="monitor-core"
                 :data-core-index="core.index"
               >
-                <span class="monitor-view__core-index">核 {{ core.index }}</span>
-                <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
+                <span class="monitor-view__core-bar" aria-hidden="true">
+                  <span
+                    class="monitor-view__core-bar-fill"
+                    :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
+                    :style="coreBarStyle(core.usage_ratio)"
+                  ></span>
+                </span>
+                <span class="monitor-view__core-label">
+                  <span class="monitor-view__core-index">核 {{ core.index }}</span>
+                  <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
+                </span>
                 <span
                   v-if="core.saturated"
-                  class="ds-tag ds-tag--warning monitor-view__core-tag"
+                  class="monitor-view__core-tag"
                   data-test="monitor-core-saturated"
                 >饱和</span>
               </li>
             </ul>
-            <div v-else-if="cpuCores.length === 0" class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
               <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
               <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
             </div>
-
-            <!-- 每核频率（#73）：仅在 cpu.frequency 可用时渲染；与每核使用率同属每核明细，一起收起 -->
-            <div v-if="frequencyAvailable" class="monitor-view__subsection" data-test="monitor-frequency">
-              <h3 class="monitor-view__panel-title">每核频率</h3>
-              <ul v-if="coreFrequencies.length > 0 && cpuDetailOpen" class="monitor-view__cores">
-                <li
-                  v-for="frequency in coreFrequencies"
-                  :key="frequency.index"
-                  class="monitor-view__core"
-                  data-test="monitor-frequency-core"
-                  :data-core-index="frequency.index"
-                >
-                  <span class="monitor-view__core-index">核 {{ frequency.index }}</span>
-                  <span class="monitor-view__core-value">{{ formatFrequency(frequency.mhz) }}</span>
-                </li>
-              </ul>
-              <p
-                v-else-if="coreFrequencies.length > 0"
-                class="monitor-view__meta"
-                data-test="monitor-frequency-collapsed"
-              >{{ coreFrequencies.length }} 核频率 · 展开每核明细查看</p>
-              <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
-                <div class="ds-empty__title">暂无数据</div>
-                <div class="ds-empty__desc">当前快照未提供每核频率</div>
-              </div>
-            </div>
           </div>
-        </div>
-      </section>
 
-      <!-- 温度（#73）：仅在 temperature 可用时渲染整块卡片；不可用整块不渲染（不是显示 0）。
-           #126：按芯片分组（CPU / GPU / 无线网卡 / 主板 ACPI 等友好名），组内逐通道显示；
-           原始 sensor 标识降级到 title（tooltip）——需要与系统工具输出对照时仍可查到。
-           不过滤任何传感器：主板 ACPI 类只是排在组列表末尾。 -->
-      <section v-if="temperatureAvailable" class="ds-card monitor-view__card" data-test="monitor-temperature">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="system" :size="14" /></span>温度
-        </h2>
-        <template v-if="temperatureGroups.length > 0">
-          <!-- #127：默认只显示主数值（最高温）+ 关键数字（传感器 / 芯片数），逐传感器明细收起 -->
-          <div class="monitor-view__metric-row">
-            <div class="monitor-view__metric" data-test="monitor-temperature-max">
-              {{ formatTemperature(temperaturePeak?.celsius ?? null) }}
-            </div>
-            <button
-              class="ds-btn ds-btn--tertiary ds-btn--sm"
-              type="button"
-              :aria-expanded="temperatureDetailOpen"
-              data-test="monitor-temperature-detail-toggle"
-              @click="temperatureDetailOpen = !temperatureDetailOpen"
-            >{{ temperatureDetailOpen ? '收起' : '展开明细' }}</button>
+          <!-- 每核频率明细（#73 / #362）：由「当前频率」那格的开关展开，但以**整卡宽**渲染——
+               128 核的列表塞进 1/4 格会挤成一列窄条。不可用（cpu.frequency 不可用）时整块不渲染。 -->
+          <div v-if="frequencyAvailable && coreFrequencies.length > 0 && cpuDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-frequency-detail">
+            <h3 class="monitor-view__panel-title">每核频率</h3>
+            <ul class="monitor-view__cores monitor-view__cores--detail">
+              <li
+                v-for="frequency in coreFrequencies"
+                :key="frequency.index"
+                class="monitor-view__core monitor-view__core--detail"
+                data-test="monitor-frequency-core"
+                :data-core-index="frequency.index"
+              >
+                <span class="monitor-view__core-index">核 {{ frequency.index }}</span>
+                <span class="monitor-view__core-value">{{ formatFrequency(frequency.mhz) }}</span>
+              </li>
+            </ul>
           </div>
-          <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
-          <p class="monitor-view__meta" data-test="monitor-temperature-summary">
-            最高温度 · {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
-          </p>
-          <div v-if="temperatureDetailOpen" class="monitor-view__temp-groups">
+
+          <!-- 温度明细（#126 / #362）：由「最高温度」那格的开关展开，同样以整卡宽渲染；
+               按芯片分组（CPU / GPU / 无线网卡 / 主板 ACPI 等友好名），组内逐通道显示，
+               原始 sensor 标识降级到 title（tooltip）；不过滤任何传感器。 -->
+          <div v-if="temperatureAvailable && temperatureGroups.length > 0 && temperatureDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide monitor-view__temp-groups" data-test="monitor-temperature-detail">
             <div
               v-for="group in temperatureGroups"
               :key="group.chip"
@@ -900,10 +998,22 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
               </ul>
             </div>
           </div>
-        </template>
-        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-temperature-empty">
-          <div class="ds-empty__title">暂无数据</div>
-          <div class="ds-empty__desc">当前快照未提供温度读数</div>
+
+          <!-- 上下文切换 / 中断（#72）：四数字腾出的那格不浪费——速率降级为 CPU 卡底部一行小字。
+               数值 null（首次采样 / 计数器重置）显示「不可用」而不是 0；能力不可用另给原因。 -->
+          <div class="monitor-view__rates-block">
+            <dl class="monitor-view__rates" data-test="monitor-cpu-rates">
+              <div class="monitor-view__rate-item">
+                <dt class="monitor-view__rate-label">上下文切换</dt>
+                <dd class="monitor-view__rate-value" data-test="monitor-context-switches">{{ formatCountPerSec(contextSwitches) }}</dd>
+              </div>
+              <div class="monitor-view__rate-item">
+                <dt class="monitor-view__rate-label">中断</dt>
+                <dd class="monitor-view__rate-value" data-test="monitor-interrupts">{{ formatCountPerSec(interrupts) }}</dd>
+              </div>
+            </dl>
+            <p v-if="!ratesAvailable" class="monitor-view__hint">{{ unavailableDesc('cpu.context_switches') }}</p>
+          </div>
         </div>
       </section>
 
@@ -1647,35 +1757,164 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   white-space: nowrap;
 }
 
-.monitor-view__info {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--spacer-12) var(--spacer-24);
-  margin: 0;
-}
-
-.monitor-view__info-row {
+/* ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
+   脉冲点 + 主机名 + 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数 + 右端「实时」。
+   窄屏换行而不是横向滚动：字段都允许收缩，型号过长先折行。 */
+.monitor-view__host {
   display: flex;
-  gap: var(--spacer-8);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacer-4) var(--spacer-12);
+  grid-column: 1 / -1;
   min-width: 0;
+  margin-bottom: var(--spacer-4);
+  padding: var(--spacer-8) var(--spacer-12);
+  border: 1px solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  background: var(--bg-base-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
 }
 
-.monitor-view__info-row dt {
-  flex: 0 0 auto;
-  min-width: var(--spacer-64);
-  color: var(--text-tertiary);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
+/* 脉冲点：实时快照在推进（纯装饰，状态文字由快照状态行承担，故 aria-hidden） */
+.monitor-view__host-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--status-success-default);
+  animation: monitor-view-host-pulse 2s ease-in-out infinite;
 }
 
-.monitor-view__info-row dd {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
+@keyframes monitor-view-host-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* 尊重「减少动态效果」：脉冲是装饰，关掉不影响任何信息（点本身仍在） */
+@media (prefers-reduced-motion: reduce) {
+  .monitor-view__host-dot {
+    animation: none;
+  }
+}
+
+.monitor-view__host-name {
   color: var(--text-default);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
+  font-weight: var(--body-sm-strong-font-weight);
+}
+
+.monitor-view__host-field {
+  min-width: 0;
+  color: var(--text-tertiary);
   overflow-wrap: anywhere;
+}
+
+.monitor-view__host-live {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--status-success-default);
+}
+
+/* ---- CPU 四数字（#362）：占用率 / 系统负载 / 当前频率 / 最高温度横排 ----
+   容器自适应（auto-fit）而不是固定 4 列：窄屏两列、宽屏四列，一条规则覆盖，不写断点。 */
+.monitor-view__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(var(--stat-cell-min-width), 1fr));
+  gap: var(--spacer-16);
+  grid-column: 1 / -1;
+}
+
+.monitor-view__stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-2);
+  min-width: 0;
+}
+
+.monitor-view__stat-label {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-weight: var(--body-xs-strong-font-weight);
+}
+
+.monitor-view__stat-context {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+/* 四数字里的明细开关：不设上边距（上下文小字已提供间隔），紧跟小字 */
+.monitor-view__detail-toggle {
+  align-self: flex-start;
+  margin-top: var(--spacer-4);
+}
+
+/* ---- 趋势（#362）：左侧独立刻度列 + 右侧折线，下方一行说明 ----
+   刻度列宽与绘图区高度是图表几何量（不是间距），走 `--chart-*` token。 */
+.monitor-view__trend {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.monitor-view__chart {
+  display: grid;
+  grid-template-columns: var(--chart-axis-col-width) minmax(0, 1fr);
+  gap: var(--spacer-8);
+  align-items: stretch;
+}
+
+/* 三档标签均分绘图区高度：列两端对齐（上界贴顶、下界贴底），中点落在中线 */
+.monitor-view__chart-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: var(--chart-height-trend);
+  color: var(--text-tertiary);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  /* 刻度列是固定宽度的窄栏：标签在极端轴上会变长（`100.00%` 7 字符 ≈ 45px > 34px）。
+     不换行，宁可溢出到绘图区一侧（绘图区是透明的，覆盖不掉曲线）——换行会把三档的
+     vertical rhythm 打乱，比横向溢出更难读。 */
+  white-space: nowrap;
+}
+
+.monitor-view__chart-tick {
+  display: block;
+}
+
+.monitor-view__chart-plot {
+  display: block;
+  width: 100%;
+  height: var(--chart-height-trend);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.monitor-view__chart-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.monitor-view__chart-line {
+  fill: none;
+  stroke: var(--status-primary-default);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.monitor-view__chart-caption {
+  margin: var(--spacer-4) 0 0;
 }
 
 /* 可点击数值（#127：点击跳转历史视图并预选指标）：只重置按钮外观，字号/颜色沿用所在行的样式，
@@ -1726,8 +1965,12 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   max-width: 160px;
 }
 
-/* 负载 / 交换 / 共享内存目录的 sparkline 跟在数值块之后，独占一行时也不撑满整卡 */
-.monitor-view__sparkline--block {
+/* 负载 sparkline 跟在四数字的小字之后（#362）：格内是纵向 flex，故 `flex: none`
+   （基础规则是 `flex: 1`，在纵向容器里会把 24px 的辅助线在主轴上拉伸），独占一行且不撑满整格 */
+.monitor-view__sparkline--stat {
+  flex: none;
+  width: 100%;
+  max-width: 200px;
   margin-top: var(--spacer-4);
 }
 
@@ -1823,40 +2066,17 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   overflow-wrap: anywhere;
 }
 
-.monitor-view__bar {
-  width: 100%;
-  height: var(--spacer-6);
-  margin: var(--spacer-8) 0 var(--spacer-4);
-  border-radius: var(--radius-full);
-  background: var(--bg-overlay-l2);
-  overflow: hidden;
-}
-
-.monitor-view__bar-fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  background: var(--status-primary-default);
-  transition: width 0.2s ease;
-}
-
 .monitor-view__empty {
   padding: var(--spacer-20) var(--spacer-12);
 }
 
-/* ---- CPU 区块（#72）：总量 / 负载 / 速率面板 + 每核网格 ---- */
-/* 显式列数而不是 auto-fit：第 4 个面板 `grid-column: 1 / -1` 占满全部轨道，空轨折叠因此
-   永不触发，列数随容器宽度无限增长（#321）。列数与页面网格同一口径：两列 / ≥xl 三列。 */
+/* ---- CPU 宽卡（#362）：四数字 / 单序列趋势 / 每核条形三块内容纵向排布 ---- */
+/* 一块面里读完：三块都跨满整卡（`grid-column: 1 / -1`），因此这里只需单列——
+   不再有「面板数 vs 列数一致」的问题（#321 的前提已随面板网格一并消失）。 */
 .monitor-view__cpu {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--spacer-16) var(--spacer-24);
-}
-
-/* 同特异性下按出现顺序取胜，故必须排在基础规则之后。 */
-@media (min-width: 1280px) {
-  .monitor-view__cpu {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--spacer-16);
 }
 
 .monitor-view__cpu-panel {
@@ -1896,29 +2116,70 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
   font-weight: var(--body-sm-strong-font-weight);
 }
 
+/* 每核条形（#362）：容器自适应网格——**一条规则覆盖 4–128 核**，不写断点、不用 JS 测量。
+   格宽下限走 `--core-cell-min-width` token；auto-fit 让格子随容器宽度增减，
+   2560 宽的一行放得下更多核，390 宽自动折成多行（无横向滚动）。 */
 .monitor-view__cores {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: var(--spacer-8);
+  grid-template-columns: repeat(auto-fit, minmax(var(--core-cell-min-width), 1fr));
+  gap: var(--spacer-6) var(--spacer-4);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* 单核：柱在上、号与读数在下（同一格内纵向堆叠），不靠 flex 行内排布 */
 .monitor-view__core {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--spacer-6);
+  gap: var(--spacer-2);
   min-width: 0;
-  padding: var(--spacer-4) var(--spacer-8);
-  border: 1px solid var(--border-neutral-l1);
-  border-radius: var(--radius-6);
+  padding: var(--spacer-2) 0;
+  text-align: center;
 }
 
-/* 持续饱和核：警示样式 + 「饱和」标签（颜色/背景均取状态 token） */
+/* 饱和核的格底加重（除颜色外仍靠下方的「饱和」文字区分，灰度截屏可辨） */
 .monitor-view__core--saturated {
-  border-color: var(--status-warning-default);
-  background: var(--status-warning-surface-l1);
+  border-radius: var(--radius-4);
+  background: var(--status-error-surface-l1);
+}
+
+/* 柱：竖向轨道，自底向上按占用率填充——长度差异一眼可读，核号在下方。
+   轨道高度走 `--core-bar-height` token（不是间距，不进 spacer 步进）。
+   flex + `justify-content: flex-end` 是填充贴底的必要条件：块级容器里 `margin-top: auto`
+   会解析成 0，填充会挂在轨道顶部（实测踩过）。 */
+.monitor-view__core-bar {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  width: 100%;
+  height: var(--core-bar-height);
+  border-radius: var(--radius-2);
+  background: var(--bg-overlay-l2);
+  overflow: hidden;
+}
+
+/* 柱的填充：高度由 `--core-fill`（占用率）驱动，颜色区分饱和 / 正常两个状态 token */
+.monitor-view__core-bar-fill {
+  display: block;
+  width: 100%;
+  height: var(--core-fill, 0%);
+  border-radius: var(--radius-2);
+  background: var(--status-success-default);
+}
+
+.monitor-view__core-bar-fill--saturated {
+  background: var(--status-error-default);
+}
+
+/* 核号与读数同一行但允许折行：格宽约 40–60px 时自动落成两行，宽格时并排 —— 同样不靠 JS 测量 */
+.monitor-view__core-label {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0 var(--spacer-4);
+  min-width: 0;
 }
 
 .monitor-view__core-index {
@@ -1929,49 +2190,71 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
 }
 
 .monitor-view__core-value {
-  margin-left: auto;
   color: var(--text-default);
   font-family: var(--font-family-metric);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
+/* 饱和标记：文字（不是只有颜色）——灰度截屏下与正常核仍有明确差异 */
 .monitor-view__core-tag {
-  flex: 0 0 auto;
+  color: var(--status-error-default);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-weight: var(--body-xs-strong-font-weight);
+  white-space: nowrap;
 }
 
-.monitor-view__load,
-.monitor-view__rates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacer-8) var(--spacer-16);
-  margin: 0;
-}
-
-.monitor-view__load-item,
-.monitor-view__rate-item {
+/* 每核频率明细（#362：收进「当前频率」格的可展开区）：单列列表，不参与条形网格 */
+.monitor-view__cores--detail {
   display: flex;
   flex-direction: column;
   gap: var(--spacer-2);
+  margin-top: var(--spacer-8);
+}
+
+.monitor-view__core--detail {
+  flex-direction: row;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+  padding: 0;
+  text-align: left;
+}
+
+/* 上下文切换 / 中断（#362：从独立面板降级为 CPU 卡底部一行）：标签与读数同排，紧凑不占版面 */
+.monitor-view__rates-block {
+  grid-column: 1 / -1;
   min-width: 0;
 }
 
-.monitor-view__load-label,
+.monitor-view__rates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacer-4) var(--spacer-24);
+  margin: 0;
+}
+
+.monitor-view__rate-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacer-6);
+  min-width: 0;
+}
+
 .monitor-view__rate-label {
   color: var(--text-tertiary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
 }
 
-.monitor-view__load-value,
 .monitor-view__rate-value {
   margin: 0;
-  color: var(--text-default);
+  color: var(--text-secondary);
   font-family: var(--font-family-metric);
-  font-size: var(--body-base-font-size);
-  line-height: var(--body-base-line-height);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2138,12 +2421,11 @@ function formatEventRateWithTotal(rate: number | null | undefined, total: number
     grid-column: auto;
   }
 
-  .monitor-view__info {
-    grid-template-columns: 1fr;
-  }
-
-  .monitor-view__cpu {
-    grid-template-columns: minmax(0, 1fr);
+  /* 窄屏：主机条与 CPU 宽卡的内层块也要让回单列（宽卡本身已 `grid-column: auto`） */
+  .monitor-view__host,
+  .monitor-view__stats,
+  .monitor-view__trend {
+    grid-column: auto;
   }
 
   .monitor-view__cpu-panel--wide {

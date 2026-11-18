@@ -567,6 +567,7 @@ describe('#348 检查 1：token 对对比度', () => {
 const RUNTIME_INJECTED: Record<string, string> = {
   '--icon-url': 'components/shared/Icon.vue:11 与 Dropdown/DatePicker/TimePicker 等以 :style 注入图标 url',
   '--ds-status-fill': 'components/shared/StatusIndicator.vue:56 按进度注入填充百分比',
+  '--core-fill': 'views/MonitorView.vue 的 coreBarStyle() 按每核占用率注入柱高（#362）——值逐核不同，只能运行时定',
 }
 
 /**

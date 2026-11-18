@@ -85,10 +85,13 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     vi.restoreAllMocks()
   })
 
-  it('5 个标量指标各有一条 sparkline，维度指标（温度 / 每核 / 每盘 / 每网卡）没有', async () => {
+  it('5 个标量指标各有一条趋势，维度指标（温度 / 每核 / 每盘 / 每网卡）没有', async () => {
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(5)
+    // #362：CPU 使用率的趋势升级为宽卡内的「刻度列 + 折线」（不再是内联 sparkline 组件），
+    // 其余四个标量指标仍是内联 sparkline。5 条趋势的数据源与时间窗口径不变。
+    expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(4)
+    expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').exists()).toBe(true)
     for (const metric of SYSMON_TREND_METRIC_KEYS) {
       expect(vi.mocked(sysmonApi.getHistory).mock.calls.some(([params]) => params?.metric === metric)).toBe(true)
     }
@@ -294,10 +297,12 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     vi.restoreAllMocks()
   })
 
-  it('每核明细默认收起：只显示摘要（核数 + 最高使用率），点开展开后显示全部', async () => {
+  it('每核条形常驻（#362），每核频率明细默认收起、点开展开后显示全部', async () => {
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
+    // #362：每核使用率条形是 CPU 宽卡的主信息（一眼看形态），不再收进折叠区
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+    // 每核频率同属维度明细，仍默认收起
     expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
     const summary = wrapper.find('[data-test="monitor-cpu-detail-summary"]')
     expect(summary.exists()).toBe(true)
@@ -306,12 +311,14 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
     expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
 
     await toggle(wrapper, 'monitor-cpu-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+    // 频率明细展开后出现；条形数量不随折叠变化
     expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(16)
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
     expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('true')
 
     await toggle(wrapper, 'monitor-cpu-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
   })
 
   it('每传感器明细默认收起：卡片显示最高温作为主数值，展开后按芯片分组显示全部', async () => {
@@ -385,13 +392,14 @@ describe('MonitorView 卡片折叠（#127：维度明细默认收起）', () => 
   it('折叠状态不持久化：重新挂载（等价刷新）回到默认收起', async () => {
     const wrapper = await mountView()
     await toggle(wrapper, 'monitor-cpu-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(16)
 
     // 重新挂载 = 刷新的组件生命周期：不读写任何持久化存储，必须回到产品认为重要的默认视图
     wrapper.unmount()
     const refreshed = await mountView()
 
-    expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(0)
+    expect(refreshed.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
+    expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(16)
     expect(refreshed.find('[data-test="monitor-cpu-detail-summary"]').exists()).toBe(true)
     expect(refreshed.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
   })
@@ -462,15 +470,15 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toMatch(/\.monitor-view__grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
   })
 
-  it('CPU 内网格列数与面板数一致：显式列数，不用 auto-fit（#321）', () => {
-    // auto-fit 会被第 4 个跨列面板（grid-column: 1/-1）废掉空轨折叠，列数随宽度无限增长
-    const cpuBase = ruleBody('.monitor-view__cpu')
-    expect(cpuBase).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
-    expect(cpuBase).not.toContain('auto-fit')
-    // ≥xl 三列（与页面网格同口径）；不加 4 列档（页面主网格到 2560 也不增列）
-    expect(mediaRuleBody('@media (min-width: 1280px)', '.monitor-view__cpu'))
-      .toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/)
-    expect(source).not.toMatch(/\.monitor-view__cpu[^{]*\{[^}]*repeat\(4,/)
+  it('每核条形容器自适应：一条 auto-fit 规则覆盖 4–128 核，不写断点、不用 JS 测量（#362）', () => {
+    // #362：CPU 卡内不再是「多面板网格」，而是三块纵向排布（四数字 / 趋势 / 每核条形），
+    // 因此原来「面板数 == 列数」的断言失去意义，改为断言每核条形这一条规则的容器自适应口径。
+    const cores = ruleBody('.monitor-view__cores')
+    expect(cores).toContain('repeat(auto-fit, minmax(var(--core-cell-min-width), 1fr))')
+    // 不写断点：全文件里没有任何规则为每核网格单独改列数（一条规则覆盖 4–128 核）
+    expect(source).not.toMatch(/\.monitor-view__cores[^{]*\{[^}]*grid-template-columns:\s*repeat\(\d/)
+    // 不用 JS 测量：模板里不出现对每核网格的 clientWidth / getBoundingClientRect 计算
+    expect(source).not.toMatch(/clientWidth|getBoundingClientRect/)
   })
 
   it('长 token 只在这一处开断行，其它 list-value 不被拦腰折断（#321）', () => {
@@ -532,5 +540,122 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(switchRule).toContain('background: var(--bg-base-default)')
     // 只钉 Tab 行：header 本身不得 sticky（否则 390×844 上吃掉 90–110px 视口）
     expect(ruleInMedia(narrow, '.monitor-view__header')).not.toContain('position: sticky')
+  })
+})
+
+describe('MonitorView CPU 自适应趋势（#362：纵轴随序列变化 + 三档刻度 + 如实时间窗）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS)
+    mockHistoryAvailable()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('三档刻度标签 + 纵轴范围说明：19%→21% 的波动不被压成一条直线', async () => {
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const to = Math.floor(NOW_MS / 1000)
+      return Promise.resolve({
+        available: true,
+        level: 'raw',
+        metric: params.metric ?? 'cpu.usage_ratio',
+        from: to - 120,
+        to,
+        interval_sec: 60,
+        truncated: false,
+        series: [{
+          dimension: '',
+          points: [
+            { ts: to - 120, min: 0.19, max: 0.19, avg: 0.19, last: 0.19, n: 1 },
+            { ts: to - 60, min: 0.21, max: 0.21, avg: 0.21, last: 0.21, n: 1 },
+          ],
+        }],
+        marks: [],
+        gaps: [],
+      } satisfies SysmonHistoryAvailable)
+    })
+    const wrapper = await mountView()
+
+    const ticks = wrapper.findAll('.monitor-view__chart-tick')
+    expect(ticks).toHaveLength(3)
+    // 三档整数百分点标签，自上而下递减（上界 / 中点 / 下界）
+    const labels = ticks.map(tick => Number(tick.text().replace('%', '')))
+    expect(labels.every(value => Number.isInteger(value))).toBe(true)
+    expect(labels[0]).toBeGreaterThan(labels[1])
+    expect(labels[1]).toBeGreaterThan(labels[2])
+    // 轴范围随 19–21% 的序列收窄：绝不是 0–100 的固定轴
+    expect(labels[0] - labels[2]).toBeLessThanOrEqual(10)
+    expect(labels[0]).toBeGreaterThanOrEqual(20)
+    // 说明行必须点明「自适应，不是 0–100」——刻度不是从 0 起的轴
+    const caption = wrapper.find('[data-test="monitor-cpu-trend-caption"]').text()
+    expect(caption).toMatch(/纵轴 \d+–\d+%（自适应，不是 0–100）/)
+    // 折线在 100px 高度内用满绘图区（不是一条平线）
+    const points = wrapper.find('[data-test="monitor-sparkline-cpu"] polyline').attributes('points') ?? ''
+    const ys = points.split(' ').map(pair => Number(pair.split(',')[1]))
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(15)
+  })
+
+  it('时间窗按实际覆盖标注：未满 15 分钟不写「最近 15 分钟」（默认夹具只覆盖 2 分钟）', async () => {
+    const wrapper = await mountView()
+
+    const caption = wrapper.find('[data-test="monitor-cpu-trend-caption"]').text()
+    // 夹具历史覆盖 2 分钟（两条 60 秒桶）+ 实时点，实际跨度 ≈ 2 分钟
+    expect(caption).toContain('最近 2 分钟')
+    expect(caption).not.toContain('最近 15 分钟')
+    expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('data-window-complete')).toBe('false')
+  })
+
+  it('覆盖满 15 分钟才写「最近 15 分钟」', async () => {
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const to = Math.floor(NOW_MS / 1000)
+      return Promise.resolve({
+        available: true,
+        level: 'raw',
+        metric: params.metric ?? 'cpu.usage_ratio',
+        from: to - 15 * 60,
+        to,
+        interval_sec: 60,
+        truncated: false,
+        series: [{
+          dimension: '',
+          points: [
+            { ts: to - 15 * 60, min: 0.1, max: 0.1, avg: 0.1, last: 0.1, n: 1 },
+            { ts: to, min: 0.2, max: 0.2, avg: 0.2, last: 0.2, n: 1 },
+          ],
+        }],
+        marks: [],
+        gaps: [],
+      } satisfies SysmonHistoryAvailable)
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-cpu-trend-caption"]').text()).toContain('最近 15 分钟')
+    expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('data-window-complete')).toBe('true')
+  })
+
+  it('序列不足两个点时不渲染趋势（一个点画不出趋势），数值与每核条形照常', async () => {
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
+      const to = Math.floor(NOW_MS / 1000)
+      return Promise.resolve({
+        available: true,
+        level: 'raw',
+        metric: params.metric ?? 'cpu.usage_ratio',
+        from: to - 15 * 60,
+        to,
+        interval_sec: null,
+        truncated: false,
+        series: [{ dimension: '', points: [] }],
+        marks: [],
+        gaps: [],
+      } satisfies SysmonHistoryAvailable)
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-cpu-trend"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
   })
 })
