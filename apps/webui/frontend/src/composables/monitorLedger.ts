@@ -30,6 +30,7 @@
  */
 import {
   UNAVAILABLE_TEXT,
+  formatAge,
   formatByteRate,
   formatBytes,
   formatCount,
@@ -155,8 +156,10 @@ export interface MonitorLedgerInput {
 /**
  * 不可用原因的中文文案（契约 §2 的建议取值 + 未知原因原文兜底）。
  *
- * 这是监控页「缺数据怎么说」的**唯一**实现：台账与组注共用一份。不认识的原因原样显示而不是
- * 归并成「不可用」——把 `some_new_reason` 抹成「不可用」会让新增的采集失败原因永远不可见。
+ * 「缺数据怎么说」只有这一份映射：台账直接调用，视图侧 `MonitorView.vue` 的
+ * `unavailableDesc(metric)` 也是转调本函数（只负责先查 `availability.metrics` 拿 reason）。
+ * 不认识的原因原样显示而不是归并成「不可用」——把 `some_new_reason` 抹成「不可用」会让新增的
+ * 采集失败原因永远不可见。
  */
 export function unavailableReasonText(reason: string | undefined): string {
   if (!reason) return '当前快照未提供该指标'
@@ -196,6 +199,17 @@ function headroomText(value: number, format: (n: number) => string): string {
 function pointsHeadroomText(value: number): string {
   const rounded = Math.round(value * 10) / 10
   return headroomText(rounded, n => `${n.toFixed(1)} 点`)
+}
+
+/**
+ * 字节余量：与 `formatBytes` 同精度取整后再判符号（防浮点噪声伪造「已超 0 B」）。
+ *
+ * `total_bytes × pct / 100` 是浮点乘法，阈值上恰好卡线的机器会算出 `-0.2 B` 这类残差：
+ * 按原始值判符号就会把「刚好到阈值」报成越线。取整到整字节即与 `formatBytes` 的 `B` 档精度
+ * 一致（`Math.round(-0.2)` 为 `-0`，`-0 >= 0` 成立，落回非越线分支显示 `0 B`）。
+ */
+function bytesHeadroomText(value: number): string {
+  return headroomText(Math.round(value), formatBytes)
 }
 
 /** 取阈值：配置已到达用它，未到达回退契约默认（配置镜像到达后不跳变） */
@@ -287,7 +301,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       value: formatPercent(ratio),
       detail: `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)}`,
       thresholdText: `${memoryPct}%`,
-      headroomText: headroomText(headroom, formatBytes),
+      headroomText: bytesHeadroomText(headroom),
       historyKey: 'memory.used_ratio',
       fields: [
         { label: '总量', value: formatBytes(memory.total_bytes) },
@@ -334,7 +348,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       value: formatPercent(ratio),
       detail: `${formatBytes(swap.used_bytes)} / ${formatBytes(swap.total_bytes)}`,
       thresholdText: `${swapPct}%`,
-      headroomText: headroomText(headroom, formatBytes),
+      headroomText: bytesHeadroomText(headroom),
       historyKey: 'swap.used_ratio',
       fields: [
         { label: '总量', value: formatBytes(swap.total_bytes) },
@@ -438,7 +452,7 @@ function shmRow(shm: SysmonShmDirInfo): LedgerRow {
     ratio: null,
     value: formatBytes(shm.total_bytes),
     detail: `${formatCount(shm.page_files)} 页文件${
-      shm.oldest_file_age_sec === null ? '' : ` · 最旧 ${formatAgedays(shm.oldest_file_age_sec)}`
+      shm.oldest_file_age_sec === null ? '' : ` · 最旧 ${formatAge(shm.oldest_file_age_sec)}`
     }`,
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
@@ -447,19 +461,9 @@ function shmRow(shm: SysmonShmDirInfo): LedgerRow {
       { label: '路径', value: shm.path },
       { label: '占用', value: formatBytes(shm.total_bytes) },
       { label: '页文件数', value: formatCount(shm.page_files) },
-      { label: '最旧页文件年龄', value: formatAgedays(shm.oldest_file_age_sec) },
+      { label: '最旧页文件年龄', value: formatAge(shm.oldest_file_age_sec) },
     ],
   }
-}
-
-/** 秒 → 「N 天」，与 `formatAge` 同档口径但固定到最大档（页文件年龄跨月时读天更有意义） */
-function formatAgedays(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
-  const days = Math.floor(seconds / 86_400)
-  if (days >= 1) return `${days} 天`
-  const hours = Math.floor(seconds / 3_600)
-  if (hours >= 1) return `${hours} 小时`
-  return `${Math.floor(seconds / 60)} 分钟`
 }
 
 /** 存储组：卷（保持 store 顺序）→ 物理盘（按 device 升序）→ 共享内存目录 */
@@ -623,7 +627,7 @@ function clockRow(clock: SysmonClockInfo | null, input: MonitorLedgerInput): Led
     ratio: null,
     value: formatSignedMilliseconds(clock.offset_ms),
     detail: `误差界 ±${formatMillisecondsPlain(clock.bound_ms)} · ${clock.source || '无来源'}${
-      age === null ? '' : ` · ${formatAgedays(age)}前`
+      age === null ? '' : ` · ${formatAge(age)}前`
     }`,
     // 阈值列写两档（warn / error）：时钟的判据是「进入哪一档」，只写一档会丢掉另一档。
     thresholdText: `±${thresholds.warn_ms} / ±${thresholds.error_ms} ms`,

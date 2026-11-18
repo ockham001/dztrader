@@ -8,6 +8,7 @@ import SysmonConfigTab from '@/components/sysmon/SysmonConfigTab.vue'
 import SysmonHistoryTab from '@/components/sysmon/SysmonHistoryTab.vue'
 import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
+import { unavailableReasonText } from '@/composables/monitorLedger'
 import {
   UNAVAILABLE_TEXT,
   formatAge,
@@ -232,14 +233,9 @@ function isAvailable(metric: string): boolean {
 }
 
 function unavailableDesc(metric: string): string {
-  const reason = sysmon.availabilityOf(metric)?.reason
-  if (!reason) return '当前快照未提供该指标'
-  // reason 为契约约定的自由文案（建议取值 not_implemented/unsupported/no_permission/no_sensor/
-  // collect_failed/disabled_by_config）
-  if (reason === 'not_implemented') return '该指标将在后续版本接入'
-  if (reason === 'collect_failed') return '采集失败，暂不可用'
-  if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
-  return reason
+  // 文案映射只有一份（`composables/monitorLedger` 的 `unavailableReasonText`，台账共用）：
+  // 这里只负责先查可用性映射拿到 reason，不在视图里再写一条 if 链。
+  return unavailableReasonText(sysmon.availabilityOf(metric)?.reason)
 }
 
 // ---- CPU 总使用率 ----

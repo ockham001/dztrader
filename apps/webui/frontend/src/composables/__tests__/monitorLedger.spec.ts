@@ -16,6 +16,8 @@ import type {
   SysmonAvailabilityEntry,
   SysmonClockInfo,
   SysmonConfigPayload,
+  SysmonSnapshotPayload,
+  SysmonVolumeInfo,
 } from '@/types/generated'
 import {
   SYSMON_CLOCK_ALL_FAILED,
@@ -24,40 +26,79 @@ import {
   SYSMON_METRIC_KEYS,
   makeSysmonConfig,
   makeSysmonSnapshot,
+  type SysmonSnapshotOptions,
 } from '@/test-utils/sysmonSnapshot'
-import { useSysmonStore } from '@/stores/sysmon'
-import { createPinia, setActivePinia } from 'pinia'
 
 // #361 口径单测：台账的行构成、七列取值、阈值来源与余量口径、四类空态、行序稳定性。
 // 直接调纯函数（不 mount、不渲染），与 composables/__tests__/sysmonClock.spec.ts 同形态。
 //
-// 用 store 的 computed 作为输入源是**有意的**：视图拿到的就是这些净化后的值，若这里手搓
-// 输入对象，测试与实际调用之间就多了一层可以各自漂移的口径。
+// AC1：被测算子模块不 import vue / pinia / store，**本用例也不挂 pinia**——输入直接从夹具
+// payload 构造。视图取数走 store 的净化 computed，那层净化有 `stores/__tests__/sysmon.spec.ts`
+// 自己的用例；这里若 import store，纯模块的边界就只是纸面约定。
 
-/** 用一份快照构造 store，再取出 computed 组装台账输入（与视图的取数路径一致） */
-function ledgerFrom(
-  options: Parameters<typeof makeSysmonSnapshot>[0] = {},
-  config?: { thresholds?: Partial<SysmonConfigPayload['thresholds']>; clock?: Partial<SysmonConfigPayload['clock']> },
-) {
-  setActivePinia(createPinia())
-  const store = useSysmonStore()
-  store.applySnapshot(makeSysmonSnapshot({ resourceData: true, ...options }))
-  const cfg = makeSysmonConfig(config ?? {})
-  const input: MonitorLedgerInput = {
-    memory: store.memoryInfo,
-    swap: store.swapInfo,
-    readableVolumes: store.readableVolumes,
-    zeroCapacityVolumes: store.zeroCapacityVolumes,
-    diskIo: store.diskIo,
-    network: store.network,
-    shmDir: store.shmDirInfo,
-    clock: store.clock,
+type LedgerFixtureOptions = SysmonSnapshotOptions
+type LedgerConfig = {
+  thresholds?: Partial<SysmonConfigPayload['thresholds']>
+  clock?: Partial<SysmonConfigPayload['clock']>
+}
+
+/**
+ * 复刻 store 的卷展示序（ADR 0048：挂载深度升序 → 挂载点升序），**仅供夹具构造**。
+ *
+ * 纯模块单测不得 import store（AC1），因此这里按 `stores/sysmon.ts` 的 `volumeDepth` 同口径
+ * 做一个最小等价实现，只为把夹具 payload 排成视图会看到的顺序。
+ */
+function fixtureVolumeDepth(mount: string): number {
+  const normalized = mount.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (!normalized) return 0
+  const driveMatch = /^([A-Za-z]):(.*)$/.exec(normalized)
+  if (driveMatch) {
+    const rest = driveMatch[2]
+    return rest ? rest.split('/').filter(Boolean).length : 0
+  }
+  return normalized.split('/').filter(Boolean).length
+}
+
+function fixtureSortedVolumes(volumes: readonly SysmonVolumeInfo[]): SysmonVolumeInfo[] {
+  return [...volumes].sort((a, b) => {
+    const depthDelta = fixtureVolumeDepth(a.mount) - fixtureVolumeDepth(b.mount)
+    if (depthDelta !== 0) return depthDelta
+    return a.mount.localeCompare(b.mount)
+  })
+}
+
+/** 从夹具 payload 直接组装台账输入（不 import store / pinia） */
+function ledgerInput(
+  options: LedgerFixtureOptions = {},
+  config: LedgerConfig = {},
+  patch: Partial<MonitorLedgerInput> = {},
+): MonitorLedgerInput {
+  const snapshot: SysmonSnapshotPayload = makeSysmonSnapshot({ resourceData: true, ...options })
+  const cfg = makeSysmonConfig(config)
+  const volumes = fixtureSortedVolumes(snapshot.volumes ?? [])
+  return {
+    // 夹具 payload 与 store 净化口径自洽（内存 used = total − available、卷 used_ratio 由
+    // used/total 派出），因此直接透传；派生逻辑本身由 store 的单测锁定。
+    memory: snapshot.memory,
+    swap: snapshot.swap,
+    readableVolumes: volumes.filter(volume => volume.used_ratio !== null),
+    zeroCapacityVolumes: volumes.filter(volume => volume.used_ratio === null),
+    diskIo: snapshot.disk_io ?? [],
+    network: snapshot.network ?? [],
+    shmDir: snapshot.shm_dir,
+    clock: snapshot.clock,
     thresholds: cfg.thresholds,
     clockConfig: cfg.clock,
-    availability: store.availabilityOf,
+    availability: metric => snapshot.availability.metrics[metric],
     nowUnixMs: Date.UTC(2026, 9, 21, 15, 0, 0),
+    ...patch,
   }
-  return { groups: buildMonitorLedger(input), input, store, cfg }
+}
+
+/** 构造输入并产出三组台账（与视图的构造入口一致） */
+function ledgerFrom(options: LedgerFixtureOptions = {}, config: LedgerConfig = {}) {
+  const input = ledgerInput(options, config)
+  return { groups: buildMonitorLedger(input), input }
 }
 
 /** 取某组的全部行（组缺失时返回空数组，让断言失败而不是抛错） */
@@ -100,25 +141,8 @@ describe('buildMonitorLedger · 分组与行序（固定顺序，不按使用率
   })
 
   it('传入乱序的盘数组时仍按 device 升序排（行序稳定不依赖调用方）', () => {
-    setActivePinia(createPinia())
-    const store = useSysmonStore()
-    store.applySnapshot(makeSysmonSnapshot({ resourceData: true }))
-    const cfg = makeSysmonConfig()
-    const shuffled = [...store.diskIo].reverse()
-    const groups = buildMonitorLedger({
-      memory: store.memoryInfo,
-      swap: store.swapInfo,
-      readableVolumes: store.readableVolumes,
-      zeroCapacityVolumes: store.zeroCapacityVolumes,
-      diskIo: shuffled,
-      network: store.network,
-      shmDir: store.shmDirInfo,
-      clock: store.clock,
-      thresholds: cfg.thresholds,
-      clockConfig: cfg.clock,
-      availability: store.availabilityOf,
-      nowUnixMs: Date.now(),
-    })
+    const base = ledgerInput({ metrics: allAvailable() })
+    const groups = buildMonitorLedger({ ...base, diskIo: [...base.diskIo].reverse() })
     expect(rowsOf(groups, 'storage').map(row => row.id)).toContain('disk:nvme0n1')
     const diskIds = rowsOf(groups, 'storage').map(row => row.id).filter(id => id.startsWith('disk:'))
     expect(diskIds).toEqual(['disk:nvme0n1', 'disk:sda'])
@@ -187,10 +211,10 @@ describe('buildMonitorLedger · 阈值列只写契约里真实存在的阈值', 
     expect(rowById(groups, 'shm_dir').thresholdText).toBe(NO_THRESHOLD_TEXT)
     expect(rowById(groups, 'shm_dir').headroomText).toBe(NO_THRESHOLD_TEXT)
     const netRow = rowsOf(groups, 'network_clock').find(row => row.contractKey === 'network' && row.state === 'ok')
-    if (netRow) {
-      expect(netRow.thresholdText).toBe(NO_THRESHOLD_TEXT)
-      expect(netRow.headroomText).toBe(NO_THRESHOLD_TEXT)
-    }
+    // 先断言存在再取值：守卫式 if 会让整组断言在夹具漂移时被静默跳过（finding 6）
+    expect(netRow).toBeDefined()
+    expect(netRow!.thresholdText).toBe(NO_THRESHOLD_TEXT)
+    expect(netRow!.headroomText).toBe(NO_THRESHOLD_TEXT)
   })
 
   it('时钟阈值取生效配置的两档（不是前端常量），并同时给 warn 与 error', () => {
@@ -202,22 +226,10 @@ describe('buildMonitorLedger · 阈值列只写契约里真实存在的阈值', 
   })
 
   it('配置镜像未到达时回退契约默认值 90 / 50 / 10 / 100 / 1000（不跳变）', () => {
-    setActivePinia(createPinia())
-    const store = useSysmonStore()
-    store.applySnapshot(makeSysmonSnapshot({ resourceData: true, clock: SYSMON_CLOCK_LIVE }))
     const groups = buildMonitorLedger({
-      memory: store.memoryInfo,
-      swap: store.swapInfo,
-      readableVolumes: store.readableVolumes,
-      zeroCapacityVolumes: store.zeroCapacityVolumes,
-      diskIo: store.diskIo,
-      network: store.network,
-      shmDir: store.shmDirInfo,
-      clock: store.clock,
+      ...ledgerInput({ metrics: allAvailable(), clock: SYSMON_CLOCK_LIVE }),
       thresholds: null,
       clockConfig: null,
-      availability: store.availabilityOf,
-      nowUnixMs: Date.now(),
     })
     expect(rowById(groups, 'memory').thresholdText).toBe(`${LEDGER_DEFAULT_MEMORY_USED_PCT}%`)
     expect(rowById(groups, 'swap').thresholdText).toBe(`${LEDGER_DEFAULT_SWAP_USED_PCT}%`)
@@ -275,6 +287,25 @@ describe('buildMonitorLedger · 余量按契约阈值算（不是 70/90 展示�
     const { groups } = ledgerFrom({ metrics: allAvailable(), clock: SYSMON_CLOCK_LIVE })
     // SYSMON_CLOCK_LIVE: offset 12.5 ms，error 1000 → 1000 − 12.5 = 987.5
     expect(rowById(groups, 'clock').headroomText).toBe('987.5 ms')
+  })
+
+  it('字节余量按展示精度判符号：阈值上恰好卡线不得显示「已超 0 B」（finding 2 复现）', () => {
+    // 8 GiB × 90% = 7730941132.8，用 7730941133 让差值略负（−0.19999980926513672）。
+    // 按原始浮点判符号会把「刚好到阈值」报成越线，一个精度噪声伪装成结论。
+    const totalBytes = 8 * 1024 ** 3
+    const { groups } = ledgerFrom({
+      metrics: allAvailable(),
+      memory: {
+        total_bytes: totalBytes,
+        available_bytes: totalBytes - 7730941133,
+        used_bytes: 7730941133,
+        used_ratio: 7730941133 / totalBytes,
+        cached_bytes: null,
+        buffers_bytes: null,
+      },
+    })
+    expect(rowById(groups, 'memory').headroomText).toBe('0 B')
+    expect(rowById(groups, 'memory').headroomText).not.toBe('已超 0 B')
   })
 })
 
