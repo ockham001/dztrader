@@ -18,14 +18,18 @@ import { TD_UNAVAILABLE_TEXT, formatTdPrice } from './tdOrderView'
 import type { TdPositionRow } from '@/types/api'
 
 /**
- * 方向在游标坐标里的全序（契约 rest §2.9.2）：Short(-1) < Net(0) < Long(1)，
- * `Unknown` 排在最后（服务端的枚举码 INT8_MIN 也最小，契约 rest §2.9.3 的 Unknown 取值）。
+ * 方向在展示排序里的全序（契约 rest §2.9.2）：Short < Unknown < Net < Long。
+ *
+ * 值是**序号**而不是枚举码：`positions.direction` 是 TEXT affinity 列，服务端
+ * `ORDER BY direction ASC` 走**文本序** `'-1' < '-128' < '0' < '1'`，即
+ * Short("-1") → Unknown("-128") → Net("0") → Long("1")。前端照抄的必须是这个**可见顺序**
+ * （枚举数值序是 Unknown(-128) < Short(-1) < Net(0) < Long(1)，与文本序不同）。
  */
 const DIRECTION_ORDER: Record<TdPositionRow['direction'], number> = {
-  Short: -1,
-  Net: 0,
-  Long: 1,
-  Unknown: -2,
+  Short: 0,
+  Unknown: 1,
+  Net: 2,
+  Long: 3,
 }
 
 /**
@@ -40,7 +44,8 @@ export function tdPositionBusinessKey(row: TdPositionRow): string {
 
 /**
  * 服务端列表顺序（契约 rest §2.9.2）：`(account_id, instrument_id, direction)` 升序，
- * direction 全序 Short < Net < Long。字符串用原生比较（服务端 SQLite TEXT 为字节序；
+ * direction 顺序 Short < Unknown < Net < Long（服务端该列是 TEXT affinity，见
+ * {@link DIRECTION_ORDER} 的说明）。字符串用原生比较（服务端 SQLite TEXT 为字节序；
  * 账户/合约 ID 为 ASCII，与 UTF-16 码元序一致），不做 locale 排序。
  */
 export function comparePositionRows(a: TdPositionRow, b: TdPositionRow): number {

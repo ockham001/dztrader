@@ -437,6 +437,26 @@ TEST_F(TdPositionsQueryTest, OrderIsAccountThenInstrumentThenDirectionAscending)
     EXPECT_EQ(body->at("items")[3].at("account_id").get<std::string>(), "ACC2");
 }
 
+TEST_F(TdPositionsQueryTest, DirectionOrderFollowsStorageTextNotEnumNumericOrder) {
+    // positions.direction 是 TEXT 列（schema_catalog），所以 `ORDER BY direction ASC` 走
+    // 文本序：'-1' < '-128' < '0' < '1' = Short < Unknown < Net < Long。契约 rest §2.9.2
+    // 已按**实际行为**写明这一点；本用例把它钉住，防止后人「按枚举数值序」改契约或改 SQL。
+    create_db();
+    insert_position({.instrument_id = "rb2601", .direction = 1, .seq = 1});     // Long
+    insert_position({.instrument_id = "rb2601", .direction = 0, .seq = 2});     // Net
+    insert_position({.instrument_id = "rb2601", .direction = -1, .seq = 3});    // Short
+    insert_position({.instrument_id = "rb2601", .direction = -128, .seq = 4});  // Unknown
+
+    const auto body = run({});
+    ASSERT_TRUE(body.has_value());
+    std::vector<std::string> order;
+    for (const auto& item : body->at("items")) {
+        order.push_back(item.at("direction").get<std::string>());
+    }
+    EXPECT_EQ(order, (std::vector<std::string>{"Short", "Unknown", "Net", "Long"}))
+        << "text-affinity column sorts '-128' after '-1'; the contract says so explicitly";
+}
+
 TEST_F(TdPositionsQueryTest, CursorPaginatesWithoutGapsOrDuplicates) {
     create_db();
     for (int i = 0; i < 5; ++i) {

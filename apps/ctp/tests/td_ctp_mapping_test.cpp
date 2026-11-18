@@ -419,6 +419,19 @@ TEST(ToInputOrderFieldTest, UnknownPositionEffectFails) {
     EXPECT_FALSE(to_input_order_field(req, ctx).has_value());
 }
 
+TEST(ToInputOrderFieldTest, UnknownDirectionFails) {
+    // 报单方向只有买/卖两种: 未知方向兜成 Sell 会把一张「方向读不懂」的单发给交易所.
+    OrderBuildContext ctx{"acc1", 1, 10, "CFFEX"};
+    for (DzDirection dir : {DZ_DIRECTION_UNKNOWN, DZ_DIRECTION_NET}) {
+        auto req = make_order_req(DZ_PRICE_LIMIT, dir, DZ_POSITION_EFFECT_OPEN, 1);
+        EXPECT_FALSE(to_input_order_field(req, ctx).has_value())
+            << "direction=" << static_cast<int>(dir) << " must not be mapped silently";
+    }
+    auto req =
+        make_order_req(DZ_PRICE_LIMIT, static_cast<DzDirection>(99), DZ_POSITION_EFFECT_OPEN, 1);
+    EXPECT_FALSE(to_input_order_field(req, ctx).has_value());
+}
+
 // ============================================================================
 // to_order_record
 // ============================================================================
@@ -602,6 +615,19 @@ TEST(ToOrderRecordTest, KnownCodesHaveNoUnknownEvidence) {
     EXPECT_TRUE(unknown.empty());
 }
 
+TEST(ToOrderRecordTest, UnknownDirectionBecomesUnknown) {
+    // 回报方向只有买/卖两种: 读不懂的方向不得猜成 SHORT (净敞口符号会反向).
+    auto of = make_order_field();
+    of.Direction = 'Z';
+
+    UnknownEnumSink unknown;
+    auto r = to_order_record(of, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.direction, DZ_DIRECTION_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryDirection);
+    EXPECT_EQ(unknown.items[0].raw_char, 'Z');
+}
+
 // ============================================================================
 // to_trade_record
 // ============================================================================
@@ -667,6 +693,19 @@ TEST(ToTradeRecordTest, UnknownOffsetBecomesUnknownNotOpen) {
     EXPECT_EQ(r.base.position_effect, DZ_POSITION_EFFECT_UNKNOWN);
     ASSERT_EQ(unknown.count, 1u);
     EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryPositionEffect);
+    EXPECT_EQ(unknown.items[0].raw_char, 'Z');
+}
+
+TEST(ToTradeRecordTest, UnknownDirectionBecomesUnknown) {
+    // 成交方向同理: 未知方向不得猜成 SHORT.
+    auto tf = make_trade_field();
+    tf.Direction = 'Z';
+
+    UnknownEnumSink unknown;
+    auto r = to_trade_record(tf, "acc1", kTradingDay, &unknown);
+    EXPECT_EQ(r.base.direction, DZ_DIRECTION_UNKNOWN);
+    ASSERT_EQ(unknown.count, 1u);
+    EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryDirection);
     EXPECT_EQ(unknown.items[0].raw_char, 'Z');
 }
 

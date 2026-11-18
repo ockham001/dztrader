@@ -166,8 +166,10 @@ public:
     void set_trading_day(int32_t trading_day);
 
     /// 重新发起持仓/资金补查 (登录查询失败降级后的定时补查路径).
-    /// 仅 Ready 且此前查询未成功时生效; 无会话/非 Ready 时 no-op.
-    void resync_account_data();
+    /// @param force true = 忽略「此前查询已成功」这一道门 (用于未知枚举后强制用柜台
+    ///   权威数据覆盖本地不确定状态); 在途查询与收尾状态机的互斥检查仍然生效,
+    ///   避免并发双查询链. 无会话/非 Ready 时 no-op.
+    void resync_account_data(bool force = false);
 
     /// 设置持仓周期重查间隔 (秒); <=0 回退 60. 已 Ready 时立即重排定时器
     /// (配置热更新传播路径, 由 TdApi 在配置变更后调用).
@@ -175,6 +177,11 @@ public:
 
     /// 数据是否已完整 (持仓/资金双查询都成功). 供 TdApi 定时补查节流.
     bool data_query_ok() const noexcept { return data_query_ok_; }
+
+    /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false).
+    /// 与 data_query_ok() 分开暴露: 后者只在登录收尾时合成, 会话未登录时恒为 false,
+    /// 拿它断言「未知方向按查询失败处置」会恒真 (issue #367 审查 F9).
+    bool position_query_ok() const noexcept { return position_query_ok_; }
 
     /// 未知枚举累计计数 (按种类). TdApi 在拼状态帧 ext 时读取.
     const UnknownEnumCounts& unknown_enum_counts() const noexcept { return unknown_enum_counts_; }
@@ -225,7 +232,10 @@ private:
     /// 持久化 OrderRecord (enqueue 到 PersistWriter, 含 CTP 扩展字段).
     void persist_order(const OrderRecord& r);
 
-    /// 上报一条回报里的未知枚举: 每个种类计一次数 + ERROR 日志 + notify_ui (popup=false).
+    /// 上报一条回报里的未知枚举: 每个种类计一次数 + ERROR 日志 + notify_ui (popup=false)
+    /// + 触发一次资金/持仓重查 (issue #367 上报口径).
+    /// 通知与重查按最小间隔限频 (kUnknownEnumReportIntervalS): 未知枚举可能每条回报都带,
+    /// 逐条通知会刷爆前端通知环、逐条重查会打满柜台流控; 间隔内只计数与记日志.
     /// 只记日志不猜值; 调用方已把对应字段落成 UNKNOWN.
     void report_unknown_enums(const UnknownEnumSink& unknown);
 
@@ -305,6 +315,11 @@ private:
     uint64_t seq_counter_ = 0;
     /// 未知枚举累计计数 (按种类; 见 UnknownEnumCounts). 由 report_unknown_enums 递增.
     UnknownEnumCounts unknown_enum_counts_;
+    /// 未知枚举「通知 + 强制重查」的最小间隔 (5 分钟, 与 docs/components/dztd_ctp.md
+    /// 通知分级的持续性异常限频同量级). 间隔内的未知枚举只计数与记日志.
+    static constexpr int64_t kUnknownEnumReportIntervalS = 300;
+    /// 上次「通知 + 强制重查」的时刻 (steady_clock 秒; 0 = 尚未发生过).
+    int64_t unknown_enum_last_report_s_ = 0;
     /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
     std::unique_ptr<ReportFilter> report_filter_;
     /// 每单成交累计 (委托成交均价的唯一累源; 登录日装载时由当日成交重建, 契约 §3).

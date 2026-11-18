@@ -46,17 +46,21 @@ describe('tdPositionBusinessKey / comparePositionRows（契约 rest §2.9.2/§2.
     expect(tdPositionBusinessKey(long)).not.toBe(tdPositionBusinessKey(short))
   })
 
-  it('顺序 = (account, instrument, direction) 升序，direction 全序 Short < Net < Long', () => {
+  it('顺序 = (account, instrument, direction) 升序，direction 顺序 Short < Unknown < Net < Long', () => {
     const rows = [
       position({ account_id: 'b', instrument_id: 'a', direction: 'Long' }),
       position({ account_id: 'a', instrument_id: 'b', direction: 'Short' }),
       position({ account_id: 'a', instrument_id: 'a', direction: 'Long' }),
       position({ account_id: 'a', instrument_id: 'a', direction: 'Net' }),
       position({ account_id: 'a', instrument_id: 'a', direction: 'Short' }),
+      position({ account_id: 'a', instrument_id: 'a', direction: 'Unknown' }),
     ]
     const sorted = [...rows].sort(comparePositionRows)
+    // Unknown 排在 Short 之后、Net 之前：服务端 positions.direction 是 TEXT 列，
+    // 文本序 '-1' < '-128' < '0' < '1'（与枚举数值序不同，见 comparePositionRows 的说明）。
     expect(sorted.map(r => `${r.account_id}/${r.instrument_id}/${r.direction}`)).toEqual([
       'a/a/Short',
+      'a/a/Unknown',
       'a/a/Net',
       'a/a/Long',
       'a/b/Short',

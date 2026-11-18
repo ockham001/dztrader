@@ -72,6 +72,14 @@ int64_t sync_order_ref(int64_t current_ref, int64_t ctp_max) noexcept;
 /// 解析 CTP MaxOrderRef 字符串为 int64. 非数字/空返回 0.
 int64_t parse_max_order_ref(const char* max_order_ref) noexcept;
 
+/// 未知枚举「通知 + 强制重查」的限频判定 (issue #367 上报口径).
+/// 未知枚举可能每条回报都带: 逐条通知会刷爆前端通知环, 逐条强制重查会打满柜台流控.
+/// @param now_s 当前单调时钟秒
+/// @param last_report_s 上次上报时刻 (<=0 = 尚未上报过)
+/// @param interval_s 最小间隔秒
+/// @return true = 本次应当通知并触发一次资金/持仓重查
+bool unknown_enum_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept;
+
 }  // namespace dztrader::ctp
 
 #endif  // DZTRADER_CTP_TD_ACCOUNT_SESSION_PURE_H_

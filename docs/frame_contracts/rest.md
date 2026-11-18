@@ -187,7 +187,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 查询作用域 = 端点 + accounts + 该端点的日期口径（委托/成交为当前交易日；持仓/资金为各账户锚点日集合）。作用域变化必须丢弃 cursor 从首页重拉。
 - 分页**禁止 OFFSET 深翻页**；各端点的游标坐标固定如下：
   - 委托 / 成交：坐标 = 与 sort_key 同源的 (排序时间, 业务唯一键) 降序；下一页从该坐标**之后**（排序更旧）继续。
-  - 持仓：坐标 = (account_id, instrument_id, direction) 升序元组，direction 全序 Short(-1) < Net(0) < Long(1)；下一页从该元组之后继续。
+  - 持仓：坐标 = (account_id, instrument_id, direction) 升序元组，下一页从该元组之后继续。`direction` 的实际排序序是**存储文本序**（`positions.direction` 为 TEXT 列）：`Short("-1") < Unknown("-128") < Net("0") < Long("1")`——注意它与枚举数值序（Unknown(-128) < Short(-1) < Net(0) < Long(1)）不同，`"-128"` 在字典序上大于 `"-1"`。游标比较与 `ORDER BY` 使用同一序，因此分页仍然无重复、无遗漏；读端不得假定 direction 的排序等于枚举数值序。
   - 资金（trading_accounts）：不适用 cursor——不分页，返回全部已登记账户（next_cursor 恒 null，limit/cursor 被忽略），按 account_id 升序。
 - 同一记录在翻页过程中不得重复或遗漏；翻页期间新写入的委托/成交只会出现在首页之前，不影响已取页面。
 
@@ -328,7 +328,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | date | string | 该账户锚点日 "YYYYMMDD"（不是全局当前交易日） |
 | instrument_id | string | 合约代码 |
 | exchange_id | string | 交易所 ID |
-| direction | string | 持仓方向（Long / Short / Net） |
+| direction | string | 持仓方向（Long / Short / Net / Unknown） |
 | volume | int | 总持仓（含今仓与昨仓） |
 | frozen_volume | int | 冻结量 |
 | today_volume | int | 今仓 |

@@ -36,6 +36,57 @@ int64_t epoch_ms() {
         .count();
 }
 
+/// 拒单路径 (on_rsp_order_insert / on_err_rtn_order_insert) 的输入枚举映射.
+/// 未知的开平/价格类型/方向一律落成对应的 UNKNOWN 并登记到 `unknown`: 这两条路径构造的是
+/// 本地拒单回报, 把不认识的值兜成 Open/Limit/Sell 会让下游看到一张「正常」的委托——
+/// 方向猜错还会让净敞口符号反向 (issue #367 方案 §二). 由调用方随后统一上报.
+void map_input_order_enums(const CThostFtdcInputOrderField& in,
+                           OrderRecord& rec,
+                           UnknownEnumSink& unknown) {
+    switch (in.CombOffsetFlag[0]) {
+        case THOST_FTDC_OF_Open:
+            rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+            break;
+        case THOST_FTDC_OF_Close:
+            rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
+            break;
+        case THOST_FTDC_OF_CloseToday:
+            rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
+            break;
+        case THOST_FTDC_OF_CloseYesterday:
+            rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
+            break;
+        default:
+            unknown.add(kUnknownCategoryPositionEffect, in.CombOffsetFlag[0]);
+            rec.base.position_effect = DZ_POSITION_EFFECT_UNKNOWN;
+            break;
+    }
+    switch (in.OrderPriceType) {
+        case THOST_FTDC_OPT_AnyPrice:
+            rec.base.price_type = DZ_PRICE_MARKET;
+            break;
+        case THOST_FTDC_OPT_LimitPrice:
+            rec.base.price_type = DZ_PRICE_LIMIT;
+            break;
+        default:
+            unknown.add(kUnknownCategoryPriceType, in.OrderPriceType);
+            rec.base.price_type = DZ_PRICE_UNKNOWN;
+            break;
+    }
+    switch (in.Direction) {
+        case THOST_FTDC_D_Buy:
+            rec.base.direction = DZ_DIRECTION_LONG;
+            break;
+        case THOST_FTDC_D_Sell:
+            rec.base.direction = DZ_DIRECTION_SHORT;
+            break;
+        default:
+            unknown.add(kUnknownCategoryDirection, in.Direction);
+            rec.base.direction = DZ_DIRECTION_UNKNOWN;
+            break;
+    }
+}
+
 }  // namespace
 
 AccountSession::AccountSession(std::string account_id,
@@ -593,7 +644,14 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
         refresh_order_avg(rpt.base.order_id);
 
         // 盘中持仓增量 (基准就绪且非缓冲重放; 重放成交已含在查询快照中)
-        if (position_baseline_ready_ && !replaying_) {
+        // 未知开平标志不参与持仓增量: 当成平仓会平掉对方真实持仓, 当开仓会凭空放大敞口
+        // (apply_trade 内部也有同一道防御, 这里判定是为了留下可定位的 ERROR 证据).
+        if (rpt.base.position_effect == DZ_POSITION_EFFECT_UNKNOWN) {
+            SPDLOG_ERROR(
+                "td rtn trade skipped for unknown position effect | account={} instrument={} "
+                "trade_id={} volume={}",
+                account_id_, f.trade.InstrumentID, f.trade.TradeID, f.trade.Volume);
+        } else if (position_baseline_ready_ && !replaying_) {
             if (auto* h = ensure_holding(rpt.base.instrument_id, std::string(rpt.base.exchange_id));
                 h != nullptr) {
                 auto ch = h->apply_trade(rpt.base);
@@ -650,6 +708,11 @@ void AccountSession::place_order(const DzOrderReq& req) {
                      std::format("不支持的开平标志: {}", static_cast<int>(req.position_effect)));
         return;
     }
+    // `DzOrderReq.direction` 只允许 LONG/SHORT: 报单方向必须明确买或卖, 没有第三种可能.
+    // 注意 NET(0) 不是合法的报单方向 —— 它是**内部持仓侧标签**(见 td_position.h 的
+    // ActiveOrderUpdate.direction, 默认值 DZ_DIRECTION_NET, 表示「未标注/净」), 由
+    // td_offset_converter 以内部入参形式消费, 不走本接口. UNKNOWN(-128) 表示柜台数据坏了.
+    // 两者都必须在本地拒单, 绝不发往 CTP.
     if (req.direction != DZ_DIRECTION_LONG && req.direction != DZ_DIRECTION_SHORT) {
         SPDLOG_WARN(
             "td place_order rejected: unsupported direction | account={} order_id={} "
@@ -794,11 +857,14 @@ void AccountSession::set_trading_day(int32_t trading_day) {
     SPDLOG_INFO("td trading day updated | account={} trading_day={}", account_id_, trading_day);
 }
 
-void AccountSession::resync_account_data() {
+void AccountSession::resync_account_data(bool force) {
     // Task 6 (spec §4.2 查询失败降级补查): 登录时持仓/资金查询失败已转 Ready,
     // 由 td_api_scheduled 定时任务 60s 间隔调用直至成功.
     // 仅 Ready 且此前查询未成功时生效 (成功一次后不再重复补查).
-    if (!is_ready() || data_query_ok_) {
+    // force=true 跳过「此前已成功」这道门: 未知枚举发生后即便 data_query_ok_ 为真也要
+    // 用柜台权威数据覆盖本地不确定状态 (issue #367 上报口径). 在途查询与收尾阶段的
+    // 互斥检查照旧 — 并发双查询链会污染累加器与冻结对账.
+    if (!is_ready() || (data_query_ok_ && !force)) {
         return;
     }
     if (position_query_in_flight_) return;  // 与周期重查互斥, 避免双查询链
@@ -1200,6 +1266,17 @@ void AccountSession::write_trade_rpt(const DzTradeReport& rpt) {
 }
 
 void AccountSession::report_unknown_enums(const UnknownEnumSink& unknown) {
+    if (unknown.empty()) {
+        return;
+    }
+    // 限频: 未知枚举可能每条回报都带 (某合约状态一直是新值). 逐条 notify 会刷爆前端通知环,
+    // 逐条强制重查会打满柜台流控 (CTP 1 次/秒). 间隔内只计数 + 记日志, 不通知不重查.
+    const int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    const bool report_due =
+        unknown_enum_report_due(now_s, unknown_enum_last_report_s_, kUnknownEnumReportIntervalS);
+    bool first_of_batch = true;
     for (size_t i = 0; i < unknown.count; ++i) {
         const UnknownEnumInfo& info = unknown.items[i];
         // 按种类分开计数: 「我们没跟上柜台」与「柜台给了坏数据」处置不同 (issue #367 故事 8).
@@ -1224,6 +1301,14 @@ void AccountSession::report_unknown_enums(const UnknownEnumSink& unknown) {
         // 原始值用数值码记录 (CTP 侧枚举是 char 字面量, 直接格式化不可打印字符会丢证据).
         SPDLOG_ERROR("td unknown enum | account={} category={} raw_code={} count={}", account_id_,
                      info.category, static_cast<int>(info.raw_char), count);
+        if (!report_due) {
+            continue;  // 计数与日志已记, 通知与重查在间隔内跳过
+        }
+        // 同一批里只通知一次: 一条回报可能同时带多个未知枚举, 逐条通知是重复刷屏.
+        if (!first_of_batch) {
+            continue;
+        }
+        first_of_batch = false;
         if (notify_) {
             try {
                 notify_(DZ_NOTIFY_ERROR,
@@ -1236,6 +1321,16 @@ void AccountSession::report_unknown_enums(const UnknownEnumSink& unknown) {
             }
         }
     }
+    if (!report_due || first_of_batch) {
+        return;
+    }
+    // 上报口径 (#367): 触发一次资金/持仓重查, 用柜台权威数据覆盖本地不确定状态.
+    // 未知枚举恰恰发生在正常运行时 (data_query_ok_ 为真), 所以必须走 force 绕过那道门;
+    // 查询是异步的 (只发请求), 不阻塞主线程. 若此刻已有查询在途 (或收尾链未到 kDone),
+    // resync 内部互斥会跳过 —— 那意味着柜台权威数据**正在路上** (或在途登录链稍后会查),
+    // 无需重复发起, 也仍然按一次上报计 (节流窗口照常推进, 避免在途窗口里反复尝试).
+    unknown_enum_last_report_s_ = now_s;
+    resync_account_data(/*force=*/true);
 }
 
 void AccountSession::reject_order(const DzOrderReq& req, const std::string& reason) {
@@ -1678,36 +1773,10 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
         copy_string(rec.base.instrument_id, f.input_order->InstrumentID, true);
         copy_string(rec.base.account_id, account_id_.c_str(), true);
         copy_string(rec.base.exchange_id, f.input_order->ExchangeID, true);
-        rec.base.direction =
-            (f.input_order->Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
-        switch (f.input_order->CombOffsetFlag[0]) {
-            case THOST_FTDC_OF_Open:
-                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
-                break;
-            case THOST_FTDC_OF_Close:
-                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
-                break;
-            case THOST_FTDC_OF_CloseToday:
-                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
-                break;
-            case THOST_FTDC_OF_CloseYesterday:
-                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
-                break;
-            default:
-                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
-                break;
-        }
-        switch (f.input_order->OrderPriceType) {
-            case THOST_FTDC_OPT_AnyPrice:
-                rec.base.price_type = DZ_PRICE_MARKET;
-                break;
-            case THOST_FTDC_OPT_LimitPrice:
-                rec.base.price_type = DZ_PRICE_LIMIT;
-                break;
-            default:
-                rec.base.price_type = DZ_PRICE_LIMIT;
-                break;
-        }
+        // 未知开平/价格类型/方向落成 UNKNOWN 并上报, 不兜成 Open/Limit/Sell.
+        UnknownEnumSink unknown;
+        map_input_order_enums(*f.input_order, rec, unknown);
+        report_unknown_enums(unknown);
         rec.base.status = DZ_ORDER_REJECTED;
         rec.base.price = f.input_order->LimitPrice;
         rec.base.volume = f.input_order->VolumeTotalOriginal;
@@ -1804,36 +1873,10 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
         copy_string(rec.base.instrument_id, f.input_order->InstrumentID, true);
         copy_string(rec.base.account_id, account_id_.c_str(), true);
         copy_string(rec.base.exchange_id, f.input_order->ExchangeID, true);
-        rec.base.direction =
-            (f.input_order->Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
-        switch (f.input_order->CombOffsetFlag[0]) {
-            case THOST_FTDC_OF_Open:
-                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
-                break;
-            case THOST_FTDC_OF_Close:
-                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE;
-                break;
-            case THOST_FTDC_OF_CloseToday:
-                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_TODAY;
-                break;
-            case THOST_FTDC_OF_CloseYesterday:
-                rec.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
-                break;
-            default:
-                rec.base.position_effect = DZ_POSITION_EFFECT_OPEN;
-                break;
-        }
-        switch (f.input_order->OrderPriceType) {
-            case THOST_FTDC_OPT_AnyPrice:
-                rec.base.price_type = DZ_PRICE_MARKET;
-                break;
-            case THOST_FTDC_OPT_LimitPrice:
-                rec.base.price_type = DZ_PRICE_LIMIT;
-                break;
-            default:
-                rec.base.price_type = DZ_PRICE_LIMIT;
-                break;
-        }
+        // 未知开平/价格类型/方向落成 UNKNOWN 并上报, 不兜成 Open/Limit/Sell.
+        UnknownEnumSink unknown;
+        map_input_order_enums(*f.input_order, rec, unknown);
+        report_unknown_enums(unknown);
         rec.base.status = DZ_ORDER_REJECTED;
         rec.base.price = f.input_order->LimitPrice;
         rec.base.volume = f.input_order->VolumeTotalOriginal;

@@ -283,3 +283,24 @@ TEST(ParseMaxOrderRefTest, NonDigitReturnsZero) {
     EXPECT_EQ(parse_max_order_ref("abc"), 0);
     EXPECT_EQ(parse_max_order_ref("12abc"), 0);
 }
+
+// ============================================================================
+// unknown_enum_report_due (未知枚举通知/重查限频, issue #367 上报口径)
+// ============================================================================
+
+TEST(UnknownEnumReportDueTest, NeverReportedIsDue) {
+    // 0 / 负值 = 尚未上报过 -> 首次必发 (否则计数器涨了但界面永远收不到通知).
+    EXPECT_TRUE(unknown_enum_report_due(1000, 0, 300));
+    EXPECT_TRUE(unknown_enum_report_due(1000, -5, 300));
+}
+
+TEST(UnknownEnumReportDueTest, WithinIntervalIsThrottled) {
+    // 间隔内只计数不通知不重查: 未知枚举可能每条回报都带, 逐条重查会打满柜台流控.
+    EXPECT_FALSE(unknown_enum_report_due(1299, 1000, 300));
+    EXPECT_FALSE(unknown_enum_report_due(1000, 1000, 300));
+}
+
+TEST(UnknownEnumReportDueTest, AtOrBeyondIntervalIsDue) {
+    EXPECT_TRUE(unknown_enum_report_due(1300, 1000, 300));
+    EXPECT_TRUE(unknown_enum_report_due(2000, 1000, 300));
+}

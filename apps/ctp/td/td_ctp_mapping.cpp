@@ -177,8 +177,19 @@ std::optional<CThostFtdcInputOrderField> to_input_order_field(
 
     f.RequestID = ctx.request_id;
 
-    // 买卖方向: DZ LONG(1) -> CTP Buy('0'), DZ SHORT(-1) -> CTP Sell('1')
-    f.Direction = (req.direction == DZ_DIRECTION_LONG) ? THOST_FTDC_D_Buy : THOST_FTDC_D_Sell;
+    // 买卖方向: DZ LONG(1) -> CTP Buy('0'), DZ SHORT(-1) -> CTP Sell('1').
+    // 其余取值 (含 NET/UNKNOWN) 返回失败: 报单方向只有买/卖两种, 兜成 Sell 会把一张
+    // 「方向读不懂」的单当成卖单发给交易所. 由调用方本地拒单.
+    switch (req.direction) {
+        case DZ_DIRECTION_LONG:
+            f.Direction = THOST_FTDC_D_Buy;
+            break;
+        case DZ_DIRECTION_SHORT:
+            f.Direction = THOST_FTDC_D_Sell;
+            break;
+        default:
+            return std::nullopt;
+    }
 
     // 开平标志: CombOffsetFlag[0]. 未知开平不得兜成 Open —— 那会把平仓单变成开仓单,
     // 凭空放大敞口; 返回失败由调用方本地拒单.
@@ -246,8 +257,22 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
     copy_to_dz(r.base.account_id, account_id.c_str());
     copy_to_dz(r.base.exchange_id, o.ExchangeID);
 
-    // 买卖方向
-    r.base.direction = (o.Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
+    // 买卖方向: 未知方向不得猜成 SHORT (那会把一张卖单谎报成买单, 净敞口符号反向).
+    // 编译期防线对本函数无效 (CTP 侧是 char 字面量, -Wswitch 永不生效), 只能运行期暴露.
+    switch (o.Direction) {
+        case THOST_FTDC_D_Buy:
+            r.base.direction = DZ_DIRECTION_LONG;
+            break;
+        case THOST_FTDC_D_Sell:
+            r.base.direction = DZ_DIRECTION_SHORT;
+            break;
+        default:
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryDirection, o.Direction);
+            }
+            r.base.direction = DZ_DIRECTION_UNKNOWN;
+            break;
+    }
 
     // 开平标志 (CombOffsetFlag[0]). 未知值不得兜成 OPEN (平仓成交记成开仓会放大敞口).
     switch (o.CombOffsetFlag[0]) {
@@ -344,7 +369,21 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
     copy_to_dz(r.base.exchange_id, t.ExchangeID);
     copy_to_dz(r.base.trade_id, t.TradeID);
 
-    r.base.direction = (t.Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
+    // 买卖方向: 未知方向不得猜成 SHORT (同 to_order_record, 净敞口符号不得反向).
+    switch (t.Direction) {
+        case THOST_FTDC_D_Buy:
+            r.base.direction = DZ_DIRECTION_LONG;
+            break;
+        case THOST_FTDC_D_Sell:
+            r.base.direction = DZ_DIRECTION_SHORT;
+            break;
+        default:
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryDirection, t.Direction);
+            }
+            r.base.direction = DZ_DIRECTION_UNKNOWN;
+            break;
+    }
     // 未知开平标志不得兜成 OPEN: 平仓成交记成开仓会让持仓凭空放大.
     switch (t.OffsetFlag) {
         case THOST_FTDC_OF_Open:
@@ -410,7 +449,15 @@ int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept {
     }
 }
 
-/// CTP OptionsType -> DZ_OPTION_* (0=非期权)
+/// CTP OptionsType -> DZ_OPTION_* (0=非期权).
+/// 这里刻意保持 `default -> 0` 而不是引入「未知」取值, 理由（#367 审查 F11 复核结论）:
+/// - CTP 只定义了两个取值 (CallOptions '1' / PutOptions '2'); **非期权合约（绝大多数）**
+///   的 OptionsType 本就既不是 '1' 也不是 '2', 返回 0 对它们是正确答案而不是兜底猜测.
+/// - `DzOptionType` 只有 PUT(-1)/CALL(1), 0 是契约与 DB 列默认值明文的「非期权」
+///   （《帧契约：合约》· 期权段）, 没有第三个合法取值可用; 新增 UNKNOWN 要同时改策略可见
+///   头文件、DB 列默认值、契约与前端, 属独立票, 不在本票「4 个枚举」范围内.
+/// - 信息不会丢失: 是否期权由 `product_class`（DZ_PRODUCT_OPTION）独立表达, 读端不会因为
+///   option_type=0 就把一张期权当成期货.
 int32_t option_type_from_ctp(TThostFtdcOptionsTypeType type) noexcept {
     switch (type) {
         case THOST_FTDC_CP_CallOptions:

@@ -142,6 +142,22 @@
 - 账户级细状态 `RTN_STATUS` 按 `instance_id = <网关名>:<account_id>` 推送（总则 §5 复合键例外），该复合键只用于帧路由与 dzweb 镜像分区，**账户身份仍是 `account_id`**。
 - `date` 是**会话交易日**（登录响应确定），断线（`Disconnected`，SDK 自动重连中）期间不清空——它是本交易日全部业务数据的时间锚；进入 `Idle` 才清 `date` / `login_time` / `ext.sys_version`（`ext.api_version` 是进程生命周期常量，保留）。
 - 日切（会话交易日变化，含日切后重新登录）以新 `date` 全量推送；前端以字段值变化为准，不自行推断清空时机。
+- 未知枚举计数挂在 `ext.unknown_*`（口径见《帧契约：交易网关状态》§2.3）。
+
+### 未知枚举：为什么没有编译期防线（issue #367 故事 12）
+
+本仓**放弃**用编译器抓「枚举新增值没被映射」，因为 `-Wswitch` 在本仓的两个层面都**永不生效**（实测确认，不是可以选的）：
+
+- **CTP 侧**：枚举是 `char` 的 typedef 加 `char` 字面量宏（如 `#define THOST_FTDC_OST_AllTraded '0'`）。对 `char` 做 `switch` 时 `-Wswitch` 永远不可能触发——这是硬限制，换编译器/换开关都不行。
+- **自有枚举**：`DzOrderStatus` / `DzDirection` / `DzPriceType` / `DzPositionEffect` 等是 `typedef int8_t` + 宏，不是真正的枚举类型。实测即使显式打开 `-Wswitch -Wswitch-enum` 并去掉 `default`，也**零告警**。
+
+因此本仓的映射层策略是**运行期显式化 + 计数可观测**，而不是编译期检测：
+
+- 回报方向（柜台 → 平台）：读不懂的值落成对应的 `DZ_*_UNKNOWN`，原始字符登记到 `UnknownEnumSink`，由 `AccountSession::report_unknown_enums` 记 ERROR 日志 + 按种类计数（进 `RTN_STATUS.ext`）+ `notify_ui(popup=false)` + 触发一次资金/持仓重查；通知与重查限频（5 分钟内最多一次），计数不受限频影响。
+- 出账方向（平台 → 柜台）：映射函数返回 `std::nullopt`，`place_order` 本地拒单——**绝不**兜底成某个看起来最像的真实值（兜底等于向交易所发错误指令：止损单变限价单、平仓单变开仓单）。
+- 未知开平标志的成交/委托**不参与持仓增量与活动委托表**（当开仓会放大敞口，当平仓会平掉对方真实持仓，两者都是撒谎）。
+
+要拿到编译期防线，需要把自有枚举改成真枚举（`enum : int8_t`）——那是独立的源码级不兼容变更，另票（#368）并需 ADR；**CTP 侧无论如何都拿不到**。改动映射层时请照此约定：`default` 只有两种合法行为——返回 `UNKNOWN` 并上报，或者返回失败由调用方拒单。
 
 ## 持久化（trade.db）
 

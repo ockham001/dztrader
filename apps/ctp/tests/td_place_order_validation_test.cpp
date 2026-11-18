@@ -43,6 +43,7 @@
 #include "common/ctp_events.h"
 #include "td/td_account_session.h"
 #include "td/td_events.h"
+#include "td/td_position.h"
 #include "td/td_persist_writer.h"
 #include "test_temp_dir.h"
 #include "test_util.h"
@@ -146,12 +147,6 @@ protected:
         return 0;
     }
 
-    void raw_exec(const std::string& sql) {
-        SQLite::Database db(db_path_, SQLite::OPEN_READWRITE);
-        db.exec("PRAGMA busy_timeout=5000");
-        db.exec(sql);
-    }
-
     /// 等 persist 队列排空且末批已提交（确定性同步点，不用 sleep）。
     void flush_persist() {
         const uint64_t token = persist_->enqueue_flush_signal();
@@ -246,10 +241,15 @@ TEST_F(TdPlaceOrderValidationTest, UnsupportedPriceTypeIsRejectedLocally) {
 }
 
 TEST_F(TdPlaceOrderValidationTest, UnsupportedPositionEffectIsRejectedLocally) {
-    for (DzPositionEffect pe :
-         {DZ_POSITION_EFFECT_UNKNOWN, DZ_POSITION_EFFECT_AUTO, static_cast<DzPositionEffect>(99)}) {
-        session_->place_order(make_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, pe,
-                                       /*order_id=*/100 + static_cast<DzOrderId>(pe + 128)));
+    // 显式常量而不是 `100 + pe + 128`: 依赖 UNKNOWN == -128 这个实现细节, 哨兵值一改
+    // order_id 就会变负/撞键, 失败现场与真实原因无关 (issue #367 审查 F5).
+    const std::vector<std::pair<DzPositionEffect, DzOrderId>> cases = {
+        {DZ_POSITION_EFFECT_UNKNOWN, 100},
+        {DZ_POSITION_EFFECT_AUTO, 101},
+        {static_cast<DzPositionEffect>(99), 102},
+    };
+    for (const auto& [pe, order_id] : cases) {
+        session_->place_order(make_req(DZ_PRICE_LIMIT, DZ_DIRECTION_LONG, pe, order_id));
         flush_persist();
     }
 
@@ -266,12 +266,14 @@ TEST_F(TdPlaceOrderValidationTest, UnsupportedPositionEffectIsRejectedLocally) {
               0);
 }
 
-TEST_F(TdPlaceOrderValidationTest, UnsupportedDirectionIsRejectedLocally) {
-    for (DzDirection dir : {DZ_DIRECTION_NET, DZ_DIRECTION_UNKNOWN, static_cast<DzDirection>(99)}) {
-        session_->place_order(make_req(DZ_PRICE_LIMIT, dir, DZ_POSITION_EFFECT_OPEN,
-                                       /*order_id=*/200 + static_cast<DzOrderId>(dir + 128)));
-        flush_persist();
-    }
+TEST_F(TdPlaceOrderValidationTest, UnknownDirectionIsRejectedLocally) {
+    // UNKNOWN = 柜台数据坏了: 方向读不懂的单绝不能发往交易所.
+    // 显式常量理由同 UnsupportedPositionEffectIsRejectedLocally.
+    session_->place_order(make_req(DZ_PRICE_LIMIT, DZ_DIRECTION_UNKNOWN, DZ_POSITION_EFFECT_OPEN,
+                                   /*order_id=*/201));
+    session_->place_order(make_req(DZ_PRICE_LIMIT, static_cast<DzDirection>(99),
+                                   DZ_POSITION_EFFECT_OPEN, /*order_id=*/202));
+    flush_persist();
 
     const auto frames = read_frames();
     ASSERT_FALSE(frames.empty());
@@ -280,9 +282,30 @@ TEST_F(TdPlaceOrderValidationTest, UnsupportedDirectionIsRejectedLocally) {
         EXPECT_EQ(view.type(), DZ_FRAME_ORDER_REPORT);
         EXPECT_EQ(view.payload<DzOrderReport>().status, DZ_ORDER_REJECTED);
     }
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 2);
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE status <> " +
                          std::to_string(DZ_ORDER_REJECTED)),
               0);
+}
+
+TEST_F(TdPlaceOrderValidationTest, NetDirectionIsRejectedLocally) {
+    // NET 不是「数据坏了」, 而是**语义上不是报单方向**: 内部持仓侧标签 (td_position.h 的
+    // ActiveOrderUpdate.direction 默认值) 被误当成报单方向传进来时同样必须本地拒单,
+    // 但理由与 UNKNOWN 不同, 故与上面的用例分开 (issue #367 审查 F5).
+    session_->place_order(make_req(DZ_PRICE_LIMIT, DZ_DIRECTION_NET, DZ_POSITION_EFFECT_OPEN,
+                                   /*order_id=*/203));
+    flush_persist();
+
+    const auto frames = read_frames();
+    ASSERT_FALSE(frames.empty());
+    for (const auto& frame : frames) {
+        const shm::FrameView view(frame.get());
+        EXPECT_EQ(view.type(), DZ_FRAME_ORDER_REPORT);
+        EXPECT_EQ(view.payload<DzOrderReport>().status, DZ_ORDER_REJECTED);
+    }
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 1);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders WHERE remark LIKE '不支持的方向%'"), 1)
+        << "net direction must be rejected by the direction gate, not by readiness";
 }
 
 TEST_F(TdPlaceOrderValidationTest, ValidEnumsPassTheEnumerationGate) {
@@ -313,11 +336,13 @@ TEST_F(TdPlaceOrderValidationTest, ValidEnumsPassTheEnumerationGate) {
 // ============================================================================
 
 TEST_F(TdPlaceOrderValidationTest, UnknownPositionDirectionKeepsLastKnownSnapshot) {
-    // 先把上次已知快照种进库（当日既有多头持仓）。
-    raw_exec(
-        "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, volume,"
-        " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
-        " VALUES ('acc1','20261009','IF2506','CFFEX',1,2,0,1,1,3900.0,10,'dztd_test')");
+    // 先跑一轮**正常**查询：既建立「上次已知快照」（多头 2
+    // 手），又把成功标志立起来，后面「未知方向让本轮失败」才可证伪 （会话未登录时
+    // position_query_ok_ 构造即 false，直接断言它为 false 恒真）。
+    session_->on_rsp_qry_investor_position(
+        position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, THOST_FTDC_PD_Long, /*is_last=*/true));
+    flush_persist();
+    EXPECT_TRUE(session_->position_query_ok()) << "a fully readable snapshot must count as success";
 
     // 一轮里同时有已知多头和方向未知的行：整轮快照不可信 -> 不应用。
     session_->on_rsp_qry_investor_position(
@@ -335,7 +360,7 @@ TEST_F(TdPlaceOrderValidationTest, UnknownPositionDirectionKeepsLastKnownSnapsho
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 2)
         << "an unparseable row must not turn a known position into a phantom flat one";
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='rb2510'"), 0);
-    EXPECT_FALSE(session_->data_query_ok())
+    EXPECT_FALSE(session_->position_query_ok())
         << "an unreadable snapshot counts as a failed query so the resync chain retries";
 
     // 计数按种类独立累加，且 notify 不弹窗（持续性异常不打断用户操作）。
@@ -348,19 +373,35 @@ TEST_F(TdPlaceOrderValidationTest, UnknownPositionDirectionKeepsLastKnownSnapsho
         }
     }
     EXPECT_TRUE(saw_notify) << "unknown enum must raise a non-popup error notification";
+
+    // 限频（issue #367 审查 F11）：未知枚举可能每条回报都带，同一间隔内只通知一次、
+    // 只触发一次重查；计数仍然逐条累加（否则运维看不到洪水规模）。
+    const size_t notify_count = notifications_.size();
+    session_->on_rsp_qry_investor_position(
+        position_row("rb2510", 5, 5, 5.0 * 10.0 * 3500.0, 'Z', /*is_last=*/true));
+    flush_persist();
+    EXPECT_EQ(notifications_.size(), notify_count)
+        << "a second unknown enum within the throttle window must only bump the counter";
+    EXPECT_EQ(session_->unknown_enum_counts().direction, 2u);
 }
 
-TEST_F(TdPlaceOrderValidationTest, UnknownOrderStatusRoundTripDoesNotFireAndForget) {
+TEST_F(TdPlaceOrderValidationTest, UnknownOrderStatusKeepsOrderActiveAndFrozen) {
     // CTP 回报里出现未知状态：落成 DZ_ORDER_UNKNOWN 并计数，绝不改成 REJECTED/CANCELLED
-    // （那会谎称「这笔单没成立」，而它可能正挂在交易所）。
+    // （那会谎称「这笔单没成立」，而它可能正挂在交易所）；且不得被当作终态而释放冻结。
+    // 先建好持仓基准（多头 2 手，今 1）：一张平多 1 手的挂单会冻结 long 1 手。
+    session_->on_rsp_qry_investor_position(
+        position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, THOST_FTDC_PD_Long, /*is_last=*/true));
+    flush_persist();
+    ASSERT_EQ(scalar_int("SELECT frozen_volume FROM positions WHERE instrument_id='IF2506'"), 0);
+
     OnRtnOrderField f{};
     std::strcpy(f.order.BrokerID, "9999");
     std::strcpy(f.order.InvestorID, "acc1");
     std::strcpy(f.order.InstrumentID, "IF2506");
     std::strcpy(f.order.OrderRef, "000000000001");
     std::strcpy(f.order.ExchangeID, "CFFEX");
-    f.order.Direction = THOST_FTDC_D_Buy;
-    f.order.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
+    f.order.Direction = THOST_FTDC_D_Sell;  // 卖平多
+    f.order.CombOffsetFlag[0] = THOST_FTDC_OF_Close;
     f.order.OrderPriceType = THOST_FTDC_OPT_LimitPrice;
     f.order.OrderStatus = 'Z';  // 不认识的柜台状态
     f.order.LimitPrice = 3900.0;
@@ -373,6 +414,13 @@ TEST_F(TdPlaceOrderValidationTest, UnknownOrderStatusRoundTripDoesNotFireAndForg
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 1);
     EXPECT_EQ(scalar_int("SELECT status FROM orders"), DZ_ORDER_UNKNOWN);
     EXPECT_EQ(session_->unknown_enum_counts().order_status, 1u);
+    // 未知状态不是终态：该结论是「冻结不释放」的判据，两侧都断言才算钉住。
+    EXPECT_FALSE(is_terminal_order_status(DZ_ORDER_UNKNOWN))
+        << "unknown status must never be terminal, otherwise the frozen position is released";
+    // 活动委托仍在 -> 平多 1 手仍冻结 long（若被当终态处理，这里会回 0 = 凭空释放冻结）。
+    EXPECT_EQ(scalar_int("SELECT frozen_volume FROM positions WHERE instrument_id='IF2506'"), 1)
+        << "an active close order with unreadable status must keep its frozen volume";
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 2);
 }
 
 }  // namespace

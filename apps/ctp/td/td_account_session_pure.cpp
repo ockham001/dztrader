@@ -114,4 +114,12 @@ int64_t parse_max_order_ref(const char* max_order_ref) noexcept {
     }
 }
 
+bool unknown_enum_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept {
+    // 从未上报过 (含初始 0 与负值) -> 立即上报; 否则看是否已过最小间隔.
+    if (last_report_s <= 0) {
+        return true;
+    }
+    return now_s - last_report_s >= interval_s;
+}
+
 }  // namespace dztrader::ctp

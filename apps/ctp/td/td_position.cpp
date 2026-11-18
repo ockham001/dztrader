@@ -14,6 +14,14 @@ bool same_side(const PositionSide& a, const PositionSide& b) noexcept {
            a.frozen_yd == b.frozen_yd;
 }
 
+/// 该开平标志是否「平仓」(会冻结/释放对侧持仓).
+/// UNKNOWN 不算平仓: 读不懂的开平标志既不能当开仓 (凭空放大敞口) 也不能当平仓
+/// (平掉对方真实持仓), 两种猜测都是撒谎 (issue #367 方案 §二).
+bool is_close_effect(DzPositionEffect effect) noexcept {
+    return effect == DZ_POSITION_EFFECT_CLOSE || effect == DZ_POSITION_EFFECT_CLOSE_TODAY ||
+           effect == DZ_POSITION_EFFECT_CLOSE_YESTDAY;
+}
+
 void add_open(PositionSide& s, const DzTradeReport& t) {
     int64_t old = s.volume();
     if (old <= 0 || s.price <= 0.0) {
@@ -107,6 +115,13 @@ SideChange PositionHolding::apply_query_side(DzDirection dir,
 
 SideChange PositionHolding::apply_trade(const DzTradeReport& trade) {
     if (trade.volume <= 0) return {};
+    // 未知开平标志不参与持仓增量: 落到下面的 close_side 会把对侧真实持仓平掉,
+    // 当开仓又会凭空放大敞口。判定在调用侧更早发生 (on_rtn_trade 已记 ERROR + 计数),
+    // 这里只是防御性第二道, 不改持仓也不改冻结.
+    if (!is_close_effect(trade.position_effect) &&
+        trade.position_effect != DZ_POSITION_EFFECT_OPEN) {
+        return {};
+    }
     const PositionSide lb = long_;
     const PositionSide sb = short_;
     if (trade.direction == DZ_DIRECTION_LONG) {
@@ -134,7 +149,13 @@ SideChange PositionHolding::apply_order(const ActiveOrderUpdate& order) {
     const PositionSide lb = long_;
     const PositionSide sb = short_;
     if (is_terminal_order_status(order.status) || order.effect == DZ_POSITION_EFFECT_OPEN) {
+        // 终态必须释放冻结 (状态本身是可读的), 开仓本来就不冻结.
         active_orders_.erase(order.order_ref);
+    } else if (!is_close_effect(order.effect)) {
+        // 读不懂的开平且未终态: 不得进表 —— 既有的 else 支会把它当「非开仓」按 direction
+        // 冻结对侧持仓, 等于用猜测的语义占用可用持仓. 保留既有条目 (不抹掉已知的合法冻结):
+        // 过度冻结会挡住下单, 而错误释放会让已经挂着的平仓单失去保护, 后者更危险.
+        return {};
     } else {
         active_orders_[order.order_ref] =
             ActiveOrder{order.direction, order.effect, order.volume, order.volume_traded};
@@ -150,6 +171,8 @@ SideChange PositionHolding::rebuild_active_orders(const std::vector<ActiveOrderU
     for (const auto& o : orders) {
         if (o.order_ref.empty() || o.instrument_id != instrument_id_) continue;
         if (o.direction != DZ_DIRECTION_LONG && o.direction != DZ_DIRECTION_SHORT) continue;
+        // 同 apply_order: 未知开平不进活动委托表 (否则按「非开仓」冻结对侧).
+        if (!is_close_effect(o.effect) && o.effect != DZ_POSITION_EFFECT_OPEN) continue;
         if (is_terminal_order_status(o.status) || o.effect == DZ_POSITION_EFFECT_OPEN) {
             continue;
         }

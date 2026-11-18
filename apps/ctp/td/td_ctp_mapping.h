@@ -62,8 +62,10 @@ struct UnknownEnumInfo {
     char raw_char = '\0';            ///< 柜台原始字符 (CTP 侧枚举是 char 字面量)
 };
 
-/// 一条回报里可能同时出现多个未知枚举 (开平 + 价格类型 + 状态), 定长收集避免 noexcept
-/// 路径分配. 超出容量的取证丢弃 (计数器仍由调用方按条计数).
+/// 一条回报里可能同时出现多个未知枚举 (方向 + 开平 + 价格类型 + 状态), 定长收集避免
+/// noexcept 路径分配. **超出容量的取证丢弃且不计数**(report_unknown_enums 的计数正是遍历
+/// 本 sink): 当前 kCapacity=4 已覆盖单条回报的最坏情况 (to_order_record 最多同时产出
+/// direction + position_effect + price_type + status 四条), 溢出不发生.
 struct UnknownEnumSink {
     static constexpr size_t kCapacity = 4;
 
@@ -99,10 +101,10 @@ std::optional<OrderTypeTriplet> ORDERTYPE_VT2CTP(DzPriceType t) noexcept;
 // ============================================================================
 
 /// DZ 下单请求 -> CTP InputOrderField (设计 §12.3).
-/// 不支持的 price_type / position_effect 返回 nullopt —— 出账方向**绝不兜底**
+/// 不支持的 price_type / position_effect / direction 返回 nullopt —— 出账方向**绝不兜底**
 /// (兜底等于把错误指令发给交易所), 由调用方本地拒单.
 /// - CombOffsetFlag[0] 由 req.position_effect 映射
-/// - Direction 由 req.direction 映射
+/// - Direction 由 req.direction 映射 (只接受 LONG/SHORT; NET 属内部持仓侧标签, 不是报单方向)
 /// - OrderPriceType/TimeCondition/VolumeCondition 由 ORDERTYPE_VT2CTP 决定
 /// - OrderRef 由 ctx.order_ref 转为 12 位字符串
 /// - FOK 模拟: MinVolume = req.volume (配合 CV 实现"全部成交否则撤销")
@@ -116,7 +118,7 @@ std::optional<CThostFtdcInputOrderField> to_input_order_field(
 /// is_external 留 0, 由 AccountSession 根据 OrderRefMap 命中情况覆写.
 /// volume_canceled 留 0 (CThostFtdcOrderField 无此字段), AccountSession 在
 /// on_rtn_order 中根据 OrderStatus 推导: CANCELLED 状态时 = volume - volume_traded.
-/// 未知的开平/价格类型/状态一律落成对应的 UNKNOWN 枚举, 原始字符登记到 `unknown`.
+/// 未知的方向/开平/价格类型/状态一律落成对应的 UNKNOWN 枚举, 原始字符登记到 `unknown`.
 OrderRecord to_order_record(const CThostFtdcOrderField& o,
                             const std::string& account_id,
                             int32_t trading_day,
