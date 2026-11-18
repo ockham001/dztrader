@@ -428,6 +428,11 @@ function rowDimension(row: LedgerRow): string {
   return rest.join(':')
 }
 
+/** 网卡行的方向（`rx` / `tx`）：明细段的 data-test 用它拼出 `monitor-network-rx-errors` 等 */
+function directionTestId(row: LedgerRow): string {
+  return row.id.split(':')[2] ?? ''
+}
+
 /** 状态点旁的文字：正常/警戒/危险（`ok` 行）或四类空态各自的短标签——状态不得只靠颜色 */
 function rowStateTag(row: LedgerRow): string {
   return row.state === 'ok' ? row.levelText : row.stateLabel
@@ -1141,7 +1146,15 @@ const cpuTrendAriaLabel = computed(
               <!-- ② 指标名 + 契约键 -->
               <span class="monitor-view__ledger-name">
                 <span class="monitor-view__ledger-label" :title="row.label">{{ row.label }}</span>
-                <span class="monitor-view__ledger-key">{{ row.contractKey }}</span>
+                <span class="monitor-view__ledger-key">
+                  {{ row.contractKey }}
+                  <span
+                    v-for="badge in row.badges"
+                    :key="badge"
+                    class="ds-tag monitor-view__ledger-badge"
+                    data-test="monitor-network-virtual"
+                  >{{ badge }}</span>
+                </span>
               </span>
 
               <!-- ③ 量程轨道：填充比例由 `--ledger-fill` 注入（与 CPU 每核柱同一形态）。
@@ -1157,21 +1170,42 @@ const cpuTrendAriaLabel = computed(
 
               <!-- ④ 当前值：有 historyKey 的行是按钮（跳历史视图并预选该指标，#325 的 title/aria 口径）；
                    空态行的值列是「—」——**不是 0**，四类空态的文字在明细列与状态点旁给出。 -->
-              <span class="monitor-view__ledger-value" :data-test="rowHasReading(row) ? rowValueTestId(row) : undefined">
+              <!-- 等级同时写在值槽上（行级 data-level 之外）：数值自身的着色锚点是这一个格，
+                   与旧卡片的 `.monitor-view__metric-row[data-level]` 同一口径（等级为 null 时
+                   属性被省略，不套任何状态色）。 -->
+              <span class="monitor-view__ledger-value" :data-level="row.level">
                 <button
                   v-if="row.state === 'ok' && row.historyKey !== null"
                   type="button"
                   class="monitor-view__value-btn"
+                  :data-test="rowValueTestId(row)"
                   :title="rowHistoryTitle(row)"
                   :aria-label="rowHistoryAriaLabel(row)"
                   @click="openRowHistory(row)"
                 >{{ row.value }}</button>
+                <!-- 非可点读数也带同一个钩子（`ok` 但没有历史入口 / `unavailable`）：值槽是「读到的
+                     当前值」这一事实的锚点，空态槽（empty/disabled/none）不提供它——那里没有读数。 -->
+                <span
+                  v-else-if="rowHasReading(row)"
+                  :data-test="rowValueTestId(row)"
+                >{{ rowValueText(row) }}</span>
                 <template v-else>{{ rowValueText(row) }}</template>
               </span>
 
               <!-- ⑤ 明细：`ok` 行是一行明细；空态行是四类空态的说明（互不混淆，都不产出数字） -->
               <span class="monitor-view__ledger-detail" :data-test="row.state === 'ok' ? 'ledger-detail' : 'row-state'">
-                <template v-if="row.state === 'ok'">{{ row.detail }}</template>
+                <template v-if="row.state === 'ok'">
+                  <!-- 有分段形态的行（网卡：错误 / 丢弃各自可寻址）逐段渲染；其余行一句话。 -->
+                  <!-- 分段之间只用列间距分隔，不插入「·」标点：标点会进可读文本，
+                       让同一事实在无障碍朗读里多读一个符号。 -->
+                  <span
+                    v-for="part in row.detailParts"
+                    :key="part.id"
+                    class="monitor-view__ledger-detail-part"
+                    :data-test="`monitor-network-${directionTestId(row)}-${part.id}`"
+                  >{{ part.text }}</span>
+                  <template v-if="row.detailParts.length === 0">{{ row.detail }}</template>
+                </template>
                 <template v-else>{{ rowStateNote(row) }}</template>
               </span>
 
@@ -1237,7 +1271,7 @@ const cpuTrendAriaLabel = computed(
                     :data-label="field.label"
                   >
                     <dt class="monitor-view__ledger-field-label">{{ field.label }}</dt>
-                    <dd class="monitor-view__ledger-field-value">{{ field.value }}</dd>
+                    <dd class="monitor-view__ledger-field-value" data-test="ledger-field-value">{{ field.value }}</dd>
                   </div>
                 </dl>
               </div>
@@ -2106,6 +2140,10 @@ const cpuTrendAriaLabel = computed(
 
 .monitor-view__ledger-row[data-level='danger'] .monitor-view__ledger-value {
   color: var(--status-error-default);
+}
+
+.monitor-view__ledger-detail-part + .monitor-view__ledger-detail-part {
+  margin-left: var(--spacer-8);
 }
 
 .monitor-view__ledger-detail {

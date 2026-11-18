@@ -87,6 +87,19 @@ export interface LedgerField {
   value: string
 }
 
+/**
+ * 明细列里可以被单独寻址的一段（目前只有网卡的「错误」与「丢弃」两项）。
+ *
+ * 为什么要拆段而不是只给一句 `detail`：网卡行的明细要**速率与累计量并列**
+ * （`0.0/s（累计 3）`：速率反映本窗口，累计量反映是否曾经发生过），而错误与丢弃是
+ * 两个独立事实。把它们拼成一句就无法分别断言/分别着色，也没法各自带 tooltip。
+ */
+export interface LedgerDetailPart {
+  /** 段标识（视图据此给 `data-test`），如 `errors` / `drops` */
+  id: string
+  text: string
+}
+
 /** 台账的一行：行内容即七列的取值，视图只负责摆放 */
 export interface LedgerRow {
   /** 稳定标识（`v-for` 的 `:key` 与测试断言用），形如 `memory` / `volume:/data` / `nic:eno1:rx` */
@@ -123,8 +136,17 @@ export interface LedgerRow {
   headroomText: string
   /** 非 null 时该行数值可点，跳历史视图并预选此指标（契约 §6.1） */
   historyKey: string | null
+  /** 明细列的分段形态；空数组 = 明细列就是一句 {@link detail}（多数行如此） */
+  detailParts: LedgerDetailPart[]
   /** 展开后的完整明细 */
   fields: LedgerField[]
+  /**
+   * 行级标记（如虚拟网卡的「虚拟」）。空数组 = 无标记。
+   *
+   * 为什么放在纯函数层：标记来自 payload 字段（`network[].is_virtual`），而「这一行是不是
+   * 虚拟网卡」是一个关于数据的事实，不是排版决定。视图只负责把它渲染成标签，不重新判断。
+   */
+  badges: string[]
 }
 
 /** 台账的一个分组 */
@@ -284,7 +306,9 @@ function blankRow(
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
+    detailParts: [],
     fields: [],
+    badges: [],
   }
 }
 
@@ -340,6 +364,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       thresholdText: `${memoryPct}%`,
       headroomText: bytesHeadroomText(headroom),
       historyKey: 'memory.used_ratio',
+      detailParts: [],
       fields: [
         { label: '总量', value: formatBytes(memory.total_bytes) },
         { label: '已用（总量 − 可用）', value: formatBytes(memory.used_bytes) },
@@ -347,6 +372,7 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
         { label: '缓存（可回收）', value: formatBytes(memory.cached_bytes) },
         { label: '缓冲（内核元数据）', value: formatBytes(memory.buffers_bytes) },
       ],
+      badges: [],
     })
   }
 
@@ -388,11 +414,13 @@ function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
       thresholdText: `${swapPct}%`,
       headroomText: bytesHeadroomText(headroom),
       historyKey: 'swap.used_ratio',
+      detailParts: [],
       fields: [
         { label: '总量', value: formatBytes(swap.total_bytes) },
         { label: '已用', value: formatBytes(swap.used_bytes) },
         { label: '剩余', value: formatBytes(Math.max(0, swap.total_bytes - swap.used_bytes)) },
       ],
+      badges: [],
     })
   }
 
@@ -435,12 +463,14 @@ function volumeRow(volume: SysmonVolumeInfo, freePct: number): LedgerRow {
     thresholdText: `${freePct}% 空闲`,
     headroomText: pointsHeadroomText(headroom),
     historyKey: null,
+    detailParts: [],
     fields: [
       { label: '挂载点', value: volume.mount },
       { label: '总量', value: formatBytes(total) },
       { label: '已用', value: formatBytes(used) },
       { label: '可用', value: total === null || used === null ? UNAVAILABLE_TEXT : formatBytes(total - used) },
     ],
+    badges: [],
   }
 }
 
@@ -466,6 +496,7 @@ function diskRow(disk: SysmonDiskIoInfo): LedgerRow {
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
+    detailParts: [],
     fields: [
       { label: '读吞吐', value: formatByteRate(disk.read_bytes_per_sec) },
       { label: '写吞吐', value: formatByteRate(disk.write_bytes_per_sec) },
@@ -475,6 +506,7 @@ function diskRow(disk: SysmonDiskIoInfo): LedgerRow {
       { label: '队列深度', value: formatDecimal(disk.queue_depth) },
       { label: '忙碌占比', value: formatPercent(ratio) },
     ],
+    badges: [],
   }
 }
 
@@ -501,12 +533,17 @@ function shmRow(shm: SysmonShmDirInfo): LedgerRow {
     // `shm_dir.total_bytes`）。它没有**阈值**（没有总容量分母），但「可看历史」与「有阈值」
     // 是两件事，不能因为前者缺失就把历史入口一并删掉。
     historyKey: 'shm_dir.total_bytes',
+    detailParts: [],
     fields: [
       { label: '路径', value: shm.path },
       { label: '占用', value: formatBytes(shm.total_bytes) },
       { label: '页文件数', value: formatCount(shm.page_files) },
-      { label: '最旧页文件年龄', value: formatAge(shm.oldest_file_age_sec) },
+      // 无页文件时 `oldest_file_age_sec` 为 null：该行不渲染（不是「0 秒」，也不是「不可用」）
+      ...(shm.oldest_file_age_sec === null
+        ? []
+        : [{ label: '最旧页文件年龄', value: formatAge(shm.oldest_file_age_sec) }]),
     ],
+    badges: [],
   }
 }
 
@@ -604,7 +641,13 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
     ratio: null,
     value: formatByteRate(rate),
     // 累计错误与丢弃是这张卡的风险信号，放在明细里让它不点开也可见（不是藏在展开里）。
-    detail: `错 ${formatCount(errorsTotal)} 累计 · 丢 ${formatCount(dropsTotal)} 累计`,
+    // 速率与累计量并列：速率反映本窗口（0 是合法值），累计量反映是否曾经发生过。
+    detail: `错 ${formatEventRate(errorsPerSec)}（累计 ${formatCount(errorsTotal)}）`
+      + ` · 丢 ${formatEventRate(dropsPerSec)}（累计 ${formatCount(dropsTotal)}）`,
+    detailParts: [
+      { id: 'errors', text: `错 ${formatEventRate(errorsPerSec)}（累计 ${formatCount(errorsTotal)}）` },
+      { id: 'drops', text: `丢 ${formatEventRate(dropsPerSec)}（累计 ${formatCount(dropsTotal)}）` },
+    ],
     thresholdText: NO_THRESHOLD_TEXT,
     headroomText: NO_THRESHOLD_TEXT,
     historyKey: null,
@@ -612,12 +655,13 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
       { label: `${dirLabel}速率`, value: formatByteRate(rate) },
       { label: `${dirLabel}错误速率`, value: formatCountPerSecOf(errorsPerSec) },
       { label: `${dirLabel}丢弃速率`, value: formatCountPerSecOf(dropsPerSec) },
-      { label: `${dirLabel}字节（累计）`, value: formatCount(bytesTotal) },
+      { label: `${dirLabel}字节（累计）`, value: formatBytes(bytesTotal) },
       { label: `${dirLabel}包数（累计）`, value: formatCount(packetsTotal) },
       { label: `${dirLabel}错误（累计）`, value: formatCount(errorsTotal) },
       { label: `${dirLabel}丢弃（累计）`, value: formatCount(dropsTotal) },
       { label: '虚拟网卡', value: nic.is_virtual ? '是（不由硬件设备支撑）' : '否' },
     ],
+    badges: nic.is_virtual ? ['虚拟'] : [],
   }
 }
 
@@ -625,6 +669,14 @@ function nicRow(nic: SysmonNetworkInfo, direction: 'rx' | 'tx'): LedgerRow {
 function formatCountPerSecOf(value: number | null): string {
   if (value === null) return UNAVAILABLE_TEXT
   return `${value.toFixed(1)}/s`
+}
+
+/**
+ * 错误 / 丢弃的**速率**（不含累计量）：null（首次采样 / 计数器重置）写「不可用」而不是 0。
+ * 0 是合法真实值（本窗口确实没有增量），因此不能把 null 折成 0。
+ */
+function formatEventRate(value: number | null): string {
+  return formatCountPerSecOf(value)
 }
 
 /**
@@ -679,7 +731,9 @@ function clockRow(clock: SysmonClockInfo | null, input: MonitorLedgerInput): Led
     thresholdText: `±${thresholds.warn_ms} / ±${thresholds.error_ms} ms`,
     headroomText: errorHeadroom === null ? NO_THRESHOLD_TEXT : `${errorHeadroom.toFixed(1)} ms`,
     historyKey: null,
+    detailParts: [],
     fields,
+    badges: [],
   }
 }
 
