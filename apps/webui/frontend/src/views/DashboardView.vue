@@ -6,6 +6,12 @@ import { processStateText, processStateColor } from '@/composables/useProcessSta
 import { formatSignedVolume, formatTdDate, positionDetailTexts } from '@/composables/tdPositionView'
 import { TD_POSITION_DETAIL_COLUMNS } from '@/composables/tdPositionView'
 import {
+  tdPanelEmptyText,
+  tdPanelState,
+  tdPanelUnknownBannerText,
+  type TdPanelState,
+} from '@/composables/tdPanelState'
+import {
   formatDepositWithdraw,
   formatFundDateLabel,
   formatTdMoney,
@@ -187,6 +193,60 @@ const fundAggregate = computed<string>(() => (
     ? '0/0'
     : `${fundsStore.onlineCount}/${fundsStore.totalAccounts}`
 ))
+
+// === 交易面板空态状态机（#358，契约 webui-ws §5 第 13 条）===
+// 评审实测（2026-11-18 仪表盘评审 P0-1）：`/api/td/accounts` 回 available:false 而
+// `/api/td/positions` 回 available:true + items:[] 时，屏幕渲染成「暂无持仓 + 绿 0/0」——
+// 「无法确认数据」被说成「空仓正常」。判定抽到 `composables/tdPanelState` 纯函数里，
+// 两个面板消费同一个状态机（五态互斥，优先级 degraded → loading → error → no-accounts → empty）。
+//
+// 「账户全集」的取法（各面板按其 store 的账户真相源）：
+// - 持仓：`accounts`（在线 ∪ 已返回行的 account_id，契约 webui-ws §5 第 11 条）；
+// - 资金：`rows`（一行 = 一个已登记账户，含离线与 has_data:false，契约 rest §2.9.4）。
+// 两者都并入 `onlineAccounts`：信封声明有在线账户时，即使行集为空也是「已知账户，无数据」。
+// 这个兜底在稳态下是冗余的（store 保证账户全集 ⊇ 在线集合），保留是为了覆盖基线翻页的
+// 中间窗口——`loadBaseline` 逐页 await 期间先写 `onlineAccounts`、翻完才重建账户全集，
+// 那一瞬「在线集合非空而账户全集还是空的」确实成立。
+
+/** 持仓面板是否已知账户（账户全集或在线集合非空） */
+const positionHasAccounts = computed<boolean>(
+  () => positionsStore.accounts.length > 0 || positionsStore.onlineAccounts.length > 0,
+)
+
+/** 资金面板是否已知账户（资金行集合即账户全集，含离线；信封在线集合兜底，理由同上） */
+const fundHasAccounts = computed<boolean>(
+  () => fundsStore.rows.length > 0 || fundsStore.onlineAccounts.length > 0,
+)
+
+/** 持仓面板空态状态（仅在无行可渲染时消费；有行时空态槽位不渲染） */
+const positionPanelState = computed<TdPanelState>(() => tdPanelState({
+  available: positionsStore.available,
+  loading: positionsStore.loading,
+  initialized: positionsStore.initialized,
+  error: positionsStore.error,
+  hasAccounts: positionHasAccounts.value,
+}))
+
+/** 资金面板空态状态（同上） */
+const fundPanelState = computed<TdPanelState>(() => tdPanelState({
+  available: fundsStore.available,
+  loading: fundsStore.loading,
+  initialized: fundsStore.initialized,
+  error: fundsStore.error,
+  hasAccounts: fundHasAccounts.value,
+}))
+
+/** 持仓空态槽位文案（降级 / 加载中 / 加载失败 / 持仓未知 / 暂无持仓 五选一） */
+const positionEmptyText = computed<string>(() => tdPanelEmptyText(positionPanelState.value, 'position'))
+
+/** 资金空态槽位文案（同上，资金口径） */
+const fundEmptyText = computed<string>(() => tdPanelEmptyText(fundPanelState.value, 'fund'))
+
+/** 持仓未知态提示条文案（no-accounts 时渲染，中性色） */
+const positionUnknownBanner = computed<string>(() => tdPanelUnknownBannerText('position'))
+
+/** 资金未知态提示条文案（同上） */
+const fundUnknownBanner = computed<string>(() => tdPanelUnknownBannerText('fund'))
 
 // === 委托 / 策略 / 消息（演示数据，issue #200）===
 // 这三个面板的交易数据链路尚未接入：真实委托数据在「交易数据」页（`/trading-data`，随
@@ -441,6 +501,11 @@ onUnmounted(() => {
                       @click="selectAllPositionAccounts"
                     >全选</button>
                   </div>
+                  <!-- 空文案的判据是**本列表的数据源** `accounts`（账户全集），不是面板态的
+                       `positionHasAccounts`：后者并入 `onlineAccounts` 兜底，用它会让
+                       「在线集合非空、账户全集尚未重建」的中间窗口渲染出一个空的选项列表。
+                       那类中间窗口处于 `loading` 态（面板显示「加载中...」），因此不会与
+                       面板的空态文案同时出现、不构成同一事实的相反说法。 -->
                   <p v-if="positionsStore.accounts.length === 0" class="dashboard-pos-filter__empty">暂无已登记账户</p>
                   <div v-else data-test="position-account-filter" class="dashboard-pos-filter__list">
                     <label v-for="account in positionsStore.accounts" :key="account" class="ds-check">
@@ -466,7 +531,13 @@ onUnmounted(() => {
                 <input v-model="hideMatchedPositions" type="checkbox" data-test="position-hide-matched">
                 <span class="ds-check__box"></span> 隐藏匹配行
               </label>
-              <span data-test="position-aggregate" class="dashboard-panel__aggregate dashboard-panel__aggregate--positive" title="净仓非零行/全部行">{{ positionAggregate }}</span>
+              <!-- 聚合数颜色（#358 AC6）：`0/0` 不是「健康」的证明，成功色只在有持仓组时应用 -->
+              <span
+                data-test="position-aggregate"
+                class="dashboard-panel__aggregate"
+                :class="{ 'dashboard-panel__aggregate--positive': positionsStore.groups.length > 0 }"
+                title="净仓非零行/全部行"
+              >{{ positionAggregate }}</span>
             </div>
           </div>
           <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据） -->
@@ -478,6 +549,18 @@ onUnmounted(() => {
           >
             <span class="ds-alert__icon"><Icon name="Tips" :size="14" /></span>
             <span>{{ positionsStore.degradedText }}</span>
+          </div>
+          <!-- 未知态提示条（#358 AC2）：账户全集为空 = 无法确认持仓，不是「空仓」。
+               中性色（不用 status 色族）：尚未配置账户也可能是初始态，染成告警色会让
+               常绿告警失去意义（#358 拍板记录）。可见性靠措辞 + 面板级位置保证。 -->
+          <div
+            v-if="positionPanelState === 'no-accounts'"
+            class="dashboard-pos-unknown"
+            role="status"
+            data-test="position-unknown-banner"
+          >
+            <span class="dashboard-pos-unknown__icon"><Icon name="Tips" :size="14" /></span>
+            <span>{{ positionUnknownBanner }}</span>
           </div>
           <div v-if="positionsStore.truncated" class="dashboard-pos-truncated" role="status" data-test="position-truncated">
             持仓行数超过单次拉取上限，列表不完整；请用账户筛选缩小范围
@@ -518,13 +601,12 @@ onUnmounted(() => {
                     >{{ text }}</td>
                   </template>
                 </tr>
-                <!-- 空态 / 加载态：降级与请求失败不是「无数据」（契约 webui-ws §5 第 13 条） -->
-                <tr v-if="!positionsStore.loading && visiblePositionGroups.length === 0">
-                  <td :colspan="positionColumnCount" class="dashboard-pos-empty" data-test="position-empty">
-                    <template v-if="!positionsStore.available">交易数据暂不可用</template>
-                    <template v-else-if="positionsStore.initialized">暂无持仓</template>
-                    <template v-else>加载中...</template>
-                  </td>
+                <!-- 空态：五态互斥（#358）——降级 / 加载中 / 加载失败 / 持仓未知 / 暂无持仓。
+                     原先 `v-if="!loading"` 把「加载中」分支变成死代码（tbody 空白），
+                     且 error 态因 initialized 在 finally 里置 true 而落到「暂无持仓」——
+                     两处都是把「无法确认」说成「没有」。状态判定统一由 tdPanelState 给出。 -->
+                <tr v-if="visiblePositionGroups.length === 0">
+                  <td :colspan="positionColumnCount" class="dashboard-pos-empty" data-test="position-empty">{{ positionEmptyText }}</td>
                 </tr>
               </tbody>
             </table>
@@ -563,6 +645,17 @@ onUnmounted(() => {
               <span>{{ fundsStore.degradedText }}</span>
             </div>
             <div v-if="fundsStore.error" class="dashboard-fund-error" role="alert" data-test="fund-error">{{ fundsStore.error }}</div>
+            <!-- 未知态提示条（#358 AC2）：无已登记账户 = 无法确认资金，不是「暂无资金」。
+                 中性色（不用 status 色族），理由同持仓面板未知态提示条。 -->
+            <div
+              v-if="fundPanelState === 'no-accounts'"
+              class="dashboard-fund-unknown"
+              role="status"
+              data-test="fund-unknown-banner"
+            >
+              <span class="dashboard-fund-unknown__icon"><Icon name="Tips" :size="14" /></span>
+              <span>{{ fundUnknownBanner }}</span>
+            </div>
             <div class="auto-scroll">
               <table class="ds-table ds-table--normal dashboard-panel__table">
                 <thead class="dashboard-panel__thead">
@@ -604,20 +697,11 @@ onUnmounted(() => {
                     <td class="cell-num">{{ formatDepositWithdraw(row.deposit, row.withdraw) }}</td>
                     <td class="cell-num cell-muted" data-test="fund-row-date">{{ row.has_data && row.date ? formatTdDate(row.date) : '—' }}</td>
                   </tr>
-                  <!-- 空态（请求已结束）：降级 / 失败 / 无数据三态互斥，不可用与「无数据」必须可区分，
-                       不能用 0 或假空态冒充（契约 webui-ws §5 第 13 条）。
-                       请求在途（首次加载 / data_changed 清空重拉）由下一行承担——此时 rows 已被清空
-                       但基线尚未返回，显示「暂无资金数据」就是把「刷新中」冒充「无数据」。 -->
-                  <tr v-if="!fundsStore.loading && fundsStore.rows.length === 0">
-                    <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">
-                      <template v-if="!fundsStore.available">交易数据暂不可用</template>
-                      <template v-else-if="fundsStore.error">加载失败</template>
-                      <template v-else-if="fundsStore.initialized">暂无资金数据</template>
-                      <template v-else>加载中...</template>
-                    </td>
-                  </tr>
-                  <tr v-else-if="fundsStore.rows.length === 0">
-                    <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">加载中...</td>
+                  <!-- 空态：五态互斥（#358）——降级 / 加载中 / 加载失败 / 资金未知 / 暂无资金数据。
+                       原先分两条规则（`!loading` 一条 + 兜底一条），语义正确但文案来源两处；
+                       统一由 tdPanelState 给出，与持仓面板同一判定逻辑（契约 webui-ws §5 第 13 条）。 -->
+                  <tr v-if="fundsStore.rows.length === 0">
+                    <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">{{ fundEmptyText }}</td>
                   </tr>
                 </tbody>
               </table>

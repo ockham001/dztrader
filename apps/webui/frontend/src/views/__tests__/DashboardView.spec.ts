@@ -525,4 +525,90 @@ describe('DashboardView', () => {
     expect(w.text()).not.toContain('暂无资金数据')
     w.unmount()
   })
+
+  // ---- #358：无法确认数据时不得渲染成「暂无」（五态互斥）----
+
+  it('无已登记账户（持仓）时渲染「持仓未知」+ 面板级提示条，不渲染「暂无持仓」', async () => {
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([], { online_accounts: [] }))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="position-empty"]').text()).toBe('持仓未知')
+    const banner = w.get('[data-test="position-unknown-banner"]')
+    expect(banner.text()).toContain('持仓未知')
+    expect(banner.text()).toContain('交易网关')
+    expect(banner.text()).toContain('账户')
+    // 假空态与假降级都不得出现
+    expect(w.text()).not.toContain('暂无持仓')
+    expect(w.find('[data-test="position-degraded-banner"]').exists()).toBe(false)
+
+    w.unmount()
+  })
+
+  it('无已登记账户（资金）时渲染「资金未知」+ 面板级提示条，不渲染「暂无资金数据」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([], { online_accounts: [] }))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="fund-empty"]').text()).toBe('资金未知')
+    const banner = w.get('[data-test="fund-unknown-banner"]')
+    expect(banner.text()).toContain('资金未知')
+    expect(banner.text()).toContain('交易网关')
+    expect(w.text()).not.toContain('暂无资金数据')
+    expect(w.find('[data-test="fund-degraded-banner"]').exists()).toBe(false)
+
+    w.unmount()
+  })
+
+  it('持仓请求失败时渲染「加载失败」，不渲染「暂无持仓」（initialized 置 true）', async () => {
+    vi.mocked(tdApi.getPositions).mockRejectedValue(new Error('HTTP 500'))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="position-empty"]').text()).toBe('加载失败')
+    expect(w.text()).not.toContain('暂无持仓')
+    expect(w.find('[data-test="position-unknown-banner"]').exists()).toBe(false)
+
+    w.unmount()
+  })
+
+  it('持仓首次加载在途时渲染「加载中...」，不渲染空白 tbody 或「暂无持仓」', async () => {
+    vi.mocked(tdApi.getPositions).mockImplementation(
+      () => new Promise<never>(() => {}))
+    const w = await mountDashboard()
+
+    // 原先 `v-if="!loading"` 让加载态分支成为死代码：tbody 完全空白
+    expect(w.get('[data-test="position-empty"]').text()).toBe('加载中...')
+    expect(w.text()).not.toContain('暂无持仓')
+
+    w.unmount()
+  })
+
+  it('已知账户但无持仓行时仍显示「暂无持仓」（online_accounts 非空即视为已知账户）', async () => {
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([], { online_accounts: ['acc_a'] }))
+    const w = await mountDashboard()
+
+    expect(w.get('[data-test="position-empty"]').text()).toBe('暂无持仓')
+    expect(w.find('[data-test="position-unknown-banner"]').exists()).toBe(false)
+
+    w.unmount()
+  })
+
+  it('0/0 聚合数不使用成功色，有持仓组时才应用 positive 修饰', async () => {
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([], { online_accounts: ['acc_a'] }))
+    const w = await mountDashboard()
+
+    const aggregate = w.get('[data-test="position-aggregate"]')
+    expect(aggregate.text()).toBe('0/0')
+    expect(aggregate.classes()).not.toContain('dashboard-panel__aggregate--positive')
+
+    // 有持仓组时恢复成功色（原口径不变）
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([
+      position({ instrument_id: 'rb2601', volume: 2 }),
+    ]))
+    await useTdPositionsStore().resetAndReload()
+    await w.vm.$nextTick()
+
+    expect(w.get('[data-test="position-aggregate"]').classes())
+      .toContain('dashboard-panel__aggregate--positive')
+
+    w.unmount()
+  })
 })
