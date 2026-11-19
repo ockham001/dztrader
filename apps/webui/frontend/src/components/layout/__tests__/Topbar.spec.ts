@@ -878,3 +878,24 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像）', (
     expectNeutralUnknown(serviceBadge(wrapper, 'resMd'))
   })
 })
+
+// #380：壳层顶栏是全站唯一的 banner 地标。无名的 banner 让读屏的「跳到 banner」
+// 变成一个不知道通往哪里的命令（audit 实测改动前两个 banner 的 name 都是空）。
+describe('Topbar banner 地标（#380）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  it('根元素是 <header> 且带 aria-label（banner 有名）', async () => {
+    const wrapper = await mountTopbar()
+    const root = wrapper.element as unknown as HTMLElement
+    expect(root.tagName).toBe('HEADER')
+    expect(root.getAttribute('aria-label')).toBe('全局状态栏')
+  })
+
+  it('头栏里没有 h1/h2：名字只能来自 aria-label，不得退化成用页面标题当地标名', async () => {
+    const wrapper = await mountTopbar()
+    expect(wrapper.findAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0)
+  })
+})
