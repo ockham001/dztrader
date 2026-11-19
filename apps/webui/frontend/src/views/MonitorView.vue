@@ -2179,12 +2179,21 @@ const cpuTrendAriaLabel = computed(
   width: 100%;
 }
 
+/* 填充块自身的描边（#381）：轨道有了 outline 只画出一个空框，而 forced-colors 下填充与轨道背景
+   被统一成同一个 Canvas 色 —— 「填充到哪里」这条唯一的图形信息随之消失，只剩右边的百分比文字。
+   `outline` 不占盒模型（`border` 会在 `--ledger-fill: 0%` 时仍占 1px，把 0.4% 画成 1%），
+   且随 `overflow: hidden` 被轨道裁掉四边，只在填充块的边缘留下一圈。
+   `transparent` 是这条修法能在正常主题下「零像素」的原因：普通渲染不画任何东西，
+   forced-colors 下系统把它换成 `CanvasText`（不用另写 `@media (forced-colors: active)` 分支，
+   也就不必在四个等级色上各写一遍描边色）。 */
 .monitor-view__ledger-track-fill {
   display: block;
   width: var(--ledger-fill, 0%);
   height: 100%;
   border-radius: var(--radius-2);
   background: var(--status-primary-default);
+  outline: var(--border-width-default) solid transparent;
+  outline-offset: calc(-1 * var(--border-width-default));
 }
 
 .monitor-view__ledger-row[data-level='normal'] .monitor-view__ledger-track-fill {
@@ -2320,6 +2329,12 @@ const cpuTrendAriaLabel = computed(
   overflow: hidden;
   border-radius: var(--radius-2);
   background: var(--bg-overlay-l1);
+  /* 整条带子的外框（#381）：段间的缝由 `border-inline-start` 撑起（#363），但首段没有左边框、
+     末段没有右边框，forced-colors 下 band 与 seg 同被统一成 Canvas 后，这条图形（总量 15 GiB）
+     的左右两端没有边界，比例就被读成「从任意处开始」。透明描边在正常主题下不画任何像素，
+     forced-colors 下自动取 `CanvasText` 补上外框。 */
+  outline: var(--border-width-default) solid transparent;
+  outline-offset: 0;
 }
 
 .monitor-view__ledger-band-seg {
@@ -2344,6 +2359,13 @@ const cpuTrendAriaLabel = computed(
   background: var(--text-default);
   /* 内描边用既有底色 token（与段间缝隙同色）：把「已用」圈成一块，边界不依赖相邻段的色差。 */
   box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1);
+  /* 上面那条 `box-shadow` 在 forced-colors 下被强制为 `none`（#381）：「已用」与另外三段同被
+     统一成 Canvas，四段读不出哪一段是压力所在。补一圈透明 `outline`（正常主题零像素），
+     forced-colors 下自动取 `CanvasText`，把「已用」重新框出来。
+     用 `outline` 而不是 `border`：四段宽度按占比注入（`flex-basis`），`border` 会占掉盒模型、
+     改变各段比例；`outline-offset` 负值让它落在段内，相邻段的缝仍归 `border-inline-start`。 */
+  outline: var(--border-width-default) solid transparent;
+  outline-offset: calc(-1 * var(--border-width-default));
 }
 
 .monitor-view__ledger-band-seg--cached {
@@ -2634,15 +2656,25 @@ const cpuTrendAriaLabel = computed(
   border-radius: var(--radius-2);
   background: var(--bg-overlay-l2);
   overflow: hidden;
+  /* 轨道外框（#381）：forced-colors 下轨道底与填充都被统一成 Canvas，柱的**满格高度**消失，
+     只有填充被描边时读者无法区分「柱高 = 36px 轨道」与「柱高 = 当前占用」。
+     透明描边在正常主题下不画像素，forced-colors 下取 `CanvasText`。
+     用 `outline` 而非 `border`：轨道高度是 token 定值，`border` 会缩掉 2px 的画布。 */
+  outline: var(--border-width-default) solid transparent;
+  outline-offset: 0;
 }
 
-/* 柱的填充：高度由 `--core-fill`（占用率）驱动，颜色区分饱和 / 正常两个状态 token */
+/* 柱的填充：高度由 `--core-fill`（占用率）驱动，颜色区分饱和 / 正常两个状态 token。
+   描边同台账轨道填充（#381）：`outline` 不占盒模型、不改变 `--core-fill` 的百分比语义，
+   `outline-offset` 负值把它压进填充块内部，四边都随轨道 `overflow: hidden` 收口。 */
 .monitor-view__core-bar-fill {
   display: block;
   width: 100%;
   height: var(--core-fill, 0%);
   border-radius: var(--radius-2);
   background: var(--status-success-default);
+  outline: var(--border-width-default) solid transparent;
+  outline-offset: calc(-1 * var(--border-width-default));
 }
 
 .monitor-view__core-bar-fill--saturated {
