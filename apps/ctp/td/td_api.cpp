@@ -1,4 +1,5 @@
 #include "td/td_api.h"
+#include "common/default_auto_login.h"
 
 #include <chrono>
 #include <cstring>
@@ -52,7 +53,11 @@ TdApi::TdApi(std::string name,
       config_path_(std::move(cfg_path)),
       notify_ui_(name_, event_writer_),
       log_config_(name_, config_path_),
-      auto_login_config_(name_, config_path_, event_writer_) {
+      auto_login_config_(name_,
+                         config_path_,
+                         event_writer_,
+                         nlohmann::json::json_pointer("/auto_login"),
+                         default_schedules_td()) {
     // 全平台共享一个 order_id 计数器 (CHANNEL_NAME_ORDER_ID; 策略与 td 同用):
     // 文件布局 shm_dir_/order_id/order_id.dat。master 建库后按 DB MAX(order_id) 播种,
     // td 只消费不建私有计数器 (ADR 0041 §6)。

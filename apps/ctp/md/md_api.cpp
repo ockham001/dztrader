@@ -1,4 +1,5 @@
 #include "md/md_api.h"
+#include "common/default_auto_login.h"
 
 #include <chrono>
 #include <cstring>
@@ -39,7 +40,11 @@ MdApi::MdApi(const std::string& name,
       notify_ui_(name_, event_writer_),
       log_config_(name_, config_path_),
       md_shm_config_(name_, config_path_, event_writer_, nlohmann::json::json_pointer("/shm")),
-      auto_login_config_(name_, config_path_, event_writer_),
+      auto_login_config_(name_,
+                         config_path_,
+                         event_writer_,
+                         nlohmann::json::json_pointer("/auto_login"),
+                         default_schedules_md()),
       progress_reporter_(name_, event_writer_),
       sub_manager_(name_, event_writer_, notify_ui_),
       flow_dir_{flow_dir} {

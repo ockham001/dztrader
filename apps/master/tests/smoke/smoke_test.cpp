@@ -538,7 +538,17 @@ protected:
         // 最小 dztraderd.json: 注册 dzmd_ctp + dztd_ctp + dzweb + 常驻策略 stg_demo
         // (网关段模板与 ProcessControlFrameTest 一致; td/webui 段见 config.cpp parse_master_json)
         // 不写 configs/dzmd_ctp.json: 顺带回归"配置缺失自愈"路径 (历史崩溃 bug, td 侧
-        // TdConfig::load 对缺失文件走 exists 短路, 冒烟由 md 覆盖共享模式即可)
+        // TdConfig::load 对缺失文件走 exists 短路, 冒烟由 md 覆盖共享模式即可)。
+        // auto_login 段同样缺失, 但仍有内置默认排程 (契约 auto-login): 调度不随配置缺失而
+        // 停摆, 08:55 / 20:55 的登录尝试在 no_current_broker 处被拒 (无经纪商配置), 不建
+        // 会话; 自动调度非用户发起, 故只留一条 WARN、不发 NOTIFY_UI。因此「无会话拒单」
+        // 闭环与测试恰好运行在哪个时刻无关 —— 不必为 md 写配置文件 (那会牺牲整文件缺失的
+        // 覆盖)。注意 AutoLoginConfig::load 在 md 构造里最后执行, 会把归一后的默认表
+        // 材料化写回 dzmd_ctp.json: 文件在 md 启动后**会**出现, 但 md/log/shm 三个 section
+        // 的 load 都在它之前, 已经完整走过"整文件缺失"分支, 回归意图不受影响。
+        // 约束: 后续断言**不得**假设 dzmd_ctp.json 仍缺失 —— 材料化会在 md 启动后创建它。
+        // td 侧则必须显式关闭 (见下方 dztd_ctp.json): 其默认排程在 08:45 / 20:45 会走到
+        // no_frontends 拒绝并**无条件**发 NOTIFY_UI 错误通知, 与"从不连接"的前提表述冲突。
         // 策略: exe 名即策略ID (stg_demo), 必须与 strategy[].name 一致; 常驻策略不传 args
         // (不再有 CLI 模式), md_source 必填且 ready 后 master 才拉起策略
         {
@@ -599,8 +609,13 @@ protected:
             ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
         }
 
-        // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接 (无 auto_login 段,
-        // 无 --recover), 会话懒创建于 connect 不会发生; 下单走 no_session 拒单回报。
+        // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接, 会话懒创建于 connect
+        // 不会发生; 下单走 no_session 拒单回报。
+        // auto_login 段**显式关闭** (#390-2): 网关内置默认排程装好即启用, 08:45 / 20:45
+        // 会自动 connect_account_by_id。本夹具的账户没有前置地址, 那条路径在
+        // no_frontends 处拒绝 (不建会话、不崩), 「无会话拒单」闭环本身仍成立, 但会多发
+        // 一条 NOTIFY_UI 错误通知, 且"从不连接"的表述依赖测试恰好不在登录时点运行 ——
+        // 显式关闭让闭环与运行时刻解耦。enabled=false 时调度器不触发任何动作。
         // 形态不手写: 走 apps/ctp/tests/td_config_fixture.h（单一真相源 = TdConfig::to_json）。
         // #251 把连接参数移入账户 ext 后，手写旧形态会让 dztd_ctp 启动即 CRITICAL 退出、
         // 冒烟超时；夹具让形状变更在构造它的测试 target 编译期就红。
@@ -609,8 +624,15 @@ protected:
             seed.account_id = "CTP001";
             seed.user_id = "SMOKE001";
             seed.password = "";
+            // 夹具只产 {"td": ...} (td section 的真相源), auto_login 是文件外层 section,
+            // 在此合并。关闭自动登录只能靠 enabled=false —— 空表语义已改为「回落默认」
+            // (#390-2), 少写 enabled 就等于启用网关默认排程; schedules 显式给空数组只是
+            // 表达"不该有运维自定义时段", 网关加载时仍会归一为内置默认表并写回文件
+            // (契约 auto-login「持久化与默认值」), 不影响 enabled=false 的关闭效果。
+            auto cfg = dztrader::test::make_td_config_json(seed);
+            cfg["auto_login"] = {{"enabled", false}, {"schedules", nlohmann::json::array()}};
             std::ofstream ofs(home_ / "configs" / "dztd_ctp.json");
-            ofs << dztrader::test::make_td_config_json(seed).dump();
+            ofs << cfg.dump();
             ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztd_ctp.json failed";
         }
 
@@ -1082,6 +1104,47 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     const bool td_running =
         wait_until([&] { return saw_running("dztd_ctp"); }, 15000, send_query_snapshot);
     ASSERT_TRUE(td_running) << "dztd_ctp did not report Running within 15s";
+
+    // 1c-1. 网关内置默认排程端到端 (#393 AC2/AC3/AC4): 夹具把 dztd_ctp.json 的
+    //     auto_login.schedules 写成空数组, 经 #392 空表归一 -> 网关内置默认表 -> 加载时
+    //     材料化写回文件 (normalize_schedules 只看 schedules 是否为空, 不看 enabled,
+    //     故 enabled=false 不影响材料化)。断言文件里落的是 td 侧两条默认区间。
+    //     期望值用字面量而**不** include common/default_auto_login.h 反算 —— 否则测不出
+    //     "网关构造实际注入了什么"(删掉 td_api.cpp 的实参时本断言必须红)。
+    //     文件由 td 启动后的 AutoLoginConfig::load() 写出, 故用 wait_until 轮询容忍时序。
+    const nlohmann::json expected_td_schedules = nlohmann::json::array({
+        {{"login_time", "08:45"}, {"logout_time", "15:45"}},
+        {{"login_time", "20:45"}, {"logout_time", "02:33"}},
+    });
+    std::string last_td_auto_login = "<file not read yet>";
+    const auto td_schedules_materialized = [&] {
+        std::ifstream ifs(home_ / "configs" / "dztd_ctp.json");
+        if (!ifs) {
+            last_td_auto_login = "<configs/dztd_ctp.json missing>";
+            return false;
+        }
+        nlohmann::json file_json;
+        try {
+            ifs >> file_json;
+        } catch (const std::exception& e) {
+            // 原子写 (tmp + rename) 的中间态: 继续轮询
+            last_td_auto_login = std::string("<unparsable> ") + e.what();
+            return false;
+        }
+        if (!file_json.is_object() || !file_json.contains("auto_login")) {
+            last_td_auto_login = "<auto_login section missing>";
+            return false;
+        }
+        last_td_auto_login = file_json["auto_login"].dump();
+        const auto& auto_login = file_json["auto_login"];
+        return auto_login.contains("schedules") && auto_login["schedules"].is_array() &&
+               auto_login["schedules"] == expected_td_schedules;
+    };
+    ASSERT_TRUE(wait_until(td_schedules_materialized, 10000, send_query_snapshot))
+        << "dztd_ctp did not materialize built-in default auto-login schedules into "
+           "configs/dztd_ctp.json; got auto_login="
+        << last_td_auto_login
+        << " — possible gateway ctor omitted default_schedules_td() (apps/ctp/td/td_api.cpp)";
 
     // 1c-2. 账户状态回路: td 配置了账户 CTP001 但从不连接 (dztd_ctp.json stub)
     //     -> td 启动读完配置应推 DZ_FRAME_ACCOUNT_STATUS Offline 帧 (契约 account-status 触发场景
