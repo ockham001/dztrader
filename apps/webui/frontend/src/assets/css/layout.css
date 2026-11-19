@@ -25,6 +25,46 @@
   .app-shell.sidebar-collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
 }
 
+/* ===== Skip link（#380：键盘第一站直达正文）=====
+   存在方式只有一种：只有聚焦时才可见，所以它的「隐藏」不能是 display/visibility 或
+   aria-hidden（那样它既不进 Tab 序列，读屏也读不到 —— 等于没做）。这里是
+   position: fixed + transform 推出的视口上沿：
+   - `fixed` 而非 `absolute`：≤1024 时滚动容器是 document（见 dashboard.css 的窄屏段），
+     absolute 会把链接钉在**文档**顶端，用户滚到页面中部再按 Tab 时它出现在屏幕外、
+     文本已被宣读却看不见 —— 这是 skip link 最常见的假实现。fixed 永远相对视口。
+   - `translateY(-200%)` 而非 `top: -<像素>`：自身高度的两倍必定完全推出视口上沿，
+     不依赖某个魔数，也不给 token 体系塞一个「必须小于元素负高度」的假 token。
+   - z-index 取既有最高档（与 .ds-toast 同级）：它必须在侧栏（300）/ 抽屉（150）/
+     弹层（200）之上，否则聚焦时会被壳层盖住。
+   - 不套 `.ds-btn`：那是 24/28/32px 定高控件，文字若换行会被裁；这里用行内 padding。 */
+.ds-skip-link {
+  position: fixed;
+  top: var(--spacer-8);
+  left: var(--spacer-8);
+  z-index: 2000;
+  padding: var(--spacer-8) var(--spacer-16);
+  background: var(--bg-menu);
+  color: var(--text-default);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-weight: var(--font-weight-medium);
+  border: var(--border-width-default) solid var(--border-neutral-l1);
+  border-radius: var(--radius-8);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--text-default) 16%, transparent);
+  text-decoration: none;
+  white-space: nowrap;
+  /* #332 未落地前，全站没有 :focus-visible 体系；这里只给 skip link 自己一条可见的
+     聚焦态（它本来就只在聚焦时出现，这是它的全部存在方式），不铺开到其它控件。 */
+  transform: translateY(-200%);
+  transition: transform 120ms ease;
+}
+.ds-skip-link:focus {
+  transform: translateY(0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ds-skip-link { transition: none; }
+}
+
 /* ===== Global reset ===== */
 body, main { margin: 0; }
 *, *::before, *::after { box-sizing: border-box; }
