@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import Topbar from '@/components/layout/Topbar.vue'
 import MonitorView from '../MonitorView.vue'
@@ -67,6 +67,10 @@ function levelMap(wrapper: VueWrapper, selector: string): Map<string | undefined
     .filter(el => !el.element.closest('[data-test="topbar-resource-measure"]'))
   return new Map(visibleMatches.map(el => [el.attributes('data-mount'), el.attributes('data-level')]))
 }
+
+// #371：MonitorView 挂了 1 秒 ticker，用例必须卸载 —— 不卸载时未清理的定时器会在
+// 后续用例的 flush 里插入无主更新，实测会让无关用例偶发假红。
+enableAutoUnmount(afterEach)
 
 describe('顶栏卷徽章 / 监控页卷列表色标一致性（共用 useResourceLevel）', () => {
   beforeEach(() => {

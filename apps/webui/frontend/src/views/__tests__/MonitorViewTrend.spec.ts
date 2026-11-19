@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -72,6 +72,10 @@ async function toggle(wrapper: VueWrapper, testId: string): Promise<void> {
   await wrapper.find(`[data-test="${testId}"]`).trigger('click')
   await wrapper.vm.$nextTick()
 }
+
+// #371：MonitorView 挂了 1 秒 ticker，用例必须卸载 —— 不卸载时未清理的定时器会在
+// 后续用例的 flush 里插入无主更新，实测会让无关用例偶发假红。
+enableAutoUnmount(afterEach)
 
 describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', () => {
   beforeEach(() => {

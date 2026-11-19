@@ -1816,9 +1816,10 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
   })
 
   it('实时快照状态降级为状态点 + 小字，且不与视图切换按钮同排', async () => {
-    // #371：数据龄按快照 timestamp 与本机此刻作差，夹具时刻是固定的 2026-10-21 15:00:00Z ——
-    // 不钉住「此刻」时这条用例跑在几个月后就会看到「快照已停 N 天」。钉到夹具时刻 +2 秒：
-    // 数据龄 2 秒 < 3 × 5 秒阈值，页面处于「实时快照」，本用例要验的结构与文案才成立。
+    // 钉住「此刻」：停推判据是「本机收到快照的时刻」与本机此刻之差（#371 返工后的口径），
+    // 而 REST 补拉在收到时就记 `Date.now()`，所以数据龄恒为 0 —— 这条钉桩对停推判定已无影响
+    // （#371 审查实测：删掉它两条用例仍全绿）。保留是为了让所有依赖 `Date.now()` 的展示
+    // （「更新于 …」等）有确定的取值，不让用例随真实时间漂移。
     vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 21, 15, 0, 2))
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
@@ -2046,8 +2047,9 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
   })
 
   it('主机条字段与快照一一对应：主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数', async () => {
-    // #371：右端「实时」是存活信号，数据龄超阈值（3 × 5 秒）时撤掉——本用例验的是正常态，
-    // 把「此刻」钉到夹具时刻 +2 秒（否则夹具时刻距今越久，这一行越会进入停推态）。
+    // 右端「实时」是存活信号，停推时撤掉（#371）——本用例验的是正常态。钉住「此刻」的理由
+    // 同上一条：停推判据用本机接收时刻，与夹具的 `timestamp` 无关，这条钉桩是给别的
+    // `Date.now()` 消费者一个确定值。
     vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 21, 15, 0, 2))
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
