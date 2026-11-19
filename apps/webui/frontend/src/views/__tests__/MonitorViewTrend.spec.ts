@@ -678,6 +678,37 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toContain('background: var(--status-error-default)')
   })
 
+  it('#371 存活信号走中性色，绿色只留给指标状态（One Job Rule）', () => {
+    // 四处存活信号（快照状态点 / 快照状态行 / 主机条脉冲点 / 右端「实时」）
+    // 一律中性色：绿色在页面上只意味着「指标正常」，不能再兼作「快照到了」「条在推进」。
+    for (const selector of ['.monitor-view__snapshot-state', '.monitor-view__snapshot-dot',
+      '.monitor-view__host-dot', '.monitor-view__host-live']) {
+      const body = ruleBody(selector)
+      expect(body, `${selector} 不得再占用状态色`).not.toContain('--status-success-default')
+      expect(body, `${selector} 不得借用警示色`).not.toContain('--status-warning-default')
+      // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到 6px 图形的 3:1 下限）
+      expect(body, `${selector} 应用 --text-secondary`).toContain('var(--text-secondary)')
+    }
+    // 等待态不靠色相区分（空心环 = 形状差异），因此不再有状态色规则
+    expect(ruleBody('.monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot'))
+      .toContain('background: transparent')
+    // 停推只加字重，不加色块 / 背景 / 动画
+    const stale = ruleBody('.monitor-view__snapshot-state--stale')
+    expect(stale).toContain('font-weight: var(--body-xs-strong-font-weight)')
+    expect(stale).not.toContain('background')
+    expect(stale).not.toContain('animation')
+    // 停推时脉冲点停跳：它说的是「在推进」，数据不推进时继续动就是撒谎
+    expect(ruleBody('.monitor-view__host--stale .monitor-view__host-dot')).toContain('animation: none')
+  })
+
+  it('#371 台账的 normal 状态点与轨道填充仍然保持绿色（绿只属于指标状态）', () => {
+    // 与上一条成对：存活信号撤出之后，绿色必须仍然在它唯一正当的位置
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
+      .toContain('background: var(--status-success-default)')
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-track-fill'))
+      .toContain('background: var(--status-success-default)')
+  })
+
   it('组成带的「已用」与「缓存」分得开：阶梯整体往「虚」侧挪一格（#363 C7）', () => {
     // 已用：保持最实的中性色 + 一圈底色内描边（用既有 token，不引入新 token / 新纹理）
     const used = ruleBody('.monitor-view__ledger-band-seg--used')
