@@ -33,6 +33,8 @@ import {
   formatAge,
   formatByteRate,
   formatBytes,
+  formatClockHeadroom,
+  formatClockThreshold,
   formatCount,
   formatDecimal,
   formatIops,
@@ -745,8 +747,10 @@ function clockRow(clock: SysmonClockInfo | null, input: MonitorLedgerInput): Led
       age === null ? '' : ` · ${formatAge(age)}前`
     }`,
     // 阈值列写两档（warn / error）：时钟的判据是「进入哪一档」，只写一档会丢掉另一档。
-    thresholdText: `±${thresholds.warn_ms} / ±${thresholds.error_ms} ms`,
-    headroomText: errorHeadroom === null ? NO_THRESHOLD_TEXT : `${errorHeadroom.toFixed(1)} ms`,
+    // 单位折算的唯一实现在 `format.formatClockThreshold`（#382）：契约允许 6 位数毫秒，
+    // 直接写 ms 会把定宽阈值列撑爆（列宽 88px 只容得下默认档的 84.9px）。
+    thresholdText: formatClockThreshold(thresholds.warn_ms, thresholds.error_ms),
+    headroomText: errorHeadroom === null ? NO_THRESHOLD_TEXT : formatClockHeadroom(errorHeadroom),
     historyKey: null,
     detailParts: [],
     fields,

@@ -3,6 +3,8 @@ import {
   UNAVAILABLE_TEXT,
   formatByteRate,
   formatBytes,
+  formatClockHeadroom,
+  formatClockThreshold,
   formatCount,
   formatCountPerSec,
   formatDecimal,
@@ -161,6 +163,139 @@ describe('formatMilliseconds / formatSignedMilliseconds：时钟偏差与误差�
     expect(formatCompactSignedMilliseconds(0.4)).toBe('0ms')
     expect(formatCompactSignedMilliseconds(null)).toBe(UNAVAILABLE_TEXT)
     expect(formatCompactSignedMilliseconds(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatClockThreshold：两档阈值按单位折算（#382）', () => {
+  it('默认值逐字符不变（最常见的配置，也是 88px 列宽的唯一依据）', () => {
+    expect(formatClockThreshold(100, 1000)).toBe('±100 / ±1000 ms')
+    // 契约默认值来自 sysmon §3.1，前端不得自行改写
+    expect(formatClockThreshold(50, 500)).toBe('±50 / ±500 ms')
+  })
+
+  it('毫秒形态装得下就留原样——判据是文本长度，不是 error 的位数', () => {
+    // 小值：
+    expect(formatClockThreshold(1, 2)).toBe('±1 / ±2 ms')
+    expect(formatClockThreshold(999, 1000)).toBe('±999 / ±1000 ms')
+    expect(formatClockThreshold(1000 - 1, 1000)).toBe('±999 / ±1000 ms')
+    // **这批是审查抓到的回归**：它们全是 15 字符、84.86px，88px 列装得下，
+    // 第一版按 `error <= 1000` 把它们推去秒档（`±0.2 / ±2 s`），等于在用户没要求的情况下
+    // 改了他读到的东西。仓内后端测试自用的 `500/2000`、`250/3000`、`300/1200` 全在其中。
+    expect(formatClockThreshold(200, 2000)).toBe('±200 / ±2000 ms')
+    expect(formatClockThreshold(500, 2000)).toBe('±500 / ±2000 ms')
+    expect(formatClockThreshold(250, 3000)).toBe('±250 / ±3000 ms')
+    expect(formatClockThreshold(300, 1200)).toBe('±300 / ±1200 ms')
+    // 极端不对称也装得下：`±1 / ±600000 ms` 恰好 15 字符
+    expect(formatClockThreshold(1, 600_000)).toBe('±1 / ±600000 ms')
+    // 而 16 字符（91.16px）真的装不下 → 必须折算
+    expect(formatClockThreshold(1600, 2000)).toBe('±1.6 / ±2 s')
+    expect(formatClockThreshold(9999, 9999)).toBe('±9.99 / ±10 s')
+  })
+
+  it('长度边界钉在 15：装得下的最长形态与装不下的最短形态各一例', () => {
+    // 15 字符 = 84.86px（实测，11px tabular-nums）→ 留毫秒
+    expect('±999 / ±9999 ms').toHaveLength(15)
+    expect(formatClockThreshold(999, 9999)).toBe('±999 / ±9999 ms')
+    // 16 字符 = 91.16px → 折算。这一对是「边界在哪」的唯一直接证据，
+    // 改列宽或改字号时它会先红，逼着重新量。
+    expect('±9999 / ±9999 ms').toHaveLength(16)
+    expect(formatClockThreshold(9999, 9999)).not.toContain(' ms')
+  })
+
+  it('两档都是整分钟时用 min（契约上限即此形）', () => {
+    expect(formatClockThreshold(60_000, 600_000)).toBe('±1 / ±10 min')
+    expect(formatClockThreshold(60_000, 60_000 * 3)).toBe('±1 / ±3 min')
+  })
+
+  it('装不下的走秒、3 位有效数字（warn 向下、error 向上）', () => {
+    expect(formatClockThreshold(1000, 10_000)).toBe('±1 / ±10 s')
+    expect(formatClockThreshold(1500, 6000)).toBe('±1.5 / ±6 s')
+    expect(formatClockThreshold(1000, 1500)).toBe('±1 / ±1.5 s')
+    expect(formatClockThreshold(1600, 2000)).toBe('±1.6 / ±2 s')
+    expect(formatClockThreshold(59_999, 599_999)).toBe('±59.9 / ±600 s')
+    // 亚秒形态：`±10 / ±100000 ms` 是 16 字符（装不下）→ 走秒档，warn 侧落到毫秒量级
+    expect('±10 / ±100000 ms').toHaveLength(16)
+    expect(formatClockThreshold(10, 100_000)).toBe('±0.01 / ±100 s')
+  })
+
+  it('两档在显示上永不相等（否则「两档」这个事实消失）', () => {
+    // 59999 / 60000 换秒后是 59.999 / 60：warn 向下、error 向上才不会塌成「±59.9 / ±59.9 s」
+    expect(formatClockThreshold(59_999, 60_000)).toBe('±59.9 / ±60 s')
+    expect(formatClockThreshold(59_999, 60_000)).not.toBe('±60 / ±60 s')
+  })
+
+  it('舍入方向写反/写漏也会塌陷：取「同一取整台阶内」的一对值', () => {
+    // 审查 finding：原来那四组（999/1001、1999/2001、9999/10001、14999/15001）只能抓
+    // 「两侧都 nearest」——它们跨了取整台阶，两侧都 floor 时也不会撞。真正区分方向的是
+    // **落在同一台阶内**的一对值：两侧都用 floor 时它们映到同一个显示值。
+    // 下面每组的左值都在秒档（长度 16+ 才走到这里），且 `floor(left) == floor(right)`。
+    const sameStepPairs: Array<[number, number, string]> = [
+      [14_500, 14_550, '±14.5 / ±14.6 s'],   // 都要 2 位小数；两侧 floor 会得 ±14.5 / ±14.5
+      [10_100, 10_140, '±10.1 / ±10.2 s'],   // 同台阶的两位小数对
+      [25_000, 25_040, '±25 / ±25.1 s'],     // 2 位有效数字档：两侧 floor 都会得 ±25
+      [14_700, 14_760, '±14.7 / ±14.8 s'],   // 1 位小数档内的近邻对
+    ]
+    for (const [warn, error, expected] of sameStepPairs) {
+      // 先确认这两值确实落在同一取整台阶（否则这组样本没有鉴别力）
+      const text = formatClockThreshold(warn, error)
+      const [left, right] = text.replace(/^±/, '').replace(/ s$/, '').split(' / ±')
+      expect(left, `${warn}/${error} → ${text}：两侧塌成同一个数`).not.toBe(right)
+      expect(text, `${warn}/${error} 的折算文案变了`).toBe(expected)
+    }
+  })
+
+  it('两档在显示上永不相等（全契约空间抽样，含跨台阶的一对）', () => {
+    // 跨台阶的一对：两侧都 nearest 时不会撞，所以它们抓的是「nearest 那种实现」
+    for (const [warn, error] of [[999, 1001], [1999, 2001], [9999, 10_001], [14_999, 15_001]]) {
+      const text = formatClockThreshold(warn, error)
+      const [left, right] = text.replace(/^±/, '').replace(/ s$/, '').split(' / ±')
+      expect(left, `${warn}/${error} → ${text}`).not.toBe(right)
+    }
+  })
+
+  it('非有限值退化为不可用占位（不编造阈值）', () => {
+    expect(formatClockThreshold(Number.NaN, 1000)).toBe(UNAVAILABLE_TEXT)
+    expect(formatClockThreshold(100, Number.POSITIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatClockHeadroom：余量按单位折算（#382）', () => {
+  it('1 s 以下保留 1 位小数毫秒（既有文案不变）', () => {
+    expect(formatClockHeadroom(987.5)).toBe('987.5 ms')
+    expect(formatClockHeadroom(0)).toBe('0.0 ms')
+    expect(formatClockHeadroom(999.9)).toBe('999.9 ms')
+    expect(formatClockHeadroom(12.34)).toBe('12.3 ms')
+  })
+
+  it('取整先于换档：999.95 ms 不被写成「1000.0 ms」', () => {
+    expect(formatClockHeadroom(999.95)).toBe('1 s')
+    expect(formatClockHeadroom(999.94)).toBe('999.9 ms')
+  })
+
+  it('1 s 及以上换秒、3 位有效数字（契约上限 600 s 不再需要 6 位毫秒）', () => {
+    expect(formatClockHeadroom(1000)).toBe('1 s')
+    expect(formatClockHeadroom(3600)).toBe('3.6 s')
+    expect(formatClockHeadroom(59_999)).toBe('60 s')
+    expect(formatClockHeadroom(600_000)).toBe('600 s')
+    // 6 位毫秒在 92px 列里放不下（实测 65.4px + 「已超 」前缀 96.6px）
+    expect(formatClockHeadroom(600_000)).not.toContain('ms')
+  })
+
+  it('负值保留负号（越线由调用方加前缀，纯格式化不吞符号）', () => {
+    expect(formatClockHeadroom(-12.5)).toBe('-12.5 ms')
+    expect(formatClockHeadroom(-3600)).toBe('-3.6 s')
+    // 负零天然不会漏出来（`(-0).toFixed(1)` 就是 `"0.0"`），所以这里**没有**专门的守卫分支。
+    // 这几条锁的是「行为正确」，不是「守卫存在」——审查指出原版那条断言无法区分两者，
+    // 而守卫本身不可观测，已删除（留注释说明，不留死代码）。
+    expect(formatClockHeadroom(-0.04)).toBe('0.0 ms')
+    expect(formatClockHeadroom(-0)).toBe('0.0 ms')
+    expect(-0.04 * 10).toBeLessThan(0)          // 前提：取整前确实是负数
+    expect((-0).toFixed(1)).toBe('0.0')          // 前提：toFixed 自己就处理了负零
+  })
+
+  it('非有限值退化为不可用占位', () => {
+    expect(formatClockHeadroom(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+    expect(formatClockHeadroom(Number.NEGATIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
   })
 })
 
