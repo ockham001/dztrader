@@ -435,7 +435,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s2.scheduleRemovePending).toBe(false)
     })
 
-    it('schedules 以 auto_login 镜像为准（契约 auto-login, 含清空语义）', async () => {
+    it('schedules 以 auto_login 镜像为准（契约 auto-login, 空数组=回落默认排程）', async () => {
       await loadDb()
       const store = useMarketSourcesStore()
       const md = useMdConfigStore()
@@ -467,7 +467,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(vi.mocked(marketSourcesApi.setAutoLogin)).not.toHaveBeenCalled()
     })
 
-    it('镜像已建立但 schedules 清空时显示空（清空语义不被回退掩盖）', async () => {
+    it('镜像已建立但 schedules 为空时显示空（回落默认由网关侧完成，镜像不代填）', async () => {
       await loadDb()
       const store = useMarketSourcesStore()
       const md = useMdConfigStore()

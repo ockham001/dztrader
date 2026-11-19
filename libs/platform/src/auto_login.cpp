@@ -11,12 +11,30 @@ namespace dztrader::platform {
 AutoLoginConfig::AutoLoginConfig(std::string instance_id,
                                  std::filesystem::path cfg_path,
                                  shm::MultiWriter& event_writer,
-                                 nlohmann::json::json_pointer section)
+                                 nlohmann::json::json_pointer section,
+                                 nlohmann::json default_schedules)
     : instance_id_(std::move(instance_id)),
       cfg_path_(std::move(cfg_path)),
       event_writer_(event_writer),
       section_(std::move(section)),
+      default_schedules_(std::move(default_schedules)),
       cfg_(default_cfg()) {  // 初始化为默认值，load() 前也有合理状态
+    // 默认排程与文件值/patch 走同一套校验：非法则退化为空数组（归一恒为 no-op，
+    // 平台层行为等价于「未注入」），不抛异常——启动不因网关常量写错而中断。
+    if (!default_schedules_.is_array()) {
+        spdlog::error("auto-login default schedules rejected | reason=\"not an array\"");
+        default_schedules_ = nlohmann::json::array();
+        cfg_ = default_cfg();
+        return;
+    }
+    for (const auto& s : default_schedules_) {
+        if (auto err = validate_schedule(s)) {
+            spdlog::error("auto-login default schedules rejected | reason=\"{}\"", *err);
+            default_schedules_ = nlohmann::json::array();
+            cfg_ = default_cfg();
+            return;
+        }
+    }
 }
 
 bool AutoLoginConfig::is_hh_mm(const std::string& s) noexcept {
@@ -85,7 +103,8 @@ std::optional<std::string> AutoLoginConfig::validate(const nlohmann::json& cfg) 
     return std::nullopt;
 }
 
-nlohmann::json AutoLoginConfig::load_cfg_from_file(bool& degraded) const {
+nlohmann::json AutoLoginConfig::load_cfg_from_file(bool& degraded,
+                                                   bool& schedules_normalized) const {
     nlohmann::json raw;
     if (std::filesystem::exists(cfg_path_)) {
         std::ifstream ifs(cfg_path_);
@@ -106,6 +125,8 @@ nlohmann::json AutoLoginConfig::load_cfg_from_file(bool& degraded) const {
     }
     // 补齐缺失字段为默认值，校验类型 + 值有效性
     nlohmann::json result = default_cfg();
+    // 文件是否表达了非空排程（用于判断是否需要在加载后材料化内置默认排程）
+    bool file_expresses_schedules = false;
     if (raw.is_object()) {
         nlohmann::json candidate = result;
         bool field_degraded = false;
@@ -120,6 +141,7 @@ nlohmann::json AutoLoginConfig::load_cfg_from_file(bool& degraded) const {
         if (raw.contains("schedules")) {
             if (raw["schedules"].is_array()) {
                 candidate["schedules"] = raw["schedules"];
+                file_expresses_schedules = !candidate["schedules"].empty();
             } else {
                 field_degraded = true;
             }
@@ -131,7 +153,22 @@ nlohmann::json AutoLoginConfig::load_cfg_from_file(bool& degraded) const {
         }
         degraded = degraded || field_degraded;
     }
+    // 空表归一：文件/section 缺失、或 schedules 为空数组/缺失时回落到内置默认排程。
+    // 归一实际改变了文件所表达的值才标记材料化；内置默认排程为空时归一恒为 no-op。
+    normalize_schedules(result);
+    schedules_normalized = !default_schedules_.empty() && !file_expresses_schedules;
     return result;
+}
+
+void AutoLoginConfig::normalize_schedules(nlohmann::json& cfg) const {
+    if (default_schedules_.empty()) {
+        return;  // 无内置默认排程：空表归一不适用（平台层行为不变）
+    }
+    auto it = cfg.find("schedules");
+    if (it == cfg.end() || !it->is_array() || !it->empty()) {
+        return;  // 已是非空排程或非法类型（后者由 validate 处理）
+    }
+    *it = default_schedules_;
 }
 
 void AutoLoginConfig::save_cfg_to_file(const nlohmann::json& cfg) const {
@@ -199,22 +236,30 @@ void AutoLoginConfig::save_cfg_to_file(const nlohmann::json& cfg) const {
 
 void AutoLoginConfig::load() {
     bool degraded = false;
+    bool schedules_normalized = false;
     std::string reason;
     try {
-        cfg_ = load_cfg_from_file(degraded);
+        cfg_ = load_cfg_from_file(degraded, schedules_normalized);
     } catch (const std::exception& e) {
         // 文件损坏（JSON 解析失败）：用默认值修复，不中断启动
         degraded = true;
         reason = e.what();
         cfg_ = default_cfg();
     }
+    // 内容非法 → 修复写回；空表归一改变了文件所表达的值 → 材料化默认表；值未变 → 不写。
+    // 两条原因分别记日志：材料化单独成立时也必须可审计（文件内容变了要有解释）。
     if (degraded) {
         if (reason.empty()) {
             reason = "invalid values, using defaults";
         }
         spdlog::error("auto-login config load degraded, using defaults | error=\"{}\"", reason);
+    } else if (schedules_normalized) {
+        spdlog::info("auto-login default schedules materialized | path={} schedules={}",
+                     cfg_path_.string(), cfg_["schedules"].size());
+    }
+    if (degraded || schedules_normalized) {
         try {
-            save_cfg_to_file(cfg_);  // 修复文件（内容与内存值同步）
+            save_cfg_to_file(cfg_);  // 修复/材料化文件（内容与内存值同步）
         } catch (const std::exception& se) {
             // 修复失败：内存值已是默认/降级值，进程能跑，仅告警
             spdlog::error("auto-login config repair save failed | error=\"{}\"", se.what());
@@ -257,6 +302,10 @@ void AutoLoginConfig::set_auto_login(const nlohmann::json& patch) {
         }
         merged["schedules"] = v;  // 整体覆盖（非递归合并）
     }
+
+    // 2b. 空表归一：空数组表示「回落到网关内置默认排程」，不是清空。
+    //     放在幂等判定之前，使「当前值已等于默认表时再提交 []」不产生磁盘写入。
+    normalize_schedules(merged);
 
     // 3. 校验 merged 完整配置（safety net：cfg_ 已合法，patch 字段已在上面校验）
     if (auto err = validate(merged)) {
