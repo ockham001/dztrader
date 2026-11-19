@@ -86,3 +86,45 @@ describe('SyncSwitch', () => {
     expect(wrapper.find('input[type="checkbox"]').attributes('aria-label')).toBeUndefined()
   })
 })
+
+// #379：开关的 <input> 曾由 `.ds-switch input { display: none }` 隐藏，控件被摘出无障碍树
+// （CDP 实测 activeElement 退回 BODY、AXTree 无 checkbox 角色）。CSS 侧的回归由
+// assets/css/__tests__/componentsCss.spec.ts 锁；这里从组件挂载侧锁住**可访问契约**：
+// input 真的在 DOM 里、带着名称与禁用态——两者合起来才是「键盘与读屏能操作这个开关」。
+describe('SyncSwitch 可访问契约（#379）', () => {
+  it('checkbox 作为真实元素挂载（不是被 CSS 移除的装饰），且角色/类型正确', () => {
+    const wrapper = mount(SyncSwitch, { props: { modelValue: true, label: '显示全部网卡' } })
+    const input = wrapper.find('input[type="checkbox"]')
+    expect(input.exists()).toBe(true)
+    // 语义保留为 checkbox：视觉是开关，但状态与事件都是 checkbox 语义。
+    // 加 role="switch" 需要另配 aria-checked，会与 :checked 重复且易不一致（#379 明确不做）
+    expect(input.attributes('role')).toBeUndefined()
+    expect((input.element as HTMLInputElement).type).toBe('checkbox')
+    expect((input.element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('label prop 落到 aria-label；未传时不产生空名称', () => {
+    const named = mount(SyncSwitch, { props: { modelValue: false, label: '实时' } })
+    expect(named.find('input[type="checkbox"]').attributes('aria-label')).toBe('实时')
+    const unnamed = mount(SyncSwitch, { props: { modelValue: false } })
+    expect(unnamed.find('input[type="checkbox"]').attributes('aria-label')).toBeUndefined()
+  })
+
+  it('disabled 与 pending 都把 disabled 属性落到 input（读屏能报出不可用）', () => {
+    for (const props of [{ disabled: true }, { pending: true }]) {
+      const wrapper = mount(SyncSwitch, { props: { modelValue: false, ...props } })
+      const input = wrapper.find('input[type="checkbox"]')
+      expect(input.attributes('disabled'), JSON.stringify(props)).toBeDefined()
+      expect((input.element as HTMLInputElement).disabled).toBe(true)
+    }
+  })
+
+  it('开关本体（焦点环归属的视觉控件）始终渲染', () => {
+    // 焦点环画在 .ds-switch 上（input 只有 1×1 且被 clip-path 裁掉）。若视觉块消失，
+    // 焦点环会画在一个看不见的元素上——等于没有焦点指示。
+    const wrapper = mount(SyncSwitch, { props: { modelValue: false, label: '自动登录' } })
+    expect(wrapper.find('.ds-switch').exists()).toBe(true)
+    expect(wrapper.find('.ds-switch__track').exists()).toBe(true)
+    expect(wrapper.find('.ds-switch__thumb').exists()).toBe(true)
+  })
+})
