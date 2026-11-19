@@ -54,6 +54,12 @@ function closeMobile(): void {
     class="app-shell"
     :class="{ 'sidebar-collapsed': sidebarCollapsed && !isMobile }"
   >
+    <!-- Skip link（#380）：键盘用户按下的第一个 Tab 就落在这里，Enter 直达正文，不必逐项
+         穿过侧栏品牌 / 8 个导航项 / 折叠按钮 / 头像 / 设置 / 关于（/monitor 实测前 15 项全是壳）。
+         放在壳层第一个位置：它是文档顺序里的第一站，`position: fixed` 让它在任何滚动位置
+         都能从视口顶端出现（样式在 assets/css/layout.css，`.ds-*` 不得定义在 scoped 块）。 -->
+    <a href="#main-content" class="ds-skip-link">跳到主内容</a>
+
     <!-- Mobile overlay：点击关闭抽屉是鼠标便利路径，键盘等效路径是顶栏抽屉按钮与抽屉内导航；
          role="presentation" 表明遮罩本身不是可交互控件（#206） -->
     <!-- dz-allow-inline-style: display 是 JS 状态驱动的开/关（静态定位与层叠已进 .app-shell__overlay）。
@@ -87,7 +93,18 @@ function closeMobile(): void {
         <span class="ds-conn-banner__dot"></span>
         <span>{{ connBannerText }}</span>
       </div>
-      <slot />
+      <!-- 正文地标（#380）：内容槽是全站唯一的 `<main>`，skip link 的锚点指向它。
+           只包 `<slot />` 而不含 Topbar —— 这一层的边界就是 banner 数量的边界：
+           `<header>` 只有在**不是** main/article/aside/nav/section 的后代时才是 banner 地标，
+           所以壳层 `<header class="topbar">` 留在 main 外仍是唯一 banner，而各页面自带
+           `<header>`（如 MonitorView 的标题组）落进 main 后自动不再是 banner，
+           无需去改任何页面组件（#371 正在改 MonitorView.vue，本票与它零交集）。
+
+           `tabindex="-1"`：锚点跳转后焦点真的落进正文（可编程聚焦、不进 Tab 序列）。
+           没有它浏览器只滚动不移动焦点，下一个 Tab 又回到导航壳，skip link 等于没生效。 -->
+      <main id="main-content" tabindex="-1" class="app-shell__main">
+        <slot />
+      </main>
     </div>
   </div>
 </template>
@@ -114,5 +131,28 @@ function closeMobile(): void {
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+}
+
+/* 正文区（#380）：workspace 里除顶栏之外的剩余高度全给页面，页面组件自己
+   （`.monitor-view` / `.logs-view` / … 都有 `flex: 1`）才能撑满并各自滚动。
+   在 `<div>` 改成 `<main>` 之前，slot 的直接父级是 workspace 自身（flex 容器），
+   现在多了一层 main —— 它必须自己吃下剩余空间并继续做 flex 容器，否则页面高度塌陷。
+
+   这 4 条声明**不是可选装饰**，删掉任何一条都会全站内容被裁死（复核实测：
+   删掉后 main 高 868→2349、页面内滚动失效、文档滚动高度仍 900）。jsdom 无布局，
+   单测抓不到，故由 AppShellLandmarks.spec.ts 直接断言规则体文本守护。 */
+.app-shell__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 键盘聚焦这块正文时（skip link 的落点），UA 会在**整块正文**外围画一圈 1px 描边
+     （1440 下实测 1220×868 一圈）——那不是聚焦指示，是把整个视口框起来，读起来像选中了全页。
+     退到 2px 内缩的位置：仍保留可见的聚焦反馈（不依赖 skip link 自身的可见性），
+     又不会贴着内容边缘割裂版面。 */
+  outline-offset: -2px;
+  /* 窄屏 sticky 顶栏（32px，layout.css 的 .topbar）会压住锚点落点后的首行；
+     留出这段滚动外边距，Enter 跳转后正文标题不被顶栏遮住。 */
+  scroll-margin-top: var(--spacer-64);
 }
 </style>
