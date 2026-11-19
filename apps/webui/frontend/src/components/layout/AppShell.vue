@@ -136,11 +136,23 @@ function closeMobile(): void {
 /* 正文区（#380）：workspace 里除顶栏之外的剩余高度全给页面，页面组件自己
    （`.monitor-view` / `.logs-view` / … 都有 `flex: 1`）才能撑满并各自滚动。
    在 `<div>` 改成 `<main>` 之前，slot 的直接父级是 workspace 自身（flex 容器），
-   现在多了一层 main —— 它必须自己吃下剩余空间并继续做 flex 容器，否则页面高度塌陷。 */
+   现在多了一层 main —— 它必须自己吃下剩余空间并继续做 flex 容器，否则页面高度塌陷。
+
+   这 4 条声明**不是可选装饰**，删掉任何一条都会全站内容被裁死（复核实测：
+   删掉后 main 高 868→2349、页面内滚动失效、文档滚动高度仍 900）。jsdom 无布局，
+   单测抓不到，故由 AppShellLandmarks.spec.ts 直接断言规则体文本守护。 */
 .app-shell__main {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* 键盘聚焦这块正文时（skip link 的落点），UA 会在**整块正文**外围画一圈 1px 描边
+     （1440 下实测 1220×868 一圈）——那不是聚焦指示，是把整个视口框起来，读起来像选中了全页。
+     退到 2px 内缩的位置：仍保留可见的聚焦反馈（不依赖 skip link 自身的可见性），
+     又不会贴着内容边缘割裂版面。 */
+  outline-offset: -2px;
+  /* 窄屏 sticky 顶栏（32px，layout.css 的 .topbar）会压住锚点落点后的首行；
+     留出这段滚动外边距，Enter 跳转后正文标题不被顶栏遮住。 */
+  scroll-margin-top: var(--spacer-64);
 }
 </style>

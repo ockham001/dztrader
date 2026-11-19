@@ -34,14 +34,22 @@
      文本已被宣读却看不见 —— 这是 skip link 最常见的假实现。fixed 永远相对视口。
    - `translateY(-200%)` 而非 `top: -<像素>`：自身高度的两倍必定完全推出视口上沿，
      不依赖某个魔数，也不给 token 体系塞一个「必须小于元素负高度」的假 token。
-   - z-index 取既有最高档（与 .ds-toast 同级）：它必须在侧栏（300）/ 抽屉（150）/
-     弹层（200）之上，否则聚焦时会被壳层盖住。
+   - z-index 9500：skip link 聚焦时必须压在**任何**会在它上面落地的浮层之上。
+     实测叠层（全仓 grep）：顶栏 90 / 抽屉 150 / 下拉 200–210 / 侧栏 300 /
+     **默认口令 banner 9000**（App.vue 的 .default-password-banner，fixed + top:16px）/
+     toast 9999 / 弹窗遮罩 10000（App.vue 的 .popup-overlay）。
+     9000 那一层是硬冲突：390 宽时 banner 的 min-width 360px 几乎横满视口、
+     正好压住左上的 skip link —— 聚焦后读屏已宣读、键盘用户却看不见（#380 复核实测
+     elementFromPoint 命中 banner）。所以取 9500：**高于口令 banner、低于 toast 与弹窗遮罩**。
+     不给更高：弹窗打开时焦点被 focus trap 锁在框内，skip link 本就不该浮在遮罩之上。
+     注意 components.css:779 的 z-index: 2000 是旧 `.ds-toast` 单体（非当前最高档），
+     以本注释这组实测值为准。
    - 不套 `.ds-btn`：那是 24/28/32px 定高控件，文字若换行会被裁；这里用行内 padding。 */
 .ds-skip-link {
   position: fixed;
   top: var(--spacer-8);
   left: var(--spacer-8);
-  z-index: 2000;
+  z-index: 9500;
   padding: var(--spacer-8) var(--spacer-16);
   background: var(--bg-menu);
   color: var(--text-default);
@@ -50,7 +58,9 @@
   font-weight: var(--font-weight-medium);
   border: var(--border-width-default) solid var(--border-neutral-l1);
   border-radius: var(--radius-8);
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--text-default) 16%, transparent);
+  /* 复用既有浮层阴影 token（App.vue 的默认口令 banner 同款），不另写 color-mix：
+     后者在旧浏览器缺 color-mix 支持时会整条丢弃，阴影静默消失。 */
+  box-shadow: var(--shadow-lg);
   text-decoration: none;
   white-space: nowrap;
   /* #332 未落地前，全站没有 :focus-visible 体系；这里只给 skip link 自己一条可见的
