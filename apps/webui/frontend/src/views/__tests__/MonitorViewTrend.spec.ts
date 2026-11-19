@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import MonitorView from '../MonitorView.vue'
+import { parseCssFile, tokenDeclarationsOf } from '@/test-utils/cssTheme'
 import { sysmonApi } from '@/api/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -72,6 +73,17 @@ async function toggle(wrapper: VueWrapper, testId: string): Promise<void> {
   await wrapper.find(`[data-test="${testId}"]`).trigger('click')
   await wrapper.vm.$nextTick()
 }
+
+/** assets/css 下某个文件的绝对路径（从本 spec 文件位置推导，不依赖 cwd） */
+function cssPath(name: string): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'css', name)
+}
+const themePath = (): string => cssPath('theme.css')
+const designTokensPath = (): string => cssPath('design-tokens.css')
+
+// #371：MonitorView 挂了 1 秒 ticker，用例必须卸载 —— 不卸载时未清理的定时器会在
+// 后续用例的 flush 里插入无主更新，实测会让无关用例偶发假红。
+enableAutoUnmount(afterEach)
 
 describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', () => {
   beforeEach(() => {
@@ -676,6 +688,63 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toContain('background: var(--status-alert-default)')
     expect(ruleBody('.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-track-fill'))
       .toContain('background: var(--status-error-default)')
+  })
+
+  it('#371 存活信号走中性色，绿色只留给指标状态（One Job Rule）', () => {
+    // 四处存活信号（快照状态点 / 快照状态行 / 主机条脉冲点 / 右端「实时」）
+    // 一律中性色：绿色在页面上只意味着「指标正常」，不能再兼作「快照到了」「条在推进」。
+    for (const selector of ['.monitor-view__snapshot-state', '.monitor-view__snapshot-dot',
+      '.monitor-view__host-dot', '.monitor-view__host-live']) {
+      const body = ruleBody(selector)
+      expect(body, `${selector} 不得再占用状态色`).not.toContain('--status-success-default')
+      expect(body, `${selector} 不得借用警示色`).not.toContain('--status-warning-default')
+      // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到 6px 图形的 3:1 下限）
+      expect(body, `${selector} 应用 --text-secondary`).toContain('var(--text-secondary)')
+    }
+    // 等待态不靠色相区分（空心环 = 形状差异），因此不再有状态色规则
+    expect(ruleBody('.monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot'))
+      .toContain('background: transparent')
+    // 停推只加字重，不加色块 / 背景 / 动画
+    const stale = ruleBody('.monitor-view__snapshot-state--stale')
+    expect(stale).toContain('font-weight: var(--body-xs-strong-font-weight)')
+    expect(stale).not.toContain('background')
+    expect(stale).not.toContain('animation')
+    // 停推时脉冲点停跳：它说的是「在推进」，数据不推进时继续动就是撒谎
+    expect(ruleBody('.monitor-view__host--stale .monitor-view__host-dot')).toContain('animation: none')
+  })
+
+  it('#371 中性色与绿色在**解析后**确实不同：token 名匹配之外，颜色值也要分开', () => {
+    // 上一条只 grep token 名（源码文本匹配），挡不住「token 被重新定义成绿色」这种改动。
+    // 这里把三个 token 的名字解析成实际字面值，断言存活信号用的中性色与状态绿**不同值**。
+    // 解析口径复用 tokenContrast.spec.ts 的同一套（theme.css 三段结构 → 每段的 token 表），
+    // 不在本文件另写一份，否则两份会漂移（review-checklist §2.4）。
+    // 两处来源都要读：状态色（--status-*）定义在 design-tokens.css 的 :root 里，
+    // 主题色（--text-secondary）在 theme.css 的两段里。合并顺序照 src/main.ts 的导入顺序
+    // （design-tokens 在前、theme 在后，同名由主题段胜），与 tokenContrast.spec.ts 同一口径。
+    const designTokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
+    const themeRoot = parseCssFile(themePath())
+    const scopes = {
+      light: new Map([...designTokens, ...tokenDeclarationsOf(themeRoot, ':root', false)]),
+      dark: new Map([...designTokens, ...tokenDeclarationsOf(themeRoot, '.dark', false)]),
+    }
+    for (const [theme, scope] of Object.entries(scopes)) {
+      const neutral = scope.get('--text-secondary')
+      const success = scope.get('--status-success-default')
+      expect(neutral, `${theme} 段缺 --text-secondary`).toBeDefined()
+      expect(success, `${theme} 段缺 --status-success-default`).toBeDefined()
+      // 直白但有效的断言：两者不是同一个字面值。若有人把 --text-secondary 重新定义成
+      // 状态绿（或反过来），存活信号与指标状态就又会同色，One Job Rule 当场失效。
+      expect(neutral, `${theme} 段的中性色与状态绿同值，存活信号会与指标状态撞色`)
+        .not.toBe(success)
+    }
+  })
+
+  it('#371 台账的 normal 状态点与轨道填充仍然保持绿色（绿只属于指标状态）', () => {
+    // 与上一条成对：存活信号撤出之后，绿色必须仍然在它唯一正当的位置
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
+      .toContain('background: var(--status-success-default)')
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-track-fill'))
+      .toContain('background: var(--status-success-default)')
   })
 
   it('组成带的「已用」与「缓存」分得开：阶梯整体往「虚」侧挪一格（#363 C7）', () => {

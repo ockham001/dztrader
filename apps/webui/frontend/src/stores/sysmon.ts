@@ -123,6 +123,36 @@ export const useSysmonStore = defineStore('sysmon', () => {
   const error = ref<string | null>(null)
 
   /**
+   * 本机收到最近一次快照的时刻（#371，`Date.now()` 毫秒）。**停推判定的唯一时钟基准**。
+   *
+   * 为什么记在这里而不是视图里：
+   * 1. 它是**快照流**的属性，不是某个视图的局部状态——顶栏与监控页读的是同一份镜像。
+   * 2. 组件会重建：离开 /monitor 再回来时 MonitorView 整体卸载重建，记在视图里的 ref 会被
+   *    重新写成此刻，一台已经在停推的机器遂显示成「刚收到」。store 的记录跨重建存活。
+   *    （三个 Tab 之间切换不重建组件，那条路径验不出这个问题。）
+   *
+   * 为什么不用发送方 `snapshot.timestamp`：两机时钟偏差会让「本机 now − 发送方 timestamp」
+   * 两个方向都坏（钟慢 → 永久假红，钟快 → 永久假绿），详见 `composables/sysmonFreshness.ts`
+   * 模块头。`snapshot.timestamp` 仍是快照生成时刻，继续用于「更新于 …」的展示。
+   *
+   * null = 至今没有任何接收记录（首次挂载的短暂窗口）——此时不判停推，不拿「不知道」冒充
+   * 「刚刚收到」。
+   */
+  const lastReceivedAt = ref<number | null>(null)
+
+  /**
+   * 对外导出的接收时刻，**只读**（无 setter 的 computed）：唯一写入口是
+   * {@link markSnapshotReceived}。让任何调用方都能随手改写它，等于让「停推」这个结论可以被
+   * 与快照无关的代码篡改。
+   */
+  const lastReceivedAtMs = computed<number | null>(() => lastReceivedAt.value)
+
+  /** 记录一次「收到快照」。REST 补拉与 WS 推送都算收到——两者都是本机拿到了新数据。 */
+  function markSnapshotReceived(): void {
+    lastReceivedAt.value = Date.now()
+  }
+
+  /**
    * 首次挂载补拉镜像：快照（GET /api/sysmon/snapshot）与配置（GET /api/sysmon/config）并发。
    * 已加载过的部分跳过（WS 推送负责后续更新）；配置补拉失败不抛错——配置 tab 显示
    * 「配置尚未到达」，后续 WS `sysmon_config`（快照域）到达会自然补上。
@@ -133,6 +163,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
     if (!loaded.value) {
       try {
         snapshot.value = await sysmonApi.getSnapshot()
+        // REST 补拉也是一次「收到」：不记就会把刚补拉到的新鲜快照判成停推（或漏记）
+        markSnapshotReceived()
         error.value = null
       } catch (e) {
         // 503（未上报）/网络失败：保持无快照态，页面显示等待空态，后续 WS 推送会补上
@@ -155,6 +187,8 @@ export const useSysmonStore = defineStore('sysmon', () => {
     if (!p.availability || typeof p.availability !== 'object') return
     if (!p.availability.metrics || typeof p.availability.metrics !== 'object') return
     snapshot.value = p as SysmonSnapshotPayload
+    // 只在 payload 通过校验后记时：被丢弃的坏帧不算「收到新快照」（否则一个畸形帧能刷新存活信号）
+    markSnapshotReceived()
     loaded.value = true
     error.value = null
     // 「立即查询」的清除信号（#302，契约 sysmon §1.1）：读的是**净化后**的 `clock`
@@ -867,6 +901,7 @@ export const useSysmonStore = defineStore('sysmon', () => {
     diskIo,
     network,
     networkFilteredAll,
+    lastReceivedAtMs,
     clock,
     clockProbePending,
     clockProbeCooldownSec,

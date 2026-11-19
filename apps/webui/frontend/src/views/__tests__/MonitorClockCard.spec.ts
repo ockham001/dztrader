@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
@@ -52,6 +52,10 @@ async function mountView() {
 
 /** 上次探测时刻（夹具常量：快照 timestamp 前 30 秒）→ 相对时间「30 秒前」 */
 const PROBE_AGE_TEXT = '30 秒前'
+
+// #371：MonitorView 挂了 1 秒 ticker，用例必须卸载 —— 不卸载时未清理的定时器会在
+// 后续用例的 flush 里插入无主更新，实测会让无关用例偶发假红。
+enableAutoUnmount(afterEach)
 
 describe('时间卡片 · 空态三分支（契约 §2.9）', () => {
   beforeEach(() => {

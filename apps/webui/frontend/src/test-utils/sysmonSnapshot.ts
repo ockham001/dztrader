@@ -103,6 +103,11 @@ export interface SysmonSnapshotOptions {
   metrics?: Record<string, SysmonAvailabilityEntry>
   /** CPU 总使用率；null = 首次采样/不可用（不得用 0 冒充） */
   cpuUsageRatio?: number | null
+  /**
+   * 快照生成时刻（契约 sysmon §2，Unix 毫秒）；默认夹具时刻 `2026-10-21T15:00:00Z`。
+   * #371 的数据龄用例用它把「本机此刻」与快照时刻的差值钉成确定的秒数。
+   */
+  timestamp?: number
   /** 填充网卡数据并标记 network 可用（#75 起 volumes / shm_dir 默认已可用） */
   resourceData?: boolean
   /** 内存对象；默认 #74 形状（32 GiB 总量 / 16 GiB 可用 / 0.5 比率 / 8 GiB 缓存 / 256 MiB 缓冲），null = 本帧未采集 */
@@ -456,7 +461,7 @@ export function makeSysmonSnapshot(options: SysmonSnapshotOptions = {}): SysmonS
 
   return {
     source: 'dzsysmon',
-    timestamp: Date.UTC(2026, 9, 21, 15, 0, 0),
+    timestamp: options.timestamp ?? Date.UTC(2026, 9, 21, 15, 0, 0),
     sampling: {
       measure_interval_ms: 1000,
       last_sample_unix_ms: Date.UTC(2026, 9, 21, 15, 0, 0) - 877,

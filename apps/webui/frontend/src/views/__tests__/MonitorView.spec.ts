@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount, flushPromises, type DOMWrapper } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { enableAutoUnmount, mount, flushPromises, type DOMWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import MonitorView from '../MonitorView.vue'
 import { sysmonApi } from '@/api/sysmon'
@@ -15,6 +15,12 @@ vi.mock('@/api/sysmon', () => ({
 const stubs = {
   Icon: { template: '<span class="icon" />' },
 }
+
+// #371：本页现在带一个 1 秒的数据龄定时器（停推时读数要自己走秒）。用例从不卸载 wrapper，
+// 未卸载的定时器会在后续用例的渲染 flush 里插入无主的更新，把「apply 之后 nextTick」的断言
+// 搅成偶发假红（实测 5 次里 2 次）。让 @vue/test-utils 在每条用例后统一卸载，定时器随
+// onUnmounted 一起清。
+enableAutoUnmount(afterEach)
 
 /** CPU 卡内仍可展开的明细（#363：卷 / 盘 / 网卡的明细已平铺进台账，不再有卡片级折叠） */
 const DETAIL_TOGGLES = [
@@ -1810,6 +1816,11 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
   })
 
   it('实时快照状态降级为状态点 + 小字，且不与视图切换按钮同排', async () => {
+    // 钉住「此刻」：停推判据是「本机收到快照的时刻」与本机此刻之差（#371 返工后的口径），
+    // 而 REST 补拉在收到时就记 `Date.now()`，所以数据龄恒为 0 —— 这条钉桩对停推判定已无影响
+    // （#371 审查实测：删掉它两条用例仍全绿）。保留是为了让所有依赖 `Date.now()` 的展示
+    // （「更新于 …」等）有确定的取值，不让用例随真实时间漂移。
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 21, 15, 0, 2))
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
@@ -1825,9 +1836,10 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
     expect(wrapper.find('.monitor-view__header > .monitor-view__snapshot-state').exists()).toBe(false)
     expect(wrapper.find('.monitor-view__view-switch .monitor-view__snapshot-state').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-subtitle"]').exists()).toBe(true)
+    vi.restoreAllMocks()
   })
 
-  it('等待快照态用警示色状态点，且副标题不重复「等待」语义', async () => {
+  it('等待快照态用空心环状态点（不再借用警示色），且副标题不重复「等待」语义', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
     const wrapper = await mountView()
 
@@ -1839,6 +1851,174 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
     // 实时视图的等待语义只由状态行承担（副标题不重复同一句话）
     expect(wrapper.find('[data-test="monitor-subtitle"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-waiting"]').exists()).toBe(true)
+  })
+})
+
+// #371：存活性可失效——距上次收到新快照超过 3 × push_interval_sec（默认 5 秒 → 15 秒）时，
+// 「实时快照」必须变成一句可被推翻的话。时间用 fake timers 推进（不睡墙钟），
+// 阈值来源是生效配置的 realtime.push_interval_sec，**判据是本机接收时刻**（#331 triage）。
+describe('MonitorView 快照停推降级（#371）', () => {
+  const FIXTURE_TS = Date.UTC(2026, 9, 21, 15, 0, 0)
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  /**
+   * 挂载页面，然后让本机时钟静置 `ageMs`（期间一帧快照都没收到）。
+   *
+   * 不伪造 store 内部状态、也不动 `snapshot.timestamp`：只是把假时钟往前推，让组件自己的 1 秒
+   * ticker 与「此刻」自然走到那个年龄——这正是生产里停推时的样子。
+   */
+  async function mountAtAge(
+    ageMs: number,
+    configPushIntervalSec?: number,
+    snapshot = makeSysmonSnapshot(),
+  ) {
+    vi.useFakeTimers({ now: FIXTURE_TS })
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    if (configPushIntervalSec !== undefined) {
+      vi.mocked(sysmonApi.getConfig).mockResolvedValue(
+        makeSysmonConfig({ realtime: { push_interval_sec: configPushIntervalSec } }),
+      )
+    }
+    const wrapper = await mountView()
+    // 静置 ageMs：ticker 每秒把「此刻」往前推，而没有任何新帧到达
+    await vi.advanceTimersByTimeAsync(ageMs)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('停推后状态行转「快照已停 N 秒」，主机条右端「实时」同时撤掉（两处不再各说各话）', async () => {
+    // 数据龄 16 秒 > 15 秒阈值
+    const wrapper = await mountAtAge(16_000)
+
+    const state = wrapper.find('.monitor-view__snapshot-state')
+    expect(state.text()).toContain('快照已停 16 秒')
+    expect(state.text()).not.toContain('实时快照')
+    expect(state.classes()).toContain('monitor-view__snapshot-state--stale')
+    // 主机条那个只为「在推进」而存在的哨兵随之消失：页面不再同时出现「实时」与「已停 16 秒」
+    expect(wrapper.find('[data-test="monitor-host"] .monitor-view__host-live').exists()).toBe(false)
+    // 脉冲点停止脉动（`--stale` 修饰类挂上主机条，CSS 关掉 animation）
+    expect(wrapper.find('[data-test="monitor-host"]').classes()).toContain('monitor-view__host--stale')
+  })
+
+  it('秒数随时间自己走：不靠推送驱动，页面静置 10 秒后读数跟着涨', async () => {
+    // 挂载时数据龄 16 秒 → 推进 10 秒（期间一帧推送都没有）→ 26 秒
+    const wrapper = await mountAtAge(16_000)
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('快照已停 16 秒')
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('快照已停 26 秒')
+  })
+
+  it('恢复推送即自动消失（无粘性）：下一帧快照把「已停」换回「实时快照」', async () => {
+    const wrapper = await mountAtAge(16_000)
+    expect(wrapper.find('.monitor-view__snapshot-state').classes())
+      .toContain('monitor-view__snapshot-state--stale')
+
+    // 恢复推送：有新帧到达 → store 把「上次收到」刷新为此刻 → 数据龄归零
+    useSysmonStore().applySnapshot(makeSysmonSnapshot())
+    await flushPromises()
+
+    const state = wrapper.find('.monitor-view__snapshot-state')
+    expect(state.text()).toContain('实时快照')
+    expect(state.classes()).not.toContain('monitor-view__snapshot-state--stale')
+    expect(wrapper.find('[data-test="monitor-host"] .monitor-view__host-live').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-host"]').classes()).not.toContain('monitor-view__host--stale')
+  })
+
+  it('阈值随生效配置走：push_interval_sec = 30 时，数据龄 16 秒仍是「实时快照」', async () => {
+    // 30 × 3 = 90 秒阈值；16 秒远未到
+    const wrapper = await mountAtAge(16_000, 30)
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('实时快照')
+
+    // 同一个间隔下越过 90 秒才降级（91 秒按共享的「多久以前」口径落到「1 分钟」档）
+    await vi.advanceTimersByTimeAsync(75_000)   // 累计 91 秒
+    await flushPromises()
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('快照已停 1 分钟')
+  })
+
+  it('停推不改变台账的指标等级：normal 行仍是 normal（数据旧 ≠ 指标异常）', async () => {
+    const wrapper = await mountAtAge(16_000)
+
+    // 停推只降级存活信号，不改数据本身的等级判定——两件事不得互相污染
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('快照已停')
+    const normalRows = wrapper.findAll('.monitor-view__ledger-row[data-level="normal"]')
+    expect(normalRows.length).toBeGreaterThan(0)
+  })
+
+  it('发送方钟慢 60 秒也不判停推：判据是本机接收时刻，不是 snapshot.timestamp', async () => {
+    // 这一条是口径的证伪用例。挂载时 REST 补拉让「上次收到」= 此刻（新鲜），
+    // 而快照自带的 timestamp 比本机早整整 60 秒（发送方这口钟是慢的）。
+    // 旧口径（now − timestamp）会算出 60 秒 > 15 秒阈值 → 永久假红；
+    // 新口径（now − 接收时刻）应算出 0 秒 → 「实时快照」。
+    vi.useFakeTimers({ now: FIXTURE_TS })
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(
+      makeSysmonSnapshot({ timestamp: FIXTURE_TS - 60_000 }),
+    )
+    const wrapper = await mountView()
+
+    const state = wrapper.find('.monitor-view__snapshot-state')
+    expect(state.text()).toContain('实时快照')
+    expect(state.classes()).not.toContain('monitor-view__snapshot-state--stale')
+  })
+
+  it('发送方钟快 60 秒且确实停推时仍判停推：不会被负差值掩盖', async () => {
+    // 反向证伪：真停推 60 秒，而最后一帧的 timestamp 比本机此刻还晚 60 秒（发送方钟快）。
+    // 旧口径算出 −60 秒 → 永不判停推（静默失效）；新口径只看本机接收时刻 → 照常判停推。
+    // 本机此刻走到 FIXTURE_TS + 60s，而最后一帧的 timestamp 是 FIXTURE_TS + 120s（比此刻还晚 60s）
+    const senderClockAhead = makeSysmonSnapshot({ timestamp: FIXTURE_TS + 120_000 })
+    const wrapper = await mountAtAge(60_000, undefined, senderClockAhead)
+    // 前提成立：用本机此刻作差得 −60 秒 —— 旧口径由此永不判停推（静默失效）
+    expect(useSysmonStore().snapshot?.timestamp).toBe(FIXTURE_TS + 120_000)
+    expect((FIXTURE_TS + 60_000) - (FIXTURE_TS + 120_000)).toBe(-60_000)
+
+    const state = wrapper.find('.monitor-view__snapshot-state')
+    expect(state.text()).toContain('快照已停 1 分钟')
+    expect(state.classes()).toContain('monitor-view__snapshot-state--stale')
+  })
+
+  it('视图重建后停推计时不重置：接收时刻记在 store 里，不在视图里', async () => {
+    // 这条用例的牙在**重建**上：三个 Tab 之间切换不销毁组件（viewMode 是组件内 ref），
+    // 视图局部 ref 在那条路径上不会归零，因此切 Tab 验不出问题。
+    // 真正的路径是路由离开再回来（组件卸载重建）：若「上次收到」记在视图里，重建时会被
+    // 重新写成此刻 → 一台已经在停推的机器显示成「刚收到」。store 里的记录跨重建存活。
+    const wrapper = await mountAtAge(60_000)
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('快照已停 1 分钟')
+
+    // 切 Tab 往返（组件不重建，仍应保持停推）
+    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="monitor-tab-realtime"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.monitor-view__snapshot-state').text()).toContain('快照已停 1 分钟')
+
+    // 卸载后重建（= 路由离开 /monitor 再回来）：store 保留，计时必须接着走
+    wrapper.unmount()
+    const rebuilt = await mountView()
+
+    const state = rebuilt.find('.monitor-view__snapshot-state')
+    expect(state.text()).toContain('快照已停 1 分钟')
+    expect(state.classes()).toContain('monitor-view__snapshot-state--stale')
+    // 反证：若接收时刻被重建逻辑重置，这里会是 0 秒 → 「实时快照」
+    expect(state.text()).not.toContain('实时快照')
+  })
+
+  it('组件卸载后不留定时器（数据龄的读者已经走了）', async () => {
+    const wrapper = await mountAtAge(16_000)
+    // 挂载后有且仅有数据龄一个定时器（本页不轮询，WS 推送不是定时器）
+    expect(vi.getTimerCount()).toBe(1)
+    wrapper.unmount()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 
@@ -1867,6 +2047,10 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
   })
 
   it('主机条字段与快照一一对应：主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数', async () => {
+    // 右端「实时」是存活信号，停推时撤掉（#371）——本用例验的是正常态。钉住「此刻」的理由
+    // 同上一条：停推判据用本机接收时刻，与夹具的 `timestamp` 无关，这条钉桩是给别的
+    // `Date.now()` 消费者一个确定值。
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 21, 15, 0, 2))
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
 
@@ -1881,6 +2065,7 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     expect(text).toContain('AMD Ryzen 9 7950X 16-Core Processor')
     expect(text).toContain('16 逻辑核')
     expect(text).toContain('实时')
+    vi.restoreAllMocks()
     // 系统信息卡已从实时视图消失（其内容并入主机条）
     expect(wrapper.find('[data-test="monitor-system"]').exists()).toBe(false)
     // 温度卡同样消失：温度只在 CPU 宽卡内占一格（本夹具无传感器，故该格整块不渲染）

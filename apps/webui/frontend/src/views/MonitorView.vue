@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, getCurrentInstance, onMounted, ref } from 'vue'
+import { computed, getCurrentInstance, onMounted, onUnmounted, ref } from 'vue'
 import { onBeforeRouteLeave, type NavigationGuardNext, type Router } from 'vue-router'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
@@ -62,6 +62,12 @@ import {
   resolveClockThresholds,
   sortClockDaemons,
 } from '@/composables/sysmonClock'
+import {
+  isSnapshotStale,
+  receivedAgeMs,
+  resolvePushIntervalSec,
+  staleSnapshotText,
+} from '@/composables/sysmonFreshness'
 import { useAuthStore } from '@/stores/auth'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
@@ -122,11 +128,27 @@ const trend = useSysmonTrendStore()
 /** 视图模式：实时（默认） / 历史 / 配置（#81 展示生效配置 + admin 编辑） */
 const viewMode = ref<'realtime' | 'history' | 'config'>('realtime')
 
+// ---- 停推判定的「此刻」（#371）：停推时没有任何事件到达，时长必须自己走秒 ----
+// 本页靠 WS 推送驱动（契约 sysmon §4），一帧都不来的时候没有回调可用；「快照已停 N 秒」
+// 里的 N 若只在推送时算一次，就会永远停在推送前那一刻（正是本票要修的那句「永不失效的断言」）。
+// 1 秒一跳，只写一个 ref；不轮询、不发请求、不改 WS 契约。
+// 「上次何时收到」由 store 提供（`sysmon.lastReceivedAtMs`），不在这里记：那是快照流的属性，
+// 且这个组件在路由内被重建时（切走再切回）局部 ref 会归零，会在停推的机器上显示成「刚收到」。
+const nowMs = ref(Date.now())
+let freshnessTicker: ReturnType<typeof setInterval> | null = null
+
 onMounted(() => {
   void sysmon.init()
   // 内联趋势（#127）：进入页面时补拉最近 15 分钟历史；历史库不可用/被关闭时静默降级，
   // 已保留的上一轮曲线在补拉降级时继续显示并标记未刷新（#142）
   void trend.init()
+  freshnessTicker = setInterval(() => { nowMs.value = Date.now() }, 1_000)
+})
+
+onUnmounted(() => {
+  // 定时器必须随组件清理：本页在三种视图间切换时不重建，但离开路由后没人再读数据龄
+  if (freshnessTicker !== null) clearInterval(freshnessTicker)
+  freshnessTicker = null
 })
 
 /**
@@ -226,6 +248,23 @@ const platformDescription = computed(() => snapshot.value?.availability.platform
 const updatedAt = computed(() => {
   const timestamp = snapshot.value?.timestamp
   return typeof timestamp === 'number' ? formatDateTime(timestamp) : ''
+})
+
+// ---- 快照停推判定（#371；术语见 GLOSSARY.md「数据龄」）----
+// 判据是**本机收到新快照的时刻**（store 的 `lastReceivedAtMs`），不是发送方 `snapshot.timestamp`：
+// 两机时钟偏差会让「本机 now − 发送方 timestamp」两个方向都坏（钟慢 → 永久假红，钟快 → 永久假绿），
+// 详见 composables/sysmonFreshness.ts 模块头。发送方 timestamp 仍用于「更新于 …」的展示。
+// 阈值来自生效配置 `realtime.push_interval_sec`（3 倍，默认 5s → 15s），不硬编码在组件里。
+const pushIntervalSec = computed(() => resolvePushIntervalSec(sysmon.config?.realtime))
+const snapshotAge = computed(() => receivedAgeMs(sysmon.lastReceivedAtMs, nowMs.value))
+/** 停推：距上次收到新快照已超阈值（无接收记录时为 false —— 不知道就不说） */
+const snapshotStale = computed(() => isSnapshotStale(snapshotAge.value, pushIntervalSec.value))
+/** 降级文案「快照已停 N 秒」；未停推为 null（此时显示「实时快照」） */
+const snapshotStaleText = computed(() => staleSnapshotText(snapshotAge.value, pushIntervalSec.value))
+/** 快照状态行的三段文案（#371）：无快照 / 有快照且新鲜 / 有快照但停推 */
+const snapshotStateText = computed(() => {
+  if (!snapshot.value) return '等待快照'
+  return snapshotStaleText.value ?? '实时快照'
 })
 
 // ---- 格式化（#126：唯一实现收敛到 @/composables/format，本文件不得再写 toFixed）----
@@ -741,14 +780,20 @@ const cpuTrendAriaLabel = computed(
             <template v-else>系统监控数据尚未到达</template>
           </p>
           <!-- 实时快照状态（#325）：原为 `ds-tag` 药丸，在 390 宽与三个视图切换按钮同排、同属药丸族，
-               看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。 -->
+               看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。
+               #371：三段——等待快照 / 实时快照 / 快照已停 N 秒。存活信号一律中性色，
+               绿色只留给指标状态（DESIGN.md One Job Rule）；停推的「警示」由文案承担，
+               不靠状态色（它们是进程状态，不是数据龄）。 -->
           <p
             v-if="viewMode === 'realtime'"
             class="monitor-view__snapshot-state"
-            :class="{ 'monitor-view__snapshot-state--waiting': !snapshot }"
+            :class="{
+              'monitor-view__snapshot-state--waiting': !snapshot,
+              'monitor-view__snapshot-state--stale': snapshotStale,
+            }"
           >
             <span class="monitor-view__snapshot-dot" aria-hidden="true"></span>
-            {{ snapshot ? '实时快照' : '等待快照' }}
+            {{ snapshotStateText }}
           </p>
         </div>
       </header>
@@ -809,15 +854,23 @@ const cpuTrendAriaLabel = computed(
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
       <!-- 主机条（#362）：取代原「系统信息」整张卡——一条紧凑的行，字段全部来自既有快照，
-           无可显示值的字段显示 `—`。脉冲点 + 右端「实时」表达快照在推进（本区只在有快照时渲染）。 -->
-      <section class="monitor-view__host" data-test="monitor-host" aria-label="主机">
+           无可显示值的字段显示 `—`。脉冲点 + 右端「实时」表达快照在推进（本区只在有快照时渲染）。
+           #371：脉冲点与右端「实时」是**存活信号**，一律中性色——绿色只留给指标状态
+           （DESIGN.md One Job Rule：同一色族只承担一个含义）。停推时两处随状态行一起说明，
+           不再由这两个哨兵各自声称「实时」。 -->
+      <section
+        class="monitor-view__host"
+        :class="{ 'monitor-view__host--stale': snapshotStale }"
+        data-test="monitor-host"
+        aria-label="主机"
+      >
         <span class="monitor-view__host-dot" aria-hidden="true"></span>
         <span class="monitor-view__host-name">{{ hostName }}</span>
         <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
         <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
         <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
         <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
-        <span class="monitor-view__host-live">实时</span>
+        <span v-if="!snapshotStale" class="monitor-view__host-live">实时</span>
       </section>
 
       <!-- CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
@@ -1550,27 +1603,49 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* 实时快照状态（#325）：状态点 + 小字（原 `ds-tag` 药丸在 390 宽与三个视图切换按钮同排、
-   同属药丸族，看起来像第 4 个 Tab）。放在标题组内，与 Tab 行分离。 */
+   同属药丸族，看起来像第 4 个 Tab）。放在标题组内，与 Tab 行分离。
+   #371：这是**存活信息**（数据到没到、有多旧），一律中性色——绿色属于指标状态（台账 normal
+   的轨道与状态点），同一个绿在这里会同时意味着「快照到了」「机器正常」「主机条在推进」三件事，
+   违反 DESIGN.md 的 One Job Rule（DESIGN.md:225）。
+   文字用 secondary 而不是 tertiary：本行 11px 且承载信息（「快照已停 18 秒」），tertiary 在
+   深/浅两套下只有 3.19 / 4.35，够不到 11px 正文的 4.5:1（#363 C5 的同一笔账）。
+   数字加 `tabular-nums`：停推时秒数每秒变化，等宽数字让文案不左右跳（DESIGN.md 表格数字规则）。 */
 .monitor-view__snapshot-state {
   display: inline-flex;
   align-items: center;
   gap: var(--spacer-6);
   margin: var(--spacer-4) 0 0;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
 }
 
+/* 状态点：存在的意义是「这一行说的是数据」而不是「一切正常」。
+   secondary（浅 9.51 / 深 5.86 对各自底色）而不是 tertiary：6px 的图形要求 ≥3:1，
+   tertiary 在深色主机条底（#262626）只有 3.19，太贴近下限。 */
 .monitor-view__snapshot-dot {
   flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: var(--radius-full);
-  background: var(--status-success-default);
+  background: var(--text-secondary);
 }
 
+/* 无快照 ≠ 数据停了：用**形状**（空心环）而不是色相区分「还没有数据」与「数据在更新」。
+   状态色与整页空态已在别处表达「等待」，这里不再多涂一种颜色。
+   用 border 而不是 box-shadow：forced-colors（Windows 高对比度）下 box-shadow 被强制为 none，
+   border 会保留并取 CanvasText，空心环在两种模式下都读得出来。 */
 .monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot {
-  background: var(--status-warning-default);
+  background: transparent;
+  border: 1px solid var(--text-secondary);
+}
+
+/* 停推（数据龄 > 3 × 推送间隔）：**不加色相、不加背景块、不加脉冲**——「快照已停 18 秒」
+   这句话本身已经说清事实；加重只给字重（DESIGN.md Paired-Step Rule：色族只给状态，
+   这里给的是「数据有多旧」，不是进程状态）。 */
+.monitor-view__snapshot-state--stale {
+  font-weight: var(--body-xs-strong-font-weight);
 }
 
 /* 离开确认对话框正文（#322）：与其它对话框正文同档字号，不引入新范式 */
@@ -1665,19 +1740,28 @@ const cpuTrendAriaLabel = computed(
   line-height: var(--body-xs-line-height);
 }
 
-/* 脉冲点：实时快照在推进（纯装饰，状态文字由快照状态行承担，故 aria-hidden） */
+/* 脉冲点：实时快照在推进（纯装饰，状态文字由快照状态行承担，故 aria-hidden）。
+   #371：存活信号走中性色。脉冲动画本身仍在——「条在推进」是**动作**而不是**状态**，
+   动作可以保留动效；颜色则归指标状态用。
+   深浅两套都对各自底色 ≥ 5.86:1（secondary：浅 #404040 对 #F5F5F5、深 #a1a1a1 对 #262626）。 */
 .monitor-view__host-dot {
   flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: var(--radius-full);
-  background: var(--status-success-default);
+  background: var(--text-secondary);
   animation: monitor-view-host-pulse 2s ease-in-out infinite;
 }
 
 @keyframes monitor-view-host-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/* 停推时脉冲点停止脉动：它代表「在推进」，数据不再推进时继续跳就是在撒谎。
+   颜色不变（仍是中性灰），信息由状态行那句话承担——两处同时说同一件事，且不靠色相。 */
+.monitor-view__host--stale .monitor-view__host-dot {
+  animation: none;
 }
 
 /* 尊重「减少动态效果」：脉冲是装饰，关掉不影响任何信息（点本身仍在） */
@@ -1698,10 +1782,12 @@ const cpuTrendAriaLabel = computed(
   overflow-wrap: anywhere;
 }
 
+/* 右端「实时」：与脉冲点同源的存活信号，同样中性色（#371）。停推时整句由 v-if 撤掉，
+   不留一句「实时」与「快照已停 18 秒」并排自相矛盾。 */
 .monitor-view__host-live {
   margin-left: auto;
   flex-shrink: 0;
-  color: var(--status-success-default);
+  color: var(--text-secondary);
 }
 
 /* ---- CPU 四数字（#362）：占用率 / 系统负载 / 当前频率 / 最高温度横排 ----
