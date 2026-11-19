@@ -553,7 +553,12 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
 </script>
 
 <template>
-  <header class="topbar">
+  <header class="topbar" aria-label="全局状态栏">
+    <!-- #380：壳层顶栏是全站唯一的 banner 地标，必须是有名字的那一个：
+         读屏的「跳到 banner」若不命名，只会报一个无名的 banner，用户不知道落在哪里。
+         `aria-label` 而非 `aria-labelledby`：顶栏里没有能当标题的元素（全是状态徽章与时钟）。
+         注：注释必须写在根元素**内部** —— 写在 <template> 顶层会让组件变成多根（注释也占一个
+         根节点），$el 退化成包裹用的 div，app-shell 里那层 header 语义就丢了。 -->
     <div class="topbar__left">
       <button type="button"
         class="topbar__hamburger"
