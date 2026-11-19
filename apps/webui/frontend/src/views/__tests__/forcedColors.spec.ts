@@ -53,13 +53,78 @@ function ruleBody(selector: string): string {
   return declarations(bodies.join('\n'))
 }
 
-/** 是否为「写了实际边框」的声明（`border-radius` / `border-collapse` 不算；`transparent` 算） */
-function hasRealBorder(body: string): boolean {
-  return /(^|[\s;{])border(-(top|right|bottom|left|inline|block)[a-z-]*)?\s*:/.test(body)
+/**
+ * 取某条属性在规则体里的**最后一条**声明值（CSS 后写覆盖先写）。无该属性返回 null。
+ *
+ * 为什么按值判而不按属性名判（#381 审查 finding 3）：`outline: none` / `border: 0`
+ * 是对应属性的**合法取值**，写了等于没写。只看「出现过 `outline` 字样」的判据会被
+ * 这两条声明绕过——审查实测三个绕过探针全部绿灯。判据必须是「实际画得出来」。
+ */
+function lastValue(body: string, prop: string): string | null {
+  const re = new RegExp(`(?:^|[\\s;{])${prop}\\s*:\\s*([^;}]+)`, 'g')
+  let match: RegExpExecArray | null
+  let value: string | null = null
+  while ((match = re.exec(body)) !== null) value = match[1].trim()
+  return value
 }
 
+/**
+ * 是否真的画得出边框：`border` / `border-*` 的**简写或宽度**不是 0 / none。
+ *
+ * `border-radius` / `border-collapse` / `border-color` 不画边框，不算。
+ */
+function hasRealBorder(body: string): boolean {
+  for (const prop of ['border', 'border-top', 'border-right', 'border-bottom', 'border-left',
+    'border-inline', 'border-block', 'border-inline-start', 'border-inline-end',
+    'border-block-start', 'border-block-end', 'border-width']) {
+    const value = lastValue(body, prop)
+    if (value === null) continue
+    if (/^0(?![.\d])/.test(value)) continue          // border: 0 / 0px
+    if (/\bnone\b/.test(value)) continue              // border: none
+    return true
+  }
+  return false
+}
+
+/**
+ * 是否真的画得出外轮廓：简写的 style 不是 none/hidden、宽度不为 0。
+ *
+ * `outline: none` / `outline: 0` / `outline: 0 solid transparent` 都算「没画」——
+ * 审查实测这三种都能绕过只看属性名的判据。
+ */
 function hasOutline(body: string): boolean {
-  return /(^|[\s;{])outline(-[a-z]+)?\s*:/.test(body)
+  const shorthand = lastValue(body, 'outline')
+  if (shorthand !== null) {
+    const lower = shorthand.toLowerCase()
+    if (lower === 'none' || lower === 'initial' || lower === 'unset' || lower === 'revert') return false
+    if (/^0(?![.\d])/.test(shorthand)) return false   // outline: 0
+    if (/\bnone\b|\bhidden\b/.test(lower)) return false // outline: 0 none / hidden
+    return true
+  }
+  // 分写形态：outline-style 决定「画不画」，缺省（无 style 声明）在 CSS 里是 none
+  const style = lastValue(body, 'outline-style')
+  if (style === null || /\bnone\b|\bhidden\b/.test(style.toLowerCase())) return false
+  const width = lastValue(body, 'outline-width')
+  if (width !== null && /^0(?![.\d])/.test(width)) return false
+  return true
+}
+
+/**
+ * 纯装饰投影（非 inset 且带模糊）不承担边界语义，`box-shadow` 消失不影响信息。
+ *
+ * 审查 finding 3 的另一半：原判据把「装饰」与「边界」混为一谈，一条
+ * `box-shadow: 0 2px 8px rgba(0,0,0,.16)` 会被误判成缺陷。浮层投影就属这一类。
+ */
+function isDecorativeShadow(body: string): boolean {
+  if (/(^|[\s;{])box-shadow\s*:\s*[^;}]*\binset\b/.test(body)) return false
+  // 三个长度 + 颜色，第三个长度（blur）非 0 → 有模糊 → 装饰投影。
+  // 长度要**连裸 0 一起匹配**：`box-shadow: 0 2px 8px …` 的第一个偏移量写作 `0`（无单位），
+  // 只认 `px` 会把三元组数成两项、blur 取到 undefined（本 spec 第一版就这样漏了装饰豁免）。
+  const value = lastValue(body, 'box-shadow') ?? ''
+  const parts = value.split(/,(?![^(]*\))/)[0].trim()
+  const lengths = parts.match(/(?:^|\s)-?(?:[\d.]+px|0)(?=\s|$)/g) ?? []
+  if (lengths.length < 3) return false
+  return Number.parseFloat(lengths[2]) > 0
 }
 
 describe('#381 forced-colors：靠背景色表达的图形必须有 border / outline', () => {
@@ -123,6 +188,8 @@ describe('#381 forced-colors：靠背景色表达的图形必须有 border / out
       if (!/(^|[\s;{])box-shadow\s*:/.test(body)) return
       // 值为 none 的声明不画任何东西，不算「承担边界」
       if (/(^|[\s;{])box-shadow\s*:\s*none/.test(body)) return
+      // 纯装饰投影（非 inset + 有模糊）不承担边界语义：它消失不影响任何信息
+      if (isDecorativeShadow(body)) return
       if (hasRealBorder(body) || hasOutline(body)) return
       offenders.push(`${rule.selector} → ${body.trim().replace(/\s+/g, ' ').slice(0, 80)}`)
     })

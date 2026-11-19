@@ -2185,7 +2185,12 @@ const cpuTrendAriaLabel = computed(
    且随 `overflow: hidden` 被轨道裁掉四边，只在填充块的边缘留下一圈。
    `transparent` 是这条修法能在正常主题下「零像素」的原因：普通渲染不画任何东西，
    forced-colors 下系统把它换成 `CanvasText`（不用另写 `@media (forced-colors: active)` 分支，
-   也就不必在四个等级色上各写一遍描边色）。 */
+   也就不必在四个等级色上各写一遍描边色）。
+
+   **已知边界（实测，不粉饰）**：填充宽度 < 2px 时（本机存在 0.6% 这种真实取值，宽约 1.47px），
+   负 offset 把描边压到元素内部后只剩右缘一条 1px 竖线，「一圈边界」不成立。这一档下
+   比例信息由右侧的百分比文字兜底，没有丢；改 `border` 会更糟——实测 1% 会把 0.39px 画成 2px，
+   那是把读数改大，比少画一条边严重。 */
 .monitor-view__ledger-track-fill {
   display: block;
   width: var(--ledger-fill, 0%);
@@ -2666,7 +2671,13 @@ const cpuTrendAriaLabel = computed(
 
 /* 柱的填充：高度由 `--core-fill`（占用率）驱动，颜色区分饱和 / 正常两个状态 token。
    描边同台账轨道填充（#381）：`outline` 不占盒模型、不改变 `--core-fill` 的百分比语义，
-   `outline-offset` 负值把它压进填充块内部，四边都随轨道 `overflow: hidden` 收口。 */
+   `outline-offset` 负值把它压进填充块内部，四边都随轨道 `overflow: hidden` 收口。
+
+   **已知边界（实测，不粉饰）**：填充高度 < 3px 时（本机 8 核里 4 个核 < 3%），
+   0.36–0.72px 的高度装不下带负 offset 的描边，forced-colors 下**一个像素都不画** ——
+   读者看到的仍是空轨道，与改前一致。这一档下每核的百分比文字在柱下方，信息没丢。
+   这不是回归（改前也是空轨道），是「这条修法在低占用档不生效」，写在这里防止下一个人
+   把它当 bug 重报。真正的解法是给柱底加一条基线（不随高度变化），属于另一票的版面改动。 */
 .monitor-view__core-bar-fill {
   display: block;
   width: 100%;
