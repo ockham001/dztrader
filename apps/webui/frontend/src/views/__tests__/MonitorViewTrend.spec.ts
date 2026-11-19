@@ -645,6 +645,29 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(ruleBody('.monitor-view__ledger-col-label')).toContain('display: none')
   })
 
+  it('阈值 / 余量两列按契约全空间定宽（#382：数字列只由内容定宽，不随版面收窄）', () => {
+    // 实测（11px 等宽数字，台账真实单元格）：
+    // 阈值最宽 = 默认档 `±100 / ±1000 ms` 84.86px（秒档最宽 80.47px、分钟档 64.06px）；
+    // 余量最宽 = 字节余量 `已超 1023.9 MiB` 82.09px（时钟余量换秒后 ≤ 58px、点数余量 66.8px）。
+    // 两列在两个位宽档都必须容得下这两串——#382 的教训正是「按当前机器实测值定列宽」。
+    const tokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
+    const REQUIRED: Record<string, number> = {
+      '--ledger-col-threshold': 88,
+      '--ledger-col-headroom': 88,
+      '--ledger-col-threshold-md': 88,
+      '--ledger-col-headroom-md': 88,
+    }
+    for (const [token, min] of Object.entries(REQUIRED)) {
+      const value = tokens.get(token)
+      expect(value, `design-tokens.css 缺少 ${token}`).toBeDefined()
+      const px = Number.parseFloat(String(value))
+      expect(px, `${token}=${value} 容不下契约上限文案（需 ≥ ${min}px）`).toBeGreaterThanOrEqual(min)
+    }
+    // 两档的阈值 / 余量列宽必须一致：同一串文本在两个位宽档不能一档放得下一档放不下
+    expect(tokens.get('--ledger-col-threshold')).toBe(tokens.get('--ledger-col-threshold-md'))
+    expect(tokens.get('--ledger-col-headroom')).toBe(tokens.get('--ledger-col-headroom-md'))
+  })
+
   it('数值列右对齐（DESIGN.md:354）：阈值 / 余量 / 值槽；值槽是 flex 列，还要给 alignItems', () => {
     // 表格口径：数值列右对齐 + 等宽数字。阈值 / 余量是纯文字格 → text-align: right
     for (const selector of ['.monitor-view__ledger-threshold', '.monitor-view__ledger-headroom']) {

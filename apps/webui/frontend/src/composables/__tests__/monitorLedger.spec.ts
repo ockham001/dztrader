@@ -312,6 +312,87 @@ describe('buildMonitorLedger · 余量按契约阈值算（不是 70/90 展示�
   })
 })
 
+// #382：阈值/余量两列是定宽（阈值 88px 全档同宽，余量 ≥1280 92px / 1024–1279 88px），而契约
+// 允许 `offset_warn_ms ∈ [1, 60000]`、`offset_error_ms ∈ (warn, 600000]`。台账必须在**契约全空间**
+// 内都不撑破列。渲染宽度由人眼 + 实测负责（本仓单测不挂浏览器），本组锁的是「文本形态收敛」：
+// ① 默认配置逐字符不变；② 每个合法档位产出的是短形态而不是 6 位毫秒；③ 两档永不塌成同一个数。
+describe('buildMonitorLedger · 阈值/余量列在契约全空间内收敛（#382）', () => {
+  const clockAt = (offsetWarnMs: number, offsetErrorMs: number, offsetMs = 12.5) =>
+    rowById(
+      ledgerFrom(
+        { metrics: allAvailable(), clock: { ...SYSMON_CLOCK_LIVE, offset_ms: offsetMs } },
+        { clock: { offset_warn_ms: offsetWarnMs, offset_error_ms: offsetErrorMs } },
+      ).groups,
+      'clock',
+    )
+
+  it('默认配置 100 / 1000 的文案逐字符不变（改它等于改所有人的肌肉记忆）', () => {
+    expect(clockAt(100, 1000).thresholdText).toBe('±100 / ±1000 ms')
+  })
+
+  it('契约上限 60000 / 600000 折成分钟，不再是 110px 的 6 位毫秒', () => {
+    expect(clockAt(60_000, 600_000).thresholdText).toBe('±1 / ±10 min')
+    // 负向对照：旧实现（恒写 ms）的形态必须已被消灭
+    expect(clockAt(60_000, 600_000).thresholdText).not.toContain('ms')
+  })
+
+  it('中间档 1000 / 10000 折成秒（旧文本 ±1000 / ±10000 ms 实测 97.4px，超 88px 列 9.4px）', () => {
+    expect(clockAt(1000, 10_000).thresholdText).toBe('±1 / ±10 s')
+  })
+
+  it('非整秒配置保留 3 位有效数字，且不塌成一档', () => {
+    expect(clockAt(1500, 6000).thresholdText).toBe('±1.5 / ±6 s')
+    expect(clockAt(59_999, 60_000).thresholdText).toBe('±59.9 / ±60 s')
+    expect(clockAt(59_999, 60_000).thresholdText).not.toBe('±60 / ±60 s')
+  })
+
+  it('契约内任一合法组合的阈值文本都不含 3 位以上整数毫秒（列宽 88px 的硬前提）', () => {
+    // 抽样覆盖三个分支的边界与跨档点（全空间 3.6e10 组合不可能穷举，形态由 format 的单测锁死）
+    const samples: Array<[number, number]> = [
+      [1, 2], [1, 1000], [999, 1000], [1000, 1001], [1000, 2000],
+      [1001, 60_000], [9999, 10_000], [10_000, 59_999], [30_000, 60_000],
+      [59_999, 60_000], [60_000, 60_001], [60_000, 120_000], [60_000, 600_000],
+    ]
+    for (const [warn, error] of samples) {
+      const text = clockAt(warn, error).thresholdText
+      expect(text, `${warn}/${error} → ${text}`).toMatch(/^±\d+(\.\d+)? \/ ±\d+(\.\d+)? (ms|s|min)$/)
+      // 单侧数值最多 4 个字符（`600` / `59.9` / `0.001` / `1000`），6 位毫秒形态已不可能
+      for (const side of text.replace(/^±/, '').replace(/ (ms|s|min)$/, '').split(' / ±')) {
+        expect(side.length, `${warn}/${error} → ${text}`).toBeLessThanOrEqual(5)
+      }
+    }
+  })
+
+  it('时钟余量：默认档文案不变，契约上限换秒（600000 ms 加前缀实测 96.6px）', () => {
+    // SYSMON_CLOCK_LIVE offset 12.5 → error 1000 − 12.5 = 987.5
+    expect(clockAt(100, 1000).headroomText).toBe('987.5 ms')
+    // error 600000、offset 12.5 → 599987.5 ms → 600 s（旧文本「599987.5 ms」+「已超 」放不下）
+    expect(clockAt(60_000, 600_000).headroomText).toBe('600 s')
+    // 越线（offset 超过 error）时负号留给调用方口径：时钟行直接给带符号值
+    expect(clockAt(100, 1000, 1200).headroomText).toBe('-200.0 ms')
+  })
+
+  it('字节余量：真实大内存（≥123 GiB 余量）的文本是「已超 X」形态且不含 6 位以上数字', () => {
+    const totalBytes = 512 * 1024 ** 3
+    const { groups } = ledgerFrom({
+      metrics: allAvailable(),
+      memory: {
+        total_bytes: totalBytes,
+        // 已用远超 90% 阈值：余量 = 512 × 90% − 已用 = 460.8 − 512 × 0.99 → 负值走「已超」
+        available_bytes: totalBytes * 0.01,
+        used_bytes: totalBytes * 0.99,
+        used_ratio: 0.99,
+        cached_bytes: null,
+        buffers_bytes: null,
+      },
+    })
+    const text = rowById(groups, 'memory').headroomText
+    // 512 × 0.9 = 460.8 GiB 阈值；已用 506.88 GiB → 已超 46.08 GiB → 1 位小数 46.1 GiB
+    expect(text).toBe('已超 46.1 GiB')
+    expect(text.length).toBeLessThanOrEqual(13)
+  })
+})
+
 describe('buildMonitorLedger · 定档边界与「无法定档」', () => {
   it('ratio 恰好 0.7 → warn、恰好 0.9 → danger（边界含）', () => {
     const { groups } = ledgerFrom({

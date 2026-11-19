@@ -3,6 +3,8 @@ import {
   UNAVAILABLE_TEXT,
   formatByteRate,
   formatBytes,
+  formatClockHeadroom,
+  formatClockThreshold,
   formatCount,
   formatCountPerSec,
   formatDecimal,
@@ -161,6 +163,88 @@ describe('formatMilliseconds / formatSignedMilliseconds：时钟偏差与误差�
     expect(formatCompactSignedMilliseconds(0.4)).toBe('0ms')
     expect(formatCompactSignedMilliseconds(null)).toBe(UNAVAILABLE_TEXT)
     expect(formatCompactSignedMilliseconds(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatClockThreshold：两档阈值按单位折算（#382）', () => {
+  it('默认值逐字符不变（最常见的配置，也是 88px 列宽的唯一依据）', () => {
+    expect(formatClockThreshold(100, 1000)).toBe('±100 / ±1000 ms')
+    // 契约默认值来自 sysmon §3.1，前端不得自行改写
+    expect(formatClockThreshold(50, 500)).toBe('±50 / ±500 ms')
+  })
+
+  it('ms 档覆盖 error ≤ 1000 的全部合法组合（warn < error）', () => {
+    expect(formatClockThreshold(1, 2)).toBe('±1 / ±2 ms')
+    expect(formatClockThreshold(999, 1000)).toBe('±999 / ±1000 ms')
+    // 边界含：error 恰好 1000 仍是 ms 档，不提前换秒
+    expect(formatClockThreshold(1000 - 1, 1000)).toBe('±999 / ±1000 ms')
+  })
+
+  it('两档都是整分钟时用 min（契约上限即此形）', () => {
+    expect(formatClockThreshold(60_000, 600_000)).toBe('±1 / ±10 min')
+    expect(formatClockThreshold(60_000, 60_000 * 3)).toBe('±1 / ±3 min')
+  })
+
+  it('其余走秒、3 位有效数字（warn 向下、error 向上）', () => {
+    expect(formatClockThreshold(1, 600_000)).toBe('±0.001 / ±600 s')
+    expect(formatClockThreshold(1000, 10_000)).toBe('±1 / ±10 s')
+    expect(formatClockThreshold(1500, 6000)).toBe('±1.5 / ±6 s')
+    expect(formatClockThreshold(1000, 1500)).toBe('±1 / ±1.5 s')
+    expect(formatClockThreshold(1001, 2000)).toBe('±1 / ±2 s')
+    expect(formatClockThreshold(59_999, 599_999)).toBe('±59.9 / ±600 s')
+  })
+
+  it('两档在显示上永不相等（否则「两档」这个事实消失）', () => {
+    // 59999 / 60000 换秒后是 59.999 / 60：warn 向下、error 向上才不会塌成「±59.9 / ±59.9 s」
+    expect(formatClockThreshold(59_999, 60_000)).toBe('±59.9 / ±60 s')
+    expect(formatClockThreshold(59_999, 60_000)).not.toBe('±60 / ±60 s')
+    // 反向：若两侧都「就近」舍入，下面这些近邻值会撞在一起
+    for (const [warn, error] of [[999, 1001], [1999, 2001], [9999, 10_001], [14_999, 15_001]]) {
+      const text = formatClockThreshold(warn, error)
+      const [left, right] = text.replace(/^±/, '').replace(/ s$/, '').split(' / ±')
+      expect(left, `${warn}/${error} → ${text}`).not.toBe(right)
+    }
+  })
+
+  it('非有限值退化为不可用占位（不编造阈值）', () => {
+    expect(formatClockThreshold(Number.NaN, 1000)).toBe(UNAVAILABLE_TEXT)
+    expect(formatClockThreshold(100, Number.POSITIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatClockHeadroom：余量按单位折算（#382）', () => {
+  it('1 s 以下保留 1 位小数毫秒（既有文案不变）', () => {
+    expect(formatClockHeadroom(987.5)).toBe('987.5 ms')
+    expect(formatClockHeadroom(0)).toBe('0.0 ms')
+    expect(formatClockHeadroom(999.9)).toBe('999.9 ms')
+    expect(formatClockHeadroom(12.34)).toBe('12.3 ms')
+  })
+
+  it('取整先于换档：999.95 ms 不被写成「1000.0 ms」', () => {
+    expect(formatClockHeadroom(999.95)).toBe('1 s')
+    expect(formatClockHeadroom(999.94)).toBe('999.9 ms')
+  })
+
+  it('1 s 及以上换秒、3 位有效数字（契约上限 600 s 不再需要 6 位毫秒）', () => {
+    expect(formatClockHeadroom(1000)).toBe('1 s')
+    expect(formatClockHeadroom(3600)).toBe('3.6 s')
+    expect(formatClockHeadroom(59_999)).toBe('60 s')
+    expect(formatClockHeadroom(600_000)).toBe('600 s')
+    // 6 位毫秒在 92px 列里放不下（实测 65.4px + 「已超 」前缀 96.6px）
+    expect(formatClockHeadroom(600_000)).not.toContain('ms')
+  })
+
+  it('负值保留负号（越线由调用方加前缀，纯格式化不吞符号）', () => {
+    expect(formatClockHeadroom(-12.5)).toBe('-12.5 ms')
+    expect(formatClockHeadroom(-3600)).toBe('-3.6 s')
+    // 负零不是越线结论：error 1000 − |offset| 1000.04 取整后是 -0
+    expect(formatClockHeadroom(-0.04)).toBe('0.0 ms')
+    expect(formatClockHeadroom(-0)).toBe('0.0 ms')
+  })
+
+  it('非有限值退化为不可用占位', () => {
+    expect(formatClockHeadroom(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+    expect(formatClockHeadroom(Number.NEGATIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
   })
 })
 
