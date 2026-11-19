@@ -41,7 +41,7 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
 
   const keyOf = (id: number, op: string) => `source:${id}:${op}`
 
-  /// 聚合 schedules: 以 auto_login 镜像为准 (契约 auto-login, 含清空语义)。
+  /// 聚合 schedules: 以 auto_login 镜像为准 (契约 auto-login, 空数组=回落默认排程)。
   /// 镜像条目无 id, 前端以 login+logout 时间对匹配 (ScheduleView.id 为占位)。
   function mergeSchedules(id: number, mirror?: { login_time: string; logout_time: string }[]): ScheduleView[] {
     return (mirror ?? []).map((raw) => {

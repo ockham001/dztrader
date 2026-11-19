@@ -58,10 +58,12 @@
 {}
 ```
 
+- 上例第三行 `{"schedules": []}` 的语义见下方「校验」第一条：空数组表示**回落到网关内置默认排程**，不是清空
+
 **时序**：前端提交触发 → 必回 `RTN_AUTO_LOGIN`（总则 §7 兜底适用）
 
 **校验**（与总则 §8 的差异）：
-- `schedules` 出现时整体覆盖：清空用空数组 `[]`，不用 `null`
+- `schedules` 出现时整体覆盖：空数组 `[]` 表示**回落到网关内置默认排程**（不是清空）；关闭自动登录只能通过 `enabled=false`
 - **`null` 语义**：本帧无 map 字段，任何位置出现 `null` 均为校验失败
 - 校验失败场景：payload 非 object；`enabled` 非 bool；`schedules` 非数组；排程元素非 object；`login_time`/`logout_time` 缺失/非字符串/不符合 `"HH:MM"`；`login_time == logout_time`
 - 空对象 `{}` 视为无操作，校验通过，仍回 RTN（当前值）
@@ -91,5 +93,5 @@
 ## 持久化与默认值
 
 - SET 应用成功后持久化到目标网关配置文件（默认 section `/auto_login`）
-- 启动加载：文件/section 缺失或校验非法时用默认值并修复文件（自愈），不抛异常、不发 RTN
-- 默认值：`enabled=true`，`schedules=[]`
+- 启动加载：内容非法时用默认值并修复写回文件（自愈），不抛异常、不发 RTN；文件/section 缺失或 `schedules` 为空数组时归一为网关内置默认排程并材料化到文件；值未变化时不写文件
+- 默认值：`enabled=true`，`schedules` = 各 CTP 网关内置默认排程；类型层类库（`AutoLoginConfig` 未注入默认排程时）仍为空表

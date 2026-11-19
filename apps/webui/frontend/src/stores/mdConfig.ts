@@ -309,7 +309,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     const key = runner.opKey(id, 'auto_login')
     if (runner.busy(key)) return false
     // 守卫：镜像未就绪禁止提交。RFC7386 全量提交中 schedules 出现即整体覆盖，
-    // 兜底值 {enabled:false, schedules:[]} 会清空网关侧已有排程（破坏性）
+    // 兜底值 {enabled:false, schedules:[]} 会让网关回落到内置默认排程（丢弃用户配置，破坏性）
     if (!autoLogins.value[sourceName]) return false
     runner.assign(id, sourceName)
     return submitAutoLogin(id, sourceName, key, OP_LABELS.auto_login,

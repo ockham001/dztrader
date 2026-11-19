@@ -26,15 +26,19 @@ namespace dztrader::platform {
 ///   - login_time == logout_time 非法（会话区间 [login, logout) 必须非空）
 class AutoLoginConfig {
 public:
-    /// @param instance_id  网关进程名，作 RTN_AUTO_LOGIN 的帧头 instance_id
-    /// @param cfg_path     持久化路径
-    /// @param event_writer 共享内存写入器
-    /// @param section      JSON 路径，默认 "/auto_login"；空路径 "" 表示 root
+    /// @param instance_id       网关进程名，作 RTN_AUTO_LOGIN 的帧头 instance_id
+    /// @param cfg_path          持久化路径
+    /// @param event_writer      共享内存写入器
+    /// @param section           JSON 路径，默认 "/auto_login"；空路径 "" 表示 root
+    /// @param default_schedules 网关内置默认排程（JSON 数组，空数组合法）；非空时空表归一为它。
+    ///                          与文件值/patch 走同一套校验：非数组或含非法元素时退化为空数组
+    ///                          并记 error 日志（不抛异常，归一随之恒为 no-op）
     AutoLoginConfig(
         std::string instance_id,
         std::filesystem::path cfg_path,
         shm::MultiWriter& event_writer,
-        nlohmann::json::json_pointer section = nlohmann::json::json_pointer("/auto_login"));
+        nlohmann::json::json_pointer section = nlohmann::json::json_pointer("/auto_login"),
+        nlohmann::json default_schedules = nlohmann::json::array());
     // 构造后 cfg_ 初始化为 default_cfg()，即使不调 load() 也有合理默认值
 
     // 禁拷贝/移动：持有引用成员，绑定后终身不变，不应放入容器或按值传递
@@ -84,16 +88,24 @@ private:
     std::filesystem::path cfg_path_;
     shm::MultiWriter& event_writer_;
     nlohmann::json::json_pointer section_;
+    // 网关内置默认排程；声明在 cfg_ 之前，因为 cfg_(default_cfg()) 会用到它
+    nlohmann::json default_schedules_;
     nlohmann::json cfg_;  // { "enabled": bool, "schedules": [...] }
 
-    // 默认配置 {"enabled": true, "schedules": []}
-    static nlohmann::json default_cfg() {
-        return {{"enabled", true}, {"schedules", nlohmann::json::array()}};
+    // 默认配置 {"enabled": true, "schedules": <内置默认排程>}
+    nlohmann::json default_cfg() const {
+        return {{"enabled", true}, {"schedules", default_schedules_}};
     }
 
+    // 空表归一：schedules 为空数组时替换为内置默认排程（默认排程为空则 no-op）。
+    // 加载路径与运行期设置路径共用本方法，保证两条路径语义一致。
+    void normalize_schedules(nlohmann::json& cfg) const;
+
     // 按 section_ 从文件读取，文件不存在/section 缺失返回默认值，JSON 解析失败抛。
-    // degraded=true 表示文件内容非法/不可读，调用方应修复文件并记日志
-    [[nodiscard]] nlohmann::json load_cfg_from_file(bool& degraded) const;
+    // degraded=true 表示文件内容非法/不可读，调用方应修复文件并记日志。
+    // schedules_normalized=true 表示文件未表达非空排程，已归一为内置默认排程，调用方应材料化
+    [[nodiscard]] nlohmann::json load_cfg_from_file(bool& degraded,
+                                                    bool& schedules_normalized) const;
 
     // 按 section_ 原子写入文件（load-modify-save 保留其他 section），失败抛
     void save_cfg_to_file(const nlohmann::json& cfg) const;

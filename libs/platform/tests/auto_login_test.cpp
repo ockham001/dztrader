@@ -225,7 +225,8 @@ TEST_F(AutoLoginConfigTest, LoadInvalidScheduleHeals) {
 
     cfg.rtn_auto_login();
     auto rtn = read_last_rtn();
-    EXPECT_TRUE(rtn["schedules"].empty());  // 回退默认空数组
+    // 未注入内置默认表（平台层情形）：回退默认空数组；归一见 #392 的注入用例
+    EXPECT_TRUE(rtn["schedules"].empty());
 }
 
 // 6. 文件缺 schedules 字段：补默认空数组，不降级
@@ -276,8 +277,8 @@ TEST_F(AutoLoginConfigTest, SetSchedulesWholesaleReplace) {
     EXPECT_EQ(rtn["schedules"][1]["login_time"], "09:00");
 }
 
-// 9. patch schedules=[] 清空排程
-TEST_F(AutoLoginConfigTest, SetEmptySchedulesClears) {
+// 9. patch schedules=[]：平台层无内置默认表时空数组保持为空（网关层归一见 #392）
+TEST_F(AutoLoginConfigTest, SetEmptySchedulesKeepsEmptyWithoutInjectedDefault) {
     write_cfg_file(R"({"auto_login":{"enabled":true,"schedules":[)"
                    R"({"login_time":"08:45","logout_time":"15:30"}]}})");
     dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
@@ -470,6 +471,269 @@ TEST_F(AutoLoginConfigTest, SetPersistsToFile) {
     auto file_json = nlohmann::json::parse(read_cfg_file());
     EXPECT_EQ(file_json["auto_login"]["enabled"], false);
     EXPECT_EQ(file_json["auto_login"]["schedules"][0]["login_time"], "20:45");
+}
+
+// ===== 排程空表归一为默认排程（#392）=====
+
+// 网关注入的内置默认排程（非空），空数组回落到它
+nlohmann::json make_default_schedules() {
+    return nlohmann::json::array({
+        {{"login_time", "08:45"}, {"logout_time", "15:30"}},
+        {{"login_time", "20:45"}, {"logout_time", "02:30"}},
+    });
+}
+
+// 22. 文件里 schedules=[]：加载后 RTN 与文件都是默认排程（空数组=未配置，不是清空）
+TEST_F(AutoLoginConfigTest, LoadEmptySchedulesNormalizesToDefault) {
+    write_cfg_file(R"({"auto_login":{"enabled":false,"schedules":[]}})");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+    EXPECT_EQ(rtn["enabled"], false);  // 只归一排程，enabled 保留文件值
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 23. 文件里没有 auto_login 段：加载后 RTN 与文件都是默认排程，其他段保留
+TEST_F(AutoLoginConfigTest, LoadMissingSectionMaterializesDefault) {
+    write_cfg_file(R"({"other":{"x":1}})");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+    EXPECT_EQ(rtn["enabled"], true);  // 段缺失：enabled 用默认 true
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+    EXPECT_EQ(file_json["other"]["x"], 1);  // 材料化不丢其他段
+}
+
+// 24. 文件不存在：加载后 RTN 与文件都是默认排程
+TEST_F(AutoLoginConfigTest, LoadMissingFileMaterializesDefault) {
+    EXPECT_FALSE(std::filesystem::exists(cfg_path_));
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    EXPECT_TRUE(std::filesystem::exists(cfg_path_));
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 25. 运行期提交空数组：RTN 与文件都回落到默认排程
+TEST_F(AutoLoginConfigTest, SetEmptySchedulesFallsBackToDefault) {
+    write_cfg_file(R"({"auto_login":{"enabled":true,"schedules":[)"
+                   R"({"login_time":"10:00","logout_time":"11:00"}]}})");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.set_auto_login({{"schedules", nlohmann::json::array()}});
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 26. 幂等：当前值已等于默认表时再提交空数组：值不变、文件内容不变（不落盘）
+TEST_F(AutoLoginConfigTest, SetEmptySchedulesWhenAlreadyDefaultKeepsFile) {
+    const auto defaults = make_default_schedules();
+    write_cfg_file(
+        nlohmann::json({{"auto_login", {{"enabled", true}, {"schedules", defaults}}}}).dump());
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    const auto file_before = read_cfg_file();
+
+    cfg.set_auto_login({{"schedules", nlohmann::json::array()}});
+
+    EXPECT_EQ(read_cfg_file(), file_before);  // 幂等：无磁盘写入
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+}
+
+// 27. 文件里已有非空合法排程：加载不覆盖文件（用户配置优先）
+TEST_F(AutoLoginConfigTest, LoadKeepsUserSchedulesWithoutRewrite) {
+    const std::string user_cfg = R"({"auto_login":{"enabled":true,"schedules":[)"
+                                 R"({"login_time":"10:00","logout_time":"11:00"}]}})";
+    write_cfg_file(user_cfg);
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    EXPECT_EQ(read_cfg_file(), user_cfg);  // 未写回
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    ASSERT_EQ(rtn["schedules"].size(), 1);
+    EXPECT_EQ(rtn["schedules"][0]["login_time"], "10:00");
+}
+
+// 28. 空默认（不传第 5 参数）：文件不存在时不材料化，空数组仍是空数组
+TEST_F(AutoLoginConfigTest, EmptyDefaultSchedulesDoesNotMaterializeFile) {
+    EXPECT_FALSE(std::filesystem::exists(cfg_path_));
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
+    cfg.load();
+
+    EXPECT_FALSE(std::filesystem::exists(cfg_path_));  // 平台层：空默认不写文件
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_TRUE(rtn["schedules"].is_array() && rtn["schedules"].empty());
+}
+
+// 29. 空默认：文件里 schedules=[] 保持空数组且不改写文件
+TEST_F(AutoLoginConfigTest, EmptyDefaultSchedulesKeepsEmptyInFile) {
+    const std::string content = R"({"auto_login":{"enabled":true,"schedules":[]}})";
+    write_cfg_file(content);
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_);
+    cfg.load();
+
+    EXPECT_EQ(read_cfg_file(), content);  // 归一 no-op：不写回
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_TRUE(rtn["schedules"].is_array() && rtn["schedules"].empty());
+}
+
+// 30. 非空默认 + 文件排程非法（login==logout）：降级为默认表并材料化
+TEST_F(AutoLoginConfigTest, LoadInvalidScheduleFallsBackToDefaultSchedules) {
+    write_cfg_file(R"({"auto_login":{"enabled":true,"schedules":[)"
+                   R"({"login_time":"08:00","logout_time":"08:00"}]}})");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 31. 非空默认 + 文件 JSON 损坏：降级为默认表并材料化
+TEST_F(AutoLoginConfigTest, LoadCorruptFileFallsBackToDefaultSchedules) {
+    write_cfg_file("{not a valid json");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["schedules"], defaults);
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 32. 非空默认 + enabled 非 bool：enabled 回 true，排程为默认表
+TEST_F(AutoLoginConfigTest, LoadNonBoolEnabledKeepsDefaultSchedules) {
+    write_cfg_file(R"({"auto_login":{"enabled":"yes","schedules":[]}})");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["enabled"], true);  // 降级默认
+    EXPECT_EQ(rtn["schedules"], defaults);
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["enabled"], true);
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 33. 非空默认 + section 存在但 schedules 键缺失：排程为默认表并材料化，enabled 保留
+TEST_F(AutoLoginConfigTest, LoadMissingSchedulesKeyMaterializesDefault) {
+    write_cfg_file(R"({"auto_login":{"enabled":false}})");
+    const auto defaults = make_default_schedules();
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"), defaults);
+    cfg.load();
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_EQ(rtn["enabled"], false);  // 文件值保留
+    EXPECT_EQ(rtn["schedules"], defaults);
+
+    auto file_json = nlohmann::json::parse(read_cfg_file());
+    EXPECT_EQ(file_json["auto_login"]["enabled"], false);
+    EXPECT_EQ(file_json["auto_login"]["schedules"], defaults);
+}
+
+// 34. 注入非法默认表（元素 login==logout）：退化为空数组，不写文件、不产生非法配置
+TEST_F(AutoLoginConfigTest, InvalidInjectedDefaultDegradesToEmpty) {
+    const nlohmann::json bad_defaults = nlohmann::json::array({
+        {{"login_time", "08:00"}, {"logout_time", "08:00"}},
+    });
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"),
+                                            bad_defaults);
+    cfg.load();
+
+    EXPECT_FALSE(std::filesystem::exists(cfg_path_));  // 退化后归一 no-op：不材料化
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_TRUE(rtn["schedules"].is_array() && rtn["schedules"].empty());
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::validate(rtn).has_value());
+}
+
+// 35. 注入非数组默认表（花括号列表构造出 object）：同样退化为空数组
+TEST_F(AutoLoginConfigTest, NonArrayInjectedDefaultDegradesToEmpty) {
+    // {{"login_time","08:45"}} 构造出的是 object 而非 array
+    const nlohmann::json bad_defaults = {{"login_time", "08:45"}};
+    ASSERT_FALSE(bad_defaults.is_array());
+
+    dztrader::platform::AutoLoginConfig cfg("test_instance", cfg_path_, *writer_,
+                                            nlohmann::json::json_pointer("/auto_login"),
+                                            bad_defaults);
+    cfg.load();
+
+    EXPECT_FALSE(std::filesystem::exists(cfg_path_));  // 退化后归一 no-op：不材料化
+
+    cfg.rtn_auto_login();
+    auto rtn = read_last_rtn();
+    EXPECT_TRUE(rtn["schedules"].is_array() && rtn["schedules"].empty());
 }
 
 }  // namespace
