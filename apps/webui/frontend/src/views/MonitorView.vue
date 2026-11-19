@@ -64,8 +64,8 @@ import {
 } from '@/composables/sysmonClock'
 import {
   isSnapshotStale,
+  receivedAgeMs,
   resolvePushIntervalSec,
-  snapshotAgeMs,
   staleSnapshotText,
 } from '@/composables/sysmonFreshness'
 import { useAuthStore } from '@/stores/auth'
@@ -128,10 +128,12 @@ const trend = useSysmonTrendStore()
 /** 视图模式：实时（默认） / 历史 / 配置（#81 展示生效配置 + admin 编辑） */
 const viewMode = ref<'realtime' | 'history' | 'config'>('realtime')
 
-// ---- 快照数据龄的「此刻」（#371）：停推时没有任何事件到达，数据龄必须自己走秒 ----
+// ---- 停推判定的「此刻」（#371）：停推时没有任何事件到达，时长必须自己走秒 ----
 // 本页靠 WS 推送驱动（契约 sysmon §4），一帧都不来的时候没有回调可用；「快照已停 N 秒」
 // 里的 N 若只在推送时算一次，就会永远停在推送前那一刻（正是本票要修的那句「永不失效的断言」）。
 // 1 秒一跳，只写一个 ref；不轮询、不发请求、不改 WS 契约。
+// 「上次何时收到」由 store 提供（`sysmon.lastReceivedAtMs`），不在这里记：那是快照流的属性，
+// 且这个组件在路由内被重建时（切走再切回）局部 ref 会归零，会在停推的机器上显示成「刚收到」。
 const nowMs = ref(Date.now())
 let freshnessTicker: ReturnType<typeof setInterval> | null = null
 
@@ -248,16 +250,14 @@ const updatedAt = computed(() => {
   return typeof timestamp === 'number' ? formatDateTime(timestamp) : ''
 })
 
-// ---- 快照数据龄（#371；术语见 GLOSSARY.md「数据龄」）----
-// 数据龄 = 本机此刻 − 快照自带 timestamp，**不混用**别的时钟：发送方的 timestamp 与本机
-// `Date.now()` 若有时钟偏差，差值会是负数（约定：负值不判停推、不显示负数）。
+// ---- 快照停推判定（#371；术语见 GLOSSARY.md「数据龄」）----
+// 判据是**本机收到新快照的时刻**（store 的 `lastReceivedAtMs`），不是发送方 `snapshot.timestamp`：
+// 两机时钟偏差会让「本机 now − 发送方 timestamp」两个方向都坏（钟慢 → 永久假红，钟快 → 永久假绿），
+// 详见 composables/sysmonFreshness.ts 模块头。发送方 timestamp 仍用于「更新于 …」的展示。
 // 阈值来自生效配置 `realtime.push_interval_sec`（3 倍，默认 5s → 15s），不硬编码在组件里。
 const pushIntervalSec = computed(() => resolvePushIntervalSec(sysmon.config?.realtime))
-const snapshotAge = computed(() => {
-  const timestamp = snapshot.value?.timestamp
-  return typeof timestamp === 'number' ? snapshotAgeMs(timestamp, nowMs.value) : null
-})
-/** 停推（数据龄超阈值）：有快照、且有 timestamp、且越过了阈值 */
+const snapshotAge = computed(() => receivedAgeMs(sysmon.lastReceivedAtMs, nowMs.value))
+/** 停推：距上次收到新快照已超阈值（无接收记录时为 false —— 不知道就不说） */
 const snapshotStale = computed(() => isSnapshotStale(snapshotAge.value, pushIntervalSec.value))
 /** 降级文案「快照已停 N 秒」；未停推为 null（此时显示「实时快照」） */
 const snapshotStaleText = computed(() => staleSnapshotText(snapshotAge.value, pushIntervalSec.value))

@@ -77,6 +77,48 @@ describe('useSysmonStore', () => {
     expect(store.snapshot?.cpu.total.usage_ratio).toBe(0.2)
   })
 
+  it('接收时刻只在快照真正写入时记录（#371：坏帧不算「收到新快照」）', () => {
+    const store = useSysmonStore()
+    // 首次：还没有任何接收记录 → null（不拿「不知道」冒充「刚刚收到」）
+    expect(store.lastReceivedAtMs).toBeNull()
+
+    const first = Date.UTC(2026, 9, 21, 15, 0, 0)
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(first)
+    store.applySnapshot(makeSysmonSnapshot())
+    expect(store.lastReceivedAtMs).toBe(first)
+
+    // 关键：把钟往前拨，再喂坏帧。若坏帧也记时，接收时刻会变成 second —— 一个畸形帧就能把
+    // 停推提示抹掉一秒。时钟不动的话这条断言无论如何都成立，等于没牙。
+    const later = first + 5_000
+    nowSpy.mockReturnValue(later)
+    for (const bad of [{ timestamp: 'x' }, null, undefined, {}, 'bad']) {
+      store.applySnapshot(bad)
+    }
+    expect(store.lastReceivedAtMs).toBe(first)
+
+    // 好帧到达才前进
+    store.applySnapshot(makeSysmonSnapshot())
+    expect(store.lastReceivedAtMs).toBe(later)
+  })
+
+  it('REST 补拉也算「收到」：init 之后停推计时从补拉时刻起算（#371）', async () => {
+    const fetchedAt = Date.UTC(2026, 9, 21, 15, 0, 0)
+    vi.spyOn(Date, 'now').mockReturnValue(fetchedAt)
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const store = useSysmonStore()
+
+    await store.init()
+    // 不记就会把刚补拉到的新鲜快照当成「从没收到过」（或漏记成旧值）
+    expect(store.lastReceivedAtMs).toBe(fetchedAt)
+
+    // 503 补拉失败：没有拿到快照 → 不记接收时刻
+    setActivePinia(createPinia())
+    const store2 = useSysmonStore()
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    await store2.init()
+    expect(store2.lastReceivedAtMs).toBeNull()
+  })
+
   it('cpuUsageRatio 仅在可用且数值有效时返回，否则 null（不得用 0 冒充）', () => {
     const store = useSysmonStore()
 

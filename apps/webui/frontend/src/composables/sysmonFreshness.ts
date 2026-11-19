@@ -1,17 +1,23 @@
 /**
- * 快照数据龄与停推降级（#371；契约 sysmon §2 快照 / §4 推送场景）
+ * 快照停推判定（#371；术语见 GLOSSARY.md「数据龄」）
  *
- * 「数据龄」的术语定义见 GLOSSARY.md：**某个实时快照距此刻的时长**，由快照自带 `timestamp`
- * 与本机此刻作差得到。它与 WebSocket 连接状态是两个独立事实——连接正常但发送方停推时，
- * 连接状态仍是「已连接」而数据龄持续增长。因此本模块**不读**连接状态：「连接断开」由
- * AppShell 的全页横幅承担（那是另一件事），这里只回答「我看的数据有多旧」。
+ * 判据是**本机收到新快照的时刻**，不是发送方 `snapshot.timestamp`。这不是口味问题：两机时钟
+ * 一旦有偏差，用「本机 now − 发送方 timestamp」会在两个方向同时坏掉，而 3 倍阈值给的容差对
+ * 几十秒级的偏差毫无帮助。
+ * - 发送方钟**落后** Δ：差值恒为 +Δ，数据再新鲜也永远超阈值 → 页面永久「快照已停 N 秒」，
+ *   用户很快学会忽略这个提示，比没有更糟。
+ * - 发送方钟**超前** Δ：差值恒为 −Δ，永远不到阈值 → 真停推时静默失效，一句谎话说到底。
+ *
+ * 「多久没收到新快照」只取决于**本机**这口钟：收到就记一次 `Date.now()`，之后与本机此刻作差。
+ * 发送方 `timestamp` 仍是快照生成时刻（契约 sysmon §2），继续用于「更新于 …」这类展示，但**不**
+ * 参与停推判定。
  *
  * 三条约定：
  * 1. **阈值不硬编码**：降级阈值为 `3 × realtime.push_interval_sec`（契约 sysmon §3.1，
- *    默认 5 秒 → 15 秒）。取 3 倍而不是 2 倍，是给正常的推送抖动留余量：WS 重连、事件通道
- *    唤醒延迟都能占掉一两个周期，2 倍会把一次正常的晚点报成停推。
- * 2. **负值不判停推**：发送方时间戳比本机快时差值为负（两机时钟偏差），此时既不判停推、
- *    也不显示负数——「时钟不准」不是「数据停了」。
+ *    默认 5 秒 → 15 秒）。取 3 倍是给正常抖动留余量：WS 重连、事件通道唤醒延迟都能占掉一两个
+ *    周期，2 倍会把一次正常的晚点报成停推。
+ * 2. **不知道就不判**：还没收到过任何快照（首次挂载的短暂窗口）返回 null，而不是「从此刻开始
+ *    计时」——后者会把「不知道」写成「刚刚收到」。
  * 3. **文案复用 formatAge**：「快照已停 18 秒 / 2 分钟 / 3 小时」与页面上其它「多久以前」
  *    共用同一份时长格式化（`format.ts` 是唯一实现），不另写一套取整口径。
  *
@@ -52,26 +58,31 @@ export function staleThresholdMs(pushIntervalSec: number): number {
 }
 
 /**
- * 数据龄（毫秒）。快照无 `timestamp`（缺失 / 非有限 / ≤ 0 = 不是一次有效的生成时刻）时返回
- * null —— 不拿 0 冒充「刚刚生成」，也不拿本机墙钟冒充发送方的时间戳。
+ * 距上次收到新快照的时长（毫秒）。
  *
- * 返回值可为**负**：发送方时间戳比本机快（两机时钟偏差）时就是负的，由调用方按约定 2 处理。
+ * @param receivedAtMs 本机收到该快照的时刻（store 写入快照时记下的 `Date.now()`）；
+ *        null = 还没有任何接收记录 → 返回 null（约定 2：不拿「不知道」冒充「刚刚」）
+ * @param nowMs 本机此刻
+ *
+ * **时钟倒流返回 null**（`now < receivedAt`）：两个数出自同一口本机钟，它们互相矛盾说明这口钟
+ * 此刻不可信，于是既不断言停推、也不断言新鲜。钳 0 会把「不可信」写成「刚刚收到」，与本模块
+ * 「不用 0 冒充刚生成」是同一笔账；判停推则会把时钟回拨说成数据停了，两个都是无中生有的断言。
  */
-export function snapshotAgeMs(snapshotTimestampMs: number, nowMs: number): number | null {
-  if (typeof snapshotTimestampMs !== 'number'
-    || !Number.isFinite(snapshotTimestampMs)
-    || snapshotTimestampMs <= 0) {
+export function receivedAgeMs(receivedAtMs: number | null, nowMs: number): number | null {
+  if (typeof receivedAtMs !== 'number' || !Number.isFinite(receivedAtMs) || receivedAtMs <= 0) {
     return null
   }
   if (typeof nowMs !== 'number' || !Number.isFinite(nowMs)) return null
-  return nowMs - snapshotTimestampMs
+  const ageMs = nowMs - receivedAtMs
+  if (ageMs < 0) return null
+  return ageMs
 }
 
 /**
- * 数据龄是否超过降级阈值（3 × push_interval_sec）。
+ * 是否停推：距上次收到新快照的时长超过降级阈值（3 × push_interval_sec）。
  *
  * 边界取严格大于：正好等于 3 倍不算停推（阈值是「超过多久」而不是「到了多久」）。
- * 无 timestamp（null）与负值（时钟偏差）一律**不判**停推——见模块头约定 2。
+ * null（还没有接收记录 / 时钟倒流）一律**不判**停推——不知道就不说。
  */
 export function isSnapshotStale(ageMs: number | null, pushIntervalSec: number): boolean {
   if (ageMs === null || !Number.isFinite(ageMs)) return false
