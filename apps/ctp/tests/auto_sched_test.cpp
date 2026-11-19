@@ -1,6 +1,9 @@
+#include "common/default_auto_login.h"
 #include "common/trading_calendar.h"
 
 #include <gtest/gtest.h>
+
+#include <dztrader/platform/auto_login.h>
 
 using namespace dztrader::ctp;
 
@@ -202,4 +205,65 @@ TEST(Evaluate, CrossMidnightLoginLogout) {
     EXPECT_EQ(evaluate_sched_action(cfg, 2, "21:00", false), AutoSchedAction::Login);
     // 周三 02:30 logout (跨午夜, 但星期窗口: 周三全天允许)
     EXPECT_EQ(evaluate_sched_action(cfg, 3, "02:30", true), AutoSchedAction::Logout);
+}
+
+// ============================================================
+// 网关内置默认排程 (#393)
+// ============================================================
+
+namespace {
+
+/// 逐段断言排程表：数量、顺序、每段 login_time / logout_time（期望值由调用方给字面量）。
+void expect_schedules_equal(const nlohmann::json& actual, const nlohmann::json& expected) {
+    ASSERT_TRUE(actual.is_array());
+    ASSERT_EQ(actual.size(), expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        ASSERT_TRUE(actual[i].is_object()) << "index=" << i;
+        EXPECT_EQ(actual[i].value("login_time", ""), expected[i]["login_time"].get<std::string>())
+            << "index=" << i;
+        EXPECT_EQ(actual[i].value("logout_time", ""), expected[i]["logout_time"].get<std::string>())
+            << "index=" << i;
+    }
+}
+
+}  // namespace
+
+TEST(DefaultSchedules, TdMatchesSpec) {
+    // 旧版 20230813 实盘时点：日盘 08:45~15:45，夜盘 20:45~02:33
+    const nlohmann::json expected = nlohmann::json::array({
+        {{"login_time", "08:45"}, {"logout_time", "15:45"}},
+        {{"login_time", "20:45"}, {"logout_time", "02:33"}},
+    });
+    expect_schedules_equal(default_schedules_td(), expected);
+}
+
+TEST(DefaultSchedules, MdMatchesSpec) {
+    // 行情刻意与交易错峰：晚登录、早登出（日盘 08:55~15:20，夜盘 20:55~02:33）
+    const nlohmann::json expected = nlohmann::json::array({
+        {{"login_time", "08:55"}, {"logout_time", "15:20"}},
+        {{"login_time", "20:55"}, {"logout_time", "02:33"}},
+    });
+    expect_schedules_equal(default_schedules_md(), expected);
+}
+
+TEST(DefaultSchedules, BothPassValidate) {
+    // 网关侧防线：常量被平台层静默丢弃时（默认表非法 → 退化为空 + error 日志）网关无从得知，
+    // 故在此把两份默认表钉住。has_value() 为 false 表示无错。
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::validate(
+                     {{"enabled", true}, {"schedules", default_schedules_td()}})
+                     .has_value());
+    EXPECT_FALSE(dztrader::platform::AutoLoginConfig::validate(
+                     {{"enabled", true}, {"schedules", default_schedules_md()}})
+                     .has_value());
+}
+
+// 返回值为新对象，调用方修改不污染下一次取值
+TEST(DefaultSchedules, ReturnsIndependentCopies) {
+    auto first = default_schedules_td();
+    first.clear();
+    expect_schedules_equal(default_schedules_td(),
+                           nlohmann::json::array({
+                               {{"login_time", "08:45"}, {"logout_time", "15:45"}},
+                               {{"login_time", "20:45"}, {"logout_time", "02:33"}},
+                           }));
 }
