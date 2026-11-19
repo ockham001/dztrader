@@ -514,9 +514,50 @@ pre {
     .ds-slider::-moz-range-track { height: 4px; background: var(--bg-overlay-l3); border-radius: var(--radius-full); }
     .ds-slider--progress::-moz-range-progress { height: 4px; background: var(--bg-brand); border-radius: var(--radius-full); }
     .ds-slider::-moz-range-thumb { width: 14px; height: 14px; border-radius: var(--radius-full); background: var(--bg-base-default); border: 1px solid var(--border-neutral-l3); box-shadow: none; cursor: pointer; }
-    .ds-check, .ds-radio { display: inline-flex; align-items: center; gap: var(--spacer-8); min-height: 40px; font-size: var(--body-base-font-size); color: var(--text-default); cursor: pointer; user-select: none; }
+    /* position: relative 是 .ds-check/.ds-radio input 的定位容器（见下方「可访问性隐藏」）：
+       否则 1×1 的绝对定位盒会挂到最近的 positioned 祖先上，可能撑出滚动条或布局偏移 */
+    .ds-check, .ds-radio { position: relative; display: inline-flex; align-items: center; gap: var(--spacer-8); min-height: 40px; font-size: var(--body-base-font-size); color: var(--text-default); cursor: pointer; user-select: none; }
     .ds-check__box { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-4); display: inline-flex; align-items: center; justify-content: center; color: var(--text-onbrand); transition: background .12s, border-color .12s; }
-    .ds-check input { display: none; }
+    /* #379 可访问性隐藏（三处控件共用一条规则）：不能用 display: none —— 那会把控件
+       连同无障碍树一起摘掉，Tab 到不了、读屏读不到（audit 实测 activeElement 退回 BODY）。
+       1×1 绝对定位盒仍在无障碍树里、仍可聚焦，视觉上不可见且不占布局。
+       尺寸取 --spacer-1（1px 的 hairline token），不写裸 px。 */
+    .ds-check input,
+    .ds-radio input,
+    .ds-switch input {
+      position: absolute;
+      width: var(--spacer-1);
+      height: var(--spacer-1);
+      margin: calc(-1 * var(--spacer-1));
+      padding: 0;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+    /* #379 焦点环画在**视觉控件**上：隐藏后的 input 只有 1×1 且被 clip-path 裁掉，
+       UA 画在它身上的 ring 看不见。:has() 把焦点态透到可见元素（与 .ds-switch:has(input:checked)
+       同一套选择器手法）。
+       写法：`outline: auto` + offset，**不写 outline-color** —— #332 的全站 token 化焦点环
+       尚未落地，此处复用浏览器默认环，避免自造第二套。
+       唯一要补的一行在 .ds-check：UA 的 auto 环按 `color` 着色，而 .ds-check__box 为了画勾
+       把 color 定成了 --text-onbrand（#FFFFFF），浅色主题下会在白底上画出**白环**（实测
+       rgb(255,255,255) 对 rgb(255,255,255)，等于没有焦点指示）。焦点态恢复继承即可
+       （.ds-check 的 color 是 --text-default，深浅主题各自可读）；盒内没有 currentColor
+       消费（勾用显式 --text-onbrand），不影响勾的观感。 */
+    .ds-switch:has(input:focus-visible) {
+      outline: auto;
+      outline-offset: var(--spacer-2);
+    }
+    .ds-check:has(input:focus-visible) .ds-check__box {
+      color: inherit;
+      outline: auto;
+      outline-offset: var(--spacer-2);
+    }
+    .ds-radio:has(input:focus-visible) .ds-radio__dot {
+      outline: auto;
+      outline-offset: var(--spacer-2);
+    }
     .ds-check input:checked + .ds-check__box { background: var(--bg-brand); border-color: var(--bg-brand); }
     .ds-check input:checked + .ds-check__box::after { content: ''; width: 8px; height: 4px; border-left: 2px solid var(--text-onbrand); border-bottom: 2px solid var(--text-onbrand); transform: rotate(-45deg) translate(1px, -1px); }
     .ds-check input:disabled + .ds-check__box { opacity: .5; cursor: not-allowed; }
@@ -526,7 +567,6 @@ pre {
     /* 全选行：减小高度让其与标题并列 */
     .ds-check--all { min-height: 0; }
     .ds-radio__dot { width: 16px; height: 16px; border: 1px solid var(--border-neutral-l2); background: var(--bg-base-default); border-radius: var(--radius-full); display: inline-flex; align-items: center; justify-content: center; transition: border-color .12s, background .12s; }
-    .ds-radio input { display: none; }
     .ds-radio input:checked + .ds-radio__dot { border-color: var(--bg-brand); }
     /* 内点始终存在, scale 控制显隐 → 选中时平滑过渡(伪元素无法 transition content, 用 transform) */
     .ds-radio__dot::after { content: ''; width: 10px; height: 10px; border-radius: var(--radius-full); background: var(--bg-brand); transform: scale(0); transition: transform .15s ease; }
@@ -538,7 +578,6 @@ pre {
       .ds-radio.is-pending .ds-radio__dot::after { animation: none; }
     }
     .ds-switch { position: relative; display: inline-flex; width: 36px; height: 20px; background: var(--bg-overlay-l3); border: 1px solid var(--border-neutral-l1); border-radius: var(--radius-full); cursor: pointer; transition: background .15s, border-color .15s; }
-    .ds-switch input { display: none; }
     .ds-switch__track { position: relative; width: 100%; height: 100%; }
     .ds-switch__thumb { position: absolute; top: 50%; left: 1px; width: 16px; height: 16px; box-sizing: border-box; background: var(--bg-base-default); border-radius: var(--radius-full); transform: translateY(-50%); transition: left .15s, background .15s; }
     .ds-switch:has(input:checked) .ds-switch__thumb { left: 17px; background: var(--special-white); }
