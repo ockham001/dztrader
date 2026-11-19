@@ -536,27 +536,32 @@ pre {
       border: 0;
     }
     /* #379 焦点环画在**视觉控件**上：隐藏后的 input 只有 1×1 且被 clip-path 裁掉，
-       UA 画在它身上的 ring 看不见。:has() 把焦点态透到可见元素（与 .ds-switch:has(input:checked)
-       同一套选择器手法）。
+       UA 画在它身上的 ring 看不见。
+       用**相邻兄弟选择器**而不是 `:has()`：三处控件的视觉块都是 input 的紧邻下一兄弟
+       （19 个 <label> 调用点逐一核过），兄弟选择器在 Firefox 78 这种 Vite 5 默认 target
+       就够；`:has()` 需要 Firefox 121+，本仓没有 browserslist 兜底。
        写法：`outline: auto` + offset，**不写 outline-color** —— #332 的全站 token 化焦点环
        尚未落地，此处复用浏览器默认环，避免自造第二套。
        唯一要补的一行在 .ds-check：UA 的 auto 环按 `color` 着色，而 .ds-check__box 为了画勾
        把 color 定成了 --text-onbrand（#FFFFFF），浅色主题下会在白底上画出**白环**（实测
        rgb(255,255,255) 对 rgb(255,255,255)，等于没有焦点指示）。焦点态恢复继承即可
        （.ds-check 的 color 是 --text-default，深浅主题各自可读）；盒内没有 currentColor
-       消费（勾用显式 --text-onbrand），不影响勾的观感。 */
-    .ds-switch:has(input:focus-visible) {
+       消费（勾用显式 --text-onbrand），不影响勾的观感。
+       注意 .ds-switch 的环画在 __track 上（label 本身无法用兄弟选择器选中自己）：
+       track 是 label 的内容盒（1px 边框内），offset 2px 的环正好贴住 36×20 的外沿；
+       但 track 自身没有圆角，UA 的 auto 环会画成**直角框**，与胶囊形的轨道不协调，
+       故焦点态单独给它补 --radius-full（track 无背景/边框，这条只在画环时可见）。 */
+    .ds-switch input:focus-visible + .ds-switch__track,
+    .ds-check input:focus-visible + .ds-check__box,
+    .ds-radio input:focus-visible + .ds-radio__dot {
       outline: auto;
       outline-offset: var(--spacer-2);
     }
-    .ds-check:has(input:focus-visible) .ds-check__box {
+    .ds-switch input:focus-visible + .ds-switch__track {
+      border-radius: var(--radius-full);
+    }
+    .ds-check input:focus-visible + .ds-check__box {
       color: inherit;
-      outline: auto;
-      outline-offset: var(--spacer-2);
-    }
-    .ds-radio:has(input:focus-visible) .ds-radio__dot {
-      outline: auto;
-      outline-offset: var(--spacer-2);
     }
     .ds-check input:checked + .ds-check__box { background: var(--bg-brand); border-color: var(--bg-brand); }
     .ds-check input:checked + .ds-check__box::after { content: ''; width: 8px; height: 4px; border-left: 2px solid var(--text-onbrand); border-bottom: 2px solid var(--text-onbrand); transform: rotate(-45deg) translate(1px, -1px); }
