@@ -20,8 +20,8 @@ namespace dztrader::webui {
 namespace {
 
 /// 枚举 → 契约 rest §2.9.3 的 PascalCase 字符串。
-/// 未知取值（DB 被手工改写等）不抛错，按零值语义输出并记 DEBUG
-/// （页面不能因为一行脏数据整页失败）。
+/// 未知取值（DB 被手工改写等）一律输出 `Unknown`，不冒充任何真实取值——
+/// 契约明文「未知值必须原样显示为未知，不得映射到其他值」。
 std::string direction_text(int value) {
     switch (value) {
         case DZ_DIRECTION_LONG:
@@ -30,9 +30,11 @@ std::string direction_text(int value) {
             return "Net";
         case DZ_DIRECTION_SHORT:
             return "Short";
+        case DZ_DIRECTION_UNKNOWN:
+            return "Unknown";
         default:
             SPDLOG_DEBUG("unknown td direction | value={}", value);
-            return "Net";
+            return "Unknown";
     }
 }
 
@@ -48,9 +50,11 @@ std::string position_effect_text(int value) {
             return "CloseToday";
         case DZ_POSITION_EFFECT_CLOSE_YESTDAY:
             return "CloseYesterday";
+        case DZ_POSITION_EFFECT_UNKNOWN:
+            return "Unknown";
         default:
             SPDLOG_DEBUG("unknown td position effect | value={}", value);
-            return "Auto";
+            return "Unknown";
     }
 }
 
@@ -68,9 +72,11 @@ std::string price_type_text(int value) {
             return "Fok";
         case DZ_PRICE_RFQ:
             return "Rfq";
+        case DZ_PRICE_UNKNOWN:
+            return "Unknown";
         default:
             SPDLOG_DEBUG("unknown td price type | value={}", value);
-            return "Limit";
+            return "Unknown";
     }
 }
 
@@ -88,9 +94,11 @@ std::string status_text(int value) {
             return "Cancelled";
         case DZ_ORDER_REJECTED:
             return "Rejected";
+        case DZ_ORDER_UNKNOWN:
+            return "Unknown";
         default:
             SPDLOG_DEBUG("unknown td order status | value={}", value);
-            return "Submitting";
+            return "Unknown";
     }
 }
 

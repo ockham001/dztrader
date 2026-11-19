@@ -283,3 +283,72 @@ TEST(ParseMaxOrderRefTest, NonDigitReturnsZero) {
     EXPECT_EQ(parse_max_order_ref("abc"), 0);
     EXPECT_EQ(parse_max_order_ref("12abc"), 0);
 }
+
+// ============================================================================
+// unknown_enum_report_due (未知枚举通知/重查限频, issue #367 上报口径)
+// ============================================================================
+
+TEST(UnknownEnumReportDueTest, NeverReportedIsDue) {
+    // 0 / 负值 = 尚未上报过 -> 首次必发 (否则计数器涨了但界面永远收不到通知).
+    EXPECT_TRUE(unknown_enum_report_due(1000, 0, 300));
+    EXPECT_TRUE(unknown_enum_report_due(1000, -5, 300));
+}
+
+TEST(UnknownEnumReportDueTest, WithinIntervalIsThrottled) {
+    // 间隔内只计数不通知不重查: 未知枚举可能每条回报都带, 逐条重查会打满柜台流控.
+    EXPECT_FALSE(unknown_enum_report_due(1299, 1000, 300));
+    EXPECT_FALSE(unknown_enum_report_due(1000, 1000, 300));
+}
+
+TEST(UnknownEnumReportDueTest, AtOrBeyondIntervalIsDue) {
+    EXPECT_TRUE(unknown_enum_report_due(1300, 1000, 300));
+    EXPECT_TRUE(unknown_enum_report_due(2000, 1000, 300));
+}
+
+// ============================================================================
+// resync_retry_delay_s / decide_resync_retry (补查失败的退避重试链, issue #367 B1)
+// ============================================================================
+
+TEST(ResyncRetryDelayTest, StartsAtSixtySecondsAndDoubles) {
+    // 首次 60s (与既有 60s 补查同量级), 之后翻倍.
+    EXPECT_EQ(resync_retry_delay_s(1), 60);
+    EXPECT_EQ(resync_retry_delay_s(2), 120);
+    EXPECT_EQ(resync_retry_delay_s(3), 240);
+}
+
+TEST(ResyncRetryDelayTest, CapsAtFiveMinutes) {
+    // 封顶 300s (与未知枚举上报限频同量级): 柜台持续失败时也不变成刷屏源.
+    EXPECT_EQ(resync_retry_delay_s(4), 300);
+    EXPECT_EQ(resync_retry_delay_s(5), 300);
+    EXPECT_EQ(resync_retry_delay_s(1000), 300);
+}
+
+TEST(ResyncRetryDelayTest, TreatsNonPositiveAttemptAsFirst) {
+    // 计数器异常 (0/负值) 不应算出 0s 或负延迟 —— 那会变成忙循环打满柜台流控.
+    EXPECT_EQ(resync_retry_delay_s(0), 60);
+    EXPECT_EQ(resync_retry_delay_s(-3), 60);
+}
+
+TEST(DecideResyncRetryTest, ResyncWhenIdleAndIncomplete) {
+    EXPECT_EQ(decide_resync_retry(/*is_ready=*/true, /*data_query_ok=*/false,
+                                  /*query_chain_busy=*/false),
+              ResyncRetryAction::kResync);
+}
+
+TEST(DecideResyncRetryTest, StopsWhenDataComplete) {
+    // 期间已被别的路径补全 (进程级定时器 / 重新登录): 收链, 不再排定.
+    EXPECT_EQ(decide_resync_retry(true, true, false), ResyncRetryAction::kStop);
+    EXPECT_EQ(decide_resync_retry(true, true, true), ResyncRetryAction::kStop);
+}
+
+TEST(DecideResyncRetryTest, StopsWhenNotReady) {
+    // 断连/登出后补查本身 no-op, 继续排队只是空转.
+    EXPECT_EQ(decide_resync_retry(false, false, false), ResyncRetryAction::kStop);
+    EXPECT_EQ(decide_resync_retry(false, false, true), ResyncRetryAction::kStop);
+}
+
+TEST(DecideResyncRetryTest, WaitsInsteadOfConcurrentQueryChain) {
+    // 已有查询链在途时必须等: CTP 在途查询流控 1 笔, 并发双查询链会污染累加器与冻结对账.
+    // 且等待优先于发起 —— 顺序写反就会在在途窗口里再插一条查询.
+    EXPECT_EQ(decide_resync_retry(true, false, true), ResyncRetryAction::kWait);
+}

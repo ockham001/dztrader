@@ -207,10 +207,11 @@ foreach(testfile ${TD_CTP_TESTS})
     # 走 dz_add_test 的 POST_BUILD_COMMAND —— 见 cmake/DzTest.cmake 的注释：宏调用之后再写
     # add_custom_command 会排在 gtest_discover_tests 之后，等于没修。
     set(_ctp_test_extra_args "")
-    if(testname STREQUAL "td_position_lifecycle_test" AND WIN32)
+    if((testname STREQUAL "td_position_lifecycle_test" OR
+        testname STREQUAL "td_place_order_validation_test") AND WIN32)
         set(_ctp_test_extra_args
             POST_BUILD_COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CTP_TD_DLL}" "${DZ_TESTS_DIR}"
-            POST_BUILD_COMMENT "Copying CTP TD DLL next to td_position_lifecycle_test.exe")
+            POST_BUILD_COMMENT "Copying CTP TD DLL next to ${testname}.exe")
     endif()
     dz_add_test(dztd_ctp_${testname}
         SOURCES
@@ -299,7 +300,8 @@ foreach(testfile ${TD_CTP_TESTS})
     # td_position_lifecycle_test 需要**真实的 AccountSession**：持仓快照生命周期的决策点
     # 在 on_rsp_qry_investor_position → apply_position_query 里，只链 Writer 的目标测不到。
     # 不连柜台（不调 open()），只喂查询响应分支；登录链本身由 td_login_finalize_test 覆盖。
-    if(testname STREQUAL "td_position_lifecycle_test")
+    if(testname STREQUAL "td_position_lifecycle_test" OR
+       testname STREQUAL "td_place_order_validation_test")
         target_sources(dztd_ctp_${testname} PRIVATE
             td/td_account_session.cpp td/td_account_session_pure.cpp td/td_spi.cpp
             td/td_ctp_mapping.cpp td/td_risk_gate.cpp td/td_offset_converter.cpp

@@ -4,7 +4,7 @@ import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import Icon from '@/components/shared/Icon.vue'
 import { processStateText, processStateColor } from '@/composables/useProcessState'
 import { formatSignedVolume, formatTdDate, positionDetailTexts } from '@/composables/tdPositionView'
-import { TD_POSITION_DETAIL_COLUMNS } from '@/composables/tdPositionView'
+import { TD_POSITION_DETAIL_COLUMNS, type TdPositionGroup } from '@/composables/tdPositionView'
 import {
   tdPanelEmptyText,
   tdPanelState,
@@ -109,7 +109,11 @@ const hideMatchedPositions = ref(false)
 
 const visiblePositionGroups = computed(() => {
   if (!hideMatchedPositions.value) return positionsStore.groups
-  return positionsStore.groups.filter(group => group.netVolume !== 0)
+  // 未知方向行的净仓恒为 0（未知量不参与轧差），但它**不是**「净仓为零可隐藏」的行：
+  // 隐藏它等于把一个真实存在、而网关又读不懂的持仓从列表里抹掉（#367 用户故事 9）。
+  return positionsStore.groups.filter(
+    group => group.netVolume !== 0 || group.hasUnknownDirection,
+  )
 })
 
 /** 面板级数据日期标签：各行锚点日可能不同（多账户），只标一个日期会说谎 */
@@ -125,9 +129,30 @@ function netVolumeText(volume: number): string {
   return formatSignedVolume(volume)
 }
 
+/**
+ * 存在未知方向行的分组：净仓口径不包含这些行（契约 rest §2.9.3「未知值不得映射到其他
+ * 取值」），所以单元格里的数字**不是**该合约的真实敞口。此类行显示「未知」而不是 0——
+ * 0 会被读成「已平仓」，正是 issue #367 用户故事 9 要消灭的「看起来正常的错误值」。
+ */
+function netVolumeDisplay(group: TdPositionGroup): string {
+  return group.hasUnknownDirection ? '未知' : netVolumeText(group.netVolume)
+}
+
 /** 净仓单元格类名（红涨绿跌，复用 dashboard.css 既有口径） */
 function netVolumeClass(volume: number): string {
   return volume > 0 ? 'diff-pos' : volume < 0 ? 'diff-neg' : ''
+}
+
+/** 净仓单元格类名：未知方向不染涨跌色（它不是敞口，中性色 + tooltip 说明） */
+function netVolumeCellClass(group: TdPositionGroup): string {
+  return group.hasUnknownDirection ? 'cell-muted' : netVolumeClass(group.netVolume)
+}
+
+/** 净仓单元格 tooltip：未知方向行必须说明「为什么不显示数字」 */
+function netVolumeTitle(group: TdPositionGroup): string {
+  return group.hasUnknownDirection
+    ? '该合约存在网关没读懂方向的持仓行，净仓无法计入（已标记为「未知」，不是 0）'
+    : ''
 }
 
 // === 持仓账户筛选（契约 webui-ws §5 第 11 条）===
@@ -588,7 +613,12 @@ onUnmounted(() => {
                   <!-- 策略维度持仓归属尚未建立（策略记账在策略进程内）：保留列位置显示占位，
                        不拿账户净仓冒充策略净仓（契约 strategy §「策略逻辑持仓」）。 -->
                   <td class="cell-num cell-muted" title="策略维度持仓归属尚未建立">—</td>
-                  <td class="cell-num" :class="netVolumeClass(group.netVolume)">{{ netVolumeText(group.netVolume) }}</td>
+                  <td
+                    class="cell-num"
+                    :class="netVolumeCellClass(group)"
+                    :title="netVolumeTitle(group)"
+                    data-test="position-row-net"
+                  >{{ netVolumeDisplay(group) }}</td>
                   <td class="cell-num cell-muted" title="策略维度持仓归属尚未建立">—</td>
                   <td class="cell-text cell-text--secondary">{{ group.account_id }}</td>
                   <td class="cell-num cell-muted" data-test="position-row-date">{{ formatTdDate(group.date) }}</td>

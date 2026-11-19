@@ -508,16 +508,16 @@ export interface SysmonConfigPayload {
 }
 
 // 交易方向（契约 rest §2.9.3，值 = 帧枚举的 PascalCase 名）
-export type TdDirection = 'Long' | 'Short' | 'Net'
+export type TdDirection = 'Long' | 'Short' | 'Net' | 'Unknown'
 
 // 开平仓（契约 rest §2.9.3）
-export type TdPositionEffect = 'Auto' | 'Open' | 'Close' | 'CloseToday' | 'CloseYesterday'
+export type TdPositionEffect = 'Auto' | 'Open' | 'Close' | 'CloseToday' | 'CloseYesterday' | 'Unknown'
 
 // 价格类型（契约 rest §2.9.3）
-export type TdPriceType = 'Limit' | 'Market' | 'Stop' | 'Fak' | 'Fok' | 'Rfq'
+export type TdPriceType = 'Limit' | 'Market' | 'Stop' | 'Fak' | 'Fok' | 'Rfq' | 'Unknown'
 
 // 委托状态（契约 rest §2.9.3）
-export type TdOrderStatus = 'Submitting' | 'NotTraded' | 'PartTraded' | 'AllTraded' | 'Cancelled' | 'Rejected'
+export type TdOrderStatus = 'Submitting' | 'NotTraded' | 'PartTraded' | 'AllTraded' | 'Cancelled' | 'Rejected' | 'Unknown'
 
 // 交易库读端点降级原因（契约 rest §2.9.8）
 export type TdDegradedReason = 'not_found' | 'schema_mismatch' | 'open_failed' | 'busy' | 'query_failed'
@@ -881,6 +881,14 @@ export interface TdCtpStatusExt {
     api_version?: string
     /** 登录响应中的系统版本；未登录/进入 Idle 时为空串 */
     sys_version?: string
+    /** 本会话累计收到的不认识的柜台委托状态次数（契约 td-status §2.3） */
+    unknown_order_status?: number
+    /** 本会话累计收到的不认识的持仓方向次数（契约 td-status §2.3） */
+    unknown_direction?: number
+    /** 本会话累计收到的不认识的委托价格类型次数（契约 td-status §2.3） */
+    unknown_price_type?: number
+    /** 本会话累计收到的不认识的开平标志次数（契约 td-status §2.3） */
+    unknown_position_effect?: number
 }
 
 // 交易网关账户级细状态全量结构（契约 td-status §2.1；WS td_rtn_status 的 data，始终全量、后到覆盖先到）

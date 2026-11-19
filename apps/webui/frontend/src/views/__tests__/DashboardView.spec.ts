@@ -211,6 +211,56 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
+  it('未知方向的持仓行在净仓列显示「未知」，不显示 0（#367 用户故事 9）', async () => {
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([
+      position({ instrument_id: 'rb2601', direction: 'Unknown', volume: 4, seq: 10 }),
+    ]))
+    const w = await mountDashboard()
+
+    const cell = w.get('[data-test="position-row-net"]')
+    expect(cell.text()).toBe('未知')
+    // 0 会被读成「已平仓」——正是要消灭的「看起来正常的错误值」。
+    expect(cell.text()).not.toBe('0')
+    // 不染涨跌色（它不是敞口），并给出可解释的 tooltip。
+    expect(cell.classes()).toContain('cell-muted')
+    expect(cell.attributes('title')).toContain('未知')
+
+    w.unmount()
+  })
+
+  it('勾选「隐藏匹配行」不得隐藏未知方向行（它不是净仓为零）', async () => {
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([
+      position({ instrument_id: 'rb2601', direction: 'Unknown', volume: 4, seq: 10 }),
+    ]))
+    const w = await mountDashboard()
+    await w.get('[data-test="position-hide-matched"]').setValue(true)
+
+    // 未知行净仓恒为 0；若被当成「匹配行」隐藏，用户就看不到「这里有读不懂的持仓」。
+    expect(w.get('[data-test="position-row-net"]').text()).toBe('未知')
+
+    w.unmount()
+  })
+
+  it('未知方向与已知多空并存时净仓照常轧差，但仍标「未知」（未知量不计入）', async () => {
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([
+      position({ instrument_id: 'rb2601', direction: 'Long', volume: 5, seq: 10 }),
+      position({ instrument_id: 'rb2601', direction: 'Short', volume: 2, seq: 11 }),
+      position({ instrument_id: 'rb2601', direction: 'Unknown', volume: 9, seq: 12 }),
+    ]))
+    const w = await mountDashboard()
+
+    const cell = w.get('[data-test="position-row-net"]')
+    expect(cell.text()).toBe('未知')
+    // 详情列仍能看到真实的多空明细（未知行不参与，但也没被丢掉）：
+    // 明细 10 列 = 多 5 列 + 空 5 列，首列（多总）= 5、第六列（空总）= 2。
+    await w.get('[data-test="position-detail-toggle"]').setValue(true)
+    const metrics = w.findAll('td.position-detail-col').map(item => item.text())
+    expect(metrics[0]).toBe('5')
+    expect(metrics[5]).toBe('2')
+
+    w.unmount()
+  })
+
   it('策略列保留列位置但值显示「—」（策略维度持仓归属尚未建立）', async () => {
     vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([
       position({ instrument_id: 'rb2601', volume: 2 }),

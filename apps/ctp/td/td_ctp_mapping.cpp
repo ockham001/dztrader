@@ -93,7 +93,7 @@ int32_t parse_ctp_date(const char* yyyymmdd) noexcept {
 // STATUS_CTP2VT: CTP OrderStatus -> DzOrderStatus
 // ============================================================================
 
-DzOrderStatus STATUS_CTP2VT(char ctp_status) noexcept {
+DzOrderStatus STATUS_CTP2VT(char ctp_status, UnknownEnumSink* unknown) noexcept {
     switch (ctp_status) {
         case THOST_FTDC_OST_AllTraded:
             return DZ_ORDER_ALL_TRADED;  // '0'
@@ -112,9 +112,14 @@ DzOrderStatus STATUS_CTP2VT(char ctp_status) noexcept {
         case THOST_FTDC_OST_Touched:
             return DZ_ORDER_PART_TRADED;  // 'c'
         case THOST_FTDC_OST_Unknown:
-            return DZ_ORDER_SUBMITTING;  // 'a'
+            return DZ_ORDER_SUBMITTING;  // 'a' 柜台自报「未知」, 语义即等待下次回报
         default:
-            return DZ_ORDER_SUBMITTING;  // 兜底
+            // 编译期防线对本函数无效 (CTP 侧是 char 字面量, -Wswitch 永不生效),
+            // 只能运行期暴露: 返回 UNKNOWN 交给调用方上报, 绝不猜成某个真实状态.
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryOrderStatus, ctp_status);
+            }
+            return DZ_ORDER_UNKNOWN;
     }
 }
 
@@ -122,7 +127,7 @@ DzOrderStatus STATUS_CTP2VT(char ctp_status) noexcept {
 // ORDERTYPE_VT2CTP: DzPriceType -> CTP 价格类型三元组
 // ============================================================================
 
-OrderTypeTriplet ORDERTYPE_VT2CTP(DzPriceType t) noexcept {
+std::optional<OrderTypeTriplet> ORDERTYPE_VT2CTP(DzPriceType t) noexcept {
     OrderTypeTriplet r{};
     switch (t) {
         case DZ_PRICE_LIMIT:
@@ -147,11 +152,9 @@ OrderTypeTriplet ORDERTYPE_VT2CTP(DzPriceType t) noexcept {
             r.volume_condition = THOST_FTDC_VC_CV;
             break;
         default:
-            // STOP/RFQ 期货不支持, 兜底为限价 (不会实际发出, 由调用方拦截)
-            r.limit_price_type = THOST_FTDC_OPT_LimitPrice;
-            r.time_condition = THOST_FTDC_TC_GFD;
-            r.volume_condition = THOST_FTDC_VC_MV;
-            break;
+            // STOP/RFQ 及任何未知类型: 期货不支持 -> 失败, 由调用方本地拒单.
+            // 兜底成限价会把止损单当普通限价单发到交易所 (最严重的一类错误).
+            return std::nullopt;
     }
     return r;
 }
@@ -160,8 +163,8 @@ OrderTypeTriplet ORDERTYPE_VT2CTP(DzPriceType t) noexcept {
 // to_input_order_field: DzOrderReq + ctx -> CThostFtdcInputOrderField
 // ============================================================================
 
-CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
-                                               const OrderBuildContext& ctx) noexcept {
+std::optional<CThostFtdcInputOrderField> to_input_order_field(
+    const DzOrderReq& req, const OrderBuildContext& ctx) noexcept {
     CThostFtdcInputOrderField f{};
 
     // 标识字段
@@ -174,10 +177,22 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
 
     f.RequestID = ctx.request_id;
 
-    // 买卖方向: DZ LONG(1) -> CTP Buy('0'), DZ SHORT(-1) -> CTP Sell('1')
-    f.Direction = (req.direction == DZ_DIRECTION_LONG) ? THOST_FTDC_D_Buy : THOST_FTDC_D_Sell;
+    // 买卖方向: DZ LONG(1) -> CTP Buy('0'), DZ SHORT(-1) -> CTP Sell('1').
+    // 其余取值 (含 NET/UNKNOWN) 返回失败: 报单方向只有买/卖两种, 兜成 Sell 会把一张
+    // 「方向读不懂」的单当成卖单发给交易所. 由调用方本地拒单.
+    switch (req.direction) {
+        case DZ_DIRECTION_LONG:
+            f.Direction = THOST_FTDC_D_Buy;
+            break;
+        case DZ_DIRECTION_SHORT:
+            f.Direction = THOST_FTDC_D_Sell;
+            break;
+        default:
+            return std::nullopt;
+    }
 
-    // 开平标志: CombOffsetFlag[0]
+    // 开平标志: CombOffsetFlag[0]. 未知开平不得兜成 Open —— 那会把平仓单变成开仓单,
+    // 凭空放大敞口; 返回失败由调用方本地拒单.
     switch (req.position_effect) {
         case DZ_POSITION_EFFECT_OPEN:
             f.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
@@ -192,15 +207,17 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
             f.CombOffsetFlag[0] = THOST_FTDC_OF_CloseYesterday;
             break;
         default:
-            f.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
-            break;
+            return std::nullopt;
     }
 
-    // 价格类型三元组
-    auto triplet = ORDERTYPE_VT2CTP(req.price_type);
-    f.OrderPriceType = triplet.limit_price_type;
-    f.TimeCondition = triplet.time_condition;
-    f.VolumeCondition = triplet.volume_condition;
+    // 价格类型三元组 (不支持的类型同样返回失败)
+    const auto triplet = ORDERTYPE_VT2CTP(req.price_type);
+    if (!triplet.has_value()) {
+        return std::nullopt;
+    }
+    f.OrderPriceType = triplet->limit_price_type;
+    f.TimeCondition = triplet->time_condition;
+    f.VolumeCondition = triplet->volume_condition;
 
     // 价格 + 数量
     f.LimitPrice = req.price;
@@ -229,7 +246,8 @@ CThostFtdcInputOrderField to_input_order_field(const DzOrderReq& req,
 
 OrderRecord to_order_record(const CThostFtdcOrderField& o,
                             const std::string& account_id,
-                            int32_t trading_day) noexcept {
+                            int32_t trading_day,
+                            UnknownEnumSink* unknown) noexcept {
     OrderRecord r{};
 
     // ---- base (DzOrderReport) ----
@@ -239,10 +257,24 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
     copy_to_dz(r.base.account_id, account_id.c_str());
     copy_to_dz(r.base.exchange_id, o.ExchangeID);
 
-    // 买卖方向
-    r.base.direction = (o.Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
+    // 买卖方向: 未知方向不得猜成 SHORT (那会把一张卖单谎报成买单, 净敞口符号反向).
+    // 编译期防线对本函数无效 (CTP 侧是 char 字面量, -Wswitch 永不生效), 只能运行期暴露.
+    switch (o.Direction) {
+        case THOST_FTDC_D_Buy:
+            r.base.direction = DZ_DIRECTION_LONG;
+            break;
+        case THOST_FTDC_D_Sell:
+            r.base.direction = DZ_DIRECTION_SHORT;
+            break;
+        default:
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryDirection, o.Direction);
+            }
+            r.base.direction = DZ_DIRECTION_UNKNOWN;
+            break;
+    }
 
-    // 开平标志 (CombOffsetFlag[0])
+    // 开平标志 (CombOffsetFlag[0]). 未知值不得兜成 OPEN (平仓成交记成开仓会放大敞口).
     switch (o.CombOffsetFlag[0]) {
         case THOST_FTDC_OF_Open:
             r.base.position_effect = DZ_POSITION_EFFECT_OPEN;
@@ -257,7 +289,10 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
             r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
             break;
         default:
-            r.base.position_effect = DZ_POSITION_EFFECT_OPEN;
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryPositionEffect, o.CombOffsetFlag[0]);
+            }
+            r.base.position_effect = DZ_POSITION_EFFECT_UNKNOWN;
             break;
     }
 
@@ -270,11 +305,14 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
             r.base.price_type = DZ_PRICE_LIMIT;
             break;
         default:
-            r.base.price_type = DZ_PRICE_LIMIT;
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryPriceType, o.OrderPriceType);
+            }
+            r.base.price_type = DZ_PRICE_UNKNOWN;
             break;
     }
 
-    r.base.status = STATUS_CTP2VT(o.OrderStatus);
+    r.base.status = STATUS_CTP2VT(o.OrderStatus, unknown);
     r.base.price = o.LimitPrice;
     r.base.volume = o.VolumeTotalOriginal;
     r.base.volume_traded = o.VolumeTraded;
@@ -320,7 +358,8 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
 
 TradeRecord to_trade_record(const CThostFtdcTradeField& t,
                             const std::string& account_id,
-                            int32_t trading_day) noexcept {
+                            int32_t trading_day,
+                            UnknownEnumSink* unknown) noexcept {
     TradeRecord r{};
 
     // ---- base (DzTradeReport) ----
@@ -330,8 +369,22 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
     copy_to_dz(r.base.exchange_id, t.ExchangeID);
     copy_to_dz(r.base.trade_id, t.TradeID);
 
-    r.base.direction = (t.Direction == THOST_FTDC_D_Buy) ? DZ_DIRECTION_LONG : DZ_DIRECTION_SHORT;
-    r.base.position_effect = DZ_POSITION_EFFECT_OPEN;  // 兜底
+    // 买卖方向: 未知方向不得猜成 SHORT (同 to_order_record, 净敞口符号不得反向).
+    switch (t.Direction) {
+        case THOST_FTDC_D_Buy:
+            r.base.direction = DZ_DIRECTION_LONG;
+            break;
+        case THOST_FTDC_D_Sell:
+            r.base.direction = DZ_DIRECTION_SHORT;
+            break;
+        default:
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryDirection, t.Direction);
+            }
+            r.base.direction = DZ_DIRECTION_UNKNOWN;
+            break;
+    }
+    // 未知开平标志不得兜成 OPEN: 平仓成交记成开仓会让持仓凭空放大.
     switch (t.OffsetFlag) {
         case THOST_FTDC_OF_Open:
             r.base.position_effect = DZ_POSITION_EFFECT_OPEN;
@@ -346,6 +399,10 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
             r.base.position_effect = DZ_POSITION_EFFECT_CLOSE_YESTDAY;
             break;
         default:
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryPositionEffect, t.OffsetFlag);
+            }
+            r.base.position_effect = DZ_POSITION_EFFECT_UNKNOWN;
             break;
     }
 
@@ -392,7 +449,15 @@ int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept {
     }
 }
 
-/// CTP OptionsType -> DZ_OPTION_* (0=非期权)
+/// CTP OptionsType -> DZ_OPTION_* (0=非期权).
+/// 这里刻意保持 `default -> 0` 而不是引入「未知」取值, 理由（#367 审查 F11 复核结论）:
+/// - CTP 只定义了两个取值 (CallOptions '1' / PutOptions '2'); **非期权合约（绝大多数）**
+///   的 OptionsType 本就既不是 '1' 也不是 '2', 返回 0 对它们是正确答案而不是兜底猜测.
+/// - `DzOptionType` 只有 PUT(-1)/CALL(1), 0 是契约与 DB 列默认值明文的「非期权」
+///   （《帧契约：合约》· 期权段）, 没有第三个合法取值可用; 新增 UNKNOWN 要同时改策略可见
+///   头文件、DB 列默认值、契约与前端, 属独立票, 不在本票「4 个枚举」范围内.
+/// - 信息不会丢失: 是否期权由 `product_class`（DZ_PRODUCT_OPTION）独立表达, 读端不会因为
+///   option_type=0 就把一张期权当成期货.
 int32_t option_type_from_ctp(TThostFtdcOptionsTypeType type) noexcept {
     switch (type) {
         case THOST_FTDC_CP_CallOptions:
@@ -469,22 +534,29 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
                               const std::string& account_id,
                               int32_t trading_day,
-                              double volume_multiple) noexcept {
+                              double volume_multiple,
+                              UnknownEnumSink* unknown) noexcept {
     DzPositionInfo r{};
 
     copy_to_dz(r.instrument_id, p.InstrumentID);
     copy_to_dz(r.exchange_id, p.ExchangeID);
     copy_to_dz(r.account_id, account_id.c_str());
 
-    // 持仓方向: CTP 净持仓('1') 归为多头 (DZ 仅两态); 多('2') -> LONG, 空('3') -> SHORT
+    // 持仓方向: CTP 净持仓('1') 归为多头 (DZ 仅两态); 多('2') -> LONG, 空('3') -> SHORT.
+    // 未知方向返回 UNKNOWN —— 兜成 LONG 会把空头写成多头, 净敞口符号反向.
     switch (p.PosiDirection) {
         case THOST_FTDC_PD_Short:
             r.direction = DZ_DIRECTION_SHORT;
             break;
         case THOST_FTDC_PD_Long:
         case THOST_FTDC_PD_Net:
-        default:
             r.direction = DZ_DIRECTION_LONG;
+            break;
+        default:
+            if (unknown != nullptr) {
+                unknown->add(kUnknownCategoryDirection, p.PosiDirection);
+            }
+            r.direction = DZ_DIRECTION_UNKNOWN;
             break;
     }
 

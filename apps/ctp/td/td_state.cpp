@@ -320,4 +320,18 @@ DzAccountState account_state_of(TdState state) noexcept {
     return DZ_ACCOUNT_OFFLINE;  // 防御: 未枚举值按 Offline
 }
 
+nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts& counts) {
+    // 契约 td-status §2.3: 未知枚举计数挂在 ext 下按种类分开 (原因与处置都不同, 见 #367),
+    // 与状态机自身的字段互不覆盖 —— 状态机不感知计数器, 拼接只在写帧这一处发生。
+    // 键名刻意不复用 td_ctp_mapping.h 的 kUnknownCategory*: 该头 include CTP 头
+    // (ThostFtdcUserApiStruct.h), 在 td_state.cpp 引入会把 CTP 头拖进本不链 CTP 的测试目标
+    // (td_state.h 的设计说明即为此). 两份字符串必须逐字相同, 改动须同步 mapping 头的常量.
+    nlohmann::json payload = status;
+    payload["ext"]["unknown_order_status"] = counts.order_status;
+    payload["ext"]["unknown_direction"] = counts.direction;
+    payload["ext"]["unknown_price_type"] = counts.price_type;
+    payload["ext"]["unknown_position_effect"] = counts.position_effect;
+    return payload;
+}
+
 }  // namespace dztrader::ctp

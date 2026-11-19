@@ -519,22 +519,22 @@
     },
     "TdDirection": {
       "type": "string",
-      "enum": ["Long", "Short", "Net"],
+      "enum": ["Long", "Short", "Net", "Unknown"],
       "description": "交易方向（契约 rest §2.9.3，值 = 帧枚举的 PascalCase 名）"
     },
     "TdPositionEffect": {
       "type": "string",
-      "enum": ["Auto", "Open", "Close", "CloseToday", "CloseYesterday"],
+      "enum": ["Auto", "Open", "Close", "CloseToday", "CloseYesterday", "Unknown"],
       "description": "开平仓（契约 rest §2.9.3）"
     },
     "TdPriceType": {
       "type": "string",
-      "enum": ["Limit", "Market", "Stop", "Fak", "Fok", "Rfq"],
+      "enum": ["Limit", "Market", "Stop", "Fak", "Fok", "Rfq", "Unknown"],
       "description": "价格类型（契约 rest §2.9.3）"
     },
     "TdOrderStatus": {
       "type": "string",
-      "enum": ["Submitting", "NotTraded", "PartTraded", "AllTraded", "Cancelled", "Rejected"],
+      "enum": ["Submitting", "NotTraded", "PartTraded", "AllTraded", "Cancelled", "Rejected", "Unknown"],
       "description": "委托状态（契约 rest §2.9.3）"
     },
     "TdDegradedReason": {
@@ -905,7 +905,11 @@
       "description": "CTP 细状态 ext（契约 td-status §2.3）",
       "properties": {
         "api_version": { "type": "string", "description": "接口库版本字符串，构造时设置一次" },
-        "sys_version": { "type": "string", "description": "登录响应中的系统版本；未登录/进入 Idle 时为空串" }
+        "sys_version": { "type": "string", "description": "登录响应中的系统版本；未登录/进入 Idle 时为空串" },
+        "unknown_order_status": { "type": "integer", "description": "本会话累计收到的不认识的柜台委托状态次数（契约 td-status §2.3）" },
+        "unknown_direction": { "type": "integer", "description": "本会话累计收到的不认识的持仓方向次数（契约 td-status §2.3）" },
+        "unknown_price_type": { "type": "integer", "description": "本会话累计收到的不认识的委托价格类型次数（契约 td-status §2.3）" },
+        "unknown_position_effect": { "type": "integer", "description": "本会话累计收到的不认识的开平标志次数（契约 td-status §2.3）" }
       }
     },
     "TdStatusPayload": {

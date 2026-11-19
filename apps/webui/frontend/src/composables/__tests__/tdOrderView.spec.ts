@@ -104,6 +104,30 @@ describe('tdOrderView · 枚举中文文案（契约 rest §2.9.3 枚举取值�
     expect(tdOrderStatusText('Rejected')).toBe('已拒绝')
   })
 
+  // issue #367：未知枚举必须显示「未知」，不得落回某个真实取值的中文文案
+  // （契约 rest §2.9.3「未知值必须原样显示为未知，不得映射到其他值」）。
+  it('Unknown 一律显示「未知」，不冒充任何真实取值', () => {
+    expect(tdDirectionText('Unknown')).toBe('未知')
+    expect(tdPositionEffectText('Unknown')).toBe('未知')
+    expect(tdOrderStatusText('Unknown')).toBe('未知')
+    expect(tdPriceTypeText('Unknown')).toBe('未知')
+  })
+
+  it('Unknown 的文案与既有各取值的中文都不同（防止被误并入真值）', () => {
+    const known = new Set([
+      tdDirectionText('Long'), tdDirectionText('Short'), tdDirectionText('Net'),
+      tdPositionEffectText('Auto'), tdPositionEffectText('Open'),
+      tdPositionEffectText('Close'), tdPositionEffectText('CloseToday'),
+      tdPositionEffectText('CloseYesterday'),
+      tdOrderStatusText('Submitting'), tdOrderStatusText('NotTraded'),
+      tdOrderStatusText('PartTraded'), tdOrderStatusText('AllTraded'),
+      tdOrderStatusText('Cancelled'), tdOrderStatusText('Rejected'),
+      tdPriceTypeText('Limit'), tdPriceTypeText('Market'), tdPriceTypeText('Stop'),
+      tdPriceTypeText('Fak'), tdPriceTypeText('Fok'), tdPriceTypeText('Rfq'),
+    ])
+    expect(known.has('未知')).toBe(false)
+  })
+
   it('价格类型', () => {
     expect(tdPriceTypeText('Limit')).toBe('限价')
     expect(tdPriceTypeText('Market')).toBe('市价')
@@ -113,9 +137,11 @@ describe('tdOrderView · 枚举中文文案（契约 rest §2.9.3 枚举取值�
     expect(tdPriceTypeText('Rfq')).toBe('询价')
   })
 
-  it('未知取值原样回显（不吞成空白）', () => {
+  it('契约外的取值原样回显（不吞成空白）', () => {
     expect(tdDirectionText('Hedge' as never)).toBe('Hedge')
-    expect(tdOrderStatusText('Unknown' as never)).toBe('Unknown')
+    // 契约内的 `Unknown` 走文案映射（显示「未知」），不再原样回显成英文——
+    // issue #367 把它变成一等取值后，旧的「原样回显」断言固化的是新行为之前的语义。
+    expect(tdOrderStatusText('Unknown' as never)).toBe('未知')
   })
 })
 

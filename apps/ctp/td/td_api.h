@@ -249,6 +249,8 @@ private:
     // === TD 数据同步补查 (实现在 td_api_scheduled.cpp, spec §4.2) ===
     /// 排定 td_data_resync 补查定时任务 (60s 间隔): 登录查询失败降级转 Ready 后,
     /// 对数据未完整的 Ready 账户补查持仓/资金直至成功 (成功一次后停止).
+    /// 注意它只是进程级兜底, **不是**运行期 force 重查失败的重试来源 —— 它在首次成功后
+    /// 就不再排定; 那类失败由 AccountSession 自己的退避重试链兜住 (issue #367 B1).
     void schedule_data_resync();
     /// 补查定时回调: 对所有 data_query_ok()==false 的 Ready 账户调 resync_account_data;
     /// 仍有未完整账户则 60s 后排定下一轮, 否则停止 (成功一次后不再排).

@@ -186,6 +186,10 @@ typedef int8_t DzDirection;
 #define DZ_DIRECTION_NET ((DzDirection)0)
 /** @brief 多，买 */
 #define DZ_DIRECTION_LONG ((DzDirection)1)
+/** @brief 未知（收到了不认识的方向，取值必须原样显示为未知，不得映射到任何真实方向）。
+ *         取 INT8_MIN：CTP 侧同族取值是 char 字面量（可打印 ASCII，即 ≥ 48），负数不可能
+ *         与之碰撞；同时远离现有取值区间，柜台后续新增真实取值不会占用。 */
+#define DZ_DIRECTION_UNKNOWN ((DzDirection)(-128))
 
 /* ==========================================================
  *  开平仓
@@ -205,6 +209,9 @@ typedef int8_t DzPositionEffect;
 /** @brief 自动拆分 (拆分优先级序列由账户级配置决定: 如 平今-平昨-开仓;
  *         零初始化即 AUTO, 首版仅定义不实现, td 收到 AUTO 委托直接拒单) */
 #define DZ_POSITION_EFFECT_AUTO ((DzPositionEffect)0)
+/** @brief 未知（收到了不认识的开平标志，取值必须原样显示为未知，不得映射成任何真实开平）。
+ *         取 INT8_MIN 的理由同 `DZ_DIRECTION_UNKNOWN`。 */
+#define DZ_POSITION_EFFECT_UNKNOWN ((DzPositionEffect)(-128))
 
 /* ==========================================================
  *  委托单状态
@@ -225,6 +232,10 @@ typedef int8_t DzOrderStatus;
 #define DZ_ORDER_CANCELLED ((DzOrderStatus)5)
 /** @brief 拒单 */
 #define DZ_ORDER_REJECTED ((DzOrderStatus)6)
+/** @brief 未知（收到了不认识的柜台状态，取值必须原样显示为未知，不得映射成任何真实状态）。
+ *         取 INT8_MIN 的理由同 `DZ_DIRECTION_UNKNOWN`；也刻意不复用 `SUBMITTING`——
+ *         猜测成「提交中」会让委托永久停在非终态，冻结持仓不释放。 */
+#define DZ_ORDER_UNKNOWN ((DzOrderStatus)(-128))
 
 /* ==========================================================
  *  委托单类型
@@ -245,6 +256,9 @@ typedef int8_t DzPriceType;
 #define DZ_PRICE_FOK ((DzPriceType)4)
 /** @brief 询价 */
 #define DZ_PRICE_RFQ ((DzPriceType)5)
+/** @brief 未知（收到了不认识的委托价格类型，取值必须原样显示为未知，不得映射成任何真实类型）。
+ *         取 INT8_MIN 的理由同 `DZ_DIRECTION_UNKNOWN`。 */
+#define DZ_PRICE_UNKNOWN ((DzPriceType)(-128))
 
 /* ==========================================================
  *  期权类型

@@ -153,8 +153,14 @@ protected:
     }
 
     /// 一条持仓查询响应行（`volume` 含昨仓；`cost` 为持仓成本金额）。
-    static OnRspQryInvestorPositionField position_row(
-        const std::string& instrument, int32_t volume, int32_t yd, double cost, bool is_last) {
+    /// `posi_direction` 缺省 = CTP 多('2')：本 fixture 全仓按多头语义断言，
+    /// 必须显式给（未知方向现在落成 UNKNOWN 且整行被丢弃，不再兜成多头）。
+    static OnRspQryInvestorPositionField position_row(const std::string& instrument,
+                                                      int32_t volume,
+                                                      int32_t yd,
+                                                      double cost,
+                                                      bool is_last,
+                                                      char posi_direction = THOST_FTDC_PD_Long) {
         OnRspQryInvestorPositionField f{};
         CThostFtdcInvestorPositionField p{};
         std::strcpy(p.InstrumentID, instrument.c_str());
@@ -163,6 +169,7 @@ protected:
         p.Position = volume;
         p.YdPosition = yd;
         p.PositionCost = cost;
+        p.PosiDirection = posi_direction;
         f.investor_position = p;
         f.is_last = is_last;
         // 会话用 `request_id != position_query_request_id_` 丢弃迟到响应。未登录时

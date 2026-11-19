@@ -256,3 +256,45 @@ TEST(PositionHoldingInputGuardTest, NetDirectionAndZeroVolumeIgnored) {
     EXPECT_FALSE(
         h.apply_order(make_close("1", DZ_DIRECTION_NET, DZ_POSITION_EFFECT_CLOSE, 1)).any());
 }
+
+TEST(PositionHoldingInputGuardTest, UnknownPositionEffectDoesNotMovePositions) {
+    // 未知开平标志既不能当开仓 (凭空放大敞口) 也不能落进 close_side (平掉对方真实持仓).
+    // 先建好双边持仓: 多 5 空 3.
+    PositionHolding h{"IF2506", "CFFEX"};
+    h.apply_query_side(DZ_DIRECTION_LONG, 5, 2, 3900.0);
+    h.apply_query_side(DZ_DIRECTION_SHORT, 3, 3, 3910.0);
+
+    const auto ch =
+        h.apply_trade(make_trade(DZ_DIRECTION_LONG, DZ_POSITION_EFFECT_UNKNOWN, 2, 3900.0));
+    EXPECT_FALSE(ch.any());
+    EXPECT_EQ(h.side(DZ_DIRECTION_LONG).volume(), 5);
+    EXPECT_EQ(h.side(DZ_DIRECTION_SHORT).volume(), 3)
+        << "an unreadable offset flag must not close the opposite side";
+
+    const auto ch2 =
+        h.apply_trade(make_trade(DZ_DIRECTION_LONG, static_cast<DzPositionEffect>(99), 2, 3900.0));
+    EXPECT_FALSE(ch2.any());
+    EXPECT_EQ(h.side(DZ_DIRECTION_LONG).volume(), 5);
+}
+
+TEST(PositionHoldingInputGuardTest, UnknownEffectOrderNeverFreezesAnySide) {
+    // 未知开平且未终态: 不得进活动委托表 —— 否则按「非开仓」给对侧记冻结,
+    // 等于拿猜测的语义占用可用持仓 (issue #367 审查 F4).
+    PositionHolding h{"IF2506", "CFFEX"};
+    h.apply_query_side(DZ_DIRECTION_LONG, 5, 2, 3900.0);
+    h.apply_query_side(DZ_DIRECTION_SHORT, 3, 3, 3910.0);
+    ASSERT_EQ(h.long_frozen(), 0);
+    ASSERT_EQ(h.short_frozen(), 0);
+
+    const auto ch = h.apply_order(make_close("u1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_UNKNOWN,
+                                             4, 0, DZ_ORDER_NOT_TRADED));
+    EXPECT_FALSE(ch.any());
+    EXPECT_EQ(h.long_frozen(), 0) << "an unreadable offset flag must not freeze the long side";
+    EXPECT_EQ(h.short_frozen(), 0);
+
+    // 同一张单后续变成终态时仍要清掉 (状态可读, 不允许残留冻结).
+    EXPECT_FALSE(h.apply_order(make_close("u1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_UNKNOWN, 4,
+                                          0, DZ_ORDER_CANCELLED))
+                     .any());
+    EXPECT_EQ(h.long_frozen(), 0);
+}

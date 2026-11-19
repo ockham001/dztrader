@@ -129,6 +129,8 @@ void TdApi::on_sched_timer() {
 // TD 数据同步补查 (spec §4.2): 登录查询失败降级转 Ready 后定时补查持仓/资金.
 // 60s 间隔, 成功一次后停止; 未成功前 positions/trading_accounts 表缺口由
 // 下次查询响应填充 (无变化即无帧, 故补查是缺口的唯一填充路径).
+// 注意 (issue #367 B1): 本定时器首次成功后即不再排定, 因此**不是**运行期 force 重查
+// 失败的重试来源; 那类失败由 AccountSession 自己的退避重试链 (schedule_resync_retry) 兜住.
 // ============================================================================
 
 void TdApi::schedule_data_resync() {

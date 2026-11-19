@@ -93,6 +93,8 @@
 - **冻结**：只由活动平仓挂单（含外部单）本地推导 `volume - volume_traded`，今仓优先、溢出到昨、按量夹取；拒绝/撤单/全成释放。登录种入按当前交易日过滤，CTP 冻结总量不符仅 WARN。
 - **日切**：today→yd、清挂单冻结，变化侧按上规则推帧/落库，下一轮查询权威校正。
 - **漂移自愈**：Ready 后每 `qry_position_interval_s`（默认 60s，可配置）重查一次（统一 TimerQueue 定时，不另起轮询线程，符合"无轮询"原则）；查询在途窗口的成交以快照覆盖为准，≤ 一个查询间隔收敛（近似语义见《帧契约：TD 数据同步》）。周期查询的失败处理与登录收尾链解耦：仅记日志/等下一轮，不推进 finalizer、不触发资金查询；登录查询失败期的补查沿用既有固定 60s 降级路径。
+- **补查失败必须自带重试**（issue #367 增量复核 B1）：进程级 60s 补查定时器只在「仍有未完整账户」时自续，**首次成功后即不再排定**；因此运行期（未知枚举触发）的 force 重查一旦失败，就没有别人会再来一次——`data_query_ok_` 恒 false 会让周期持仓轮询的门永久关闭，且全程无日志。所以补查失败的重试责任归会话自己：`finalize_login` 判定双查询未成功且已 Ready 时排定一条指数退避重试链（60s → 120s → 240s，封顶 300s，`resync_retry_delay_s`），成功后由 `cancel_resync_retry` 收链，断连/登出同 cancel。重试到期若已有查询链在途（登录收尾或上一轮补查未到 kDone）则继续退避等待，**绝不并发**——CTP 在途查询流控只有 1 笔，双链会污染累加器与冻结对账。
+- **运行期补查跳过 flush 屏障**：`drive_finalizer` 的 `kFlush` 同步 `wait_flush(5s)` 只在登录路径需要（Ready 广播前把重放回报的库行提交）；运行期补查（此时状态已是 Ready）跳过该阶段，只走 查询 → kReplay（此时缓冲必空，早退）→ kDone。判定依据是 `is_ready()`：登录链在 kReady 之前状态一直是 `LoadingInstruments`，只有运行期补查能在这里就是 Ready。这条不是为了性能，而是为了让补查回调不在 td 主线程（CTP SPI 事件循环）上最长阻塞 5 秒。
 - **下单**：本波不接入 OffsetConverter（SHFE 拆分/AUTO/父子单聚合回报留待专项），`DZ_POSITION_EFFECT_AUTO` 显式拒绝；风控上下文填入该合约真实多空持仓与合约 `price_tick`（现规则实际使用 `price_tick`）。
 
 ### 快照生命周期（#249 锁定的行为）
@@ -142,6 +144,22 @@
 - 账户级细状态 `RTN_STATUS` 按 `instance_id = <网关名>:<account_id>` 推送（总则 §5 复合键例外），该复合键只用于帧路由与 dzweb 镜像分区，**账户身份仍是 `account_id`**。
 - `date` 是**会话交易日**（登录响应确定），断线（`Disconnected`，SDK 自动重连中）期间不清空——它是本交易日全部业务数据的时间锚；进入 `Idle` 才清 `date` / `login_time` / `ext.sys_version`（`ext.api_version` 是进程生命周期常量，保留）。
 - 日切（会话交易日变化，含日切后重新登录）以新 `date` 全量推送；前端以字段值变化为准，不自行推断清空时机。
+- 未知枚举计数挂在 `ext.unknown_*`（口径见《帧契约：交易网关状态》§2.3）。
+
+### 未知枚举：为什么没有编译期防线（issue #367 故事 12）
+
+本仓**放弃**用编译器抓「枚举新增值没被映射」，因为 `-Wswitch` 在本仓的两个层面都**永不生效**（实测确认，不是可以选的）：
+
+- **CTP 侧**：枚举是 `char` 的 typedef 加 `char` 字面量宏（如 `#define THOST_FTDC_OST_AllTraded '0'`）。对 `char` 做 `switch` 时 `-Wswitch` 永远不可能触发——这是硬限制，换编译器/换开关都不行。
+- **自有枚举**：`DzOrderStatus` / `DzDirection` / `DzPriceType` / `DzPositionEffect` 等是 `typedef int8_t` + 宏，不是真正的枚举类型。实测即使显式打开 `-Wswitch -Wswitch-enum` 并去掉 `default`，也**零告警**。
+
+因此本仓的映射层策略是**运行期显式化 + 计数可观测**，而不是编译期检测：
+
+- 回报方向（柜台 → 平台）：读不懂的值落成对应的 `DZ_*_UNKNOWN`，原始字符登记到 `UnknownEnumSink`，由 `AccountSession::report_unknown_enums` 记 ERROR 日志 + 按种类计数（进 `RTN_STATUS.ext`）+ `notify_ui(popup=false)` + 触发一次资金/持仓重查；通知与重查限频（5 分钟内最多一次），计数不受限频影响。
+- 出账方向（平台 → 柜台）：映射函数返回 `std::nullopt`，`place_order` 本地拒单——**绝不**兜底成某个看起来最像的真实值（兜底等于向交易所发错误指令：止损单变限价单、平仓单变开仓单）。
+- 未知开平标志的成交/委托**不参与持仓增量与活动委托表**（当开仓会放大敞口，当平仓会平掉对方真实持仓，两者都是撒谎）。
+
+要拿到编译期防线，需要把自有枚举改成真枚举（`enum : int8_t`）——那是独立的源码级不兼容变更，另票（#368）并需 ADR；**CTP 侧无论如何都拿不到**。改动映射层时请照此约定：`default` 只有两种合法行为——返回 `UNKNOWN` 并上报，或者返回失败由调用方拒单。
 
 ## 持久化（trade.db）
 

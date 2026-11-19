@@ -166,8 +166,10 @@ public:
     void set_trading_day(int32_t trading_day);
 
     /// 重新发起持仓/资金补查 (登录查询失败降级后的定时补查路径).
-    /// 仅 Ready 且此前查询未成功时生效; 无会话/非 Ready 时 no-op.
-    void resync_account_data();
+    /// @param force true = 忽略「此前查询已成功」这一道门 (用于未知枚举后强制用柜台
+    ///   权威数据覆盖本地不确定状态); 在途查询与收尾状态机的互斥检查仍然生效,
+    ///   避免并发双查询链. 无会话/非 Ready 时 no-op.
+    void resync_account_data(bool force = false);
 
     /// 设置持仓周期重查间隔 (秒); <=0 回退 60. 已 Ready 时立即重排定时器
     /// (配置热更新传播路径, 由 TdApi 在配置变更后调用).
@@ -175,6 +177,14 @@ public:
 
     /// 数据是否已完整 (持仓/资金双查询都成功). 供 TdApi 定时补查节流.
     bool data_query_ok() const noexcept { return data_query_ok_; }
+
+    /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false).
+    /// 与 data_query_ok() 分开暴露: 后者只在登录收尾时合成, 会话未登录时恒为 false,
+    /// 拿它断言「未知方向按查询失败处置」会恒真 (issue #367 审查 F9).
+    bool position_query_ok() const noexcept { return position_query_ok_; }
+
+    /// 未知枚举累计计数 (按种类). TdApi 在拼状态帧 ext 时读取.
+    const UnknownEnumCounts& unknown_enum_counts() const noexcept { return unknown_enum_counts_; }
 
     /// 重推各追加流最后一条 (委托/成交, 原 seq 直接写帧, 不落库不过滤器,
     /// spec §4.2 "最后一条重推"). 由 TdApi 在 Ready 广播之后调用.
@@ -221,6 +231,13 @@ private:
 
     /// 持久化 OrderRecord (enqueue 到 PersistWriter, 含 CTP 扩展字段).
     void persist_order(const OrderRecord& r);
+
+    /// 上报一条回报里的未知枚举: 每个种类计一次数 + ERROR 日志 + notify_ui (popup=false)
+    /// + 触发一次资金/持仓重查 (issue #367 上报口径).
+    /// 通知与重查按最小间隔限频 (kUnknownEnumReportIntervalS): 未知枚举可能每条回报都带,
+    /// 逐条通知会刷爆前端通知环、逐条重查会打满柜台流控; 间隔内只计数与记日志.
+    /// 只记日志不猜值; 调用方已把对应字段落成 UNKNOWN.
+    void report_unknown_enums(const UnknownEnumSink& unknown);
 
     /// 持久化 TradeRecord.
     void persist_trade(const TradeRecord& r);
@@ -271,6 +288,16 @@ private:
     /// 周期定时器到期: 基线就绪且无在途查询时发起周期重查, 并安排下一轮.
     void on_position_poll_timer();
 
+    /// 排定一次数据补查重试 (指数退避, 见 resync_retry_delay_s). 已排定时先取消再重排.
+    /// issue #367 增量复核 B1: 进程级 60s 补查定时器只在「仍有未完整账户」时自续,
+    /// 已经停过的定时器不会因为运行期一次 force 重查失败而复活 —— 失败的重试责任归会话,
+    /// 否则 data_query_ok_ 恒 false 会让周期持仓轮询永久关闭且无任何日志.
+    void schedule_resync_retry();
+    /// 取消待定重试并清零退避计数 (补查成功/断连/登出时调用).
+    void cancel_resync_retry();
+    /// 重试定时器到期: 无并发冲突时发起补查; 已有查询链在途则继续按退避等待.
+    void on_resync_retry_timer();
+
     // === 成员 ===
     std::string account_id_;
     shm::OrderIdMeta& order_id_meta_;
@@ -296,6 +323,13 @@ private:
     /// 账户级状态变更 seq 计数器 (spec §2.2: 主线程分配, 无需原子).
     /// 跨日累积单调, 同一事件 shm 帧与 DB 行带同一 seq.
     uint64_t seq_counter_ = 0;
+    /// 未知枚举累计计数 (按种类; 见 UnknownEnumCounts). 由 report_unknown_enums 递增.
+    UnknownEnumCounts unknown_enum_counts_;
+    /// 未知枚举「通知 + 强制重查」的最小间隔 (5 分钟, 与 docs/components/dztd_ctp.md
+    /// 通知分级的持续性异常限频同量级). 间隔内的未知枚举只计数与记日志.
+    static constexpr int64_t kUnknownEnumReportIntervalS = 300;
+    /// 上次「通知 + 强制重查」的时刻 (steady_clock 秒; 0 = 尚未发生过).
+    int64_t unknown_enum_last_report_s_ = 0;
     /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
     std::unique_ptr<ReportFilter> report_filter_;
     /// 每单成交累计 (委托成交均价的唯一累源; 登录日装载时由当日成交重建, 契约 §3).
@@ -337,12 +371,19 @@ private:
     /// 本轮是否已 enqueue PositionRebuild (幂等防御: 迟到的重复 is_last 不得用已消费的
     /// 空组再次重灌清空 DB).
     bool position_rebuild_consumed_ = false;
+    /// 本轮持仓查询出现过读不懂的方向: 整轮快照不可信, is_last 时按查询失败处置
+    /// (不改表、保留上次已知快照), 由补查重试覆盖.
+    bool position_query_unknown_direction_ = false;
     /// 登录收尾状态机 (spec §4.2): 双查询齐才可收尾, 失败降级不阻塞 Ready.
     LoginFinalizer finalizer_;
     /// 持仓/资金查询是否已成功 (供登录降级补查节流: 双查询都成功才置 true, spec §4.2).
     bool position_query_ok_ = false;
     bool account_query_ok_ = false;
     bool data_query_ok_ = false;
+    /// 补查重试链 (issue #367 B1): 待定重试的定时器 id (0 = 无挂起) 与已失败次数.
+    /// 已失败次数只由重试链自身递增, 成功/断连时清零 (退避回到初值).
+    dztrader::core::TimerQueue::TimerId resync_retry_timer_id_ = 0;
+    int resync_retry_attempt_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 登录日装载用, 可空则装载失败).
     std::function<SQLite::Database*()> read_db_provider_;
     /// 无会话拒单 seq 分配器 (可空; 登录日装载据此抬高 seq 计数器).

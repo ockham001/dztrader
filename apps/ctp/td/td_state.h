@@ -13,6 +13,22 @@
 
 namespace dztrader::ctp {
 
+/// 未知枚举累计计数 (按种类分开): 「我们没跟上柜台」与「柜台给了坏数据」处置不同,
+/// 合并成一个总数会让运维无从判断该补映射还是该查数据源 (issue #367 用户故事 8).
+/// 语义 = 本会话生命周期内累计条数, 日切/断线不清零 (计数器只增不减, 供持续观察).
+/// 放在 td_state.h 而非 AccountSession 里: 状态帧 payload 的拼接口径要与它同处一文件,
+/// 才能在不链接 CTP 的目标里单测 (td_api_pure_test)。
+struct UnknownEnumCounts {
+    uint64_t order_status = 0;     ///< 不认识的柜台委托状态
+    uint64_t direction = 0;        ///< 不认识的持仓方向
+    uint64_t price_type = 0;       ///< 不认识的委托价格类型
+    uint64_t position_effect = 0;  ///< 不认识的开平标志
+
+    [[nodiscard]] uint64_t total() const noexcept {
+        return order_status + direction + price_type + position_effect;
+    }
+};
+
 /// CTP 交易网关状态机状态 (11 状态)。
 /// 参考 mdctp MdState, 扩展为 11 状态以覆盖认证/结算确认/合约加载。
 enum class TdState {
@@ -76,6 +92,11 @@ struct TdStatus {
                                                 progress_current,
                                                 ext)
 };
+
+/// RTN_TD_STATUS 的 payload: 状态机快照 + `ext` 里的未知枚举计数 (契约 td-status §2.3)。
+/// 计数挂在 `ext` 下按种类分开 (issue #367 用户故事 8), 不覆盖状态机自身字段。
+/// 实现在 td_state.cpp: 与 TdStatus 同处一个不依赖 CTP 头的目标, 便于单测。
+nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts& counts);
 
 /// 状态转移返回的通知信息。
 /// 与 mdctp MdNotification 模式一致, 调用方应通过 notify_ui 发送给前端。
