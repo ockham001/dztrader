@@ -26,7 +26,6 @@ import {
 import {
   UNAVAILABLE_TEXT,
   formatAge,
-  formatCountPerSec,
   formatDecimal,
   formatFrequency,
   formatMilliseconds,
@@ -343,13 +342,6 @@ const loadEmptyDesc = computed(() => loadAvailable.value ? '当前快照未提�
 const PROCESSOR_QUEUE_SEMANTIC = 'processor_queue'
 const loadIsProcessorQueue = computed(() => loadAverage.value?.semantic === PROCESSOR_QUEUE_SEMANTIC)
 
-// ---- 上下文切换 / 中断（#72）：两者共用可用性键 cpu.context_switches ----
-// #362 重排后不再占一格面板，降级为 CPU 卡内的一行小字（读数照旧按 nullable 渲染「不可用」，
-// 不显示 0；不可用时另给一行原因）。
-const ratesAvailable = computed(() => isAvailable('cpu.context_switches'))
-const contextSwitches = computed(() => sysmon.cpuContextSwitchesPerSec)
-const interrupts = computed(() => sysmon.cpuInterruptsPerSec)
-
 // ---- 温度 / 每核频率（#73，B 组可用性样板）----
 // 与内存 / 磁盘等「不可用显示空态」的区块不同：对应指标不可用时整块不渲染，
 // 不是显示 0、也不是显示「不可用」占位。只按 availability.metrics 与数据渲染，不按 platform.family 分支。
@@ -388,6 +380,8 @@ const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   network: sysmon.network,
   shmDir: sysmon.shmDirInfo,
   clock: sysmon.clock,
+  cpuContextSwitchesPerSec: sysmon.cpuContextSwitchesPerSec,
+  cpuInterruptsPerSec: sysmon.cpuInterruptsPerSec,
   thresholds: sysmon.config?.thresholds ?? null,
   clockConfig: sysmon.config?.clock ?? null,
   // 可用性映射直接传 store 的查询函数：台账按它区分「不可用」「配置关闭」「暂无数据」
@@ -1134,26 +1128,10 @@ const cpuTrendAriaLabel = computed(
               </ul>
             </div>
           </div>
-
-          <!-- 上下文切换 / 中断（#72）：四数字腾出的那格不浪费——速率降级为 CPU 卡底部一行小字。
-               数值 null（首次采样 / 计数器重置）显示「不可用」而不是 0；能力不可用另给原因。 -->
-          <div class="monitor-view__rates-block">
-            <dl class="monitor-view__rates" data-test="monitor-cpu-rates">
-              <div class="monitor-view__rate-item">
-                <dt class="monitor-view__rate-label">上下文切换</dt>
-                <dd class="monitor-view__rate-value" data-test="monitor-context-switches">{{ formatCountPerSec(contextSwitches) }}</dd>
-              </div>
-              <div class="monitor-view__rate-item">
-                <dt class="monitor-view__rate-label">中断</dt>
-                <dd class="monitor-view__rate-value" data-test="monitor-interrupts">{{ formatCountPerSec(interrupts) }}</dd>
-              </div>
-            </dl>
-            <p v-if="!ratesAvailable" class="monitor-view__hint">{{ unavailableDesc('cpu.context_switches') }}</p>
-          </div>
         </div>
       </section>
 
-      <!-- 指标台账（#363）：三组、每行七列，行数据全部来自 `buildMonitorLedger`。
+      <!-- 指标台账（#363）：四组（CPU → 内存 → 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
            组件不写任何「该不该显示」的判断——行的存在、空态类别、阈值与余量、能否点跳历史
            全部由 `@/composables/monitorLedger` 决定。七列共用一条列基线（每行同一套
            `grid-template-columns`），因此任意一列可纵向读下来。 -->
@@ -2740,41 +2718,6 @@ const cpuTrendAriaLabel = computed(
   gap: var(--spacer-8);
   padding: 0;
   text-align: left;
-}
-
-/* 上下文切换 / 中断（#362：从独立面板降级为 CPU 卡底部一行）：标签与读数同排，紧凑不占版面 */
-.monitor-view__rates-block {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-
-.monitor-view__rates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacer-4) var(--spacer-24);
-  margin: 0;
-}
-
-.monitor-view__rate-item {
-  display: flex;
-  align-items: baseline;
-  gap: var(--spacer-6);
-  min-width: 0;
-}
-
-.monitor-view__rate-label {
-  color: var(--text-tertiary);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-}
-
-.monitor-view__rate-value {
-  margin: 0;
-  color: var(--text-secondary);
-  font-family: var(--font-family-metric);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
-  font-variant-numeric: tabular-nums;
 }
 
 .monitor-view__hint {

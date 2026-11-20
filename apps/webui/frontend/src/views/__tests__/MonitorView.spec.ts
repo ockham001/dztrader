@@ -164,8 +164,11 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     // 无提示时不得凭空造提示（#207 B2 的映射只在发送方真的携带 key 时生效）
     expect(wrapper.find('[data-test="monitor-load-hint"]').exists()).toBe(false)
 
-    expect(wrapper.find('[data-test="monitor-context-switches"]').text()).toBe('1234/s')
-    expect(wrapper.find('[data-test="monitor-interrupts"]').text()).toBe('567/s')
+    // #370：上下文切换 / 中断移入台账的 cpu.rates 行（不再是 CPU 卡内的一行小字）
+    const ratesRow = wrapper.find('[data-row-id="cpu.rates"]')
+    expect(ratesRow.exists()).toBe(true)
+    expect(ratesRow.find('[data-test="ledger-value"]').text()).toBe('1234/s · 567/s')
+    expect(wrapper.find('[data-test="monitor-cpu-rates"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('不可用')
   })
 
@@ -207,8 +210,12 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(loadEmpty.text()).toContain('unsupported')
     expect(wrapper.find('[data-test="monitor-load-hint"]').exists()).toBe(false)
 
-    expect(wrapper.find('[data-test="monitor-context-switches"]').text()).toBe('不可用')
-    expect(wrapper.find('[data-test="monitor-interrupts"]').text()).toBe('不可用')
+    // #370：速率读数移入台账 cpu.rates 行；两值皆缺走 empty 空态（值槽写 —，不是 0）
+    const ratesRow = wrapper.find('[data-row-id="cpu.rates"]')
+    expect(ratesRow.attributes('data-state')).toBe('empty')
+    expect(ratesRow.find('.monitor-view__ledger-value').text()).toBe('—')
+    expect(wrapper.find('[data-test="monitor-context-switches"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-interrupts"]').exists()).toBe(false)
   })
 
   it('cpu.cores 不可用：每核子区块显示不可用原因空态，不渲染核条目', async () => {
@@ -285,8 +292,12 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(empty.text()).toContain('暂无可用采样（首次采样未完成或计数器重置）')
 
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-    expect(wrapper.find('[data-test="monitor-context-switches"]').text()).toBe('不可用')
-    expect(wrapper.find('[data-test="monitor-interrupts"]').text()).toBe('不可用')
+    // #370：速率移入台账 cpu.rates 行（空态口径，见「部分不可用」用例）
+    const ratesRow = wrapper.find('[data-row-id="cpu.rates"]')
+    expect(ratesRow.attributes('data-state')).toBe('empty')
+    expect(ratesRow.find('.monitor-view__ledger-value').text()).toBe('—')
+    expect(wrapper.find('[data-test="monitor-context-switches"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-interrupts"]').exists()).toBe(false)
   })
 })
 
