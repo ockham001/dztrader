@@ -4,6 +4,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ScheduleManager from '../ScheduleManager.vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
+import { RESET_TO_DEFAULT } from '@/stores/marketSources'
+import { useToastStore } from '@/stores/toast'
 import { makeSource } from '@/composables/marketSourceView'
 
 // 最小 stub: Icon/Modal/TimePicker（Modal 模拟真实 v-if="open" 行为; TimePicker 为受控 input）
@@ -140,5 +142,80 @@ describe('ScheduleManager', () => {
     const addBtn = w.findAll('button').find(b => b.text() === '添加时段')
     expect((addBtn!.element as HTMLButtonElement).disabled).toBe(true)
     expect((w.find('.schedule-item button.ds-btn--danger-icon').element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  // ===== #394: 空态语义 + 删空排程的可感知反馈 =====
+
+  it('镜像未到（空排程）显示「等待网关上报排程」，不再出现「未设置时段」', () => {
+    const source = makeSource({ id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP' })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    expect(w.findAll('.schedule-item')).toHaveLength(0)
+    expect(w.text()).toContain('等待网关上报排程')
+    expect(w.text()).not.toContain('未设置时段')
+  })
+
+  it('本次删空排程并成功下发 → 提示「已恢复默认排程」', async () => {
+    const store = useMarketSourcesStore()
+    const removeSpy = vi.spyOn(store, 'removeSchedule').mockResolvedValue(RESET_TO_DEFAULT)
+    const successSpy = vi.spyOn(useToastStore(), 'success')
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      schedules: [{ id: 0, source_id: 1, login_time: '09:00', logout_time: '15:00' }],
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    await w.find('.schedule-item button.ds-btn--danger-icon').trigger('click')
+    await flushPromises()
+
+    expect(removeSpy).toHaveBeenCalledWith(1, '09:00', '15:00')
+    expect(successSpy).toHaveBeenCalledWith('已恢复默认排程')
+  })
+
+  it('删非最后一条（仍有剩余）→ 不提示「已恢复默认排程」', async () => {
+    const store = useMarketSourcesStore()
+    vi.spyOn(store, 'removeSchedule').mockResolvedValue(true)
+    const successSpy = vi.spyOn(useToastStore(), 'success')
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      schedules: [
+        { id: 0, source_id: 1, login_time: '08:45', logout_time: '15:30' },
+        { id: 0, source_id: 1, login_time: '20:45', logout_time: '02:30' },
+      ],
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    await w.find('.schedule-item button.ds-btn--danger-icon').trigger('click')
+    await flushPromises()
+
+    expect(successSpy).not.toHaveBeenCalled()
+  })
+
+  it('提交失败（false）→ 不提示「已恢复默认排程」', async () => {
+    const store = useMarketSourcesStore()
+    vi.spyOn(store, 'removeSchedule').mockResolvedValue(false)
+    const successSpy = vi.spyOn(useToastStore(), 'success')
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      schedules: [{ id: 0, source_id: 1, login_time: '09:00', logout_time: '15:00' }],
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    await w.find('.schedule-item button.ds-btn--danger-icon').trigger('click')
+    await flushPromises()
+
+    expect(successSpy).not.toHaveBeenCalled()
+  })
+
+  it('排程上报后列表显示网关默认两条，且上报本身不弹提示（提示只由提交侧删空触发）', () => {
+    const successSpy = vi.spyOn(useToastStore(), 'success')
+    // 网关回落默认排程并回推 RTN_AUTO_LOGIN 后的聚合视图（镜像已被全量覆盖）
+    const source = makeSource({
+      id: 1, source_type: 'CTP', source_name: 'dzmd_ctp', display_name: 'CTP',
+      auto_login: true,
+      schedules: [
+        { id: 0, source_id: 1, login_time: '08:45', logout_time: '15:30' },
+        { id: 0, source_id: 1, login_time: '20:45', logout_time: '02:30' },
+      ],
+    })
+    const w = mount(ScheduleManager, { props: { source }, global: { stubs } })
+    expect(w.findAll('.schedule-item')).toHaveLength(2)
+    expect(successSpy).not.toHaveBeenCalled()
   })
 })

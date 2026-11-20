@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
-import { useMdConfigStore, MD_CONFIG_OPS, CLEAR_BY_RTN, MD_CONFIG_ALL_OPS } from '../mdConfig'
+import { useMdConfigStore, MD_CONFIG_OPS, CLEAR_BY_RTN, MD_CONFIG_ALL_OPS, RESET_TO_DEFAULT } from '../mdConfig'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { marketSourcePending, __resetForTests } from '@/composables/marketSourcePending'
 import { useProgressStore } from '@/stores/progress'
@@ -529,6 +529,99 @@ describe('useMdConfigStore', () => {
       expect(await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(false)
       // 后台断网失败: 镜像从未被修改, 09:00 保留（与服务端一致）
       expect(store.autoLogins['dzmd_ctp'].schedules).toHaveLength(1)
+    })
+
+    // ===== #394: 删空排程 = 回落默认，提交侧一次性信号 =====
+    // 信号只在「本次提交把排程删空」且下发成功时返回；RTN 侧（applyAutoLogin）不产生信号——
+    // RTN 无法区分「用户删空」与「网关本来就这样」，每次上报都提示会变成噪音。
+    it('removeSchedule 删最后一条且下发成功 → 返回 RESET_TO_DEFAULT 且提交空数组（回落默认由网关完成）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)  // 仅 09:00-15:00 一条
+      expect(await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(RESET_TO_DEFAULT)
+      // 载荷形状不变：仍全量提交 {enabled, schedules}，空数组=网关归一为默认表
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, { enabled: true, schedules: [] })
+      expect(marketSourcePending.pending['source:1:schedule_remove']).toBe(true)
+    })
+
+    // 网关归一默认表只看 schedules 是否为空、不看 enabled（契约 auto-login「持久化与默认值」），
+    // 所以 enabled=false + 空数组同样回落默认排程并回推；本用例锁定「重建载荷时 enabled 原样保留」——
+    // 将来若有人把 build 回调改成 `{ ...c, schedules, enabled: true }`，这里必须变红。
+    it('removeSchedule enabled=false 时删空 → 仍返回 RESET_TO_DEFAULT 且 enabled 不被改写', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', {
+        enabled: false,
+        schedules: [{ login_time: '09:00', logout_time: '15:00' }],
+      })
+      expect(await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(RESET_TO_DEFAULT)
+      // enabled=false 必须原样保留：自动登录开关不由「删空排程」隐式改变
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, { enabled: false, schedules: [] })
+    })
+
+    it('removeSchedule 删非最后一条 → 返回 true（不带删空标记）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [
+          { login_time: '08:45', logout_time: '15:30' },
+          { login_time: '20:45', logout_time: '02:30' },
+        ],
+      })
+      const r = await store.removeSchedule(1, 'dzmd_ctp', '08:45', '15:30')
+      expect(r).toBe(true)
+      expect(r).not.toBe(RESET_TO_DEFAULT)
+      expect(marketSourcesApi.setAutoLogin).toHaveBeenCalledWith(1, {
+        enabled: true,
+        schedules: [{ login_time: '20:45', logout_time: '02:30' }],
+      })
+    })
+
+    it('removeSchedule 删最后一条但 HTTP 失败 → false（没有默认表回推，不误报恢复默认）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockRejectedValue(new Error('net down'))
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
+      const r = await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')
+      expect(r).toBe(false)
+      expect(r).not.toBe(RESET_TO_DEFAULT)
+    })
+
+    it('removeSchedule 删最后一条但提交超时 → PENDING_TIMEOUT（已有超时 toast，不再叠加恢复提示）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockImplementation(() => new Promise(() => {}))
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
+      const p = store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')
+      await vi.advanceTimersByTimeAsync(10_001)
+      const r = await p
+      expect(r).toBe(PENDING_TIMEOUT)
+      expect(r).not.toBe(RESET_TO_DEFAULT)
+    })
+
+    it('RTN 上报默认两条本身不产生删空信号（applyAutoLogin 不是提交侧）', async () => {
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      store.applyAutoLogin('dzmd_ctp', autoLoginPayload)
+      // 本次提交只删了一条非最后一条（先补第二条，使删除非删空）
+      store.applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [
+          { login_time: '09:00', logout_time: '15:00' },
+          { login_time: '20:45', logout_time: '02:30' },
+        ],
+      })
+      expect(await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(true)
+      // 网关回推默认两条（用户没删空）：不产生任何信号，镜像被权威覆盖为默认表
+      store.applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [
+          { login_time: '08:45', logout_time: '15:30' },
+          { login_time: '20:45', logout_time: '02:30' },
+        ],
+      })
+      expect(store.autoLogins['dzmd_ctp'].schedules).toHaveLength(2)
+      // 幂等删除不存在的时段：仍返回 true，绝不返回删空标记
+      expect(await store.removeSchedule(1, 'dzmd_ctp', '09:00', '15:00')).toBe(true)
     })
   })
 

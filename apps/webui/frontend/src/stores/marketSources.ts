@@ -6,11 +6,13 @@ import type { BrokerEntry, MarketSource } from '@/types/api'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { marketSourcePending } from '@/composables/marketSourcePending'
 import { useProcessStore } from '@/stores/process'
-import { useMdConfigStore } from '@/stores/mdConfig'
+import { useMdConfigStore, RESET_TO_DEFAULT, type ScheduleRemoveResult } from '@/stores/mdConfig'
 import { useProgressStore } from '@/stores/progress'
 import { makeSource, progressLoginState, isDeterminateProgress, parseMdStatus, canRequestLogin, type MarketSourceView, type LoginState, type ScheduleView } from '@/composables/marketSourceView'
 
 export type { MarketSourceView, LoginState, ScheduleView }
+// #394: 删空信号经聚合层转发，组件层只与 marketSources 打交道（不直接依赖 mdConfig 领域 store）
+export { RESET_TO_DEFAULT }
 // P4 Task5: DB列表+聚合view; 领域状态由 process/mdConfig 镜像+usePending(单写化);
 // 操作=薄代理(失败设 error + rethrow); 类型已抽离到 marketSourceView.ts。
 export const useMarketSourcesStore = defineStore('marketSources', () => {
@@ -217,24 +219,27 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     expandedIds.value[id] = newExpanded
   }
 
-  /// 操作薄代理统一 helper: 折叠 15 个薄代理。守卫: findView+防重入+可选
+  /// 操作薄代理统一 helper: 折叠全部薄代理。守卫: findView+防重入+可选
   /// requireIdle; 失败设 error; PENDING_TIMEOUT 已 toast 不设; rethrow 抛 Error。
+  /// 返回值原样透传领域结果：目前仅 removeSchedule 消费（#394 的删空信号需穿透到组件层），
+  /// 其余调用点 `await` 后忽略返回值，行为不变。
   async function runOp(
     id: number,
     op: string,
-    fn: (src: MarketSourceView) => Promise<boolean | typeof PENDING_TIMEOUT>,
+    fn: (src: MarketSourceView) => Promise<boolean | typeof PENDING_TIMEOUT | typeof RESET_TO_DEFAULT>,
     failMsg: string,
     opts: { requireIdle?: boolean; rethrow?: boolean } = {},
-  ): Promise<void> {
+  ): Promise<boolean | typeof PENDING_TIMEOUT | typeof RESET_TO_DEFAULT | undefined> {
     const src = findView(id)
-    if (!src || pending[keyOf(id, op)]) return
-    if (opts.requireIdle && !isStateIdle(src)) return
+    if (!src || pending[keyOf(id, op)]) return undefined
+    if (opts.requireIdle && !isStateIdle(src)) return undefined
     const ok = await fn(src)
-    if (ok === PENDING_TIMEOUT) return  // 超时已 toast, 不设 error (双 toast 去重)
+    if (ok === PENDING_TIMEOUT) return PENDING_TIMEOUT  // 超时已 toast, 不设 error (双 toast 去重)
     if (!ok) {
       error.value = failMsg
       if (opts.rethrow) throw new Error(failMsg)
     }
+    return ok
   }
 
   async function login(id: number): Promise<void> {
@@ -255,9 +260,10 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
     await runOp(id, 'schedule_add', s => md.addSchedule(id, s.source_name, loginTime, logoutTime),
       notReady ? '自动登录配置尚未同步，请稍后重试' : 'add schedule failed', { rethrow: true })
   }
-  async function removeSchedule(id: number, loginTime: string, logoutTime: string): Promise<void> {
-    // 契约 auto-login 镜像条目无 id, 以 login+logout 时间对匹配（ScheduleManager 直接传时间对）
-    await runOp(id, 'schedule_remove', (s) =>
+  /// #394: 返回领域结果（而非 void），删空提交的 RESET_TO_DEFAULT 需穿透到组件层弹提示。
+  /// 契约 auto-login 镜像条目无 id, 以 login+logout 时间对匹配（ScheduleManager 直接传时间对）
+  async function removeSchedule(id: number, loginTime: string, logoutTime: string): Promise<ScheduleRemoveResult | undefined> {
+    return runOp(id, 'schedule_remove', (s) =>
       md.removeSchedule(id, s.source_name, loginTime, logoutTime),
       'remove schedule failed')
   }
