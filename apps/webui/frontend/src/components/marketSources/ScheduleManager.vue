@@ -4,7 +4,8 @@ import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import TimePicker from '@/components/shared/TimePicker.vue'
 import { useFieldId } from '@/composables/useFieldId'
-import { useMarketSourcesStore } from '@/stores/marketSources'
+import { useMarketSourcesStore, RESET_TO_DEFAULT } from '@/stores/marketSources'
+import { useToastStore } from '@/stores/toast'
 import type { MarketSourceView } from '@/stores/marketSources'
 
 // ScheduleManager — 自动登录时段的列表/添加/删除 + 添加时段 Modal
@@ -18,6 +19,9 @@ const props = defineProps<{
 const fieldId = useFieldId()
 
 const store = useMarketSourcesStore()
+// toast 在组件层调用：mdConfig/marketSources 两个 store 从不 import useToastStore
+// （唯一例外是 notify store 的推送分发），提示属展示职责，留在组件层维持既有分层。
+const toast = useToastStore()
 const src = computed(() => props.source)
 
 // auto_login 域互斥的 UI 侧: 域内任一操作在途时入口全部禁用（全量提交期间禁止并发修改）
@@ -65,6 +69,17 @@ async function confirmAddSchedule(): Promise<void> {
 const isOvernight = (sch: { login_time: string; logout_time: string }): boolean =>
   sch.login_time > sch.logout_time
 
+/// #394: 删除时段；本次提交把排程删空时提示「已恢复默认排程」。
+/// 契约 auto-login：空数组 = 网关回落内置默认排程并回推 RTN_AUTO_LOGIN，列表由镜像自动恢复。
+/// 提示条件由提交侧返值承载（RESET_TO_DEFAULT 仅在下发成功后出现）——RTN 侧不判断，
+/// 否则每次上报都会提示；提交失败/超时（已有超时 toast）也不提示。
+/// 已知边界：enabled=false 时删空同样提示「已恢复默认排程」——排程确实被恢复，
+/// 但自动登录仍关着。如需按状态区分文案（如附「自动登录当前为关闭状态」），另行开票。
+async function removeSchedule(sourceId: number, loginTime: string, logoutTime: string): Promise<void> {
+  const result = await store.removeSchedule(sourceId, loginTime, logoutTime)
+  if (result === RESET_TO_DEFAULT) toast.success('已恢复默认排程')
+}
+
 const scheduleAddPending = computed(() => {
   if (!scheduleModalSourceId.value) return false
   return store.sources.find(s => s.id === scheduleModalSourceId.value)?.scheduleAddPending ?? false
@@ -90,15 +105,16 @@ const scheduleAddPending = computed(() => {
           :disabled="autoLoginBusy"
           :title="`删除时段 ${sch.login_time}→${sch.logout_time}`"
           :aria-label="`删除时段 ${sch.login_time}→${sch.logout_time}`"
-          @click="store.removeSchedule(src.id, sch.login_time, sch.logout_time)"
+          @click="removeSchedule(src.id, sch.login_time, sch.logout_time)"
         >
           <span v-if="src.scheduleRemovePending" class="ds-btn__spinner"></span>
           <Icon v-else name="Delete" :size="14" />
         </button>
       </div>
     </div>
+    <!-- #394: 新语义下网关永不上报空排程（空数组=归一为内置默认表），空列表只剩「镜像还没到」 -->
     <div v-else class="card-hint">
-      未设置时段{{ src.auto_login ? '，自动登录已开启，添加时段后将按时段自动登录/登出' : '，开启自动登录后将按时段自动登录/登出' }}
+      等待网关上报排程
     </div>
   </div>
 

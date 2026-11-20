@@ -49,6 +49,21 @@ export type MdConfigOp =
 // 薄代理对 PENDING_TIMEOUT 不设 error, 避免超时双 toast(§7.2)。
 export type MdConfigOpResult = boolean | typeof PENDING_TIMEOUT
 
+// #394: 「本次提交把排程删空」的一次性信号（提交侧产出，RTN 侧不产生）。
+// 新语义（契约 auto-login）：schedules 空数组 = 网关归一为内置默认排程并回推 RTN_AUTO_LOGIN，
+// 列表由镜像全量覆盖自动恢复为默认表。该信号只用于让「恢复默认」被看见——
+// 由返值承载而非 applyAutoLogin 里的状态标记：RTN 无法区分「用户删空」与「网关本来就这样」，
+// 放 RTN 侧会每次上报都提示。也不引入「默认/自定义」来源字段（契约无此字段）。
+//
+// 为什么不在组件层用 `src.schedules.length === 1`（删前只剩一条）判断：
+// 那是「尝试删空」，不是「删空已下发」——HTTP 失败/超时/域互斥拒绝时列表根本不会恢复默认，
+// 组件层只看删除前的列表长度会误报「已恢复默认」。下发结果只有领域层拿得到，
+// 所以判定必须落在提交侧、由返值把「确实删空且已下发」这个事实交给组件层。
+export const RESET_TO_DEFAULT = Symbol('mdConfig.resetToDefault')
+
+// removeSchedule 结果：普通操作结果 + 删空信号（仅下发成功后出现）
+export type ScheduleRemoveResult = MdConfigOpResult | typeof RESET_TO_DEFAULT
+
 // 各操作的可读超时文案(usePending opLabel, 超时 toast 用「{opLabel}超时」)
 const OP_LABELS: Record<MdConfigOp, string> = {
   login: '行情源登录',
@@ -335,7 +350,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
       c => ({ ...c, schedules }))
   }
 
-  async function removeSchedule(id: number, sourceName: string, loginTime: string, logoutTime: string): Promise<MdConfigOpResult> {
+  async function removeSchedule(id: number, sourceName: string, loginTime: string, logoutTime: string): Promise<ScheduleRemoveResult> {
     const key = runner.opKey(id, 'schedule_remove')
     if (runner.busy(key)) return false
     runner.assign(id, sourceName)
@@ -344,8 +359,12 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
     if (schedules.length === cur.schedules.length) {
       return true  // 时段不存在（镜像未就绪/已删除）: 幂等成功, 无操作
     }
-    return submitAutoLogin(id, sourceName, key, OP_LABELS.schedule_remove,
+    const result = await submitAutoLogin(id, sourceName, key, OP_LABELS.schedule_remove,
       c => ({ ...c, schedules }))
+    // #394: 本次提交把排程删空（原列表非空 → 提交空数组）且已下发（true）时带删空信号。
+    // 契约 auto-login：空数组 = 网关回落内置默认排程并回推，列表自动恢复；false/超时没有回推，
+    // 不能误报「已恢复默认」。载荷形状不变（仍全量提交 {enabled, schedules}）。
+    return result === true && schedules.length === 0 ? RESET_TO_DEFAULT : result
   }
 
   async function addBroker(id: number, sourceName: string, data: AddBrokerBody): Promise<MdConfigOpResult> {

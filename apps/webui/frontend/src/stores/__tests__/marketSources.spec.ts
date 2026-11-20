@@ -3,7 +3,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useProcessStore } from '@/stores/process'
-import { useMdConfigStore } from '@/stores/mdConfig'
+import { useMdConfigStore, RESET_TO_DEFAULT } from '@/stores/mdConfig'
 import { useProgressStore } from '@/stores/progress'
 import { marketSourcePending } from '@/composables/marketSourcePending'
 import { useToastStore } from '@/stores/toast'
@@ -725,6 +725,60 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       // 手动 resolve (模拟 RTN_AUTO_LOGIN 批量清)
       marketSourcePending.resolve('source:1:schedule_remove')
       await nextTick()
+      expect(store.sources[0].scheduleRemovePending).toBe(false)
+    })
+
+    // #394: 删空标记必须穿透聚合层薄代理——组件层据此弹「已恢复默认排程」，
+    // 聚合层若吞掉返回值，提示就永远不会出现。
+    it('removeSchedule 删空 → 返回 RESET_TO_DEFAULT（删空标记穿透薄代理）', async () => {
+      await loadDb()
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      useMdConfigStore().applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [{ login_time: '09:00', logout_time: '15:00' }],
+      })
+      const store = useMarketSourcesStore()
+      expect(await store.removeSchedule(1, '09:00', '15:00')).toBe(RESET_TO_DEFAULT)
+    })
+
+    it('removeSchedule 删非最后一条 → 返回 true（不误报恢复默认）', async () => {
+      await loadDb()
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      useMdConfigStore().applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [
+          { login_time: '08:45', logout_time: '15:30' },
+          { login_time: '20:45', logout_time: '02:30' },
+        ],
+      })
+      const store = useMarketSourcesStore()
+      expect(await store.removeSchedule(1, '08:45', '15:30')).toBe(true)
+    })
+
+    // #394 AC: 删空并提交 → 网关回落默认表回推 → 列表自动恢复为默认两条（数据流不额外改动）
+    it('删空排程 → RTN_AUTO_LOGIN 回推默认表后列表显示默认两条（现有 RTN 闭环）', async () => {
+      await loadDb()
+      vi.mocked(marketSourcesApi.setAutoLogin).mockResolvedValue({ ok: true })
+      const md = useMdConfigStore()
+      md.applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [{ login_time: '09:00', logout_time: '15:00' }],
+      })
+      const store = useMarketSourcesStore()
+      expect(await store.removeSchedule(1, '09:00', '15:00')).toBe(RESET_TO_DEFAULT)
+      expect(store.sources[0].schedules).toHaveLength(1)  // 非乐观: RTN 未到前镜像仍是旧值
+
+      // 网关归一为内置默认排程并回推 RTN_AUTO_LOGIN（镜像全量覆盖 + 清排程类 pending）
+      md.applyAutoLogin('dzmd_ctp', {
+        enabled: true,
+        schedules: [
+          { login_time: '08:45', logout_time: '15:30' },
+          { login_time: '20:45', logout_time: '02:30' },
+        ],
+      })
+      await nextTick()
+      expect(store.sources[0].schedules.map(s => `${s.login_time}→${s.logout_time}`))
+        .toEqual(['08:45→15:30', '20:45→02:30'])
       expect(store.sources[0].scheduleRemovePending).toBe(false)
     })
 
