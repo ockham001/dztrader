@@ -1,7 +1,7 @@
 # 每票收尾（Ticket Close-out）
 
 > 用途：`/implement #N` 实现完成后的**唯一收尾流程**。人工 prompt 只说 `/implement #N` + "收尾见 docs/agents/ticket-closeout.md"，不再粘贴 6 步模板。
-> 配套：[development-checklist.md](../development-checklist.md) C 段（门禁权威来源）、[review-checklist.md](review-checklist.md)（审查清单：AC 逐条 + 6 类高频 finding）、[issue-tracker.md](issue-tracker.md)（issue 操作）、`code-review` / `pr` 技能。
+> 配套：[development-checklist.md](../development-checklist.md) C 段（门禁权威来源）、[review-checklist.md](review-checklist.md)（审查清单：AC 逐条 + 高频 finding）、[issue-tracker.md](issue-tracker.md)（issue 操作）、`code-review` / `pr` 技能。
 
 ---
 
@@ -55,6 +55,13 @@
 ```
 
 `gate.sh` 是 agent 侧的统一入口：同一 build tree 用 `flock` 串行（并行子代理不会互相踩 ninja）、自动导出 ccache 环境、输出落 `.cache/gate/`、返回**真实退出码**。人工可直接跑 `build.sh` / `test.sh` / `preflight.sh` 等价命令。**要短输出用 `./scripts/gate.sh build|test|preflight --tail N`**（成功留 N 行、失败留 max(N,30) 行）。给门禁命令接 `| tail` / `| head` 只会丢退出码（#75 的 wait-ci 超时、#81 的 ninja 失败曾因此被记成假绿），但 `gate.sh` 的 verdict 行固定打在输出**末尾**、结果同时原子写入分命令槽 `.cache/gate/last-status-<cmd>`（`build` / `test` / `preflight` / `ledger`，`#316 AC2`；兼容视图 `last-status` = 最近一次任意门禁），所以**结论仍可见**：判绿看 `gate: OK` 行或对应槽位，不要只看 shell 退出码（#249–#251 实测 83 次接管道、0 次假绿）。输出长度来自失败摘录 max(N,30)，与是否接管道无关——**不要**靠调小 `--tail` 默认值解决长度问题。**`wait-ci.sh` 例外**：它本就静默、退出码就是 CI 结论、没有 verdict 行兜底，别接管道。
+
+> **`gh pr checks` 是缓存视图，GitHub API 才是权威口径**：`gh pr checks` / `wait-ci.sh` 是客户端聚合视图，合并前后的短时间内可能显示 `pending` 而实际早已完成。实测两次：**#396 的 `wait-ci.sh` 空等满 3600s 超时**（期间 CI 早已全绿）、**#397 再现同一现象**。**等待超时或显示与预期不符时用 API 核实**：
+> ```bash
+> gh api repos/<owner>/<repo>/commits/<sha>/check-runs \
+>   --jq '.check_runs[] | "\(.name): \(.conclusion)"'
+> ```
+> 判定合并前条件时以它为准（配合 `gh pr view <n> --json mergeable,mergeStateStatus`）——**不要**因为 `gh pr checks` 显示 pending 就重复等或误判 CI 红。
 
 票内并行期间只跑定向作业即可（不必每轮全量，收尾仍须跑上面的全量门禁）：
 
@@ -217,6 +224,13 @@ R6 跳过带 `⏳` 的未勾项——如实标注优于虚假勾选，规则必�
 ## 7. 清理、交还与报告
 
 - `git worktree remove .agents/worktrees/<branch>` + `git branch -d <branch>`（worktree 实际产物路径见 AGENTS §五；历史路径 `.worktrees/` 若存在也要清）；确认 `.agents/worktrees/` 与 `.cache/` 无本票残留。
+- **移除前先看 `git status`：大量「纯删除」不是你的改动**。worktree 内若出现几十上百个 `D` 记录（本波 #393/#394 各 507 个，文件在磁盘上真的不存在）、而 `HEAD` 指向的 commit 正常，那是工作区被**外部**并发操作清空（另一个会话的 `clean` / worktree 工具 / GC），不是本票的工作。判定口径：**纯删除、规模巨大、无对应新增**。处置顺序：
+  1. 确认内容已在 main（`git merge-base --is-ancestor <head> main`，或 squash 合并后 `git log main` 能看到等价提交）；
+  2. `git stash push --include-untracked` 保存现场（**不要** `git checkout -- .` / `git worktree remove --force`，两者都会永久丢弃未提交内容，且被 CC 安全网拦截）；
+  3. 再 `git worktree remove`（不带 `--force`）+ `git branch -d`（**不是** `-D`）。
+
+  安全网会拦 `--force` / `checkout --` / `branch -D` / `stash drop`——**遇到就换安全路径，不要找绕过办法**。stash 里只剩那些假删除记录时，丢弃它需要人工执行（agent 侧被拦）。
+
 - 远端分支：`git push origin --delete <branch>`（`gh pr merge --delete-branch` 已删则跳过），`git ls-remote --heads origin <branch>` 确认为空。
 - **UI / 进程实测起栈后立即停栈**：只要本票起过 dev 栈（`./scripts/run-dev.sh`，含 `--no-build`），收尾必须执行 `./scripts/run-dev.sh --stop` 并确认无遗留 dev 栈进程（`pgrep -f' dztraderd|dzweb' ` 之类）。#302 的 digest 里最长作业是 **11,992s（3.3h）** 的 `scripts/run-dev.sh --no-build`，比该票真实 CI（1,374s）大一个量级——报告里的「长作业」若不分归属就会把实测成本记成 wait 成本（#316 AC7）。
 - **共享工作区交还**：`git switch main && git pull --ff-only`；`git status` 只允许出现**已登记的并行线**产物（没有并行线时应完全干净）。不把工作区留在 feature 分支就结束会话——会直接阻塞下一条线（本波 #91→#92：共享工作区留在 feat 分支，另一会话卡 15 分钟 + 人工介入）。

@@ -145,6 +145,11 @@ node_modules/
 # 不是源码：浏览器工具每用一次就在仓库根生成一个新目录，不忽略即污染 git status。
 .playwright-mcp/
 
+# Agent 会话的临时工作目录（调研草稿 / 未发布 spec / 交付单）。
+# 不属于仓库记忆：结论要落 docs/ 或 GitHub Issues，这里只放过程中的中间产物。
+# 不忽略就会长期占着 git status（AGENTS §五「共享工作区只允许当前票的 WIP」）。
+.scratch/
+
 # Impeccable 的运行时目录（问题种子 / 变体预览 / 审查截图 / 屏幕稿 / 表面契约）。
 # questions/ 自带 .gitignore 自我忽略；review/ 与 mocks/ 是本地取证产物，surfaces/ 是
 # `impeccable surface-brief write` 每次整份重写的产物；三者每轮都会重写，提交只会制造噪音。
