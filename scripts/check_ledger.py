@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """check_ledger.py — 仓库台账体检（只读，不修改任何东西）。
 
-检查四类问题，供波末 retro / spec 收口前使用：
+检查五类问题，供波末 retro / spec 收口前使用：
 
 1. **spec 母票可收口**：open 且标题以 `[spec]` 开头、原生子票全部 completed
    （子票全关后母票必须单独收口，见 docs/agents/ticket-closeout.md §6「spec 母票收口」）。
@@ -13,12 +13,17 @@
    docs/agents/triage-labels.md「拍板闭环」——`ready-for-agent` 的前置就是「spec 无未拍板项，
    决策已写进 issue 正文」。理由：#294–#298 波五票正文全部缺该段，于是每票退回
    「PR 创建后提问」，合并授权阻塞合计 403 min（#309 AC1）。
+5. **最近关闭的票仍有未勾选 AC**（R6，warning 级）：`- [ ]` 残留说明「验收标准未逐条确认
+   即关闭」，spec 收口审计时无法从正文判断达成情况。带 `⏳` 的未勾项视为已确认的
+   人工验证项，不计。理由：#392/#393/#394 三票 24 条 AC 全部未勾即关闭，事后只能靠
+   人肉读关闭评论复原结论。
 
 用法:
   python3 scripts/check_ledger.py              # 只报告，退出码 0
   python3 scripts/check_ledger.py --strict     # 有 error 级 finding 时退出 1
   python3 scripts/check_ledger.py --days 7     # needs-triage 超期阈值
-  python3 scripts/check_ledger.py --selftest   # 只跑承诺正则 + R4 三态自测（不联网）
+  python3 scripts/check_ledger.py --ac-window-days 14   # R6 关闭票回溯窗口
+  python3 scripts/check_ledger.py --selftest   # 只跑承诺正则 + R4 三态 + R6 计数自测（不联网）
 
 退出码: 0=无 error（或非 strict）, 1=error 级 finding（--strict）, 2=环境错误（gh / git 不可用）
 
@@ -34,7 +39,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # 只扫可能承诺「后续工作」的活跃文档；ADR 是历史决策记录（引用已关闭的后续票属正常），不在此列。
@@ -104,6 +109,24 @@ SELFTEST_LEDGER_EMPTY = [
     "## 拍板记录\n\n## 其它\n\n- 内容\n",
 ]
 
+# R6：闭票前 AC 勾选。口径来源 docs/agents/ticket-closeout.md §6「关闭前勾选验收标准」：
+# 关闭评论能证明「交付/验证/审查」，但**正文的 `- [ ]` 复选框**是 spec 收口审计时判断
+# 「这条验收标准是否确认达成」的唯一机器可读信号。本波 #392/#393/#394 三票 24 条 AC
+# 全部未勾即关闭，事后审计只能靠人肉读关闭评论复原结论——本规则把这种疏漏变成机械可见。
+# 未勾但带 `⏳` 的项视为「已确认为人工验证项」，不计入（如实标注优于虚假勾选）。
+SELFTEST_TICKS = [
+    ("", 0),
+    ("- [x] 已达成\n- [x] 也达成\n", 0),
+    ("- [ ] 忘了勾\n", 1),
+    ("- [ ] 忘了勾一\n- [ ] 忘了勾二\n- [x] 已勾\n", 2),
+    # ⏳ 标注的未勾项不计：这是「确认过、需真机验证」，不是疏漏
+    ("- [ ] ⏳ **待人工验证**：RTN 上报两条\n", 0),
+    ("- [ ] ⏳ 待验证\n- [ ] 真忘了\n", 1),
+    # 非列表项/缩进内的方括号不误报（正文行内的 `- [ ]` 才是 AC）
+    ("说明：`- [ ]` 是未勾选语法\n", 0),
+    ("* [ ] 星号列表也要认\n", 1),
+]
+
 
 def fail(msg: str) -> None:
     print(f"error: {msg}", file=sys.stderr)
@@ -164,6 +187,27 @@ def fetch_open_issues(owner: str, name: str) -> list[dict]:
         cursor = payload["pageInfo"]["endCursor"]
 
 
+def fetch_recently_closed_issues(owner: str, name: str) -> list[dict]:
+    """取**最近关闭**的 issue（R6 用）。
+
+    不扫全部已关闭票（本仓 189 张且持续增长）：关闭前该勾的 AC 只在收口那一刻有意义，
+    历史票的复选框状态早已被审计过，重扫只会制造噪音。窗口由 --ac-window-days 控制。
+    """
+    query = (
+        '{repository(owner:"%s",name:"%s"){'
+        "issues(states:CLOSED,first:100,orderBy:{field:UPDATED_AT,direction:DESC}){"
+        "nodes{number title body closedAt}}}}"
+    ) % (owner, name)
+    result = run(["gh", "api", "graphql", "-f", f"query={query}"])
+    if result.returncode != 0:
+        fail(f"gh api graphql failed: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)["data"]["repository"]["issues"]["nodes"]
+    except (KeyError, json.JSONDecodeError) as exc:
+        fail(f"unexpected graphql response: {exc}")
+    return []
+
+
 def issue_state(number: int, cache: dict[int, str | None]) -> str | None:
     if number not in cache:
         result = run(["gh", "issue", "view", str(number), "--json", "state", "--jq", ".state"])
@@ -218,7 +262,32 @@ def decision_ledger_state(body: str) -> str:
     return "empty"
 
 
+def unticked_acceptance_items(body: str) -> int:
+    """R6 判定（纯函数，不联网）：返回正文里**未勾选且未标注待人工验证**的 AC 条数。
+
+    报的是数量而非布尔，因为收口评论里要能说清「还剩几条没勾」。
+
+    只数 `- [ ]` 列表项；`- [x]` 不计。**带 `⏳` 的未勾选项不计**——它是「已确认范围但
+    需真机/人工验证」的显式标注（如实标注优于虚假勾选），与「忘了勾」必须机器可区分，
+    否则规则会逼着人把人工验证项勾成已完成。
+    """
+    count = 0
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(("- [ ]", "* [ ]")):
+            continue
+        if "⏳" in stripped:
+            continue
+        count += 1
+    return count
+
+
 def selftest() -> None:
+    for body, expected in SELFTEST_TICKS:
+        actual = unticked_acceptance_items(body)
+        if actual != expected:
+            raise SystemExit(
+                f"selftest failed: expected {expected} unticked for {body!r}, got {actual}")
     for line in SELFTEST_MATCH:
         if not promise_refs(line):
             raise SystemExit(f"selftest failed: expected promise match: {line}")
@@ -237,6 +306,7 @@ def selftest() -> None:
     print(f"selftest OK: {len(SELFTEST_MATCH)} match / {len(SELFTEST_NO_MATCH)} non-match cases")
     print(f"selftest OK: R4 {len(SELFTEST_LEDGER_HAS)} has-section / "
           f"{len(SELFTEST_LEDGER_MISSING)} missing / {len(SELFTEST_LEDGER_EMPTY)} empty-section cases")
+    print(f"selftest OK: R6 {len(SELFTEST_TICKS)} AC 勾选计数用例")
 
 
 def dangling_promises() -> list[tuple[str, int, int, str]]:
@@ -258,6 +328,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="仓库台账体检（只读）")
     parser.add_argument("--strict", action="store_true", help="有 error 级 finding 时退出 1")
     parser.add_argument("--days", type=int, default=3, help="needs-triage 超期阈值（天，默认 3）")
+    parser.add_argument("--ac-window-days", type=int, default=7,
+                        help="R6 只检查最近 N 天内关闭的票（默认 7；0 = 只查今天）")
     parser.add_argument("--selftest", action="store_true",
                         help="只跑承诺正则 + R4 拍板记录三态自测（不联网）")
     args = parser.parse_args()
@@ -303,8 +375,22 @@ def main() -> int:
     dangling = dangling_promises()
     docs = doc_files()
 
+    # R6：最近关闭的票里，正文仍残留未勾选的 AC（⏳ 标注的人工验证项除外）。
+    # 本波 #392/#393/#394 三票 24 条 AC 未勾即关闭，事后只能靠人肉读关闭评论复原。
+    unticked = []
+    cutoff = now - timedelta(days=args.ac_window_days)
+    for it in fetch_recently_closed_issues(owner, name):
+        closed_at = it.get("closedAt")
+        if not closed_at:
+            continue
+        if datetime.fromisoformat(closed_at.replace("Z", "+00:00")) < cutoff:
+            continue
+        count = unticked_acceptance_items(it.get("body") or "")
+        if count:
+            unticked.append((it["number"], it["title"], count))
+
     errors = len(closable) + len(dangling)
-    warnings = len(stale) + len(missing_ledger)
+    warnings = len(stale) + len(missing_ledger) + len(unticked)
     if args.strict:
         # R4 在默认模式下是 warning（口径同 needs-triage 超期），--strict 升 error。
         errors += len(missing_ledger)
@@ -333,10 +419,17 @@ def main() -> int:
         detail = "无「## 拍板记录」段" if state == "missing" else "「## 拍板记录」段为空"
         print(f"  - #{number}（{title}）{detail}")
 
+    print(f"\n[WARN] 最近 {args.ac_window_days} 天关闭的票仍有未勾选 AC（{len(unticked)}）")
+    for number, title, count in unticked:
+        print(f"  - #{number}（{count} 条未勾）{title}")
+
     verdict = "FAIL" if errors else "PASS"
     print(f"\n== 结果：{verdict}（{errors} error, {warnings} warning）==")
     if errors:
         print("提示：spec 母票按 ticket-closeout §6 收口；悬空承诺改文档或重开票；")
+    if unticked:
+        print("提示：关闭票前逐条勾选 AC（`- [x]`）；确实需人工/真机验证的项标 `- [ ] ⏳`，"
+              "规则会跳过它（ticket-closeout §6「关闭前勾选验收标准」）")
     if missing_ledger:
         print("提示：ready-for-agent 票在 issue 正文补「## 拍板记录」段（含条件式合并授权），"
               "回填后本项归零（triage-labels.md「拍板闭环」）")
