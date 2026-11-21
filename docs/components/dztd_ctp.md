@@ -81,7 +81,7 @@
 
 ### 登录后自动查询
 
-登录成功后自动发起基础查询（资金、持仓等），供 UI 与策略初始数据。查询受 CTP 流控约束，需排队调度；流控窗口、批次、失败回滚等调度细节属实现。持仓的基准建立、盘中增量维护与周期重查见《持仓维护与偏移转换》。
+登录成功后自动发起基础查询（资金、持仓等），供 UI 与策略初始数据。查询受 CTP 流控约束，需排队调度；流控窗口、批次等调度细节属实现。持仓的基准建立与盘中增量维护见《持仓维护与偏移转换》——**无周期重查**（ADR 0049）。
 
 ## 交易委托与回报
 
@@ -96,23 +96,27 @@
 持仓在进程内**自维护**：聚合查询建基准 + 成交/委托回报增量更新（决策见 [ADR 0008](../adr/0008-td-position-model.md)），不复用 CTP 明细查询。
 
 - **模型**（`apps/ctp/td/td_position.{h,cpp}`，纯 C++ 内部结构，不进公开头/SHM）：按合约 `PositionHolding` 维护多/空两侧 `PositionSide {today, yd, price, frozen_td, frozen_yd, seq}`（`volume = today + yd` 派生）与活动平仓挂单表（按合约隔离）。任一业务字段变化才取新 seq 推 2002 + `Kind::Position` upsert，未变化不推不落；原 `PositionMirror` 删除（差异/seq 职责并入 `PositionSide`）。`DzPositionDetail` 与 `ReqQryInvestorPositionDetail` 链路整体移除。
-- **查询建基准**：`ReqQryInvestorPosition` 响应按 (instrument, direction) 多行合并，`is_last` 一次性应用（volume/yd/price 以快照为准；frozen 不由快照覆盖）。CTP `PositionCost` 为金额，均价按 `均价 = PositionCost / (持仓量 × 合约乘数)` 换算（合约乘数取自合约查询映射，缺乘数时均价留 0）。差异侧推 2002 + `Kind::Position` upsert，消失 side 发 volume=0 帧（只推零帧、不 upsert，行由重灌 DELETE 兜底）；基准未就绪时的首个成功查询强制 `PositionRebuild` 重灌，已就绪后的查询（含补查重入与周期查询）仅在存在差异/消失时重灌。基准就绪标志独立于每轮查询成功标志（周期查询单次失败不得停用增量应用）；就绪前成交/委托的持仓增量一律不应用，首个成功查询统一重建。
-- **成交增量**：OPEN 增今仓、均价加权；平今/平昨按标志；非 SHFE generic CLOSE 今→昨溢出，SHFE generic CLOSE 减昨；量归零时均价清零，异常负值夹到 0 + WARN（下轮查询校正）。登录缓冲重放阶段（kReplay）只应用委托状态、跳过成交，避免与查询快照双重计数。
+- **查询建基准**：`ReqQryInvestorPosition` 响应按 (instrument, direction) 多行合并，`is_last` 一次性应用（volume/yd/price 以快照为准；frozen 不由快照覆盖）。**只在登录 / 重连时发起**——这是持仓的唯一权威初始值。CTP `PositionCost` 为金额，均价按 `均价 = PositionCost / (持仓量 × 合约乘数)` 换算（合约乘数取自合约查询映射，缺乘数时均价留 0）。**今昨口径**：`today = TodayPosition`、`yd = Position - TodayPosition`（`YdPosition` 是交易日开始时的静态昨仓，平昨后不减少，不得用于当前昨仓）。差异侧推 2002 + `Kind::Position` upsert，消失 side 发 volume=0 帧（只推零帧、不 upsert，行由重灌 DELETE 兜底）；首个成功查询强制 `PositionRebuild` 重灌，后续查询仅在存在差异/消失时重灌（重连即是新基准，见下）。就绪前成交/委托的持仓增量一律不应用，首个成功查询统一重建。
+- **基准查询失败即登录失败**：重试 3 次、间隔 3 秒；仍失败则停在当前进度、不转 Ready、推 ERROR 通知，由用户处理。`is_last` 正常到达但零行 = **成功**（空账户合法，"查不到"不是失败）。
+- **成交增量**：OPEN 增今仓、均价加权；平今/平昨按标志；非 SHFE generic CLOSE 今→昨溢出，SHFE generic CLOSE 减昨；量归零时均价清零，异常负值夹到 0 + WARN。登录缓冲重放阶段（kReplay）只应用委托状态、跳过成交，避免与查询快照双重计数。
 - **冻结**：只由活动平仓挂单（含外部单）本地推导 `volume - volume_traded`，今仓优先、溢出到昨、按量夹取；拒绝/撤单/全成释放。登录种入按当前交易日过滤，CTP 冻结总量不符仅 WARN。
-- **日切**：today→yd、清挂单冻结，变化侧按上规则推帧/落库，下一轮查询权威校正。
-- **漂移自愈**：Ready 后每 `qry_position_interval_s`（默认 60s，可配置）重查一次（统一 TimerQueue 定时，不另起轮询线程，符合"无轮询"原则）；查询在途窗口的成交以快照覆盖为准，≤ 一个查询间隔收敛（近似语义见《帧契约：TD 数据同步》）。周期查询的失败处理与登录收尾链解耦：仅记日志/等下一轮，不推进 finalizer、不触发资金查询；登录查询失败期的补查沿用既有固定 60s 降级路径。
-- **补查失败必须自带重试**（issue #367 增量复核 B1）：进程级 60s 补查定时器只在「仍有未完整账户」时自续，**首次成功后即不再排定**；因此运行期（未知枚举触发）的 force 重查一旦失败，就没有别人会再来一次——`data_query_ok_` 恒 false 会让周期持仓轮询的门永久关闭，且全程无日志。所以补查失败的重试责任归会话自己：`finalize_login` 判定双查询未成功且已 Ready 时排定一条指数退避重试链（60s → 120s → 240s，封顶 300s，`resync_retry_delay_s`），成功后由 `cancel_resync_retry` 收链，断连/登出同 cancel。重试到期若已有查询链在途（登录收尾或上一轮补查未到 kDone）则继续退避等待，**绝不并发**——CTP 在途查询流控只有 1 笔，双链会污染累加器与冻结对账。
-- **运行期补查跳过 flush 屏障**：`drive_finalizer` 的 `kFlush` 同步 `wait_flush(5s)` 只在登录路径需要（Ready 广播前把重放回报的库行提交）；运行期补查（此时状态已是 Ready）跳过该阶段，只走 查询 → kReplay（此时缓冲必空，早退）→ kDone。判定依据是 `is_ready()`：登录链在 kReady 之前状态一直是 `LoadingInstruments`，只有运行期补查能在这里就是 Ready。这条不是为了性能，而是为了让补查回调不在 td 主线程（CTP SPI 事件循环）上最长阻塞 5 秒。
+- **日切**：today→yd、清挂单冻结，变化侧按上规则推帧/落库。**会话不得跨交易日**：检测到回报的 `TradingDay` 与当前交易日不一致即记 ERROR 并主动登出。
+- **无周期查询**（[ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md)）：持仓不再有任何定时重查，取消 60s 周期查询与其配置项、以及登录失败后的两条补查重试链。代价是**失去自愈**——增量累积误差、私有流缺口会持续到下一次登录的基准查询。相应地，正确性依赖两条前提：会话不跨交易日（期权行权/履约/到期、盘后自动组合零回调，只能由次日登录吸收）、私有流按投资者级推送（外部单与自营单同权实时进账）。
+- **外部单与自营单同权**：`OrderRef`/OrderSysID 在本地映射中找不到的回报标为外部单（策略标识 `/external`），走与自营单完全相同的持仓路径，不做 `FrontID/SessionID` 过滤；套保仓（`HedgeFlag != 投机`）全部计入，不静默丢弃。
+- **期权**：**支持**持仓统计与普通报单（买卖开平，与期货同构）；**不支持**发起行权 / 自对冲 / 放弃行权指令。
+- **套利 / 组合合约**：`product_class == DZ_PRODUCT_SPREAD` 的持仓行**不推帧、不落库**（DEBUG 日志），成交照常记录但不参与持仓统计；单腿合约是普通期货合约，照常增量维护。不支持组合动作（`ReqCombActionInsert`）与郑商所套利/套保确认（`ReqSpdApply` / `ReqHedgeCfm`）。
+- **`PosiDirection` 为净持仓（`'1'`）的行：跳过该行 + 记 WARN**，不产生持仓记录——**不按未知方向处置**（"未知方向作废整轮快照"是给读不懂的码的防线，`PD_Net` 是合法枚举，升级它会让账户登录不上），也不静默归为多头（会凭空造多头持仓）。CTP 持仓查询实际按多/空返回（实测组合持仓行方向也是 `'2'`/`'3'`），此值为死分支。
+- **交割不支持**（不处理交割配对产生的持仓变化）。
 - **下单**：本波不接入 OffsetConverter（SHFE 拆分/AUTO/父子单聚合回报留待专项），`DZ_POSITION_EFFECT_AUTO` 显式拒绝；风控上下文填入该合约真实多空持仓与合约 `price_tick`（现规则实际使用 `price_tick`）。
 
 ### 快照生命周期（#249 锁定的行为）
 
-下列行为由 `apps/ctp/tests/td_persist_writer_test.cpp`（写入器层）、`td_data_sync_integration_test.cpp`（Writer 时序 + 收敛窗）与 `td_position_lifecycle_test.cpp`（**会话层**：真 `AccountSession` + 真 SQLite + 真 persist 线程）断言**库内容**覆盖，是《帧契约：TD 数据同步》§3 / §7 与 ADR 0045 / ADR 0046 的可执行形态（改坏任一条应红）：
+下列行为由 `apps/ctp/tests/td_persist_writer_test.cpp`（写入器层）、`td_data_sync_integration_test.cpp`（Writer 时序）与 `td_position_lifecycle_test.cpp`（**会话层**：真 `AccountSession` + 真 SQLite + 真 persist 线程）断言**库内容**覆盖，是《帧契约：TD 数据同步》§3 / §7 与 ADR 0045 / ADR 0046 / ADR 0049 的可执行形态（改坏任一条应红）：
 
 - **登录不清零、不预置 0**：新会话登录后、首个完整成功持仓查询之前，`positions` 当日**没有行**，上一次已知快照（前一日行，含跨会话 / 删户重加 / 换柜台）原样保留；不写 `volume=0` 占位行。
 - **查询失败不改表**：持仓查询 `is_last` 带 `ErrorID` 时，当日既有行的 `seq` 与内容完全不变（既不删也不改），资金行同样不写——锚点日停在上一成功日（ADR 0046）。
 - **整组原子替换的作用域 = 该账户 + 当日**：完整成功查询在单事务内删该账户当日行 + 写快照组；其他账户的当日行、同账户的历史交易日行都不动。响应里消失的合约行被删除（不产生幽灵持仓）。
-- **已就绪后的周期查询无差异不重建**：`position_baseline_ready_` 之后，无差异且无消失的一轮查询不产生 `PositionRebuild`（DB 各行的 `seq` 不变，即无新写入）。
+- **首个成功查询强制重灌，后续查询无差异不重建**：`position_baseline_ready_` 之前由 `PositionRebuild` 整组重灌；之后（重连带来新基准时）无差异且无消失的一轮查询不产生 `PositionRebuild`（DB 各行的 `seq` 不变，即无新写入）。
 - **`volume=0` 增量可查**：全平时日内增量走单行 upsert，落库是**存在的一行 `volume=0`**（不是跳过、不是删行）——「当日全平」与「从未成功查询过」因此在库里可区分。
 - **日切 today→yd 只碰当日行**：日切后当日行落成 `today_volume=0 / yd_volume=原今仓`，上一交易日的行保持它自己当时的今昨拆分（历史行不可变）。
 - **删户重加 / 盘中换柜台**：同一 `account_id` 二次登录后再次整组重建，当日结果是**整组替换**——无重复行（唯一键）、不残留上一轮独有的合约、历史交易日行不变。
@@ -122,8 +126,8 @@
 ### 已知限制（持仓）
 
 - **今昨冻结未拆分落库**：**schema v1 的 `positions` 只有 `frozen_volume` 单列**。td 内存里冻结是 `frozen_td` / `frozen_yd` 拆分维护的（今仓优先、溢出到昨），但落库与 `POSITION_INFO` 帧只带合计值；读端（REST / WebUI）只看得到总冻结，无法分别展示今/昨冻结。窗口 = 本轮 schema。
-- **旧会话残留写入的有界收敛窗**：跨进程旧会话已入队未提交的 persist 任务可能晚于新会话整组替换落地 → 当日持仓短暂回到旧值，由下一次完整成功查询收敛，**上界 = 一个 `qry_position_interval_s`（默认 60s）**；**不丢行、不产生键冲突**（不变量与理由见《帧契约：TD 数据同步》§7 与 ADR 0045 决策 7）。
-- 其余持仓准确性边界（查询在途窗口的成交以快照覆盖为准、其他终端交易的收敛期、资金盘中不刷新）见《帧契约：TD 数据同步》§7。
+- **旧会话残留写入无自愈路径**：跨进程旧会话已入队未提交的 persist 任务可能晚于新会话整组替换落地 → 当日持仓回到旧值，**要等到下一次完整成功查询（下一次登录 / 重连）才被替换**；不丢行、不产生键冲突（《帧契约：TD 数据同步》§7、ADR 0049）。
+- 其余持仓准确性边界（增量累积误差与私有流缺口无自愈、非 SHFE generic 平仓今昨归属为本地约定、期权行权/履约/到期与盘后自动组合依赖次日登录吸收、套利组合行不统计、资金盘中不刷新）见《帧契约：TD 数据同步》§7。
 
 ### 资金快照（#250 锁定的行为）
 
@@ -131,7 +135,7 @@
 
 - **按 `(account_id, date)` 多日累积**：每个交易日一行最新快照；同账户同日重复查询是 upsert（覆盖余额类列与 `seq`，不追加行），历史交易日行不被改写（`SameDayFundQueryUpsertsInsteadOfAppending` / `DaySwitchFundQueriesCoexistAsTwoDayRows`）。
 - **资金行只在持仓查询成功后写入**：`on_rsp_qry_trading_account` 的唯一写入点有 `position_query_ok_` 守卫——持仓查询失败时资金行不落库、不推帧，锚点日（两张快照表 `MAX(date)`，ADR 0046）不会被资金行单独推进。
-- **盘中不做周期资金查询**（已知限制，契约 td-data-sync §7）：资金查询只有登录收尾链与失败补查链（`resync_account_data`，持仓成功后按同序重查）两处触发，盘中停在最近一次查询结果；其他终端交易造成的资金变化不收敛到下一次登录。
+- **盘中不做周期资金查询**（已知限制，契约 td-data-sync §7）：资金查询**只有登录收尾链一处**触发（持仓查询成功后按同序发起），无补查链（ADR 0049 删除了两条补查重试链），盘中停在最近一次查询结果；其他终端交易造成的资金变化不收敛到下一次登录。
 
 ## 配置（契约 td-config / td-status）
 
@@ -139,7 +143,7 @@
 
 ### 配置结构与持久化
 
-- **文件形态 = 帧形态**：`td` section 与 `RTN_TD_CONFIG` payload 同形（顶层 `qry_account_interval_s` / `qry_position_interval_s` / `qry_flush_interval_ms` / `ext` / `accounts[]`；账户 `ext` 内是 `broker_id` / `user_id` / `password` / `product_info` / `frontends` / `auth_code` / `app_id` / `flow_dir`）。不做「文件旧形 / 帧新形」双序列化——同一事实两处定义必然漂移。代价：**旧扁平格式（连接参数直接在账户对象上）不再兼容**，开发期无迁移义务。
+- **文件形态 = 帧形态**：`td` section 与 `RTN_TD_CONFIG` payload 同形（顶层 `qry_account_interval_s` / `qry_flush_interval_ms` / `ext` / `accounts[]`；账户 `ext` 内是 `broker_id` / `user_id` / `password` / `product_info` / `frontends` / `auth_code` / `app_id` / `flow_dir`）。不做「文件旧形 / 帧新形」双序列化——同一事实两处定义必然漂移。代价：**旧扁平格式（连接参数直接在账户对象上）不再兼容**，开发期无迁移义务。持仓查询间隔已随 [ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md) 删除。
 - **启动加载两级语义**（契约 td-config §6）：文件 / `td` section **缺失** → 用默认值 + 原子修复文件（自愈，首次启动的正常形态，写失败只记 ERROR 不阻断）；内容**非法**（JSON 解析失败 / section 类型不符）→ 记 CRITICAL 后**退出非零码**，不回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法与"本来就空"区分。旧扁平格式因未知字段被忽略（总则 §8）不会触发解码失败，但账户 `ext` 为空 → `validate()` 以 `broker_id empty` 拒绝 → 同样致命退出。
 - **启动主动推一次**：`run()` 首次进入即 `report_full_snapshot()`（首帧 `report_config()`），供 dzweb 账户注册表启动快照（契约 td-config §4 场景 2）。配置在 `td_main` 中先于 `TdApi` 构造加载，推的是已加载的当前值。
 - **op 收敛**：进程级柜台特有配置统一走 `SetExt`（字段级补丁），旧 `SetLockMode` 已删除，不留双实现；`ext.enable_lock_mode` 是本进程唯一形态。账户级 op（`AddAccount` / `UpdateAccount` / `SetAccountEnabled` / `SetAccountRiskControl` / `SetAccountCurrency`）与 `SetQryIntervals` 语义见契约 §2.1。
@@ -211,7 +215,7 @@
 
 - `stop()`：通知 Writer 停止，对失败批做最后一次立即重试；成功则继续排空队列后退出；仍失败只记 ERROR 并退出——未提交的内存积压丢弃，登记为已知限制（ADR 0042 决策 6）。等待 Writer 退出设 30s 上限（大事务 fsync 兜底；超时则快速退出进程、跳过析构）；正常路径必须显式 `stop()`，析构仅作 best-effort 兜底。
 - 坏库重建后历史查询缺口由备份 / 归档兜底（本轮不实现，ADR 0042）。
-- 跨进程旧会话已入队未提交的任务可能晚于新会话的整组替换落地：当日持仓有 ≤ 一个持仓查询间隔的收敛窗，不丢行、不产生键冲突（《帧契约：TD 数据同步》§7；ADR 0045 决策 7）。
+- 跨进程旧会话已入队未提交的任务可能晚于新会话的整组替换落地：当日持仓回到旧值后**无自愈路径**，需等下一次完整成功查询（下一次登录 / 重连）替换，不丢行、不产生键冲突（《帧契约：TD 数据同步》§7；ADR 0049）。
 
 ### order_id 与外部标识
 

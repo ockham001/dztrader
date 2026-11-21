@@ -27,7 +27,7 @@ Accepted（2026-11-03，交易数据架构调整）
 ## Consequences
 
 - 正面：schema 与查询按交易日建模；柜台差异不再扩散到列与迁移；平台侧只剩一种数据库实现；命名统一（`date`）后帧 / DB / REST·WS / SDK 不再各叫各的；备份 / 归档路线与 SQLite 单文件一致。
-- 负面 / 已知限制：旧 dev 库直接丢弃；`instruments` 多柜台同名冲突本轮不处理（随行情域迁移解决）；DB 故障期间进程退出会丢内存积压（见 [ADR 0042](0042-persist-failure-backpressure-and-retry.md)）；持仓 / 资金精度与收敛窗见 ADR 0045。
+- 负面 / 已知限制：旧 dev 库直接丢弃；`instruments` 多柜台同名冲突本轮不处理（随行情域迁移解决）；DB 故障期间进程退出会丢内存积压（见 [ADR 0042](0042-persist-failure-backpressure-and-retry.md)）；持仓 / 资金精度见 [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md)，其中「收敛窗」概念已由 [ADR 0049](0049-position-pure-incremental-no-periodic-query.md) 废止（取消周期查询、无自愈）。
 - 文档 / 契约：`td-data-sync`（登录日装载、重建、seq、绝对态表述、`ORDER_REPORT` 新增 `avg_price`、成交去重键含 `exchange_id`）、`account-status`（`date`）、`td-order`（外部单保留策略标识）、`instrument`（路径与暂留）、`rest` / `webui-ws`（`date`、降级语义、委托 + 成交两 tab 的字段）等同步更新；新增 `td-config` / `td-status` 契约（[ADR 0043](0043-dzweb-direct-db-query-and-ws-push.md)）。
 - Supersedes：[ADR 0012](0012-unified-td-db-and-abstraction.md) / [ADR 0015](0015-database-interface-port-adapter.md) / [ADR 0016](0016-strategy-sdk-embedded-sql-drivers.md) / [ADR 0019](0019-strategy-sdk-db-backend-scope.md) 中与"交易数据后端可切换、MySQL 路线"相关的部分；其余结论（统一单库、tdstore 为 schema 真相源）保留。
 
