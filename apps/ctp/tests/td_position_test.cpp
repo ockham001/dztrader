@@ -207,7 +207,7 @@ TEST(PositionHoldingFrozenTest, RebuildIsIdempotent) {
     std::vector<ActiveOrderUpdate> orders{
         make_close("1", DZ_DIRECTION_SHORT, DZ_POSITION_EFFECT_CLOSE, 2)};
     EXPECT_TRUE(h.rebuild_active_orders(orders).long_changed);
-    EXPECT_FALSE(h.rebuild_active_orders(orders).any());  // 周期查询重复种入不刷帧
+    EXPECT_FALSE(h.rebuild_active_orders(orders).any());  // 同一快照重复种入不刷帧
 }
 
 TEST(PositionHoldingFrozenTest, RebuildRemovesStaleOrders) {

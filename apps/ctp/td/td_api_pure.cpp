@@ -141,14 +141,6 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
                 }
                 cfg.qry_account_interval_s = v;
             }
-            if (req.params.contains("qry_position_interval_s")) {
-                int v = req.params["qry_position_interval_s"].get<int>();
-                if (v <= 0) {
-                    throw std::invalid_argument(
-                        std::format("setqryintervals invalid | qry_position_interval_s={}", v));
-                }
-                cfg.qry_position_interval_s = v;
-            }
             if (req.params.contains("qry_flush_interval_ms")) {
                 int v = req.params["qry_flush_interval_ms"].get<int>();
                 if (v <= 0) {

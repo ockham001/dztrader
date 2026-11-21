@@ -189,10 +189,6 @@ void TdApi::run() {
             try_recover_login();
         }
         schedule_auto_sched_timer();
-        // Task 6 (spec §4.2 查询失败降级补查): 排定 60s 间隔的 data resync 定时任务.
-        // 登录查询失败降级转 Ready 后, 对数据未完整账户补查持仓/资金直至成功.
-        // 启动即排定: 首个 Ready 账户 (若有缺项) 会在 60s 内得到补查.
-        schedule_data_resync();
         started_ = true;
     }
     while (running_) {
@@ -673,8 +669,6 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
             ensure_read_db();
             return read_db_.get();
         });
-        // Task 8: 注入持仓周期重查间隔 (Ready 后生效).
-        session->set_position_poll_interval(config_.qry_position_interval_s);
         sessions_[account_id] = std::move(session);
         // 契约 account-status 场景 3: 新会话建立即推 LoggingIn (spec §3.1 盘中增账户语义)
         write_account_status(account_id, DZ_ACCOUNT_LOGGING_IN, "");

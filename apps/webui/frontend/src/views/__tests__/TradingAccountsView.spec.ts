@@ -160,7 +160,6 @@ describe('TradingAccountsView · 列表与状态（契约 rest §2.9.9、契约 
     const store = useTdAccountsStore()
     store.applyTdConfig('dztd_ctp', {
       qry_account_interval_s: 5,
-      qry_position_interval_s: 60,
       qry_flush_interval_ms: 1500,
       accounts: [{
         account_id: 'account_001', enabled: true,
@@ -180,7 +179,6 @@ describe('TradingAccountsView · 列表与状态（契约 rest §2.9.9、契约 
     const store = useTdAccountsStore()
     store.applyTdConfig('dztd_ctp', {
       qry_account_interval_s: 5,
-      qry_position_interval_s: 60,
       qry_flush_interval_ms: 1500,
       accounts: [{
         account_id: 'account_001', enabled: true,

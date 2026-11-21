@@ -364,7 +364,7 @@ TEST_F(TdPlaceOrderValidationTest, UnknownPositionDirectionKeepsLastKnownSnapsho
         << "an unparseable row must not turn a known position into a phantom flat one";
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='rb2510'"), 0);
     EXPECT_FALSE(session_->position_query_ok())
-        << "an unreadable snapshot counts as a failed query so the resync chain retries";
+        << "an unreadable snapshot counts as a failed query (no retry chain: next login rebuilds)";
 
     // 计数按种类独立累加，且 notify 不弹窗（持续性异常不打断用户操作）。
     EXPECT_EQ(session_->unknown_enum_counts().direction, 1u);
@@ -378,7 +378,7 @@ TEST_F(TdPlaceOrderValidationTest, UnknownPositionDirectionKeepsLastKnownSnapsho
     EXPECT_TRUE(saw_notify) << "unknown enum must raise a non-popup error notification";
 
     // 限频（issue #367 审查 F11）：未知枚举可能每条回报都带，同一间隔内只通知一次、
-    // 只触发一次重查；计数仍然逐条累加（否则运维看不到洪水规模）。
+    // 只通知一次；计数仍然逐条累加（否则运维看不到洪水规模）。
     const size_t notify_count = notifications_.size();
     session_->on_rsp_qry_investor_position(
         position_row("rb2510", 5, 5, 5.0 * 10.0 * 3500.0, 'Z', /*is_last=*/true));
