@@ -140,7 +140,8 @@ bool AccountSession::load_trading_day_baseline() {
         return false;
     }
     if (trading_day_ <= 0) {
-        // 交易日未知 (CTP 未给可解析 TradingDay): 无从按日过滤, 只能空基准 + 抬 seq.
+        // #404 后不可达: 唯一调用点 (on_rsp_user_login) 已由 trading_day_usable 保证 > 0.
+        // 保留作防御 (本函数是被独立测试覆盖的装载入口, 不与该守卫耦合).
         SPDLOG_WARN("td login day load degraded, trading day unknown | account={}", account_id_);
     }
     const std::string day_text = format_day_text(trading_day_);
@@ -371,8 +372,10 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     // 同步 trading_day. 解析失败按登录失败处理, 不进 LoggedIn (对齐 md 的
     // LoginParseError 分支): 会话交易日是本会话全部业务数据的时间锚, 它缺失时若继续登录,
     // 订单/成交/持仓/资金会盖上一个无效日期, 而 ACCOUNT_STATUS 帧的 date 会回落 0 ——
-    // 日切判定 (should_push_account_status 比 date 变化) 随之误判. 宁可回退重试登录,
+    // 日切判定 (should_push_account_status 比 date 变化) 随之误判. 宁可这次登录失败,
     // 也不带着错误的会话交易日进入 Ready.
+    // 注意: 回滚后本进程不会自动重发登录 (状态停在 Authenticated/Connected 直到人工断开
+    // 重连或前置断线), 该缺口见 #406.
     // 发现 3 (评审 Important): 走 set_trading_day 而非直接赋值 — 日切/重连后新交易日的
     // 持仓为绝对态, 旧镜像 (key 不含日期) 会拦截新日首报, 必须在登录时清空 (spec §4.1 跨日清空).
     if (!trading_day_usable(f.days_since_epoch)) {

@@ -110,9 +110,11 @@ ResyncRetryAction decide_resync_retry(bool is_ready,
 ///
 /// 会话交易日是本会话全部业务数据的时间锚 (GLOSSARY「会话交易日」): 订单/成交/持仓/资金
 /// 的 date、ACCOUNT_STATUS 帧的 date、日切判定都取它。它缺失时若继续登录, 数据会盖上无效
-/// 日期、日切判定误判 —— 与 md 的 LoginParseError 同口径: 判为登录失败、回退重试。
+/// 日期、日切判定误判 —— 与 md 的 LoginParseError 同口径: 判为登录失败, 不进 LoggedIn。
 /// @param days_since_epoch OnRspTdUserLoginField::days_since_epoch (SPI 线程解析结果)
-/// @return true = 可用 (非哨兵); false = 解析失败, 调用方应按登录失败处置
+/// @return true = 有效交易日 (正数 DzDate); false = 解析失败或哨兵, 调用方应按登录失败处置。
+///   注意排除的不只是 INT32_MIN 哨兵: 0 (DZ_DATE_NA, 与 "19700101" 的解析结果重合)
+///   与全部负数同样判不可用, 因此实现是 `> 0` 而非仅比哨兵。
 bool trading_day_usable(int32_t days_since_epoch) noexcept;
 
 }  // namespace dztrader::ctp

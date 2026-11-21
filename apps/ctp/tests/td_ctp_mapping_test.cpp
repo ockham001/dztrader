@@ -475,8 +475,9 @@ TEST(ToOrderRecordTest, InsertDateIgnoredInFavorOfTradingDay) {
     std::strcpy(of.InsertDate, "20260728");
 
     auto r = to_order_record(of, "acc1", kTradingDay);
-    // insert_time 09:30:45 / update_time 09:31:00, 日期部分同为会话交易日 2026-07-27
-    // (若采信 InsertDate 2026-07-28, 两者会分属两天: 差 86400-15 秒而非 15 秒).
+    // insert_time 09:30:45 / update_time 09:31:00, 日期部分同为会话交易日 2026-07-27.
+    // 若采信 InsertDate (2026-07-28), insert_time 会跳到次日 09:30:45, 于是
+    // update_time - insert_time 变为 15 - 86400 = -86385 而非 15.
     EXPECT_EQ(r.insert_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
     EXPECT_STREQ(r.trading_day, "20260727");
     EXPECT_EQ(r.update_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 31 * 60);
