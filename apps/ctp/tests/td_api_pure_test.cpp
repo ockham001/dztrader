@@ -396,25 +396,21 @@ TEST(ApplyConfigOpTest, SetExtNoExtParamIsNoOp) {
 
 TEST(ApplyConfigOpTest, SetQryIntervals) {
     TdConfig cfg;
-    auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 10},
-                                                      {"qry_position_interval_s", 15},
-                                                      {"qry_flush_interval_ms", 2000}});
+    auto req = make_req(TdConfigOp::SetQryIntervals,
+                        {{"qry_account_interval_s", 10}, {"qry_flush_interval_ms", 2000}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.qry_account_interval_s, 10);
-    EXPECT_EQ(cfg.qry_position_interval_s, 15);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 2000);
 }
 
 TEST(ApplyConfigOpTest, SetQryIntervalsPartialUpdate) {
     TdConfig cfg;
     cfg.qry_account_interval_s = 5;
-    cfg.qry_position_interval_s = 5;
     cfg.qry_flush_interval_ms = 1500;
     // 仅更新一个字段, 其他保留
     auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 20}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.qry_account_interval_s, 20);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);   // 保留旧值
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);  // 保留旧值
 }
 
@@ -422,12 +418,6 @@ TEST(ApplyConfigOpTest, SetQryIntervalsZeroAccountIntervalThrows) {
     // 关键决策: int_val 越界 (<=0) 抛 std::invalid_argument
     TdConfig cfg;
     auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 0}});
-    EXPECT_THROW(apply_config_op(cfg, req), std::invalid_argument);
-}
-
-TEST(ApplyConfigOpTest, SetQryIntervalsNegativePositionIntervalThrows) {
-    TdConfig cfg;
-    auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_position_interval_s", -1}});
     EXPECT_THROW(apply_config_op(cfg, req), std::invalid_argument);
 }
 
@@ -441,12 +431,10 @@ TEST(ApplyConfigOpTest, SetQryIntervalsPartialValidUpdatePreservesOthers) {
     // 部分更新: 只提供一个合法字段, 不影响其他字段, 不抛异常
     TdConfig cfg;
     cfg.qry_account_interval_s = 5;
-    cfg.qry_position_interval_s = 5;
     cfg.qry_flush_interval_ms = 1500;
     auto req = make_req(TdConfigOp::SetQryIntervals, {{"qry_account_interval_s", 10}});
     EXPECT_NO_THROW(apply_config_op(cfg, req));
     EXPECT_EQ(cfg.qry_account_interval_s, 10);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);   // 保留旧值
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);  // 保留旧值
 }
 

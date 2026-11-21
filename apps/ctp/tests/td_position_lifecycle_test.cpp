@@ -4,7 +4,7 @@
  *
  * 为什么需要这个目标（与 `td_persist_writer_test` / `td_data_sync_integration_test` 的分工）：
  * 那两个目标只链 `PersistWriter` / `ReportFilter` / `DayLoad`，**没有** `AccountSession`；
- * 而本票 AC 的核心（查询失败不改表、完整成功查询整组替换、已就绪周期查询无差异不重建、
+ * 而本票 AC 的核心（查询失败不改表、完整成功查询整组替换、重复成功查询无差异不重建、
  * 日切只碰当日行）的决定点在
  * `AccountSession::on_rsp_qry_investor_position → apply_position_query` 里。在只有 Writer
  * 的目标里只能写一个「镜像生产顺序」的替身，断言会恒真——属
@@ -472,7 +472,7 @@ TEST_F(TdPositionLifecycleTest, SameDayFundQueryUpsertsInsteadOfAppending) {
     ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
     const int64_t first_seq = scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'");
 
-    // 同一交易日再次成功查询（重传 / 失败补查链恢复后的首轮）：同键 (account_id,date) upsert，
+    // 同一交易日再次成功查询（重传 / 重新登录后的首轮）：同键 (account_id,date) upsert，
     // 不追加行、历史行不受影响；余额类列与 seq 更新为最新查询结果。
     feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
     session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 120000.0, 95000.0));

@@ -60,7 +60,6 @@ nlohmann::json config_payload(std::vector<std::pair<std::string, bool>> accounts
                                         {"flow_dir", ""}}}});
     }
     return nlohmann::json{{"qry_account_interval_s", 5},
-                          {"qry_position_interval_s", 60},
                           {"qry_flush_interval_ms", 1500},
                           {"ext", {{"enable_lock_mode", true}}},
                           {"accounts", list}};

@@ -852,11 +852,10 @@
     },
     "TdConfigPayload": {
       "type": "object",
-      "required": ["qry_account_interval_s", "qry_position_interval_s", "qry_flush_interval_ms", "accounts", "ext"],
+      "required": ["qry_account_interval_s", "qry_flush_interval_ms", "accounts", "ext"],
       "description": "交易网关配置全量回报（契约 td-config §2.4；WS td_rtn_config 的 data，脱敏）",
       "properties": {
         "qry_account_interval_s": { "type": "integer", "description": "资金查询间隔（秒），> 0；本轮未接入周期资金查询，保留配置" },
-        "qry_position_interval_s": { "type": "integer", "description": "持仓查询间隔（秒），> 0" },
         "qry_flush_interval_ms": { "type": "integer", "description": "流控队列间隔（毫秒），> 0" },
         "accounts": { "type": "array", "items": { "$ref": "#/$defs/TdAccountConfig" }, "description": "账户配置列表（RTN 全量；每个账户 ext.password 恒为 ****）" },
         "ext": { "$ref": "#/$defs/TdCtpProcessExt", "description": "进程级柜台特有配置" }

@@ -55,7 +55,6 @@ function registryEntry(overrides: Partial<TdConfigAccountList> = {}): TdConfigAc
 function configPayload(accounts: TdConfigPayload['accounts'] = []): TdConfigPayload {
   return {
     qry_account_interval_s: 5,
-    qry_position_interval_s: 60,
     qry_flush_interval_ms: 1500,
     accounts,
     ext: { enable_lock_mode: true },

@@ -7,7 +7,7 @@
 // 驱动: 合约加载完成后发起持仓/资金两查询 (CTP 流控 1 次/秒, 串行),
 // 每个查询的 is_last 或失败回调驱动对应 on_*_done/on_*_failed.
 // 收尾: 两查询都完成 (含失败降级) 才 can_reach_ready()==true; 查询失败
-// 不阻塞 Ready (spec §4.2: 先转 Ready 不阻塞交易, 就绪后由定时补查),
+// 不阻塞 Ready (spec §4.2: 先转 Ready 不阻塞交易),
 // 收尾序列由 next() 线性推进:
 //   kQueryPosition -> kQueryAccount -> kReplay -> kFlush -> kReady -> kDone
 // kReady 前必经 kFlush —— 保证 AccountSession 在调 on_instruments_loaded()

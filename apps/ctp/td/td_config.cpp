@@ -119,9 +119,6 @@ std::optional<std::string> validate(const TdConfig& cfg) {
     if (cfg.qry_account_interval_s <= 0) {
         return "qry_account_interval_s must be > 0";
     }
-    if (cfg.qry_position_interval_s <= 0) {
-        return "qry_position_interval_s must be > 0";
-    }
     if (cfg.qry_flush_interval_ms <= 0) {
         return "qry_flush_interval_ms must be > 0";
     }

@@ -246,16 +246,6 @@ private:
     /// 崩溃恢复补登 (--recover): 启动时若在会话区间内, 对所有 enabled 账户调用 connect_account
     void try_recover_login();
 
-    // === TD 数据同步补查 (实现在 td_api_scheduled.cpp, spec §4.2) ===
-    /// 排定 td_data_resync 补查定时任务 (60s 间隔): 登录查询失败降级转 Ready 后,
-    /// 对数据未完整的 Ready 账户补查持仓/资金直至成功 (成功一次后停止).
-    /// 注意它只是进程级兜底, **不是**运行期 force 重查失败的重试来源 —— 它在首次成功后
-    /// 就不再排定; 那类失败由 AccountSession 自己的退避重试链兜住 (issue #367 B1).
-    void schedule_data_resync();
-    /// 补查定时回调: 对所有 data_query_ok()==false 的 Ready 账户调 resync_account_data;
-    /// 仍有未完整账户则 60s 后排定下一轮, 否则停止 (成功一次后不再排).
-    void on_data_resync_timer();
-
     // === 事件通道预加载 (实现在 td_api_scheduled.cpp, 与 md_api_scheduled.cpp 组织一致) ===
     /// 事件通道预加载: 收到 DZ_FRAME_PRELOAD_EVENT_SHM 广播后随机延迟 0-5s 执行三件套
     void schedule_event_shm_preload(const DzShmPreload& params);

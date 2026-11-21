@@ -167,7 +167,7 @@
 
 因此本仓的映射层策略是**运行期显式化 + 计数可观测**，而不是编译期检测：
 
-- 回报方向（柜台 → 平台）：读不懂的值落成对应的 `DZ_*_UNKNOWN`，原始字符登记到 `UnknownEnumSink`，由 `AccountSession::report_unknown_enums` 记 ERROR 日志 + 按种类计数（进 `RTN_STATUS.ext`）+ `notify_ui(popup=false)` + 触发一次资金/持仓重查；通知与重查限频（5 分钟内最多一次），计数不受限频影响。
+- 回报方向（柜台 → 平台）：读不懂的值落成对应的 `DZ_*_UNKNOWN`，原始字符登记到 `UnknownEnumSink`，由 `AccountSession::report_unknown_enums` 记 ERROR 日志 + 按种类计数（进 `RTN_STATUS.ext`）+ `notify_ui(popup=false)`；通知限频（5 分钟内最多一次），计数不受限频影响。**不触发任何查询**——取消周期查询后不存在"重查纠正"路径（[ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md)），可观测性由计数与通知承接。
 - 出账方向（平台 → 柜台）：映射函数返回 `std::nullopt`，`place_order` 本地拒单——**绝不**兜底成某个看起来最像的真实值（兜底等于向交易所发错误指令：止损单变限价单、平仓单变开仓单）。
 - 未知开平标志的成交/委托**不参与持仓增量与活动委托表**（当开仓会放大敞口，当平仓会平掉对方真实持仓，两者都是撒谎）。
 

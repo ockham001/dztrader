@@ -35,7 +35,6 @@ namespace dztrader::test {
 struct TdConfigSeed {
     // --- 进程层 ---
     int qry_account_interval_s = 5;    ///< 资金查询间隔（秒）
-    int qry_position_interval_s = 60;  ///< 持仓查询间隔（秒）
     int qry_flush_interval_ms = 1500;  ///< 流控队列间隔（毫秒）
     bool enable_lock_mode = true;      ///< 进程级 `ext`：开平仓转换 LOCK 模式
 
@@ -68,7 +67,6 @@ struct TdConfigSeed {
 [[nodiscard]] inline nlohmann::json make_td_config_json(const TdConfigSeed& seed = {}) {
     ctp::TdConfig config;
     config.qry_account_interval_s = seed.qry_account_interval_s;
-    config.qry_position_interval_s = seed.qry_position_interval_s;
     config.qry_flush_interval_ms = seed.qry_flush_interval_ms;
     config.ext.enable_lock_mode = seed.enable_lock_mode;
 

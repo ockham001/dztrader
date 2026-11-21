@@ -1391,7 +1391,7 @@ TEST_F(TdPersistWriterTest, TradingAccountRowsAreScopedToAccountAndTradingDay) {
     EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20260901'"), 2);
     EXPECT_EQ(scalar_int("SELECT seq FROM trading_accounts WHERE date='20260902'"), 3);
 
-    // 迟到补写 D1（如失败补查链恢复后仍按 D1 写入）：只覆盖 D1 行，D2 行原样。
+    // 迟到补写 D1（异步 persist 管道里旧任务晚到）：只覆盖 D1 行，D2 行原样。
     DzTradingAccount later = make_trading_account(9);
     later.balance = 1234567.0;
     writer.enqueue(PersistTask{.kind = PersistTask::Kind::TradingAccount,

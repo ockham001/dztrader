@@ -40,14 +40,12 @@ protected:
 
 TEST_F(TdConfigTest, LoadFullConfig) {
     dztrader::test::TdConfigSeed seed;
-    seed.qry_position_interval_s = 5;
     seed.frontend_address = "tcp://180.168.146.187:10130";
     seed.frontend_label = "SimNow 7x24";
     write_config(seed);
 
     auto cfg = TdConfig::load(path_, "td");
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_position_interval_s, 5);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
     ASSERT_EQ(cfg.accounts.size(), 1u);
@@ -65,7 +63,6 @@ TEST_F(TdConfigTest, LoadDefaultsOmittedFields) {
     write_json(R"json({"accounts": []})json");
     auto cfg = TdConfig::load(path_, "td");
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_position_interval_s, 60);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
     EXPECT_TRUE(cfg.accounts.empty());
@@ -76,7 +73,6 @@ TEST_F(TdConfigTest, LoadFileNotExistsReturnsDefaults) {
     auto cfg = TdConfig::load(missing, "td");
     EXPECT_TRUE(cfg.accounts.empty());
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_position_interval_s, 60);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
 }
@@ -121,7 +117,6 @@ TEST_F(TdConfigTest, LoadSectionMissingReturnsDefaults) {
     auto cfg = TdConfig::load(path_, "td");
     EXPECT_TRUE(cfg.accounts.empty());
     EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_position_interval_s, 60);
     EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
 }
@@ -291,7 +286,6 @@ TEST_F(TdConfigTest, ToSafeJsonKeepsTopLevelProcessExt) {
 TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
     TdConfig cfg;
     cfg.qry_account_interval_s = 7;
-    cfg.qry_position_interval_s = 30;
     cfg.qry_flush_interval_ms = 800;
     cfg.ext.enable_lock_mode = false;
     AccountConfig acct;
@@ -313,7 +307,6 @@ TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
 
     // 契约 §2.4 顶层键
     EXPECT_EQ(j["qry_account_interval_s"], 7);
-    EXPECT_EQ(j["qry_position_interval_s"], 30);
     EXPECT_EQ(j["qry_flush_interval_ms"], 800);
     ASSERT_TRUE(j["ext"].is_object());
     EXPECT_FALSE(j["ext"]["enable_lock_mode"].get<bool>());
@@ -416,14 +409,6 @@ TEST_F(TdConfigTest, ValidateRejectsZeroAccountInterval) {
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
     EXPECT_NE(err->find("qry_account_interval_s"), std::string::npos);
-}
-
-TEST_F(TdConfigTest, ValidateRejectsZeroPositionInterval) {
-    TdConfig cfg;
-    cfg.qry_position_interval_s = 0;
-    auto err = validate(cfg);
-    ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("qry_position_interval_s"), std::string::npos);
 }
 
 TEST_F(TdConfigTest, ValidateRejectsEmptyBrokerId) {

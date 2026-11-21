@@ -834,8 +834,6 @@ export interface TdAccountConfig {
 export interface TdConfigPayload {
     /** 资金查询间隔（秒），> 0；本轮未接入周期资金查询，保留配置 */
     qry_account_interval_s: number
-    /** 持仓查询间隔（秒），> 0 */
-    qry_position_interval_s: number
     /** 流控队列间隔（毫秒），> 0 */
     qry_flush_interval_ms: number
     /** 账户配置列表（RTN 全量；每个账户 ext.password 恒为 ****） */

@@ -697,15 +697,17 @@ TEST_F(TdDataSyncIntegrationTest, PositionUpsertThenRebuildThenClear) {
 }
 
 // ============================================================================
-// 场景 6b (#249): 旧会话残留写入的有界收敛窗 (契约 §7「旧会话残留写入」行, ADR 0045 决策 7)
+// 场景 6b (#249): 旧会话残留写入的无自愈窗口 (契约 §7「旧会话残留写入」行, ADR 0049)
 //
 // 形态: 两个 PersistWriter 同库并发 (跨进程旧会话残留写入的进程内等价模型 —— 各自的
 // 队列/线程独立, 唯一共享的是库文件). 旧会话已入队但未提交的任务可能晚于新会话的
 // 整组重建落地. 契约承诺的不是"不发生", 而是三条可验收性质:
 //   ① 不丢行、不产生键冲突 (唯一键 (account_id,date,instrument_id,direction) 下不会
 //      出现重复行, 也不会因为残留 upsert 报错而整批失败);
-//   ② 当日持仓会短暂回到旧值 —— 这正是收敛窗的来源, 用"新会话值被旧值覆盖"观测;
-//   ③ 下一次完整成功查询 (整组重建) 收敛回权威值 —— 收敛上界 = 一个持仓查询间隔.
+//   ② 当日持仓会回到旧值 —— 这是**无自愈**的窗口: 取消周期查询后（ADR 0049）没有
+//      "下一个查询间隔"这个上界, 偏差会一直停留到下一次登录（含重连）的完整成功查询,
+//      用"新会话值被旧值覆盖"观测;
+//   ③ 下一次登录（含重连）的完整成功查询（整组重建）回到权威值 —— 由登录触发, 不是定时收敛.
 // 断言全部走 DB 内容; 时序用 flush 哨兵做确定性先后编排, 不用 sleep.
 // ============================================================================
 TEST_F(TdDataSyncIntegrationTest, StaleSessionWriteConvergesByNextRebuild) {
@@ -767,12 +769,13 @@ TEST_F(TdDataSyncIntegrationTest, StaleSessionWriteConvergesByNextRebuild) {
     const uint64_t late_token = stale.enqueue_flush_signal();
     ASSERT_TRUE(stale.wait_flush(late_token, std::chrono::seconds(5)));
 
-    // 收敛窗内的可观测量: IF2506 回到旧值 9; 但仍是 2 行 (无重复键、rb2510 未被误删).
+    // 无自愈窗口内的可观测量: IF2506 回到旧值 9; 但仍是 2 行 (无重复键、rb2510 未被误删).
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 9);
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE account_id='acc1'"), 2);
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='rb2510'"), 1);
 
-    // 4) 下一次完整成功查询的整组重建 → 收敛回权威值 (不变的行沿用原 seq, 变更行取新 seq).
+    // 4) 下一次登录（含重连）的完整成功查询整组重建 → 回到权威值 (不变的行沿用原 seq,
+    //    变更行取新 seq). 取消周期查询后这是唯一收敛路径 (ADR 0049).
     fresh.enqueue(PersistTask{
         .kind = PersistTask::Kind::PositionRebuild,
         .data = std::vector<DzPositionInfo>{make_pos("IF2506", 2, 40), make_pos("rb2510", 4, 31)},
