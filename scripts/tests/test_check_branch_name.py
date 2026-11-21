@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_branch_name.py"
+PRE_PUSH = REPO_ROOT / ".githooks" / "pre-push"
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import check_branch_name  # noqa: E402
 
 
 def run_checker(*args: str) -> subprocess.CompletedProcess[str]:
@@ -69,6 +74,26 @@ class BranchNameCheckTest(unittest.TestCase):
         result = run_checker("--selftest")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("selftest OK", result.stdout)
+
+
+class BranchTypeSingleSourceTest(unittest.TestCase):
+    """类型前缀与 `.githooks/pre-push` 的白名单必须一致（#424 审查 finding）。
+
+    两处语义不同（那边只校验前缀、这里校验完整约定），所以不合并成一份实现；但**类型集合**
+    是同一个事实，改一处漏一处会让「setup 放行、pre-push 拒」再次出现。本用例把
+    「两处一起改」的纪律变成机械检查。
+    """
+
+    def test_types_match_pre_push_whitelist(self) -> None:
+        if not PRE_PUSH.is_file():
+            self.skipTest(f"pre-push hook not found: {PRE_PUSH}")
+        text = PRE_PUSH.read_text(encoding="utf-8")
+        match = re.search(r"BRANCH_RE='\^\(([^)]*)\)/'", text)
+        self.assertIsNotNone(
+            match,
+            "pre-push 的 BRANCH_RE 形态变了：请同步本用例与 scripts/check_branch_name.py",
+        )
+        self.assertEqual(tuple(match.group(1).split("|")), check_branch_name.BRANCH_TYPES)
 
 
 class CurrentBranchResolutionTest(unittest.TestCase):

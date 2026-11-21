@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 import unittest
@@ -40,12 +41,28 @@ class R4RecoveryHintTest(unittest.TestCase):
             self.assertIn(keyword, text, "R4 提示缺少恢复路径关键字（#424 AC1）")
 
     def test_hint_is_printed_by_main(self) -> None:
-        # 文本检查：函数定义算一次，`main()` 里必须再出现一次（打印它）。
-        source = SCRIPT.read_text(encoding="utf-8")
-        self.assertGreaterEqual(
-            source.count("r4_hint_lines"),
-            2,
-            "r4_hint_lines() 只定义未打印：R4 报告会只剩「补段」提示",
+        # #424 审查 finding：只数 `r4_hint_lines` 出现次数会被 def / selftest 的引用蒙对
+        # （删掉 main 的打印仍满足阈值）。用 AST 直接断言 `main()` 里调用它。
+        tree = ast.parse(SCRIPT.read_text(encoding="utf-8"))
+        main_fn = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "main"
+            ),
+            None,
+        )
+        self.assertIsNotNone(main_fn, "check_ledger.py 缺少 main()")
+        calls = [
+            node
+            for node in ast.walk(main_fn)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "r4_hint_lines"
+        ]
+        self.assertTrue(
+            calls,
+            "main() 没有打印 r4_hint_lines()：R4 报告会只剩「补段」提示",
         )
 
     def test_selftest_asserts_the_same_keywords(self) -> None:

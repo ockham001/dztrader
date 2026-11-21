@@ -129,7 +129,29 @@ class MaskedFailureLineTest(unittest.TestCase):
             retro_extract.expected_red_kind("python3 scripts/gate_status.py --selftest"),
             "selftest",
         )
+        # 自测命令后面接一段无害片段（`echo rc=$?`）仍算预期红。
+        self.assertEqual(
+            retro_extract.expected_red_kind("python3 scripts/check_ledger.py --selftest; echo rc=$?"),
+            "selftest",
+        )
+        # 纯只读命令没有自测段：不能因为「每段都只读」被误判成预期红。
+        self.assertIsNone(retro_extract.expected_red_kind("cat log.txt; grep FAILED log.txt"))
         self.assertIsNone(retro_extract.expected_red_kind("./scripts/gate.sh test"))
+
+    def test_selftest_exemption_is_per_segment_not_whole_command(self) -> None:
+        # 审查 finding：整条命令只要出现 `--selftest` 就豁免，会把同一命令里真红的门禁段
+        # 一起吞掉。判据必须是「每段都是自测调用或无害片段」。
+        self.assertIsNone(
+            retro_extract.expected_red_kind(
+                "python3 scripts/review_marker.py --selftest && ./scripts/gate.sh test"
+            )
+        )
+        self.assertEqual(
+            retro_extract.masked_failure_line(
+                "rc=2\n", "python3 scripts/review_marker.py --selftest && ./scripts/gate.sh test"
+            )[0],
+            "rc!=0",
+        )
 
 
 class ExtractMaskedFailuresTest(unittest.TestCase):

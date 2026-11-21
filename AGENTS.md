@@ -190,12 +190,12 @@
 ### Worktree 与 Git 禁令
 
 - worktree 由 `create_worktree` 建在 **`.agents/worktrees/<branch>`**（实际约定；`.worktrees/` 是历史路径，目录若存在同样受 `.gitignore` 保护）。手动建 worktree 时沿用 `.agents/worktrees/<branch>`：`git worktree add .agents/worktrees/<branch> -b <branch> main`（#316 AC5）
-- **`create_worktree` 的 `name` 必须写完整分支名（含 `/`）**：`name: fix/issue-411-today-position` → 分支 `fix/issue-411-today-position`、目录 `.agents/worktrees/fix/issue-411-today-position`。工具描述的「hyphens」示例只保证目录能建出来；写成 flat 的 `fix-issue-411-today-position` 要到 **pre-push** 才被拒（#411 到收尾才发现）。`setup` 开头会早检并打印修复命令（`scripts/check_branch_name.py`）；已建错用 `git branch -m fix/issue-<n>-<slug>` 改名（worktree 目录可不动）。
+- **`create_worktree` 的 `name` 必须写完整分支名（含 `/`）**：`name: fix/issue-411-today-position` → 分支 `fix/issue-411-today-position`、目录 `.agents/worktrees/fix/issue-411-today-position`。工具描述的「hyphens」示例只保证目录能建出来；写成 flat 的 `fix-issue-411-today-position` 在 #411 时一路拖到 **pre-push** 才被拒（到收尾才发现）。现在 Linux 的 `setup.sh` 开头就会早检并打印修复命令（判定在 `scripts/check_branch_name.py`）；已建错用 `git branch -m fix/issue-<n>-<slug>` 改名（worktree 目录可不动）。
 - worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2` 并从 `~/.conan2` 播种一次，见 [build-appendix](docs/agents/build-appendix.md)）
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
-- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（`setup` 开头早检 + pre-push 拦截，判定在 `scripts/check_branch_name.py`）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
+- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（**两处守卫、两种粒度**：`setup.sh` 开头按完整约定早检，判定在 `scripts/check_branch_name.py`；`.githooks/pre-push` 只用 `^(feat|fix|…)/` 前缀白名单兜一道——类型集合两处同步，`setup` 的检查器有 unittest 钉住）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
 - **禁止裸 `git stash pop`**（#424 AC3）：stash 是 **repo 级、跨 worktree 共享**的，裸 pop 弹的是栈顶——可能是几天前另一条线的产物。先 `git stash list`，按 `stash@{n}` 的 message / 分支确认身份再 `git stash pop stash@{n}`；反向验证（拿旧版本跑一遍）优先 `git show <ref>:<path> > /tmp/...` 或临时 worktree，**不用 stash + checkout**。#411 实测：无条件 `git stash pop` 弹出了 2026-11-15 的 `fix/issue-322-dirty` stash（6 文件 +78/−20），污染了 worktree，收尾报告还把它写成「内容重复的 stash@{0}」。
 - **被安全网 BLOCKED 的调用零副作用**（#424 AC3）：CC Safety Net 拦下的是**整条命令**（含 `&&` 前段），所以「前半段已经执行」是错觉——不要去清理它的假想副作用。#411 的 `git stash push … && git checkout <sha> -- …` 整条被拦，agent 却接着 pop 了 stash；正确动作是原样重跑（换成被允许的安全形态）或换路径，不是补救。
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**

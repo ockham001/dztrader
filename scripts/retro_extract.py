@@ -26,7 +26,9 @@ DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.
                   `error: boom` / `error: disk full` 仍是失败。
   预期红豁免（#424 AC5）`--selftest` 命令整条不进本小节——仓库里每个检查器都有「必须拒绝」
                   的自测（`review_marker.py --selftest` 预期打印 `-> refuse -> rc=3`，#413 的
-                  digest 3/3 条全是这种预期输出）；输出行以 `selftest` 开头的同样忽略。
+                  digest 3/3 条全是这种预期输出）；按**命令段**判定，复合命令要求每一段都是
+                  自测调用或无害片段（`x.py --selftest && gate.sh test` 的门禁段照常计入）。
+                  输出行以 `selftest` 开头的同样忽略。
                   反向验证（拿旧代码跑一遍、确认新测试真的会红）在命令前加
                   `DZ_EXPECT_RED=1`：条目**保留**（那是有意取到的证据），但标
                   `expected=expect-red`，不会被读成交付失败（#411 的「旧代码测试失败」）。
@@ -390,11 +392,20 @@ def expected_red_kind(command: str) -> str | None:
       failure，见 `masked_failure_line`）；
     - `DZ_EXPECT_RED=1`：反向验证（拿旧代码跑一遍，确认新测试会红）的显式标注，条目保留
       但在 digest 里标 `expected=expect-red`。
+
+    `--selftest` 按**命令段**判定，不是整条字符串包含：`x.py --selftest && gate.sh test`
+    里的门禁段仍可能真红，整条豁免会把它一起吞掉（#424 审查 finding）。判据 = 至少一段是
+    自测调用，且其余各段都是无害片段（`echo rc=$?` 之类只读/管道工具）。
     """
-    if SELFTEST_FLAG in command:
-        return EXPECTED_RED_SELFTEST
     if EXPECTED_RED_MARKER in command:
         return EXPECTED_RED_REVERSE
+    segments = [segment.strip() for segment in _split_command_segments(command) if segment.strip()]
+    if not any(SELFTEST_FLAG in segment for segment in segments):
+        return None
+    if all(
+        SELFTEST_FLAG in segment or _segment_is_read_only(segment) for segment in segments
+    ):
+        return EXPECTED_RED_SELFTEST
     return None
 
 
