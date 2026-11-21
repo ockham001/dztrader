@@ -183,7 +183,9 @@ protected:
         return r;
     }
 
-    /// 一条持仓查询响应行（`volume` 含昨仓；`cost` 为持仓成本金额）。
+    /// 一条持仓查询响应行（`volume` 为总持仓、`yd` 为**当前**昨仓；`cost` 为持仓成本金额）。
+    /// CTP 字段按 ADR 0049 口径填：TodayPosition = 当前今仓；YdPosition 赋当前昨仓——本目标
+    /// 不构造「今日已平昨」场景，此时静态昨仓 == 当前昨仓，两者语义不冲突。
     static OnRspQryInvestorPositionField position_row(const std::string& instrument,
                                                       int32_t volume,
                                                       int32_t yd,
@@ -196,6 +198,7 @@ protected:
         std::strcpy(p.ExchangeID, "CFFEX");
         std::strcpy(p.InvestorID, "acc1");
         p.Position = volume;
+        p.TodayPosition = volume - yd;
         p.YdPosition = yd;
         p.PositionCost = cost;
         p.PosiDirection = posi_direction;

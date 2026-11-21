@@ -149,7 +149,9 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 /// PosiDirection: 净('1') 归为多头 (持仓方向仅多/空两态); 多('2') -> LONG, 空('3') -> SHORT;
 /// 未知方向 -> DZ_DIRECTION_UNKNOWN 并把原始字符登记到 `unknown` (绝不猜成多头——那会把
 /// 空头写成多头, 净敞口符号反向).
-/// 持仓量取 Position (今日持仓; CTP 该字段在持仓查询响应中为总持仓口径).
+/// 持仓量取 Position (该行的当前总持仓, 含今昨; 负值坏数据夹到 0).
+/// 今昨口径 (ADR 0049 / 契约 td-data-sync §3): today = TodayPosition (夹到 [0, Position]),
+/// yd = Position - today; YdPosition 是交易日开始时的静态昨仓 (平昨后不减少), 不参与计算.
 /// volume_multiple 为合约乘数 (CTP PositionCost 是金额, 非单价):
 /// 均价 = PositionCost / (Position × volume_multiple); Position 或乘数 <= 0 时留 0.
 DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
