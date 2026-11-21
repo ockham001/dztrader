@@ -74,7 +74,7 @@ struct ActiveOrderUpdate {
 /// 单合约聚合持仓. 由查询快照 (绝对态) 与成交/委托回报 (增量) 共同驱动.
 ///
 /// 数据来源:
-/// - apply_query_side: 周期持仓查询, 按方向覆盖绝对量
+/// - apply_query_side: 登录基准查询 (含重连), 按方向覆盖绝对量
 /// - apply_trade: OnRtnTrade, OPEN 加权增今仓 / 平仓递减今昨
 /// - apply_order / rebuild_active_orders: 委托回报, 重算挂单冻结 (含夹取)
 /// - on_day_switch: 日切, 今仓转昨仓并清空冻结与活动委托
@@ -95,7 +95,7 @@ public:
     /// 单笔活动委托单更新 (发单/成交推进/撤单). 终态或 OPEN 则移除冻结.
     SideChange apply_order(const ActiveOrderUpdate& order);
 
-    /// 用快照整体重建活动委托集合 (周期查询/重连后调用, 幂等).
+    /// 用快照整体重建活动委托集合 (登录基准查询（含重连）后调用, 幂等).
     SideChange rebuild_active_orders(const std::vector<ActiveOrderUpdate>& orders);
 
     /// 日切: 今仓转昨仓, 清空冻结与活动委托. 价格保留.
