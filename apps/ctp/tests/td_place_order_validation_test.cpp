@@ -45,6 +45,7 @@
 #include "td/td_events.h"
 #include "td/td_position.h"
 #include "td/td_persist_writer.h"
+#include "shm_frame_reader.h"
 #include "test_temp_dir.h"
 #include "test_util.h"
 
@@ -153,16 +154,9 @@ protected:
         ASSERT_TRUE(persist_->wait_flush(token, std::chrono::seconds(5)));
     }
 
-    /// 读出自 reader_ 创建以来的全部帧（Reader 只前进不回头）。
+    /// 读出自 reader_ 创建以来的全部帧（Reader 只前进不回头；共享实现见 shm_frame_reader.h）。
     std::vector<std::unique_ptr<std::byte[]>> read_frames() {
-        std::vector<std::unique_ptr<std::byte[]>> frames;
-        while (const std::byte* raw = reader_->next_frame()) {
-            const auto* hdr = reinterpret_cast<const DzFrameHeader*>(raw);
-            auto copy = std::make_unique<std::byte[]>(hdr->frame_size);
-            std::memcpy(copy.get(), raw, hdr->frame_size);
-            frames.push_back(std::move(copy));
-        }
-        return frames;
+        return dztrader::test::read_frames(*reader_);
     }
 
     /// 一条委托请求（缺省 = 一条完全合法的限价开仓多单）。

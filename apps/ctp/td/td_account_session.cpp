@@ -1790,8 +1790,9 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
                 }
                 const std::optional<DzPositionInfo> mapped =
                     to_dz_position(p, account_id_, trading_day_, volume_multiple);
-                // 净持仓('1'): 合法 CTP 枚举但 DZ 只有多/空两态, 且持仓查询实际按多/空返回
-                // (ADR 0049 决策 9) —— 跳过该行 + WARN, 不产生持仓记录.
+                // 净持仓('1'): 合法 CTP 枚举, 但持仓记账只有多/空两侧 (查询聚合键 /
+                // PositionHolding / positions 唯一键; Net 是回报/展示的兼容口径), 且持仓查询
+                // 实际按多/空返回 (ADR 0049 决策 9) —— 跳过该行 + WARN, 不产生持仓记录.
                 // **不得**走未知方向分支: 那会作废整轮快照 → 基准查询失败 → 账户登录不上,
                 // 等于让一个实际不存在的输入把账户打死; 也**不得**归为多头 (凭空造持仓).
                 if (!mapped.has_value()) {

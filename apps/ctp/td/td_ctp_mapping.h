@@ -153,7 +153,8 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 /// trading_day 为 DzDate (距纪元天数).
 /// PosiDirection: 多('2') -> LONG, 空('3') -> SHORT; 未知方向 -> DZ_DIRECTION_UNKNOWN 并把原始
 /// 字符登记到 `unknown` (绝不猜成多头——那会把空头写成多头, 净敞口符号反向).
-/// **净持仓('1', THOST_FTDC_PD_Net) 返回 nullopt** —— 合法的 CTP 枚举, 但 DZ 只有多/空两态;
+/// **净持仓('1', THOST_FTDC_PD_Net) 返回 nullopt** —— 合法的 CTP 枚举, 但持仓记账只有多/空
+/// 两侧 (查询聚合键 / PositionHolding / positions 唯一键; Net 是回报/展示的兼容口径);
 /// 持仓查询实际按多/空返回 (ADR 0049 决策 9), 调用方跳过该行并记 WARN, 不能把它当未知方向
 /// (那会作废整轮快照) 也不能归为多头 (那会凭空造持仓).
 /// 持仓量取 Position (该行的当前总持仓, 含今昨; 负值坏数据夹到 0).

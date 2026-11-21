@@ -186,8 +186,8 @@ export interface TdPositionGroup {
   /** 空方向明细；无空仓 = null */
   short: TdPositionSide | null
   /**
-   * 存在 direction=Net 的行（多柜台兼容口径；本仓 CTP 网关把净持仓映射为 Long，
-   * 因此正常不会出现）。`Net` 行按其 volume 计入净仓，展示时不做多空拆分。
+   * 存在 direction=Net 的行（多柜台兼容口径；本仓 CTP 网关对净持仓行**直接跳过**、
+   * 不产生持仓记录，因此正常不会出现）。`Net` 行按其 volume 计入净仓，展示时不做多空拆分。
    */
   hasNetDirection: boolean
   /**
@@ -253,8 +253,8 @@ export function groupPositionRows(rows: readonly TdPositionRow[]): TdPositionGro
     if (row.direction === 'Long') group.long = toSide(row)
     else if (row.direction === 'Short') group.short = toSide(row)
     else if (row.direction === 'Net') {
-      // Net 方向：按正值记为净仓。本仓 CTP 网关把净持仓映射成 Long，正常不会出现；
-      // 保留它是为了契约完整性（其它柜台可能用 Net 口径）。
+      // Net 方向：按正值记为净仓。本仓 CTP 网关对净持仓行直接跳过（不产生持仓记录），
+      // 正常不会出现；保留它是为了契约完整性（其它柜台可能用 Net 口径）。
       group.hasNetDirection = true
       netDirectionVolume = row.volume
     } else {

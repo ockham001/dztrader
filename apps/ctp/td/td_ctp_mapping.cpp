@@ -540,9 +540,10 @@ std::optional<DzPositionInfo> to_dz_position(const CThostFtdcInvestorPositionFie
     copy_to_dz(r.account_id, account_id.c_str());
 
     // 持仓方向: 多('2') -> LONG, 空('3') -> SHORT.
-    // 净持仓('1') 返回 nullopt: 它是 CTP 文档定义的合法枚举, 但 DZ 只有多/空两态, 且持仓查询
-    // 实际按多/空返回 (ADR 0049 决策 9) —— 跳过该行 + 由会话记 WARN. 不能归为多头 (凭空造持仓),
-    // 也不能走未知方向分支 (合法枚举不该让整轮快照作废 → 账户登录不上).
+    // 净持仓('1') 返回 nullopt: 它是 CTP 文档定义的合法枚举, 但持仓记账只有多/空两侧
+    // (查询聚合键 / PositionHolding / positions 唯一键; Net 是回报/展示的兼容口径), 且持仓
+    // 查询实际按多/空返回 (ADR 0049 决策 9) —— 跳过该行 + 由会话记 WARN. 不能归为多头
+    // (凭空造持仓), 也不能走未知方向分支 (合法枚举不该让整轮快照作废 → 账户登录不上).
     // 真正读不懂的码返回 UNKNOWN —— 兜成 LONG 会把空头写成多头, 净敞口符号反向.
     switch (p.PosiDirection) {
         case THOST_FTDC_PD_Short:
