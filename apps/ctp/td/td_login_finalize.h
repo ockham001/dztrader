@@ -5,9 +5,13 @@
 // 无 CTP/SHM/DB 依赖, 可完全独立单测.
 //
 // 驱动: 合约加载完成后发起持仓/资金两查询 (CTP 流控 1 次/秒, 串行),
-// 每个查询的 is_last 或失败回调驱动对应 on_*_done/on_*_failed.
-// 收尾: 两查询都完成 (含失败降级) 才 can_reach_ready()==true; 查询失败
-// 不阻塞 Ready (spec §4.2: 先转 Ready 不阻塞交易),
+// 每个查询的 is_last 驱动对应 on_*_done.
+// 收尾: 持仓查询成功 + 资金查询完结 才 can_reach_ready()==true.
+// **持仓查询是登录成功的前置**——它建的是持仓基准, 没有基准就没有账 (ADR 0049
+// 决策 3): 单次失败先由调用方按有限重试策略 (td_account_session_pure.h 的
+// kPositionQueryMaxRetries / kPositionQueryRetryInterval) 重试, 重试耗尽后调
+// on_position_failed() —— 本次登录终止, 停留 kQueryPosition, 不再进入收尾序列.
+// 资金查询失败仍不阻塞 Ready (资金行只在持仓查询成功后写入, ADR 0045 决策 4).
 // 收尾序列由 next() 线性推进:
 //   kQueryPosition -> kQueryAccount -> kReplay -> kFlush -> kReady -> kDone
 // kReady 前必经 kFlush —— 保证 AccountSession 在调 on_instruments_loaded()
@@ -69,17 +73,19 @@ public:
     /// 当前阶段. 初始 kQueryPosition.
     [[nodiscard]] Phase phase() const noexcept { return phase_; }
 
-    /// 持仓查询完成 (is_last 或失败降级, spec §4.2 失败不阻塞).
+    /// 持仓查询成功: is_last 到达且无 ErrorID. **零行也算成功** (空账户合法).
     void on_position_done() noexcept;
-    /// 持仓查询失败 (等价 done).
-    void on_position_failed() noexcept { on_position_done(); }
+    /// 持仓查询重试耗尽: 本次登录终止, 停留 kQueryPosition 且不再可收尾.
+    void on_position_failed() noexcept;
+    /// 本次登录是否已判定为「持仓基准查询失败」(重试耗尽).
+    [[nodiscard]] bool position_failed() const noexcept { return position_failed_; }
 
     /// 资金查询完成 (is_last 或失败降级).
     void on_account_done() noexcept;
-    /// 资金查询失败 (等价 done).
+    /// 资金查询失败 (等价 done; 资金查询失败不阻塞 Ready).
     void on_account_failed() noexcept { on_account_done(); }
 
-    /// 两查询都完成 (含失败) 才 true —— 查询阶段未结束时不可进入收尾序列.
+    /// 持仓查询成功 + 资金查询完结 才 true —— 持仓查询失败后恒 false.
     [[nodiscard]] bool can_reach_ready() const noexcept;
 
     /// 线性推进到下一阶段. 未满足前置 (两查询未齐 / 阶段顺序) 时停留当前阶段.
@@ -88,8 +94,9 @@ public:
 
 private:
     Phase phase_ = Phase::kQueryPosition;
-    bool position_done_ = false;  ///< 持仓查询已完结 (成功或失败)
-    bool account_done_ = false;   ///< 资金查询已完结 (成功或失败)
+    bool position_done_ = false;    ///< 持仓查询成功 (零行也算成功)
+    bool position_failed_ = false;  ///< 持仓查询重试耗尽: 本次登录失败终态
+    bool account_done_ = false;     ///< 资金查询已完结 (成功或失败降级)
 };
 
 }  // namespace dztrader::ctp

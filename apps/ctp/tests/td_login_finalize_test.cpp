@@ -10,7 +10,9 @@ using namespace dztrader::ctp;
 
 // ============================================================================
 // LoginFinalizer: 登录收尾状态机纯逻辑 (spec §4.2 登录完成协议)
-// 两查询 (持仓/资金) 完成 (含失败降级) 才可进入收尾序列; 查询失败不阻塞 Ready;
+// 持仓查询成功 (零行也算成功) + 资金查询完结 才可进入收尾序列;
+// 持仓查询重试耗尽 = 本次登录失败, 停留 kQueryPosition、不再可收尾 (ADR 0049 决策 3);
+// 资金查询失败降级仍不阻塞 Ready (资金行只在持仓成功后写入, ADR 0045 决策 4).
 // 收尾序列线性推进 kQueryPosition -> kQueryAccount -> kReplay -> kFlush
 // -> kReady -> kDone (kReady 前必须经过 kFlush, 保证 flush 屏障先于 Ready).
 // 覆盖边界: 本文件测状态机相位 + run_flush_barrier 纯逻辑 (ADR 0042 §5: 超时发
@@ -34,10 +36,28 @@ TEST(LoginFinalizer, TwoQueriesCompleteBeforeReplay) {
     EXPECT_EQ(Phase::kDone, fin.next());  // 终态停留
 }
 
-TEST(LoginFinalizer, QueryFailureDoesNotBlockFinalize) {
+// 持仓查询重试耗尽 = 本次登录失败 (ADR 0049 决策 3): 不再等价于 done,
+// 停住不推进、不可收尾 —— 否则会带着空基准转 Ready, 把「没有持仓」伪装成正常账户.
+TEST(LoginFinalizer, PositionFailureStopsFinalize) {
     LoginFinalizer fin;
-    fin.on_position_failed();  // 失败等价 done (降级收尾, spec §4.2)
+    fin.on_position_failed();
+    EXPECT_TRUE(fin.position_failed());
+    EXPECT_FALSE(fin.can_reach_ready());
+    EXPECT_EQ(Phase::kQueryPosition, fin.phase());
+    EXPECT_EQ(Phase::kQueryPosition, fin.next());  // next() 不越过失败的查询阶段
+    // 资金查询本就不会在持仓查询失败后发起; 即便迟到回调, 也不得让收尾从失败中复活.
+    fin.on_account_done();
+    EXPECT_FALSE(fin.can_reach_ready());
+    EXPECT_EQ(Phase::kQueryPosition, fin.phase());
+}
+
+// 资金查询失败仍降级收尾 (ADR 0045 决策 4 保留: 资金行只在持仓成功后写入,
+// 资金查询失败只是少一行资金, 不阻塞可交易).
+TEST(LoginFinalizer, AccountFailureDoesNotBlockFinalize) {
+    LoginFinalizer fin;
+    fin.on_position_done();
     fin.on_account_failed();
+    EXPECT_FALSE(fin.position_failed());
     EXPECT_TRUE(fin.can_reach_ready());
     EXPECT_EQ(Phase::kReplay, fin.phase());
 }

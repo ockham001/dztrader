@@ -27,6 +27,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -213,6 +214,10 @@ private:
     void cancel_login_timer();
     /// 取消合约加载超时定时器 (I2)
     void cancel_instruments_load_timer();
+    /// 取消基准持仓查询的重试定时器 (查询成功 / 重试耗尽 / 断连时清理, 不留残留定时器).
+    void cancel_position_query_retry_timer();
+    /// 取消基准持仓查询单次尝试的超时定时器.
+    void cancel_position_query_timeout_timer();
 
     /// 推 DzOrderReport 到 SHM (DZ_FRAME_ORDER_REPORT, 通用字段, 不含 CTP 特有).
     void write_order_rpt(const DzOrderReport& rpt);
@@ -272,13 +277,29 @@ private:
     void buffer_trade_rpt(const OnRtnTradeField& f);
     void replay_buffered_reports();
 
-    /// 发起持仓查询 (登录收尾阶段一, CTP 流控串行).
+    /// 发起基准持仓查询链 (登录收尾阶段一, CTP 流控串行): 重置重试预算后开始首次尝试.
     void req_qry_investor_position();
-    /// 发起资金查询 (登录收尾阶段二).
+    /// 发起一次基准持仓查询尝试 (首次或重试; 由 req_qry_investor_position 与重试定时器调用).
+    void req_qry_investor_position_once();
+    /// 一次基准持仓查询尝试失败: 预算内退避重试 (kPositionQueryMaxRetries /
+    /// kPositionQueryRetryInterval), 预算用尽则判本次登录失败 —— 停在当前进度
+    /// (LoadingInstruments)、不转 Ready、推 ERROR 通知, 且不排任何定时器 (ADR 0049 决策 3).
+    ///
+    /// 失败判据 (ADR 0049 决策 3; 判定分散在执行侧, 本函数只统一做计数/重试/停住):
+    /// - `ReqQryInvestorPosition` 返回非 0 (含 -3 流控, 同样计入预算);
+    /// - `is_last` 带 ErrorID;
+    /// - 单次尝试超时 (5 分钟);
+    /// - 未知方向使整轮快照不可信 (等价「查询结果不可用」).
+    /// 「查不到」不是失败: `is_last` 无错且零行 = 成功, 不经过本函数.
+    /// @param reason 失败原因 (仅日志用, 不是判据)
+    void on_position_query_attempt_failed(std::string_view reason);
+    /// 重试预算用尽的通知 (ERROR + popup=true; 文案见 position_query_failed_message).
+    void notify_position_query_failed();
+    /// 发起资金查询 (登录收尾阶段二; 只在持仓查询成功后发起).
     void req_qry_trading_account();
-    /// 双查询完成 (is_last 或失败降级) 后的统一收尾:
+    /// 持仓查询成功 + 资金查询完结后的统一收尾:
     /// 缓冲重放 -> flush 屏障 -> on_instruments_loaded 转 Ready.
-    /// 若查询阶段未结束时 (两查询未齐) 调用 no-op (防御).
+    /// 查询阶段未完成时调用 no-op (防御: 持仓查询重试耗尽后不会走到这里).
     void finalize_login();
 
     /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
@@ -361,10 +382,13 @@ private:
     /// 本轮持仓查询出现过读不懂的方向: 整轮快照不可信, is_last 时按查询失败处置
     /// (不改表、保留上次已知快照).
     bool position_query_unknown_direction_ = false;
-    /// 登录收尾状态机 (spec §4.2): 双查询齐才可收尾, 失败降级不阻塞 Ready.
+    /// 登录收尾状态机 (spec §4.2): 持仓查询成功 + 资金查询完结才可收尾;
+    /// 持仓查询重试耗尽 → 失败终态, 不转 Ready (ADR 0049 决策 3).
     LoginFinalizer finalizer_;
     /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false; 资金行守卫读它).
     bool position_query_ok_ = false;
+    /// 基准查询已重试次数 (登录/重连链起点清零; 预算见 kPositionQueryMaxRetries).
+    int position_query_retries_ = 0;
     /// 独立只读连接提供器 (TdApi 注入; 登录日装载用, 可空则装载失败).
     std::function<SQLite::Database*()> read_db_provider_;
     /// 无会话拒单 seq 分配器 (可空; 登录日装载据此抬高 seq 计数器).
@@ -396,6 +420,10 @@ private:
     dztrader::core::TimerQueue::TimerId login_timer_id_ = 0;
     /// I2: 合约加载超时定时器 id (5 分钟, 设计 §2.4.1 流控持续 -3 超时)
     dztrader::core::TimerQueue::TimerId instruments_load_timer_id_ = 0;
+    /// 基准持仓查询重试定时器 id (失败后 3s 重试; 0 = 无挂起)
+    dztrader::core::TimerQueue::TimerId position_query_retry_timer_id_ = 0;
+    /// 基准持仓查询单次尝试的超时定时器 id (5 分钟; 响应/失败后取消)
+    dztrader::core::TimerQueue::TimerId position_query_timeout_timer_id_ = 0;
     /// 会话存活令牌: 未跟踪的查询链定时器回调先检查它, 防 logout erase 后 UAF.
     std::shared_ptr<void> alive_token_ = std::make_shared<int>(0);
     /// 代际失效: 断线时自增, 使已挂起定时器回调失效 (避免陈旧回调误触发)

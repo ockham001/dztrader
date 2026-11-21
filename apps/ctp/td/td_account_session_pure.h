@@ -1,6 +1,7 @@
 #ifndef DZTRADER_CTP_TD_ACCOUNT_SESSION_PURE_H_
 #define DZTRADER_CTP_TD_ACCOUNT_SESSION_PURE_H_
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
@@ -104,6 +105,32 @@ bool trading_day_usable(int32_t days_since_epoch) noexcept;
 /// @param reason 失败场景的中文说明 (如「交易日无效（原始值 "00000000"）」)
 /// @return 形如「交易登录失败（交易日无效（原始值 "00000000"）），本进程不会自动重试该账户」
 std::string login_failed_message(const std::string& reason);
+
+// ============================================================================
+// 基准持仓查询的有限重试策略 (ADR 0049 决策 3)
+// ============================================================================
+// 持仓基准是登录成功的前置 (没有基准就没有账): 单次查询失败先按本策略重试,
+// 预算用尽即判本次登录失败 —— 停在当前进度、不转 Ready, 由用户处理.
+// 只在登录 / 重连链上生效, 与已删除的周期查询/补查链无关.
+
+/// 基准持仓查询最多重试次数 (首次尝试之外; 总尝试次数 = 1 + 本值).
+inline constexpr int kPositionQueryMaxRetries = 3;
+
+/// 基准持仓查询重试间隔 (ADR 0049 决策 3: 3 秒; 沿用旧版 DzTrader3 的节奏, 见 #413).
+inline constexpr std::chrono::milliseconds kPositionQueryRetryInterval{3000};
+
+/// 基准持仓查询本次失败后是否还应再重试一次.
+/// @param retries_done 已重试次数 (0 = 首次尝试刚失败, 尚未重试过)
+/// @return true = 还可用剩余重试预算; false = 预算已用尽, 调用方应判登录失败
+bool position_query_retry_allowed(int retries_done) noexcept;
+
+/// 基准持仓查询重试耗尽的通知正文 (纯构造便于断言).
+///
+/// 只陈述事实 (「查询失败 + 账户未就绪 + 已重试几次」), **不承诺** UI 上不存在的操作:
+/// WebUI 目前没有 td 的连接/断开入口 (见 #409), 写「请登出后重新登录」等于让用户
+/// 去做一件界面上做不到的事 (与 login_failed_message 同一口径).
+/// @return 固定文案「持仓查询失败，账户未就绪（已重试 3 次）」(N = kPositionQueryMaxRetries)
+std::string position_query_failed_message();
 
 }  // namespace dztrader::ctp
 

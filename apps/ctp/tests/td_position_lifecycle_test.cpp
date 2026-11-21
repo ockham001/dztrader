@@ -18,6 +18,8 @@
  * `CThostFtdcTraderApi`（需连柜台）。因此这里的会话处于**未登录**状态，只驱动持仓查询
  * 响应分支——那正是本票所有持仓写入决策所在。登录链的 flush/Ready 语义由
  * `td_login_finalize_test`（纯逻辑）与 `td_data_sync_integration_test`（Writer 时序）覆盖。
+ * 基准查询的**有限重试预算/停住/ERROR 通知**是本文件覆盖的例外：重试定时器只排定不触发
+ * （无柜台的测试不能真发请求），但预算判定、定时器清理、通知与「失败链不碰表」都走真实代码。
  *
  * 确定性来源：每次断言前用 persist flush 屏障等末批提交（`wait_flush`），不用 sleep。
  */
@@ -29,6 +31,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <SQLiteCpp/Database.h>
 #include <SQLiteCpp/Statement.h>
@@ -66,6 +69,24 @@ protected:
     MpmcQueuePtr queue_;
     std::unique_ptr<AccountSession> session_;
 
+    /// notify_ 收到的通知 (基准查询失败弹窗的唯一出口; 校验 level / popup / 文案).
+    struct Notification {
+        DzNotifyLevel level = DZ_NOTIFY_INFO;
+        std::string message;
+        bool popup = false;
+    };
+    std::vector<Notification> notifications_;
+
+    /// 构造会话 (notify 转发到 notifications_; 各用例的重连/新会话也走这里).
+    std::unique_ptr<AccountSession> make_session() {
+        return std::make_unique<AccountSession>(
+            "acc1", *order_id_meta_, *writer_, *persist_, queue_, timer_queue_,
+            /*account_state_cb=*/nullptr, /*seq_allocator=*/nullptr,
+            [this](DzNotifyLevel level, const std::string& message, bool popup) {
+                notifications_.push_back(Notification{level, message, popup});
+            });
+    }
+
     static constexpr int32_t kDay = 20735;  ///< 20261009（下面 SetUp 用真实日期派生校验）
 
     void SetUp() override {
@@ -95,8 +116,7 @@ protected:
         persist_->open();
         persist_->start_writer();
 
-        session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
-                                                    queue_, timer_queue_);
+        session_ = make_session();
         // 交易日固定，避免断言随真实当天漂移（会话用它填 DzPositionInfo.date）。
         session_->set_trading_day(kDay);
     }
@@ -275,12 +295,13 @@ TEST_F(TdPositionLifecycleTest, FailedPositionQuerySuppressesFundRowSoAnchorDayS
     // 契约 ADR 0045 决策 4 / ADR 0046 的跨表不变量：**资金行只在持仓查询成功之后写入**。
     // 若持仓失败仍写资金当日行，锚点日（两快照表 MAX(date)）会被单独推进到当日，
     // 而 positions 当日无行 → 持仓 REST 返回空数组 = 假空仓（ADR 0045 决策 3 的最危险形态）。
+    // ADR 0049 后生产时序不再「失败照常发资金查询」（改为有限重试），但唯一写入点的守卫
+    // 仍须成立：资金响应在失败窗口到达时同样不得落库（防御性断言）。
     raw_exec(
         "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, volume,"
         " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
         " VALUES ('acc1','20261008','IF2506','CFFEX',1,5,0,5,0,3900.0,10,'dztd_test')");
 
-    // 生产时序：持仓查询失败 → 收尾链照常发起资金查询 → 资金响应成功到达。
     session_->on_rsp_qry_investor_position(failed_position_query());
     session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true));
     flush_persist();
@@ -423,8 +444,7 @@ TEST_F(TdPositionLifecycleTest, NewSessionSameDayRebuildReplacesGroupInsteadOfAp
     // 只改配置，全仓无 DELETE FROM positions）。这里销毁 A、重建同 account_id 的会话 B，
     // 等价于删户重加 / 盘中换柜台后的新实例。
     session_.reset();
-    session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
-                                                queue_, timer_queue_);
+    session_ = make_session();
     session_->set_trading_day(kDay);
 
     // 会话 B 的首个完整成功查询：只剩 rb2510 空 4（上一轮的 IF2506 已平、rb2510 数量变了）。
@@ -500,8 +520,7 @@ TEST_F(TdPositionLifecycleTest, DaySwitchFundQueriesCoexistAsTwoDayRows) {
 
     // 日切 → 重连/新登录链：新会话（生产上 = 交易日推进后的重新登录）写 D2 行。
     session_.reset();
-    session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
-                                                queue_, timer_queue_);
+    session_ = make_session();
     const int32_t next_day = day(2026, 10, 10);
     session_->set_trading_day(next_day);
     feed_position_snapshot({position_row("IF2506", 2, 0, 2.0 * 300.0 * 3910.0, /*is_last=*/true)});
@@ -533,8 +552,7 @@ TEST_F(TdPositionLifecycleTest, NewSessionSameDayFundQueryOverwritesRowInPlace) 
     ASSERT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 1);
 
     session_.reset();
-    session_ = std::make_unique<AccountSession>("acc1", *order_id_meta_, *writer_, *persist_,
-                                                queue_, timer_queue_);
+    session_ = make_session();
     session_->set_trading_day(kDay);
     feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
     session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 99000.0, 84000.0));
@@ -544,6 +562,89 @@ TEST_F(TdPositionLifecycleTest, NewSessionSameDayFundQueryOverwritesRowInPlace) 
     EXPECT_EQ(
         scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts WHERE date='20261009'"),
         99000);
+}
+
+// ============================================================================
+// 基准查询失败策略 (#413 / ADR 0049 决策 3):
+// 有限重试 → 重试耗尽停住 + ERROR 弹窗通知; 零行不是失败.
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, BaselineQueryFailureRetriesThenStopsWithErrorNotification) {
+    // 上次已知快照: 证明整条失败链(含每次重试调度)不碰表.
+    raw_exec(
+        "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, volume,"
+        " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+        " VALUES ('acc1','20261008','IF2506','CFFEX',1,5,0,5,0,3900.0,10,'dztd_test')");
+
+    // 生产上每次重试由 3s 定时器发起; 本夹具不连柜台(api_ 为空), 无法真发请求,
+    // 故直接按「尝试序列」喂 is_last 失败响应 —— 会话侧的重试预算判定/定时器排定/
+    // 耗尽后的停住与通知仍走真实代码路径 (定时器只排定不触发, 预算按响应推进).
+    const int kTotalAttempts = 1 + kPositionQueryMaxRetries;  // 首次 + 3 次重试
+    for (int attempt = 1; attempt <= kTotalAttempts; ++attempt) {
+        session_->on_rsp_qry_investor_position(failed_position_query());
+        EXPECT_EQ(notifications_.size(), attempt < kTotalAttempts ? 0u : 1u)
+            << "notification must be raised exactly once, after the retry budget is exhausted";
+        if (attempt < kTotalAttempts) {
+            // 预算未耗尽: 排了重试定时器 (待命), 尚未放弃登录.
+            ASSERT_FALSE(timer_queue_.empty())
+                << "a retry must be scheduled while the budget remains";
+            // 待触发的最近定时器必须是 3 秒重试, 而不是 5 分钟单次尝试超时 ——
+            // 只看队列非空无法区分两者, 排错定时器也会绿.
+            EXPECT_LE(timer_queue_.next_timeout(), std::chrono::seconds(3));
+        }
+    }
+    flush_persist();
+
+    // 耗尽后: 一次 ERROR + popup 通知, 文案只陈述事实 (不承诺 UI 不存在的操作, #409).
+    // 文案的逐字锁定在 td_account_session_pure_test（唯一真相源 = position_query_failed_message）,
+    // 这里只钉「会话确实把该文案推给了 UI」.
+    ASSERT_EQ(notifications_.size(), 1u);
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_EQ(notifications_.front().message, position_query_failed_message());
+    // 不再排任何定时器: 不自动恢复, 等用户处理 (ADR 0049 决策 3).
+    EXPECT_TRUE(timer_queue_.empty()) << "no timer may remain after the retry budget is exhausted";
+    // 没有转 Ready (夹具未登录, 这里钉「未就绪」而不是具体状态; LoadingInstruments 的停驻
+    // 由 LoginFinalizer 纯逻辑用例钉住).
+    EXPECT_FALSE(session_->is_ready());
+    EXPECT_FALSE(session_->position_query_ok());
+    // 失败链不碰表: 当日无行, 上一交易日快照原样.
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 0);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261008'"), 5);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 0);
+
+    // 预算耗尽后迟到的响应不得复活本次登录 (on_rsp_qry_investor_position 的失败终态早退):
+    // 喂一条「成功」is_last（含一行持仓）与一条失败 is_last，都必须被拦住 ——
+    // 不写表、不二次弹窗、不排定时器、position_query_ok 不得回 true.
+    session_->on_rsp_qry_investor_position(
+        position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true));
+    session_->on_rsp_qry_investor_position(failed_position_query());
+    flush_persist();
+    EXPECT_EQ(notifications_.size(), 1u) << "late responses must not raise a second notification";
+    EXPECT_TRUE(timer_queue_.empty()) << "late responses must not schedule retries";
+    EXPECT_FALSE(session_->is_ready());
+    EXPECT_FALSE(session_->position_query_ok())
+        << "a late success must not revive the failed login";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 0)
+        << "a late response after the login is failed must not write the snapshot";
+}
+
+TEST_F(TdPositionLifecycleTest, ZeroRowSuccessfulQueryIsNotFailureAndSchedulesNoRetry) {
+    // 「查不到」不是失败 (ADR 0049 决策 3): is_last 正常到达但零行 = 成功, 空账户合法.
+    // 失败路径才会排重试定时器 + 发弹窗; 零行必须两者都不发生, 且当日空集被整组替换.
+    raw_exec(
+        "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, volume,"
+        " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+        " VALUES ('acc1','20261009','IF2506','CFFEX',1,3,0,3,0,3910.0,20,'dztd_test')");
+
+    feed_position_snapshot({});  // 只有 is_last, 无行, 无 ErrorID
+
+    EXPECT_TRUE(session_->position_query_ok())
+        << "zero rows with a clean is_last is a successful query, not a failure";
+    EXPECT_TRUE(timer_queue_.empty()) << "a successful zero-row query must not schedule retries";
+    EXPECT_TRUE(notifications_.empty()) << "success must not raise any notification";
+    // 成功查询整组替换为当日空集 (当日旧行被删, 历史不受影响).
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 0);
 }
 
 }  // namespace
