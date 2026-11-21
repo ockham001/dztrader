@@ -73,7 +73,8 @@ public:
     ///   当前仅连接超时; 在 TdApi 主循环线程同步调用)
     /// @param seq_allocator 无会话拒单的账户级 seq 分配器 (可空; 空 = 只用 DB 播种)。
     ///   登录日装载时用 max(day_load.start_seq, 本分配器 current) 抬高 seq 计数器。
-    /// @param notify 可选持久化通知回调 (登录 flush 屏障超时 ERROR 经它转 UI; 主循环线程调用)
+    /// @param notify 可选账户级 UI 通知回调 (登录 flush 屏障超时 / 登录失败原因经它转 UI;
+    ///   主循环线程调用)
     AccountSession(std::string account_id,
                    shm::OrderIdMeta& order_id_meta,
                    shm::MultiWriter& event_writer,
@@ -205,6 +206,19 @@ private:
     void req_authenticate();
     void req_login();
     void req_settlement_confirm();
+
+    /// 登录失败统一出口 (#407): 状态机回滚 + 失败原因上浮 UI 通知.
+    ///
+    /// 登录失败后状态回滚到 Authenticated/Connected, 两者都是**正常中间态**——前端与用户
+    /// 无法与「正在登录」区分, 也拿不到原因; 而本进程不会自动重发登录 (见 #406)。因此失败
+    /// 必须让用户看得见, 否则账户会静默卡住。
+    ///
+    /// @param reason 失败场景 (中文, 供通知正文; 如「交易日无效（原始值 "00000000"）」)。不复用
+    ///   on_login_failed() 的通用文案「交易登录失败」——只说失败不说原因, 用户拿不到可用信息。
+    /// 时序: 必须先 on_login_failed() 转状态再通知 (与 md 一致)。异常不逃逸 (notify_ 可能抛)。
+    /// 状态机拒绝转移 (此刻不在 LoggingIn, 如前置已断线或已登出) 时不推送: 弹窗会对不上
+    /// 当前状态。注意这不等于「只有真实登录尝试才推送」——该情形同样会静默, 是有意取舍。
+    void notify_login_failed(const std::string& reason);
     /// 触发合约查询 (设计 §7.2), 进入 LoadingInstruments 状态.
     /// 失败/超时调 on_instruments_load_failed 回退到 LoggedIn (设计 §2.4.1).
     void req_qry_instrument();
@@ -307,7 +321,8 @@ private:
     dztrader::core::TimerQueue& timer_queue_;
     /// 账户状态通知回调 (可空; 会话内直调状态机的路径经它推送 2018, 契约 account-status)
     std::function<void(DzAccountState)> account_state_cb_;
-    /// 持久化通知回调 (可空; 登录 flush 屏障超时 ERROR 经它转 UI, 空则仅日志)
+    /// 账户级 UI 通知回调 (可空; 登录失败原因 / 登录 flush 屏障超时 ERROR 经它转 UI,
+    /// 空则仅日志)
     AccountNotifyFn notify_;
 
     CThostFtdcTraderApi* api_ = nullptr;

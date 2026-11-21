@@ -361,7 +361,10 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     if (!f.rsp_info || f.rsp_info->ErrorID != 0) {
         SPDLOG_ERROR("td login failed | account={} error_id={}", account_id_,
                      f.rsp_info ? f.rsp_info->ErrorID : -1);
-        state_machine_.on_login_failed();
+        notify_login_failed(f.rsp_info
+                                ? std::format("柜台拒绝，错误码 {}：{}", f.rsp_info->ErrorID,
+                                              dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg))
+                                : std::string("柜台未返回错误信息"));
         return;
     }
     // 同步 order_ref (设计 §9.4): new = max(local+1, ctp_max+1)
@@ -379,9 +382,10 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     // 发现 3 (评审 Important): 走 set_trading_day 而非直接赋值 — 日切/重连后新交易日的
     // 持仓为绝对态, 旧镜像 (key 不含日期) 会拦截新日首报, 必须在登录时清空 (spec §4.1 跨日清空).
     if (!trading_day_usable(f.days_since_epoch)) {
+        const std::string raw = f.rsp_user_login ? f.rsp_user_login->TradingDay : "";
         SPDLOG_ERROR("td login trading day invalid | account={} trading_day=\"{}\"", account_id_,
-                     f.rsp_user_login ? f.rsp_user_login->TradingDay : "");
-        state_machine_.on_login_failed();
+                     raw);
+        notify_login_failed(std::format("交易日无效（原始值 \"{}\"）", raw));
         return;
     }
     set_trading_day(f.days_since_epoch);
@@ -389,7 +393,7 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     // 重放回报前装载当日订单/成交基准. 装载失败按登录失败路径处理 (重试登录):
     // 空基准会让重放风暴整批误判转发, 宁可重试也不带错基准进入 Ready.
     if (!load_trading_day_baseline()) {
-        state_machine_.on_login_failed();
+        notify_login_failed("当日订单/成交基准装载失败");
         return;
     }
     // I1: sys_version 改用 CTP API 版本 (CZCETime 是郑商所时间, 不是系统版本)
@@ -1039,6 +1043,31 @@ void AccountSession::req_authenticate() {
     });
 }
 
+void AccountSession::notify_login_failed(const std::string& reason) {
+    // 先转状态 (回滚到 Authenticated/Connected), 再通知 —— 与 md 的
+    // 「先 set_last_error + set_state, 再返回通知」时序一致.
+    auto notif = state_machine_.on_login_failed();
+    // 状态机拒绝了这次转移 (此刻不在 LoggingIn: 典型为前置已断线 / 已登出, 已由状态机
+    // 记 WARN): 此刻弹窗对不上界面状态, 不推送。注意这只是「不在 LoggingIn」, 不保证
+    // 等于「非真实登录尝试」——该情形同样静默, 属有意取舍 (断线场景由 Offline/重连反馈兜底).
+    if (!notif) {
+        return;
+    }
+    if (!notify_) {
+        return;  // 未注入 (测试/无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
+    }
+    const std::string message = login_failed_message(reason);
+    try {
+        notify_(notif->level, message, notif->popup);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td login failed notify failed | account={} error=\"{}\"", account_id_,
+                     e.what());
+    } catch (...) {
+        SPDLOG_ERROR("td login failed notify failed | account={} error=unknown_exception",
+                     account_id_);
+    }
+}
+
 void AccountSession::req_login() {
     CThostFtdcReqUserLoginField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
@@ -1055,7 +1084,7 @@ void AccountSession::req_login() {
         if (gen != generation_) return;
         if (state_machine_.state() == TdState::LoggingIn) {
             SPDLOG_ERROR("td login timeout | account={}", account_id_);
-            state_machine_.on_login_failed();
+            notify_login_failed("10 秒内未收到柜台的登录响应");
         }
     });
 }

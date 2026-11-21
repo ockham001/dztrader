@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <limits>
 
 namespace dztrader::ctp {
@@ -156,6 +157,18 @@ bool trading_day_usable(int32_t days_since_epoch) noexcept {
     // (td_events.h), 由 TdSpi::OnRspUserLogin 在 parse_ctp_date 返回 DZ_DATE_NA 时保留.
     // 0 是 DZ_DATE_NA 且业务上不存在 1970 年的真实交易日, 同样视为不可用.
     return days_since_epoch != std::numeric_limits<int32_t>::min() && days_since_epoch > 0;
+}
+
+std::string login_failed_message(const std::string& reason) {
+    // 不承诺「请登出后重新登录」: WebUI 目前没有 td 的连接/断开入口
+    // (DZ_FRAME_TD_CONNECT/TD_DISCONNECT 无生产端, 无 REST/WS 控制消息, 见 #409),
+    // 让用户去做一件界面上做不到的事, 比只说事实更糟. 这里只陈述「发生了什么 + 会怎样」,
+    // 具体恢复路径由运维侧处置 (等自动调度窗口 / 重启网关), 见 docs/components/dztd_ctp.md.
+    if (reason.empty()) {
+        // 空原因不产出「（）」这种残缺文案.
+        return "交易登录失败，本进程不会自动重试该账户";
+    }
+    return std::format("交易登录失败（{}），本进程不会自动重试该账户", reason);
 }
 
 }  // namespace dztrader::ctp

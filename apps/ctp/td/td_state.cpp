@@ -148,6 +148,8 @@ std::optional<TdNotification> TdStateMachine::on_login_failed() {
     TdState rollback = was_authenticated_ ? TdState::Authenticated : TdState::Connected;
     set_state(rollback);
     SPDLOG_ERROR("login failed | state=LoggingIn rollback={}", magic_enum::enum_name(rollback));
+    // message 保留通用文案供本函数的其它调用方; AccountSession 侧改用
+    // login_failed_message() 构造带场景的正文, 只取本结构的 level/popup (#407).
     return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "交易登录失败"};
 }
 
