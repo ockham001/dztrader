@@ -26,7 +26,6 @@ import {
 import {
   UNAVAILABLE_TEXT,
   formatAge,
-  formatCountPerSec,
   formatDecimal,
   formatFrequency,
   formatMilliseconds,
@@ -343,13 +342,6 @@ const loadEmptyDesc = computed(() => loadAvailable.value ? '当前快照未提�
 const PROCESSOR_QUEUE_SEMANTIC = 'processor_queue'
 const loadIsProcessorQueue = computed(() => loadAverage.value?.semantic === PROCESSOR_QUEUE_SEMANTIC)
 
-// ---- 上下文切换 / 中断（#72）：两者共用可用性键 cpu.context_switches ----
-// #362 重排后不再占一格面板，降级为 CPU 卡内的一行小字（读数照旧按 nullable 渲染「不可用」，
-// 不显示 0；不可用时另给一行原因）。
-const ratesAvailable = computed(() => isAvailable('cpu.context_switches'))
-const contextSwitches = computed(() => sysmon.cpuContextSwitchesPerSec)
-const interrupts = computed(() => sysmon.cpuInterruptsPerSec)
-
 // ---- 温度 / 每核频率（#73，B 组可用性样板）----
 // 与内存 / 磁盘等「不可用显示空态」的区块不同：对应指标不可用时整块不渲染，
 // 不是显示 0、也不是显示「不可用」占位。只按 availability.metrics 与数据渲染，不按 platform.family 分支。
@@ -388,6 +380,9 @@ const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   network: sysmon.network,
   shmDir: sysmon.shmDirInfo,
   clock: sysmon.clock,
+  cpuCores: sysmon.cpuCores,
+  cpuContextSwitchesPerSec: sysmon.cpuContextSwitchesPerSec,
+  cpuInterruptsPerSec: sysmon.cpuInterruptsPerSec,
   thresholds: sysmon.config?.thresholds ?? null,
   clockConfig: sysmon.config?.clock ?? null,
   // 可用性映射直接传 store 的查询函数：台账按它区分「不可用」「配置关闭」「暂无数据」
@@ -797,6 +792,24 @@ const cpuTrendAriaLabel = computed(
           </p>
         </div>
       </header>
+      <!-- 主机条（#362）：原在下方网格内，#370 步骤 4 并入顶栏——与页头同处一条带，省掉
+            两者之间整块的高度。字段一个未删（删哪个重复字段是 #373 的决定，本票不做）。
+            只在实时视图且快照到达时渲染，与原先在网格内的时机一致。 -->
+      <section
+        v-if="viewMode === 'realtime' && snapshot"
+        class="monitor-view__host"
+        :class="{ 'monitor-view__host--stale': snapshotStale }"
+        data-test="monitor-host"
+        aria-label="主机"
+      >
+        <span class="monitor-view__host-dot" aria-hidden="true"></span>
+        <span class="monitor-view__host-name">{{ hostName }}</span>
+        <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
+        <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
+        <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
+        <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
+        <span v-if="!snapshotStale" class="monitor-view__host-live">实时</span>
+      </section>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
            tabpanel、aria-controls、方向键与 roving tabindex——读屏按 tabs 报语义、键盘却按按钮走，
            比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
@@ -853,27 +866,9 @@ const cpuTrendAriaLabel = computed(
     </div>
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
-      <!-- 主机条（#362）：取代原「系统信息」整张卡——一条紧凑的行，字段全部来自既有快照，
-           无可显示值的字段显示 `—`。脉冲点 + 右端「实时」表达快照在推进（本区只在有快照时渲染）。
-           #371：脉冲点与右端「实时」是**存活信号**，一律中性色——绿色只留给指标状态
-           （DESIGN.md One Job Rule：同一色族只承担一个含义）。停推时两处随状态行一起说明，
-           不再由这两个哨兵各自声称「实时」。 -->
-      <section
-        class="monitor-view__host"
-        :class="{ 'monitor-view__host--stale': snapshotStale }"
-        data-test="monitor-host"
-        aria-label="主机"
-      >
-        <span class="monitor-view__host-dot" aria-hidden="true"></span>
-        <span class="monitor-view__host-name">{{ hostName }}</span>
-        <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
-        <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
-        <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
-        <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
-        <span v-if="!snapshotStale" class="monitor-view__host-live">实时</span>
-      </section>
+      <!-- 主机条已并入上方顶栏（#370 步骤 4），网格里不再重复渲染。
 
-      <!-- CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
+       CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
            每核使用率条形常驻（一眼看形态）；每核频率与每传感器读数收进各自的可展开区——
            「不可用就不渲染」「可用但本帧无数据要空态」的既有语义不变。 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-cpu">
@@ -1043,50 +1038,6 @@ const cpuTrendAriaLabel = computed(
             </p>
           </div>
 
-          <!-- 每核条形（#362）：容器自适应网格，柱在上、号在下，一条规则覆盖 4–128 核
-               （不写断点、不用 JS 测量）。饱和核用 error 色；柱的形状不随状态变化，灰度截屏下
-               靠旁边的「饱和」文字区分状态（颜色之外只有文字这一层差异）。正常核用 success 色。
-               柱数与顺序取 `cpuCores`（即快照 `cpu.cores`）：契约 sysmon §2.3 保证可用时数组长度
-               等于 `system.logical_cores`；两者不一致时以**数组**为准——逐核读数的唯一事实源是数组，
-               按 `logical_cores` 补齐或截断都会凭空造出没有读数的核。 -->
-          <div class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-cpu-cores">
-            <div class="monitor-view__panel-head">
-              <h3 class="monitor-view__panel-title">每核使用率</h3>
-              <p v-if="cpuCores.length > 0" class="monitor-view__meta" data-test="monitor-cpu-detail-summary">{{ cpuDetailSummary }}</p>
-            </div>
-            <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
-              <li
-                v-for="core in cpuCores"
-                :key="core.index"
-                class="monitor-view__core"
-                :class="{ 'monitor-view__core--saturated': core.saturated }"
-                data-test="monitor-core"
-                :data-core-index="core.index"
-              >
-                <span class="monitor-view__core-bar" aria-hidden="true">
-                  <span
-                    class="monitor-view__core-bar-fill"
-                    :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
-                    :style="coreBarStyle(core.usage_ratio)"
-                  ></span>
-                </span>
-                <span class="monitor-view__core-label">
-                  <span class="monitor-view__core-index">核 {{ core.index }}</span>
-                  <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
-                </span>
-                <span
-                  v-if="core.saturated"
-                  class="monitor-view__core-tag"
-                  data-test="monitor-core-saturated"
-                >饱和</span>
-              </li>
-            </ul>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
-              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
-              <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
-            </div>
-          </div>
-
           <!-- 每核频率明细（#73 / #362）：由「当前频率」那格的开关展开，但以**整卡宽**渲染——
                128 核的列表塞进 1/4 格会挤成一列窄条。不可用（cpu.frequency 不可用）时整块不渲染。 -->
           <div v-if="frequencyAvailable && coreFrequencies.length > 0 && cpuDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-frequency-detail">
@@ -1134,26 +1085,10 @@ const cpuTrendAriaLabel = computed(
               </ul>
             </div>
           </div>
-
-          <!-- 上下文切换 / 中断（#72）：四数字腾出的那格不浪费——速率降级为 CPU 卡底部一行小字。
-               数值 null（首次采样 / 计数器重置）显示「不可用」而不是 0；能力不可用另给原因。 -->
-          <div class="monitor-view__rates-block">
-            <dl class="monitor-view__rates" data-test="monitor-cpu-rates">
-              <div class="monitor-view__rate-item">
-                <dt class="monitor-view__rate-label">上下文切换</dt>
-                <dd class="monitor-view__rate-value" data-test="monitor-context-switches">{{ formatCountPerSec(contextSwitches) }}</dd>
-              </div>
-              <div class="monitor-view__rate-item">
-                <dt class="monitor-view__rate-label">中断</dt>
-                <dd class="monitor-view__rate-value" data-test="monitor-interrupts">{{ formatCountPerSec(interrupts) }}</dd>
-              </div>
-            </dl>
-            <p v-if="!ratesAvailable" class="monitor-view__hint">{{ unavailableDesc('cpu.context_switches') }}</p>
-          </div>
         </div>
       </section>
 
-      <!-- 指标台账（#363）：三组、每行七列，行数据全部来自 `buildMonitorLedger`。
+      <!-- 指标台账（#363）：四组（CPU → 内存 → 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
            组件不写任何「该不该显示」的判断——行的存在、空态类别、阈值与余量、能否点跳历史
            全部由 `@/composables/monitorLedger` 决定。七列共用一条列基线（每行同一套
            `grid-template-columns`），因此任意一列可纵向读下来。 -->
@@ -1303,7 +1238,7 @@ const cpuTrendAriaLabel = computed(
                 <!-- 明细展开按钮挂在明细列内（不另占一整行）：语义上它是「这段话还有下文」，
                      不是第八列，也不该把每行的行高翻倍。时钟行的按钮在它自己的结构化明细里。 -->
                 <button
-                  v-if="row.fields.length > 0 && row.id !== 'clock'"
+                  v-if="(row.fields.length > 0 || row.id === 'cpu.cores') && row.id !== 'clock'"
                   class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__ledger-expand-btn"
                   type="button"
                   :aria-expanded="isLedgerRowOpen(row.id)"
@@ -1388,6 +1323,53 @@ const cpuTrendAriaLabel = computed(
                   <dd class="monitor-view__ledger-field-value" data-test="ledger-field-value">{{ field.value }}</dd>
                 </div>
               </dl>
+
+              <!-- 每核使用率（#370）：逐核条形从 CPU 宽卡移入本行的展开区（行值只给
+                   「最高核占用率 · N 核」摘要）。网格规则沿用 #362 的一条 `auto-fit`
+                   （一条规则覆盖 4–128 核，不写断点、不用 JS 测量），只挪位置不改规则。
+                   饱和核用 error 色 + 「饱和」文字——颜色之外还有文字这一层差异。
+                   逐核读数与顺序仍取 `cpuCores`（快照 `cpu.cores` 数组是唯一事实源，
+                   契约 sysmon §2.3 保证可用时长度等于 `system.logical_cores`，
+                   两者不一致时以数组为准）。 -->
+              <div
+                v-if="row.id === 'cpu.cores' && isLedgerRowOpen(row.id)"
+                :id="`ledger-fields-${row.id}`"
+                class="monitor-view__ledger-cores"
+                data-test="monitor-cpu-cores"
+              >
+                <p v-if="cpuCores.length > 0" class="monitor-view__meta" data-test="monitor-cpu-detail-summary">{{ cpuDetailSummary }}</p>
+                <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
+                  <li
+                    v-for="core in cpuCores"
+                    :key="core.index"
+                    class="monitor-view__core"
+                    :class="{ 'monitor-view__core--saturated': core.saturated }"
+                    data-test="monitor-core"
+                    :data-core-index="core.index"
+                  >
+                    <span class="monitor-view__core-bar" aria-hidden="true">
+                      <span
+                        class="monitor-view__core-bar-fill"
+                        :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
+                        :style="coreBarStyle(core.usage_ratio)"
+                      ></span>
+                    </span>
+                    <span class="monitor-view__core-label">
+                      <span class="monitor-view__core-index">核 {{ core.index }}</span>
+                      <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
+                    </span>
+                    <span
+                      v-if="core.saturated"
+                      class="monitor-view__core-tag"
+                      data-test="monitor-core-saturated"
+                    >饱和</span>
+                  </li>
+                </ul>
+                <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
+                  <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
+                  <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
+                </div>
+              </div>
 
               <!-- 时钟行的辅助信息（#302）：方向说明 / 测量质量提示 / 同步服务检测。
                    偏差着色与质量提示是两个独立判定对象（契约 §2.8）：质量提示不改变着色。 -->
@@ -1722,6 +1704,9 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
+   #370 步骤 4：从下方网格挪进顶栏，与页头同处一条带——原先它是网格里的独立行，
+   页头与它之间有整块间距；合并后顶栏一行装下「标题组 / 主机条 / 视图切换」，
+   省掉两者之间的整块高度。字段一个未删（删哪个重复字段是 #373 的决定，本票不做）。
    脉冲点 + 主机名 + 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数 + 右端「实时」。
    窄屏换行而不是横向滚动：字段都允许收缩，型号过长先折行。 */
 .monitor-view__host {
@@ -1729,9 +1714,7 @@ const cpuTrendAriaLabel = computed(
   align-items: center;
   flex-wrap: wrap;
   gap: var(--spacer-4) var(--spacer-12);
-  grid-column: 1 / -1;
   min-width: 0;
-  margin-bottom: var(--spacer-4);
   padding: var(--spacer-8) var(--spacer-12);
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-8);
@@ -2742,41 +2725,6 @@ const cpuTrendAriaLabel = computed(
   text-align: left;
 }
 
-/* 上下文切换 / 中断（#362：从独立面板降级为 CPU 卡底部一行）：标签与读数同排，紧凑不占版面 */
-.monitor-view__rates-block {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-
-.monitor-view__rates {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacer-4) var(--spacer-24);
-  margin: 0;
-}
-
-.monitor-view__rate-item {
-  display: flex;
-  align-items: baseline;
-  gap: var(--spacer-6);
-  min-width: 0;
-}
-
-.monitor-view__rate-label {
-  color: var(--text-tertiary);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-}
-
-.monitor-view__rate-value {
-  margin: 0;
-  color: var(--text-secondary);
-  font-family: var(--font-family-metric);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
-  font-variant-numeric: tabular-nums;
-}
-
 .monitor-view__hint {
   margin: var(--spacer-8) 0 0;
   color: var(--text-tertiary);
@@ -2919,8 +2867,8 @@ const cpuTrendAriaLabel = computed(
     grid-column: auto;
   }
 
-  /* 窄屏：主机条与 CPU 宽卡的内层块也要让回单列（宽卡本身已 `grid-column: auto`） */
-  .monitor-view__host,
+  /* 窄屏：CPU 宽卡的内层块让回单列（宽卡本身已 `grid-column: auto`）。
+     主机条已在顶栏（#370 步骤 4），不再是网格项，不在此处列。 */
   .monitor-view__stats,
   .monitor-view__trend {
     grid-column: auto;

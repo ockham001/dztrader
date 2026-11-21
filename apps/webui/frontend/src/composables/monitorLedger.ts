@@ -36,6 +36,7 @@ import {
   formatClockHeadroom,
   formatClockThreshold,
   formatCount,
+  formatCountPerSec,
   formatDecimal,
   formatIops,
   formatLatency,
@@ -54,6 +55,7 @@ import type {
   SysmonAvailabilityEntry,
   SysmonClockConfigPayload,
   SysmonClockInfo,
+  SysmonCpuCore,
   SysmonDiskIoInfo,
   SysmonMemoryInfo,
   SysmonNetworkInfo,
@@ -71,8 +73,8 @@ export const LEDGER_DEFAULT_MEMORY_USED_PCT = 90
 export const LEDGER_DEFAULT_SWAP_USED_PCT = 50
 export const LEDGER_DEFAULT_VOLUME_FREE_PCT = 10
 
-/** 台账分组标识（三组，顺序固定：内存 → 存储 → 网络与时钟） */
-export type LedgerGroupId = 'memory' | 'storage' | 'network_clock'
+/** 台账分组标识（四组，顺序固定：CPU → 内存 → 存储 → 网络与时钟） */
+export type LedgerGroupId = 'cpu' | 'memory' | 'storage' | 'network_clock'
 
 /**
  * 行状态。`ok` 之外的四类是**四种不同的事实**，文案与着色都不同：
@@ -180,6 +182,18 @@ export interface MonitorLedgerInput {
   network: readonly SysmonNetworkInfo[]
   shmDir: SysmonShmDirInfo | null
   clock: SysmonClockInfo | null
+  /**
+   * 每核读数（契约 sysmon §2.3），与 store 的 `cpuCores` 同形态（已净化：`index` /
+   * `usage_ratio` / `saturated`）。`cpu.cores` 不可用时为空数组。#370 起每核条形从 CPU 宽卡
+   * 移入台账 `cpu.cores` 行的展开区，行值只给最高核占用率与核数摘要，逐核读数仍在展开区。
+   */
+  cpuCores: readonly SysmonCpuCore[]
+  /**
+   * 每秒上下文切换 / 每秒中断（契约 sysmon §2.3、§2.5）。两者共用可用性键
+   * `cpu.context_switches`；值不可用时为 null，不得用 0 冒充（与 store 同口径）。
+   */
+  cpuContextSwitchesPerSec: number | null
+  cpuInterruptsPerSec: number | null
   /** 生效配置的 `thresholds` 段；null = 镜像未到达，按契约默认值回退 */
   thresholds: SysmonThresholdsConfigPayload | null
   /** 生效配置的 `clock` 段；null = 镜像未到达，按契约默认值回退 */
@@ -347,6 +361,107 @@ function unavailableRow(
   const state = reason === 'disabled_by_config' ? 'disabled' : 'unavailable'
   // metric 一并传入：磁盘 I/O 的 no_permission 有可操作的专属文案（见 `unavailableReasonText`）
   return blankRow(base, state, `${UNAVAILABLE_TEXT}：${unavailableReasonText(reason, metric)}`)
+}
+
+// ---- CPU 组（#370）：每核使用率 + 上下文切换/中断，从 CPU 宽卡内移出 ----
+// 契约 sysmon §2.3 没有为这两类读数定义阈值，因此阈值与余量两列一律 `—`：台账不为了让列整齐
+// 而编造阈值（见本模块顶部「阈值列只写契约里真实存在的阈值」）。
+
+/**
+ * CPU 组（#370）：从 CPU 宽卡内部移出的「每核使用率」与「上下文切换 / 中断」各成一行。
+ *
+ * 两行都**没有**契约阈值：阈值列与余量列写 `—`，等级为 `null`（无判定基准，不冒充「正常」）；
+ * 每核条形不在主列里铺开，而是收进 `cpu.cores` 行的展开区（视图按行 id 渲染，数据仍是同一份
+ * `cpuCores`）。
+ */
+function cpuGroup(input: MonitorLedgerInput): LedgerGroup {
+  const rows: LedgerRow[] = []
+
+  // 每核使用率（#370）：每核条形从 CPU 宽卡移入本行的展开区（视图按行 id 渲染同一份
+  // `cpuCores`，网格规则沿用 #362 的一条 `auto-fit` 规则，不改）。主列只给「最高核占用率 +
+  // 核数」摘要——逐核读数不是单一分母，不套量程轨道（与网卡 / 共享内存目录同一口径）。
+  const coresBase = {
+    id: 'cpu.cores',
+    group: 'cpu' as const,
+    label: '每核使用率',
+    contractKey: 'cpu.cores',
+  }
+  const { available: coresAvailable } = availabilityState(input.availability, 'cpu.cores')
+  if (!coresAvailable) {
+    rows.push(unavailableRow(coresBase, 'cpu.cores', input))
+  } else if (input.cpuCores.length === 0) {
+    rows.push(blankRow(coresBase, 'empty', '暂无数据：本帧未采集到每核读数'))
+  } else {
+    let peak: number | null = null
+    let saturated = 0
+    for (const core of input.cpuCores) {
+      if (typeof core.usage_ratio === 'number' && Number.isFinite(core.usage_ratio)) {
+        if (peak === null || core.usage_ratio > peak) peak = core.usage_ratio
+      }
+      if (core.saturated) saturated += 1
+    }
+    const coreCount = input.cpuCores.length
+    rows.push({
+      ...coresBase,
+      state: 'ok',
+      stateText: '',
+      stateLabel: '',
+      // 每核使用率是**一组**读数，没有单一的可归一化分母：不画量程轨道、不套状态色
+      level: null,
+      levelText: ledgerLevelText(null),
+      ratio: null,
+      // 行值给最高核占用率与核数摘要；最高读数缺失时不伪造 0，只给核数
+      value: peak === null ? `${coreCount} 核` : `最高 ${formatPercent(peak)} · ${coreCount} 核`,
+      detail: `${saturated} 核饱和 / ${coreCount} 核`,
+      thresholdText: NO_THRESHOLD_TEXT,
+      headroomText: NO_THRESHOLD_TEXT,
+      historyKey: null,
+      detailParts: [],
+      fields: [],
+      badges: [],
+    })
+  }
+
+  const ratesBase = {
+    id: 'cpu.rates',
+    group: 'cpu' as const,
+    label: '上下文切换 / 中断',
+    contractKey: 'cpu.rates',
+  }
+  const ratesAvailability = availabilityState(input.availability, 'cpu.context_switches')
+  if (!ratesAvailability.available) {
+    rows.push(unavailableRow(ratesBase, 'cpu.context_switches', input))
+  } else if (input.cpuContextSwitchesPerSec === null && input.cpuInterruptsPerSec === null) {
+    rows.push(blankRow(ratesBase, 'empty', '暂无数据：本帧未采集到上下文切换 / 中断速率'))
+  } else {
+    // 行值按「上下文切换 · 中断」的顺序并列，明细列写明这个顺序：两个 `N/s` 读数并列时
+    // 读者不必靠列的先后去猜哪个数是谁。
+    rows.push({
+      ...ratesBase,
+      state: 'ok',
+      stateText: '',
+      stateLabel: '',
+      // 速率没有可归一化的分母：无阈值、不套状态色，等级文字给「无阈值」而非空串
+      level: null,
+      levelText: ledgerLevelText(null),
+      ratio: null,
+      value: `${formatCountPerSec(input.cpuContextSwitchesPerSec)} · ${formatCountPerSec(input.cpuInterruptsPerSec)}`,
+      detail: '上下文切换 · 中断',
+      thresholdText: NO_THRESHOLD_TEXT,
+      headroomText: NO_THRESHOLD_TEXT,
+      historyKey: null,
+      detailParts: [],
+      fields: [],
+      badges: [],
+    })
+  }
+
+  return {
+    id: 'cpu',
+    title: 'CPU',
+    note: `${rows.length} 行 · 阈值列不适用`,
+    rows,
+  }
 }
 
 /** 内存组：内存已用 + 交换已用（两行都是可点跳历史的标量） */
@@ -803,13 +918,13 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
 }
 
 /**
- * 构造资源监控台账（三组、固定顺序）。
+ * 构造资源监控台账（四组、固定顺序：CPU → 内存 → 存储 → 网络与时钟）。
  *
- * 行数由数据决定（卷数 / 盘数 / 网卡数），不是常量：8 个卷就是 8 行，0 张网卡就是 0 行。
+ * 行数由数据决定（核数 / 卷数 / 盘数 / 网卡数），不是常量：8 个卷就是 8 行，0 张网卡就是 0 行。
  * 视图只负责按行渲染，不写任何「该不该显示」的判断。
  */
 export function buildMonitorLedger(input: MonitorLedgerInput): LedgerGroup[] {
-  return [memoryGroup(input), storageGroup(input), networkClockGroup(input)]
+  return [cpuGroup(input), memoryGroup(input), storageGroup(input), networkClockGroup(input)]
 }
 
 // ---- 内存组成带（#363）----
