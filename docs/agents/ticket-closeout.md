@@ -29,7 +29,7 @@
 1. `git add <本票路径>`（显式路径，禁止 `git add -A`）→ `git commit`（WIP 提交也可）→ **`git status` 必须干净**，并把 `git rev-parse --short HEAD` 写进 verifier prompt。
 2. `/code-review since <base>`，即审 `git diff <base>...HEAD`。
 3. **冻结纪律**：从 spawn verifier 到最后一个 verifier 返回，**不改任何文件、不 amend、不 push**。审查期间继续改代码会让 findings 对旧 commit 作废，整轮白跑（本波 #93：HEAD 在审查中前移 4 次，审阅者只能对旧 commit 出结论并重跑；#164 的 Standards verifier 自己声明「working tree moved during review」，findings 只能对旧快照负责）。
-4. **verifier 一律 `spawn_teammate`，不用 `subagent`**：`code-review` 技能写的是「并行 sub-agent」，但本宿主的 `subagent` id **不可寻址**——`send_message` 报 `TEAM_MEMBER_NOT_FOUND`、`wait_agent` 报 `no-active-peer`，跑完报告也容易整份丢失（#165 两个 review 轴的结果全丢，只能重派一轮；本波四张票共 15 次此类失败）。用 `spawn_teammate` 派 Standards / Spec 两个变体，各自 `wait_agent` 或等报告；两条到齐再动代码。
+4. **verifier 按宿主派（#424 AC6）**：`code-review` 技能写的是「并行 sub-agent」，两种宿主各有正确形态——**opencode** 用 `spawn_teammate`：那里 `subagent` 的 id **不可寻址**（`send_message` 报 `TEAM_MEMBER_NOT_FOUND`、`wait_agent` 报 `no-active-peer`），跑完报告也容易整份丢失（#165 两个 review 轴的结果全丢，只能重派一轮；本波四张票共 15 次此类失败）；**DSH** 用 `subagent`，`wait_agent` 阻塞或等 `subagent-settled` 通知，#411–#416 六票实测报告正常到达（同一票的两个轴并行派也正常）。两种宿主都是**两条到齐再动代码**。
 5. **verifier prompt 用模板，不要临场写**：**成本封套与 prompt 骨架见 [verifier-prompt.md](verifier-prompt.md)**（Standards / Spec / 只读验证三个可复制块 + 为什么必须写步骤序）。带齐固定点与 `HEAD`、`git diff <base>...HEAD` 命令、上一轮 findings（贴全，避免重复审查与相反结论）、只读约束。**先复制模板再填占位符**——只写「预算 ≤N 分钟」是已知失效形态（#216 首轮两个 verifier 19.4 / 14.4 min 零产出；换步骤序后 4.8 / 0.7 min 交付）。
 6. **一个会话总共只能派 8 个 teammate**（`spawn_teammate` 第 9 个报 `Team member limit 8 reached`，本宿主硬上限）。**这是会话生命周期内的累计上限，不是并发上限**：成员跑完变成 `inactive` 后**仍占着名额**，`interrupt_agent` 也不释放，且没有工具能把成员移出花名册——#233 派满 8 个后第 9 个被拒；#237 同样（8 个历史成员全 inactive，第 9 个仍被拒）。**所以名额是稀缺资源，派之前先规划**：一次审查只派必要的那几个（Standards + Spec，验证轮能复用上下文就不新开轴）；机械工单（如 #233 的 97 条 lint）别按文件数拆——按文件群拆到 3–5 个就给验证轮留够余量。名额耗尽后只能 Lead 自己代轴（见 §1 第 10 条的 failed 恢复协议第 ③ 步）。
 
@@ -128,7 +128,8 @@ git merge-base --is-ancestor <merge-commit> main && echo merged
 
 - **PR 未 MERGED 前不得关闭 issue**。CI 绿 ≠ 已落地（本波 #91 关单 40 分钟后才合、#92 关单 5 小时后才合，期间 #93 合入造成冲突，收尾多解一次冲突 + 多跑两轮 CI）。
 - **合并授权：唯一默认形态是「开票/批准时预授权」（#309 AC1 修订 #289 AC2 / #284 AC3）**：用户在场时秒级答复；把**条件式授权**——「CI 绿 + 双轴审查通过即合并关单」，或「按票/按波一次授权」——写进 issue 正文的 `## 拍板记录` 段，实现会话据此**零提问**（#289 即此形态）。**「PR 创建后提问」是兜底，只用于开票时用户不在场**（提问窗口与 `wait-ci` 重叠，答案到达时 CI 还在跑，零关键路径代价）。开工时提问是**唯一没有并行工作可垫**的时点，`ask_user_question` 会阻塞整个回合：#284 实测提问 07:40:54 → 答复 08:04:32 = **1418s（26.5% 墙钟）**，其中 933s 纯 idle。「开工时问」仅限「预计本票无 CI / 无并行工作可垫」（例如纯文档票且下游已全部就绪）。**禁止把该问题留到 CI 绿之后才问**——#281 因此在 CI 全绿后才问，用户 6177s 后答复，等待占会话 49.6%（#252 同一问题在用户在场时 23s 内答复）。提问必须保留「**先不合并，我要自己看 PR**」选项；用户选此项时 issue 保持 open、不阻塞其它票（其它票照常开工）。**缺「拍板记录」会被机器报出**：`scripts/check_ledger.py` 规则 R4 对 open 且带 `ready-for-agent` 的票报警（`--strict` 升 error）——#294–#298 五票全部无该段、整波退回「PR 后提问」，阻塞合计 403 min = 43% 墙钟，纯文档约束已两次失效。
-- `--delete-branch` 在 worktree 里会跳过本地删除（分支被 checkout）：先 `git worktree remove`，再 `git branch -d`；远端分支用 `git ls-remote --heads origin <branch>` 确认为空。
+- **开工时 R4 报警的处理（#424 AC1）：R4 是 warning，不是开工阻塞。** `scripts/check_ledger.py` 的 R4 只说明「这票的决策还没落进正文」，不改变本票能不能开工。固定三步：① **不开工即问**——开工时提问是唯一没有并行工作可垫的时点（#284 阻塞 1418s / 26.5% 墙钟）；② **继续实现**，缺的 `## 拍板记录` 段留给用户回填或收盘时补；③ 缺段时把合并授权提问放到 **PR 创建后**（本条上一段的兜底形态，与 `wait-ci` 重叠、零关键路径代价）。`ask_user_question` 返回空选项 = **用户跳过**（`selected: []`）：既不是授权也不是拒绝，**继续实现**，不要重问、不要当成阻塞——#411 废弃会话正是「R4 报警 → 开工 7.6 分钟提问 → 阻塞 3,280s → 用户跳过 → 整段会话作废」，而用户补段后重开的会话全程 0 提问。R4 报告末尾自带这条恢复路径（`R4_RECOVERY_HINT`）。
+- `--delete-branch` 在 worktree 里会跳过本地删除（分支被 checkout）：先 `git worktree remove`，再 `git branch -d`（先 `git branch --list` 确认分支还在，见 §7）；远端分支用 `git ls-remote --heads origin <branch>` 确认为空。
 - 合并会触发 main 的 CI（merge commit 跑 Linux，约 15 分钟；Windows job 只在 PR 跑）；共享工作区切回 main 后不要停在旧 feature 分支。
 - **默认不等 main CI**：squash 合并后 main 上的 tree 与 PR head tree **完全相同**，main run 重测的是同一份内容，等它拿不到任何新信息。落地确认用秒级命令：`git merge-base --is-ancestor <merge-commit> main`；想直接验 tree 相同用 `git diff --quiet <pr-head-commit> <merge-commit>`（静默即相同）。实测代价：五票里四票选择等，合计约 113 分钟（#246 4286s / #260 1633s / #248 620s / #258 251s）。
 - 只有下列情况才抽查 main run：本次 PR 的 CI 曾红过、或改动了 `ci.yml` / ruleset / 构建缓存配置（这些是「main 与 PR 环境不同」的唯一现实来源）。真要等就留到波末批量：`./scripts/wait-ci.sh --branch main`。
@@ -201,6 +202,8 @@ Refs: <contract/component/docs 路径>
 R6 跳过带 `⏳` 的未勾项——如实标注优于虚假勾选，规则必须能区分这两种状态，
 否则它只会逼着人把人工验证项勾成已完成（比不勾更糟）。
 
+**顺手关掉的关联票同样要勾（#424 AC7）**：关闭一张票时它可能一并结掉别的票（#411 按 AC 关闭了 #277），那些票也要回正文勾选对应 AC，或写明「本票结论见 #NNN 的关闭评论」。否则 R6 会把它们点名为「未勾即关闭」——本波实测 6 张 7 天内关闭的票挂着未勾 AC，spec 收口审计时看不出这些 AC 是否已被别的票覆盖。
+
 关闭后检查下游依赖是否解除：`gh issue view <child> --json blockedBy`（返回 `{nodes:[],totalCount}`，用 `.blockedBy.nodes[]`；或 `gh api repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by` 拿数组），或在票的报告里写清"#X 的 blocked_by 从 N → 0"。
 
 **关完这张票再跑一次** `./scripts/gate.sh ledger`：若它以「spec 母票可收口」点名某张 `[spec]`，说明刚关的这张就是最后一张子票 → 立刻按 §6「spec 母票收口」处置母票，**不要留到下一波**（#41、#153 都是这样空挂的）。
@@ -217,13 +220,26 @@ R6 跳过带 `⏳` 的未勾项——如实标注优于虚假勾选，规则必�
 3. **关闭母票**：`gh issue close <spec> --comment "<收口评论>"`。母票不作为长期真相源留在 backlog——真相源是契约 / ADR / 文档；遗留的 `ready-for-agent` 等标签会让后续 agent 把已完成的 spec 当成待实现任务。
 4. **先有票再关**：仍想做的事必须先有票（或明确的 out-of-scope 记录），否则不允许关闭母票。
 
+#### 决策逐条符合性表 + 差异清单（#424 AC4）
+
+收口评论里的「spec 逐条符合性」必须是**一张逐条核对表**，不是自然段落：ADR 的每条决策、契约里每条声称的行为，都要能落到「子票 / 提交 / 测试」或「后续票」，没有第三种归宿（#410 的收口评论就是这个形态，只是当时属临时发挥）。模板：
+
+| 决策 / 声称行为 | 来源 | 落地（子票 / 提交 / 测试） | 差异或后续票 |
+|---|---|---|---|
+| 回报交易日不一致 ⇒ 报错 + 主动登出 | 《帧契约：TD 数据同步》§3、§7；ADR 0049 决策 5 | 无子票 AC 覆盖 | 未落地 → #423（#416 收口时发现） |
+| 某个决策落在一张子票里 | ADR NNNN 决策 N | #NNN（提交 `<sha7>`，测试名 `<test>`） | 无 |
+| 某条行为被收窄 | spec 用户故事 N | #NNN | 已收窄，理由写在母票评论并链 ADR |
+
+判据来自 #416 的漏网形态：**子票 AC 覆盖不到的决策，只有逐条对照才会在收口时暴露**——ADR 0049 决策 5 的「回报交易日不一致 ⇒ 报错 + 主动登出」没有任何子票 AC 覆盖，收口时才发现，只能补开 #423。因此拆票时每条决策至少落一张子票 AC（[issue-tracker.md](issue-tracker.md)「拆票」），收口时逐行核对：**差异列的每一行要么有后续票号，要么按 §0 写明不跟踪理由**，不允许留空。
+
 > **什么时候该想起这一节**：每次关闭一张实现票之前跑 `./scripts/gate.sh ledger` —— 它会直接点名「哪张 `[spec]` 的子票已经全关、母票还开着」。不要靠记忆判断「这是不是最后一张子票」。
 >
 > 动机：#41（dzsysmon spec）的 13 张子票于 2026-10-24 全部关闭，母票却一直开放到 2026-10-26 才被发现；#153（BarStrategy v1）的 12 张子票于 2026-10-30 全关，母票同样还开着——同一形态第二次发生（issue #213）。本流程原先只覆盖「单票 → 关本票」（mattpocock 原版 `implement-spec` 靠 integration branch 的 PR 关闭 spec，本仓改成一票一 PR 后该机制丢失）。
 
 ## 7. 清理、交还与报告
 
-- `git worktree remove .agents/worktrees/<branch>` + `git branch -d <branch>`（worktree 实际产物路径见 AGENTS §五；历史路径 `.worktrees/` 若存在也要清）；确认 `.agents/worktrees/` 与 `.cache/` 无本票残留。
+- `git worktree remove .agents/worktrees/<branch>` + `git branch -d <branch>`（worktree 实际产物路径见 AGENTS §五；历史路径 `.worktrees/` 若存在也要清）；确认 `.agents/worktrees/` 与 `.cache/` 无本票残留。**删分支前先 `git branch --list <branch>`**：`gh pr merge --delete-branch` 可能已经删掉本地分支（#416 实测 `git branch -d` 报 `not found`，白跑一步）；squash 合并的分支不是 main 的祖先，`-d` 会拒——确认 PR 已合并且内容在 main（`git diff --quiet <pr-head> <merge-commit>`）后才用 `git branch -D`（#424 AC7）。
+- **`git stash list` 与开工时一致**（#424 AC3）：本票不该留下 stash。stash 是 **repo 级、跨 worktree 共享**的——新条目会排到别人既有条目的前面（#411 收尾报告把内容不同的 `stash@{0}` / `stash@{1}` 当成「重复项」）。多出来的条目先按 AGENTS「Worktree 与 Git 禁令」确认 `stash@{n}` 的身份（message / 分支）再处置：不要 `git stash drop`（安全网会拦），也不要假定它「反正就是我刚弹的那个」。
 - **移除前先看 `git status`：大量「纯删除」不是你的改动**。worktree 内若出现几十上百个 `D` 记录（本波 #393/#394 各 507 个，文件在磁盘上真的不存在）、而 `HEAD` 指向的 commit 正常，那是工作区被**外部**并发操作清空（另一个会话的 `clean` / worktree 工具 / GC），不是本票的工作。判定口径：**纯删除、规模巨大、无对应新增**。处置顺序：
   1. 确认内容已在 main（`git merge-base --is-ancestor <head> main`，或 squash 合并后 `git log main` 能看到等价提交）；
   2. `git stash push --include-untracked` 保存现场（**不要** `git checkout -- .` / `git worktree remove --force`，两者都会永久丢弃未提交内容，且被 CC 安全网拦截）；

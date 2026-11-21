@@ -15,14 +15,21 @@ DSH 会话日志：`~/.dsh/sessions/--<cwd 转义>--/<session>/session.v4.jsonl.
                   第一条命中（附命中行前 160 字），最多 40 条，避免 digest 爆掉。
                   该小节与 `## failures` 分开，不改变原有小节与格式；`isError == true`
                   的结果不进本小节（已在 failures 里，避免同一事件记两次）。
-  只读命令豁免（#316 AC6）`sed -n` / `cat` / `grep` / `git grep` / `gh issue view` /
+  只读命令豁免（#316 AC6 / #424 AC5）`sed -n` / `cat` / `grep` / `git grep` / `gh issue view` /
                   `git show` / `contract_slice.py` 的输出是被引用的**内容**（契约 payload
-                  表、前端 TS 源码），这些命令的 `error:` 行不计入，`rc!=0` / `FAILED` /
-                  `FAIL:` 仍照常计入（管道吞掉退出码时还要靠它们补捞实红）。判定用命令
-                  文本，复合命令要求每一段都是只读/无害片段。
+                  表、前端 TS 源码、preflight 脚本里的 `rc!=0` 注释），这些命令的行首
+                  `error:` **与 `rc=[1-9]` 都不计**；`FAILED` / `FAIL:` 仍照常计入（管道吞掉
+                  退出码时还要靠它们补捞实红）。判定用命令文本，复合命令要求每一段都是
+                  只读/无害片段。
   类型声明豁免（#316 AC6，与命令类型无关）`error: string | null`、`error: ok ? null : ...`
                   这类「声明形状」来自契约/源码内容，同样不计入；只认有限形状，
                   `error: boom` / `error: disk full` 仍是失败。
+  预期红豁免（#424 AC5）`--selftest` 命令整条不进本小节——仓库里每个检查器都有「必须拒绝」
+                  的自测（`review_marker.py --selftest` 预期打印 `-> refuse -> rc=3`，#413 的
+                  digest 3/3 条全是这种预期输出）；输出行以 `selftest` 开头的同样忽略。
+                  反向验证（拿旧代码跑一遍、确认新测试真的会红）在命令前加
+                  `DZ_EXPECT_RED=1`：条目**保留**（那是有意取到的证据），但标
+                  `expected=expect-red`，不会被读成交付失败（#411 的「旧代码测试失败」）。
 
 用法:
   python3 scripts/retro_extract.py --latest                # 本 cwd 最新主会话
@@ -82,11 +89,27 @@ MASKED_FAILURE_RES = (
     ("error:", re.compile(r"^\s*error:")),  # 工具自己打印的 error 行（宿主未标 isError）
 )
 
-# 只读命令豁免（#316 AC6）：`sed -n` / `cat` / `grep` / `git grep` / `gh issue view` /
-# `git show` / `contract_slice.py` 的输出是**被引用的内容**（契约 payload 表、前端 TS
-# 源码），其中的行首 `error:` 是内容而非本次调用的失败；`rc!=0` / `FAILED` / `FAIL:` 仍
-# 照常计入（管道会吞掉退出码，实红还要靠它们补捞）。判定用命令文本：复合命令与管道要求
-# **每一段**都属于只读集合或无害管道工具（cd / echo / head / tail / wc / ls ...）。
+# 预期红（#424 AC5）：下列命令的「失败」是**设计内**的，不能算交付失败。
+#   - `--selftest`：仓库里每个检查器都有「必须拒绝」的自测（`review_marker.py --selftest`
+#     预期打印 `-> refuse -> rc=3`）。#413 的 digest 3/3 条 masked failure 全是这种
+#     预期输出，读 digest 时要先花时间逐条排除，才有机会看到真红。
+#   - `DZ_EXPECT_RED=1`：反向验证（拿旧代码跑一遍、确认新测试真的会红）的显式标注。
+# `--selftest` 命令整条不进本小节；带 `DZ_EXPECT_RED=1` 的条目**保留**（那是有意取到的
+# 证据），但打上 `expected=expect-red`，避免被读成交付失败（#411 的「旧代码测试失败」）。
+SELFTEST_FLAG = "--selftest"
+EXPECTED_RED_MARKER = "DZ_EXPECT_RED=1"
+# 自测 harness 自己的输出行前缀（`selftest OK: ...` / `selftest failed: ...`）：不是失败证据。
+SELFTEST_OUTPUT_PREFIX = "selftest"
+# `expected_red_kind()` 的两种类别，最终写进 digest 的 `expected=` 字段。
+EXPECTED_RED_SELFTEST = "selftest"
+EXPECTED_RED_REVERSE = "expect-red"
+
+# 只读命令豁免（#316 AC6 / #424 AC5）：`sed -n` / `cat` / `grep` / `git grep` / `gh issue view` /
+# `git show` / `contract_slice.py` 的输出是**被引用的内容**（契约 payload 表、前端 TS 源码、
+# preflight 脚本里写着 `rc!=0` 的注释行），其中的行首 `error:` 与 `rc=[1-9]` 都不是本次调用的
+# 失败；`FAILED` / `FAIL:` 仍照常计入（管道会吞掉退出码，实红还要靠它们补捞）。判定用命令
+# 文本：复合命令与管道要求**每一段**都属于只读集合或无害管道工具（cd / echo / head / tail /
+# wc / ls ...）。
 READ_ONLY_SEGMENT_HEADS = frozenset(
     {
         "cat", "grep", "rg", "head", "tail", "wc", "ls", "echo", "printf",
@@ -360,6 +383,21 @@ def _is_type_declaration_error_line(line: str) -> bool:
     )
 
 
+def expected_red_kind(command: str) -> str | None:
+    """命令是否「预期红」（#424 AC5）：返回 None / 'selftest' / 'expect-red'。
+
+    - `--selftest`：命令就是检查器的自测，它的拒绝输出是**预期结果**（整条不进 masked
+      failure，见 `masked_failure_line`）；
+    - `DZ_EXPECT_RED=1`：反向验证（拿旧代码跑一遍，确认新测试会红）的显式标注，条目保留
+      但在 digest 里标 `expected=expect-red`。
+    """
+    if SELFTEST_FLAG in command:
+        return EXPECTED_RED_SELFTEST
+    if EXPECTED_RED_MARKER in command:
+        return EXPECTED_RED_REVERSE
+    return None
+
+
 def masked_failure_line(text: str, command: str = "") -> tuple[str, str] | None:
     """在工具输出文本里找第一条失败证据，返回 (命中模式, 命中行) 或 None。
 
@@ -368,21 +406,30 @@ def masked_failure_line(text: str, command: str = "") -> tuple[str, str] | None:
     调用方必须先用 `MASKED_FAILURE_TOOL_NAMES` 过滤工具类型——被 read/grep 出来的
     `FAILED` 文本是内容，不是本次调用的失败。
 
-    `command` 是 tool call 的命令文本（默认空 = 旧口径）：只读命令（见
-    `is_read_only_command`）的 `error:` 不计入——那是被引用的内容；`rc!=0` /
-    `FAILED` / `FAIL:` 仍照常计入。类型声明形状的 `error:` 行（见
-    `_is_type_declaration_error_line`）与命令无关，一律不计入（#316 AC6）。
+    `command` 是 tool call 的命令文本（默认空 = 旧口径），三类豁免都用它判定：
+
+    - **预期红命令**（`expected_red_kind == 'selftest'`）整条返回 None（#424 AC5）；
+    - **只读命令**（见 `is_read_only_command`）的行首 `error:` **与 `rc=[1-9]` 都不计**
+      ——那是被引用的内容（#316 AC6 / #424 AC5）；`FAILED` / `FAIL:` 仍照常计入；
+    - 类型声明形状的 `error:` 行（见 `_is_type_declaration_error_line`）与命令无关，
+      一律不计入（#316 AC6）。
+
+    输出行以 `selftest` 开头时是自测 harness 自己的话（`selftest OK: ...`），同样忽略。
     """
+    if expected_red_kind(command) == EXPECTED_RED_SELFTEST:
+        return None
     read_only = is_read_only_command(command)
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped:
+        if not stripped or stripped.startswith(SELFTEST_OUTPUT_PREFIX):
             continue
         for label, pattern in MASKED_FAILURE_RES:
             if not pattern.search(line):
                 continue
             if label == "error:" and (read_only or _is_type_declaration_error_line(line)):
                 continue  # 内容/类型声明，不是本次调用的失败；同一行其它模式仍然生效
+            if label == "rc!=0" and read_only:
+                continue  # 只读输出里的 rc=1 是被引用的文本（#424 AC5）
             return label, stripped[:160].replace("\n", " ")
     return None
 
@@ -608,7 +655,7 @@ def extract(path: Path, decompose: bool = False) -> str:
     calls: dict[str, tuple[str, str, int]] = {}
     human: list[tuple[int, str]] = []
     failures: list[tuple[int, str, str, str]] = []
-    masked_failures: list[tuple[int, str, str, str, str]] = []
+    masked_failures: list[tuple[int, str, str, str, str, str | None]] = []
     long_jobs: list[tuple[int, str]] = []
     approvals: list[tuple[int, str, str]] = []
     subagents: list[tuple[int, str, str]] = []
@@ -660,7 +707,8 @@ def extract(path: Path, decompose: bool = False) -> str:
             elif len(masked_failures) < MASKED_FAILURE_LIMIT:
                 # isError 为 false 但输出里有失败证据（自掩码实红）；isError 的结果
                 # 已进 failures，不重复记。只对命令类工具生效（见 MASKED_FAILURE_* 注释），
-                # 并把命令文本传进去——只读命令的 `error:` 是被引用的内容（#316 AC6）。
+                # 并把命令文本传进去——只读命令的 `error:` / `rc=` 是被引用的内容
+                # （#316 AC6），`--selftest` 的拒绝输出是预期结果、整条跳过（#424 AC5）。
                 name, command, cts = calls.get(call_id, ("?", "", ts))
                 hit = (
                     masked_failure_line(output, command)
@@ -670,7 +718,14 @@ def extract(path: Path, decompose: bool = False) -> str:
                 if hit is not None:
                     pattern, line = hit
                     masked_failures.append(
-                        (cts, name, command[:160].replace("\n", " "), pattern, line)
+                        (
+                            cts,
+                            name,
+                            command[:160].replace("\n", " "),
+                            pattern,
+                            line,
+                            expected_red_kind(command),
+                        )
                     )
         elif kind == "user/message":
             if (data.get("source") or {}).get("kind") == "user":
@@ -721,8 +776,11 @@ def extract(path: Path, decompose: bool = False) -> str:
     out.append("")
     out.append("## masked failures (rc!=0 / FAIL in tool output)")
     out.append("")
-    for ts, name, command, pattern, line in masked_failures:
-        out.append(f"- {ts} [{name}] cmd={command} (match={pattern})")
+    for ts, name, command, pattern, line, expected in masked_failures:
+        # 预期红只做标注、不删除（#424 AC5）：反向验证取到的失败是真证据，只是不该被读成
+        # 交付失败。#413 的 3/3 条预期输出由 `--selftest` 命令豁免，进不到这里。
+        marker = f" expected={expected}" if expected else ""
+        out.append(f"- {ts} [{name}] cmd={command} (match={pattern}{marker})")
         out.append(f"  hit={line}")
     out.append("")
     out.append("## long jobs (>=60s)")

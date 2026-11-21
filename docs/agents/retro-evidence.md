@@ -101,6 +101,14 @@ python3 scripts/retro_extract.py --session "$BASE/session-<session-id>/session.v
 
 **数据判据（下次别把 span 当耗时）**：会话的 `span = max(time) − min(time)` 包含轮间空档与人工应答，**不等于审查/执行耗时**——107 个带时间盒子会话的实测里，span 相对首轮墙钟会高估 **2.4×**。判据是**首轮墙钟**（`turn 1` 的 `turn_wall`）或 `--decompose` 的四分类，不是日志首尾差。
 
+### 4.2 digest 里的「预期红」与只读噪声（#424 AC5）
+
+`## masked failures` 只收**交付面**的实红（`isError` 为 false、但输出里有 `rc=[1-9]` / `FAILED` / `FAIL:` / 行首 `error:`）。三类不算：
+
+- **`--selftest` 命令整条跳过**：每个检查器都有「必须拒绝」的自测（`review_marker.py --selftest` 预期打印 `-> refuse -> rc=3`）。#413 的 digest 3/3 条全是这种预期输出——逐条排除本身就要花掉复盘的注意力。输出行以 `selftest` 开头的同样忽略。
+- **只读命令的 `rc=[1-9]` 不计**：`sed -n` / `cat` / `grep` / `git show` / `contract_slice.py` 的输出是被引用的文本（#412 的一条就是 `sed` 读到 preflight 注释里的 `rc!=0`）。`FAILED` / `FAIL:` 仍照常计入。
+- **反向验证用 `DZ_EXPECT_RED=1` 标注**：拿旧代码跑一遍、确认新测试真的会红，是**有意取到的证据**，不是交付失败。命令前加 `DZ_EXPECT_RED=1`，条目仍进 digest 但带 `expected=expect-red`（#411 的「旧代码测试失败」就是这种）。不标注就只能靠人读 digest 判断。
+
 读契约按节切，不要再用 `sed -n` 按行号分页（改契约后行号即失效，`sysmon.md` 已 105 KB）：
 
 ```bash

@@ -33,6 +33,25 @@ esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$REPO_ROOT/.cache"
 
+# 分支名早检（#424 AC2）：`create_worktree` 的 `name` 写成 flat 的
+# `fix-issue-411-today-position` 时，`.githooks/pre-push` 要到**实现完成后的推送**才拒绝。
+# setup 是 worktree 里的第一条命令，在这里拦住并打印 `git branch -m` 修复命令
+# （worktree 目录可不动）；`main` / detached HEAD（CI 的 pull_request 与 tag 检出）跳过。
+check_branch_name() {
+    local py=""
+    if command -v python3 >/dev/null 2>&1; then
+        py=python3
+    elif command -v python >/dev/null 2>&1; then
+        py=python
+    else
+        echo "warning: no python interpreter; branch name check skipped" >&2
+        return 0
+    fi
+    "$py" "$REPO_ROOT/scripts/check_branch_name.py" --root "$REPO_ROOT"
+}
+
+check_branch_name
+
 # 本地 git hooks（.githooks）：pre-commit 跑 staged 子集机械检查，pre-push 拦直推 main。
 # 权威门禁仍是 preflight 与 CI；hooks 只是快速护栏（见 docs/development-checklist.md C 段）。
 if [ ! -d "$REPO_ROOT/.githooks" ]; then

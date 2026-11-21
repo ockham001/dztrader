@@ -171,7 +171,7 @@
 2. **立 spec** —— `to-spec` 写 GitHub Issue。涉及帧契约的 spec 必须先列契约影响面（哪份契约、哪些帧号），先改契约再改代码；满足 ADR 触发条件的在 spec 注明。
 3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。
 4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）；提交 review 前按 [review-checklist](docs/agents/review-checklist.md) §2 自搜高频 finding。
-5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性）。**两轴用 `spawn_teammate` 派，不用 `subagent`**（本宿主 subagent id 不可寻址、报告易整份丢失；冻结纪律与 verifier prompt 模板见 [ticket-closeout](docs/agents/ticket-closeout.md) §1.4–1.5）。
+5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性），**按宿主派**：opencode 用 `spawn_teammate`（那里 `subagent` 的 id 不可寻址、报告易整份丢失）；DSH 用 `subagent`，靠 `wait_agent` 阻塞或等 `subagent-settled` 通知，报告正常到达（#411–#416 六票实测）。冻结纪律与 verifier prompt 模板见 [ticket-closeout](docs/agents/ticket-closeout.md) §1.4–1.5。
 6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→**PR→合并→关 issue** 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
 7. **交接** —— `handoff` 文档写 `.cache/handoff/`（本沙箱 `/tmp` 每次 bash 调用隔离、不可跨会话，见 DSH 小节）。
 
@@ -190,11 +190,14 @@
 ### Worktree 与 Git 禁令
 
 - worktree 由 `create_worktree` 建在 **`.agents/worktrees/<branch>`**（实际约定；`.worktrees/` 是历史路径，目录若存在同样受 `.gitignore` 保护）。手动建 worktree 时沿用 `.agents/worktrees/<branch>`：`git worktree add .agents/worktrees/<branch> -b <branch> main`（#316 AC5）
+- **`create_worktree` 的 `name` 必须写完整分支名（含 `/`）**：`name: fix/issue-411-today-position` → 分支 `fix/issue-411-today-position`、目录 `.agents/worktrees/fix/issue-411-today-position`。工具描述的「hyphens」示例只保证目录能建出来；写成 flat 的 `fix-issue-411-today-position` 要到 **pre-push** 才被拒（#411 到收尾才发现）。`setup` 开头会早检并打印修复命令（`scripts/check_branch_name.py`）；已建错用 `git branch -m fix/issue-<n>-<slug>` 改名（worktree 目录可不动）。
 - worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2` 并从 `~/.conan2` 播种一次，见 [build-appendix](docs/agents/build-appendix.md)）
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
-- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（pre-push 强制）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
+- 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（`setup` 开头早检 + pre-push 拦截，判定在 `scripts/check_branch_name.py`）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
+- **禁止裸 `git stash pop`**（#424 AC3）：stash 是 **repo 级、跨 worktree 共享**的，裸 pop 弹的是栈顶——可能是几天前另一条线的产物。先 `git stash list`，按 `stash@{n}` 的 message / 分支确认身份再 `git stash pop stash@{n}`；反向验证（拿旧版本跑一遍）优先 `git show <ref>:<path> > /tmp/...` 或临时 worktree，**不用 stash + checkout**。#411 实测：无条件 `git stash pop` 弹出了 2026-11-15 的 `fix/issue-322-dirty` stash（6 文件 +78/−20），污染了 worktree，收尾报告还把它写成「内容重复的 stash@{0}」。
+- **被安全网 BLOCKED 的调用零副作用**（#424 AC3）：CC Safety Net 拦下的是**整条命令**（含 `&&` 前段），所以「前半段已经执行」是错觉——不要去清理它的假想副作用。#411 的 `git stash push … && git checkout <sha> -- …` 整条被拦，agent 却接着 pop 了 stash；正确动作是原样重跑（换成被允许的安全形态）或换路径，不是补救。
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
 - **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式与 docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；**按票型**拒绝「当前 HEAD 上失败的门禁」（读分命令槽 `.cache/gate/last-status-<cmd>`：代码票要 `build`+`test`、纯文档/脚本票要 `preflight`，`ledger` 永不参与放行；HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`，判定实现在 `scripts/gate_status.py`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。

@@ -12,7 +12,8 @@
    段、或该段为空（warning 级；`--strict` 升 error）。口径见
    docs/agents/triage-labels.md「拍板闭环」——`ready-for-agent` 的前置就是「spec 无未拍板项，
    决策已写进 issue 正文」。理由：#294–#298 波五票正文全部缺该段，于是每票退回
-   「PR 创建后提问」，合并授权阻塞合计 403 min（#309 AC1）。
+   「PR 创建后提问」，合并授权阻塞合计 403 min（#309 AC1）。**本项是 warning、不是开工
+   前置**：报告提示同时给出恢复路径（继续实现、PR 创建后再提问，#424 AC1）。
 5. **最近关闭的票仍有未勾选 AC**（R6，warning 级）：`- [ ]` 残留说明「验收标准未逐条确认
    即关闭」，spec 收口审计时无法从正文判断达成情况。带 `⏳` 的未勾项视为已确认的
    人工验证项，不计。理由：#392/#393/#394 三票 24 条 AC 全部未勾即关闭，事后只能靠
@@ -23,7 +24,7 @@
   python3 scripts/check_ledger.py --strict     # 有 error 级 finding 时退出 1
   python3 scripts/check_ledger.py --days 7     # needs-triage 超期阈值
   python3 scripts/check_ledger.py --ac-window-days 14   # R6 关闭票回溯窗口
-  python3 scripts/check_ledger.py --selftest   # 只跑承诺正则 + R4 三态 + R6 计数自测（不联网）
+  python3 scripts/check_ledger.py --selftest   # 只跑承诺正则 + R4 三态/恢复路径 + R6 计数自测（不联网）
 
 退出码: 0=无 error（或非 strict）, 1=error 级 finding（--strict）, 2=环境错误（gh / git 不可用）
 
@@ -108,6 +109,26 @@ SELFTEST_LEDGER_EMPTY = [
     "## 拍板记录\n\n   \n\t\n",
     "## 拍板记录\n\n## 其它\n\n- 内容\n",
 ]
+
+# R4 是 warning，**不是开工阻塞**（#424 AC1）。#411 的废弃会话把「缺 `## 拍板记录`」读成
+# 开工前置：开工 7.6 分钟就发起合并授权提问、阻塞 3,280s（54m40s），用户跳过（空选项）后
+# 整段会话作废，重开会话前由用户手工补齐 5 张票的段。提示必须同时说清「继续实现」与
+# 「PR 创建后再问」，否则下一次仍会被读成「先补段、再开工」。
+R4_RECOVERY_HINT = "→ 继续实现；PR 创建后按 ticket-closeout §5 兜底提问；禁止开工即问"
+R4_RECOVERY_KEYWORDS = ("继续实现", "PR 创建后", "禁止开工即问")
+
+
+def r4_hint_lines() -> list[str]:
+    """R4（缺拍板记录）的报告提示行，含恢复路径（#424 AC1）。
+
+    纯函数、不联网：`--selftest` 与 `scripts/tests/test_check_ledger.py` 都断言它带恢复路径
+    关键字——只断言「缺段」会让提示重新被读成「先补段再开工」，而真正的恢复路径是继续实现。
+    """
+    return [
+        "提示：ready-for-agent 票在 issue 正文补「## 拍板记录」段（含条件式合并授权），"
+        "回填后本项归零（triage-labels.md「拍板闭环」）",
+        f"      {R4_RECOVERY_HINT}",
+    ]
 
 # R6：闭票前 AC 勾选。口径来源 docs/agents/ticket-closeout.md §6「关闭前勾选验收标准」：
 # 关闭评论能证明「交付/验证/审查」，但**正文的 `- [ ]` 复选框**是 spec 收口审计时判断
@@ -303,9 +324,16 @@ def selftest() -> None:
     for body in SELFTEST_LEDGER_EMPTY:
         if decision_ledger_state(body) != "empty":
             raise SystemExit(f"selftest failed: expected empty ledger section: {body!r}")
+    # R4 恢复路径（#424 AC1）：缺段提示必须同时给出「继续实现 / PR 后问」，
+    # 否则下一次仍会把 warning 读成开工前置（#411 阻塞 54m40s）。
+    hint_text = "\n".join(r4_hint_lines())
+    for keyword in R4_RECOVERY_KEYWORDS:
+        if keyword not in hint_text:
+            raise SystemExit(f"selftest failed: R4 hint lost recovery keyword: {keyword}")
     print(f"selftest OK: {len(SELFTEST_MATCH)} match / {len(SELFTEST_NO_MATCH)} non-match cases")
     print(f"selftest OK: R4 {len(SELFTEST_LEDGER_HAS)} has-section / "
           f"{len(SELFTEST_LEDGER_MISSING)} missing / {len(SELFTEST_LEDGER_EMPTY)} empty-section cases")
+    print(f"selftest OK: R4 恢复路径提示含 {' / '.join(R4_RECOVERY_KEYWORDS)}")
     print(f"selftest OK: R6 {len(SELFTEST_TICKS)} AC 勾选计数用例")
 
 
@@ -431,8 +459,9 @@ def main() -> int:
         print("提示：关闭票前逐条勾选 AC（`- [x]`）；确实需人工/真机验证的项标 `- [ ] ⏳`，"
               "规则会跳过它（ticket-closeout §6「关闭前勾选验收标准」）")
     if missing_ledger:
-        print("提示：ready-for-agent 票在 issue 正文补「## 拍板记录」段（含条件式合并授权），"
-              "回填后本项归零（triage-labels.md「拍板闭环」）")
+        # 恢复路径与「补段」同样重要：R4 是 warning，报警不等于开工阻塞（#424 AC1）。
+        for line in r4_hint_lines():
+            print(line)
     return 1 if (args.strict and errors) else 0
 
 

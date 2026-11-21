@@ -79,10 +79,57 @@ class MaskedFailureLineTest(unittest.TestCase):
             retro_extract.masked_failure_line("error: boom\n", "./scripts/gate.sh build")[0],
             "error:",
         )
-        # 只读命令里 `rc=1` 仍报：管道吞掉退出码，实红只能靠 rc / FAILED 补捞。
         self.assertEqual(
-            retro_extract.masked_failure_line("rc=1\n", "cat x")[0], "rc!=0"
+            retro_extract.masked_failure_line("rc=1\n", "./scripts/gate.sh test")[0], "rc!=0"
         )
+        # 只读命令的 FAILED / FAIL: 仍报：管道吞掉退出码，实红只能靠它们补捞。
+        self.assertEqual(
+            retro_extract.masked_failure_line("FAILED tests/x.py::test_a\n", "cat log.txt")[0],
+            "FAILED",
+        )
+
+    def test_read_only_output_rc_is_not_a_failure(self) -> None:
+        # #424 AC5：只读命令的 `rc=1` 是被引用的文本（#412 实测 `sed` 读到 preflight
+        # 注释里的 `rc!=0`），与 `error:` 同理不计。
+        self.assertIsNone(retro_extract.masked_failure_line("rc=1\n", "cat x"))
+        self.assertIsNone(
+            retro_extract.masked_failure_line("rc=3\n", "sed -n '1,40p' scripts/preflight.sh")
+        )
+        self.assertIsNone(
+            retro_extract.masked_failure_line("rc=1\n", "sed -n '1,20p' scripts/preflight.sh")
+        )
+
+    def test_selftest_command_is_not_a_failure(self) -> None:
+        # #413 digest 3/3 条都是 `review_marker.py --selftest` 的预期拒绝输出。
+        self.assertIsNone(
+            retro_extract.masked_failure_line(
+                "-> refuse -> rc=3\n", "python3 scripts/review_marker.py --selftest"
+            )
+        )
+        self.assertIsNone(
+            retro_extract.masked_failure_line(
+                "FAILED injected case\n", "python3 scripts/check_docs_links.py --selftest"
+            )
+        )
+
+    def test_selftest_output_line_prefix_is_ignored(self) -> None:
+        # 自测 harness 自己的话（`selftest OK: ...` / `selftest failed: ...`）不是失败证据，
+        # 与命令类型无关——命令可能是普通门禁调用。
+        self.assertIsNone(
+            retro_extract.masked_failure_line("selftest failed: rc=1\n", "./scripts/preflight.sh")
+        )
+
+    def test_expected_red_kind_annotation(self) -> None:
+        # 反向验证用 `DZ_EXPECT_RED=1` 标注：条目保留、但打 expected 标记（#424 AC5）。
+        self.assertEqual(
+            retro_extract.expected_red_kind("DZ_EXPECT_RED=1 ./scripts/gate.sh test"),
+            "expect-red",
+        )
+        self.assertEqual(
+            retro_extract.expected_red_kind("python3 scripts/gate_status.py --selftest"),
+            "selftest",
+        )
+        self.assertIsNone(retro_extract.expected_red_kind("./scripts/gate.sh test"))
 
 
 class ExtractMaskedFailuresTest(unittest.TestCase):
@@ -167,24 +214,48 @@ class ExtractMaskedFailuresTest(unittest.TestCase):
         masked = digest.split("## masked failures", 1)[1].split("\n## ", 1)[0]
         self.assertNotIn("match=rc!=0", masked)
 
-    def test_read_only_command_content_error_is_not_masked_failure(self) -> None:
-        # #316 AC6 端到端：`cat` 读契约里的 payload 表，输出含 `error: ok ? null : foo`
-        # ——命令本身成功，那行是被引用的内容，digest 的 masked 小节不能收它。
+    def test_read_only_command_content_is_not_masked_failure(self) -> None:
+        # #316 AC6 / #424 AC5 端到端：`cat` 读契约里的 payload 表，输出含
+        # `error: ok ? null : foo` 与 `rc=1`——命令本身成功，那两行都是被引用的内容，
+        # digest 的 masked 小节不能收它们；同一次会话里真命令的非零退出码仍要报。
         session = self._write_session(
             [
                 {"type": "session", "data": {}},
                 self._call("c1", "bash", "cat docs/frame_contracts/x.md"),
                 self._result("c1", "ok: string\nnot-ok:\nerror: ok ? null : foo\n"),
                 self._call("c2", "bash", "cat docs/frame_contracts/x.md; echo rc=$?"),
-                self._result("c2", "rc=1\n"),  # 只读命令的 rc 仍要报
+                self._result("c2", "rc=1\n"),  # 只读文本里的 rc：不计（#424 AC5）
+                self._call("c3", "bash", "./scripts/gate.sh test; echo rc=$?"),
+                self._result("c3", "rc=1\n"),  # 真命令的非零退出码：仍要报
             ]
         )
         digest = retro_extract.extract(session)
         masked = digest.split("## masked failures", 1)[1].split("\n## ", 1)[0]
-        self.assertIn("cat docs/frame_contracts/x.md", masked)
+        self.assertIn("./scripts/gate.sh test", masked)
         self.assertIn("match=rc!=0", masked)
+        self.assertNotIn("cat docs/frame_contracts/x.md", masked)
         self.assertNotIn("match=error:", masked)
         self.assertNotIn("error: ok ? null : foo", masked)
+
+    def test_selftest_and_expected_red_are_marked_not_misdelivered(self) -> None:
+        # #424 AC5 端到端：`--selftest` 的预期拒绝不进 masked 小节；`DZ_EXPECT_RED=1`
+        # 的反向验证保留但标 expected，剩下的才是交付面实红。
+        session = self._write_session(
+            [
+                {"type": "session", "data": {}},
+                self._call("c1", "bash", "python3 scripts/review_marker.py --selftest"),
+                self._result("c1", "-> refuse -> rc=3\n"),
+                self._call("c2", "bash", "DZ_EXPECT_RED=1 ./scripts/gate.sh test"),
+                self._result("c2", "FAILED old_code_test\n"),
+                self._call("c3", "bash", "./scripts/gate.sh test"),
+                self._result("c3", "FAILED new_code_test\n"),
+            ]
+        )
+        masked = retro_extract.extract(session).split("## masked failures", 1)[1].split("\n## ", 1)[0]
+        self.assertNotIn("review_marker.py", masked)
+        self.assertEqual(masked.count("expected=expect-red"), 1)
+        self.assertIn("DZ_EXPECT_RED=1 ./scripts/gate.sh test", masked)
+        self.assertIn("FAILED new_code_test", masked)
 
 
 def _event(kind: str, time_ms: int, **data) -> dict:
