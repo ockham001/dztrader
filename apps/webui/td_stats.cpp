@@ -45,51 +45,62 @@ void TdStatsCounter::reset(const TdStatsSnapshot& snapshot) {
             .status = order.status, .volume = order.volume, .volume_traded = order.volume_traded};
     }
     watermarks_ = snapshot.watermarks;
+    max_order_ids_ = snapshot.max_order_ids;
 }
 
 void TdStatsCounter::apply(
     const std::string& account_id, int status, int64_t order_id, int volume, int volume_traded) {
     const bool unfilled = td_status_unfilled(status);
-    auto account_it = active_.find(account_id);
-    if (account_it != active_.end()) {
-        auto entry_it = account_it->second.find(order_id);
-        if (entry_it != account_it->second.end()) {
-            // 已在活动表 ⇒ 该委托已计入 total：只调整未成交口径的差量。
-            // 旧贡献 = 旧剩余量（活动表条目按定义属于未成交集合）；新贡献 = 未成交 ? 新剩余量 : 0。
-            // 注意离开集合时必须扣掉**旧**剩余量（新帧的 volume_traded 可能已含成交），
-            // 用「新剩余量」会在「部分成交后撤单」时留下幽灵剩余量。
-            const ActiveEntry& previous = entry_it->second;
-            const int64_t previous_remaining =
-                static_cast<int64_t>(previous.volume) - previous.volume_traded;
-            const int64_t next_remaining = static_cast<int64_t>(volume) - volume_traded;
-            values_.unfilled_volume +=
-                (unfilled ? next_remaining : int64_t{0}) - previous_remaining;
-            if (previous.status != status) {
-                values_.unfilled_orders += (unfilled ? 1 : 0) - 1;
-            }
-            if (unfilled) {
-                entry_it->second =
-                    ActiveEntry{.status = status, .volume = volume, .volume_traded = volume_traded};
-            } else {
-                account_it->second.erase(entry_it);
-                if (account_it->second.empty()) {
-                    active_.erase(account_it);
-                }
-            }
+    const auto max_it = max_order_ids_.find(account_id);
+    const int64_t known_max = max_it == max_order_ids_.end() ? 0 : max_it->second;
+    if (order_id > known_max) {
+        // 越过 order_id 水位 ⇒ 真新委托（契约 rest §2.9.5：total 含撤单、废单）。
+        max_order_ids_[account_id] = order_id;
+        values_.total_orders += 1;
+        values_.total_volume += volume;
+        if (!unfilled) {
             return;
         }
-    }
-
-    // 不在活动表 ⇒ 新委托（契约 rest §2.9.5：total 含撤单、废单）。
-    values_.total_orders += 1;
-    values_.total_volume += volume;
-    if (!unfilled) {
+        values_.unfilled_orders += 1;
+        values_.unfilled_volume += static_cast<int64_t>(volume) - volume_traded;
+        active_[account_id][order_id] =
+            ActiveEntry{.status = status, .volume = volume, .volume_traded = volume_traded};
         return;
     }
-    values_.unfilled_orders += 1;
-    values_.unfilled_volume += static_cast<int64_t>(volume) - volume_traded;
-    active_[account_id][order_id] =
-        ActiveEntry{.status = status, .volume = volume, .volume_traded = volume_traded};
+
+    // 水位内的 order_id ⇒ 见过的委托（状态迁移 / 成交均价刷新帧），total 不得再动。
+    // 不在活动表 = 该委托已终态（`reset` 后活动表只含未成交行）：终态不回退，均价刷新帧
+    // 没有未成交口径贡献，直接忽略。
+    auto account_it = active_.find(account_id);
+    if (account_it == active_.end()) {
+        return;
+    }
+    auto entry_it = account_it->second.find(order_id);
+    if (entry_it == account_it->second.end()) {
+        return;
+    }
+
+    // 已在活动表 ⇒ 该委托已计入 total：只调整未成交口径的差量。
+    // 旧贡献 = 旧剩余量（活动表条目按定义属于未成交集合）；新贡献 = 未成交 ? 新剩余量 : 0。
+    // 注意离开集合时必须扣掉**旧**剩余量（新帧的 volume_traded 可能已含成交），
+    // 用「新剩余量」会在「部分成交后撤单」时留下幽灵剩余量。
+    const ActiveEntry& previous = entry_it->second;
+    const int64_t previous_remaining =
+        static_cast<int64_t>(previous.volume) - previous.volume_traded;
+    const int64_t next_remaining = static_cast<int64_t>(volume) - volume_traded;
+    values_.unfilled_volume += (unfilled ? next_remaining : int64_t{0}) - previous_remaining;
+    if (previous.status != status) {
+        values_.unfilled_orders += (unfilled ? 1 : 0) - 1;
+    }
+    if (unfilled) {
+        entry_it->second =
+            ActiveEntry{.status = status, .volume = volume, .volume_traded = volume_traded};
+    } else {
+        account_it->second.erase(entry_it);
+        if (account_it->second.empty()) {
+            active_.erase(account_it);
+        }
+    }
 }
 
 const TdStatsValues& TdStatsCounter::values() const noexcept { return values_; }

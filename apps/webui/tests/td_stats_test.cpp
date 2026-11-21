@@ -148,10 +148,26 @@ TEST(TdStatsCounterTest, TerminalOrderLeavingActiveSetIsNoLongerCountedAsUnfille
     counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 4, 0);
     counter.apply("ACC1", DZ_ORDER_CANCELLED, 1, 4, 0);
     expect_values(counter, 1, 4, 0, 0);
-    // 终态之后同一 order_id 再到一帧：已不在活动表 ⇒ 按契约口径计为新委托。这是设计
-    // §5.5 记录的已知精度边界（下一次对账 ≤30s 自动纠正），此处锁定「不会静默回退」。
-    counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 4, 0);
-    expect_values(counter, 2, 8, 1, 4);
+    // 终态之后同一 order_id 再到一帧：该 order_id 已在水位内 ⇒ 见过的委托，不得重复计入
+    // total（ADR 0050）。终态不回退，也不重新进未成交集合。
+    counter.apply("ACC1", DZ_ORDER_CANCELLED, 1, 4, 0);
+    expect_values(counter, 1, 4, 0, 0);
+}
+
+/// 行为回归（#416 / ADR 0050）：新委托帧 → 终态帧 → 同一 `order_id` 的成交均价刷新帧。
+///
+/// td 在每笔成交使均价变化时以**新 seq** 刷新该委托并再推 `ORDER_REPORT`（包括已终态
+/// 委托，契约 td-data-sync §3）。旧判据「不在活动表 = 新委托」把这一帧计成第二笔
+/// （total +1、volume 再累加）——这正是 #410 记录的真实多计。`order_id` 单调水位判据下
+/// 它仍是见过的委托，四个计数器都不变。
+TEST(TdStatsCounterTest, AveragePriceRefreshFrameForTerminalOrderDoesNotDoubleCountTotal) {
+    TdStatsCounter counter;
+    counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 5, 0);
+    counter.apply("ACC1", DZ_ORDER_ALL_TRADED, 1, 5, 5);
+    expect_values(counter, 1, 5, 0, 0);
+    // 均价刷新帧：同一 order_id，终态不变（新 seq 由调用方按 seq 水位放行，这里只测水位判据）。
+    counter.apply("ACC1", DZ_ORDER_ALL_TRADED, 1, 5, 5);
+    expect_values(counter, 1, 5, 0, 0);
 }
 
 TEST(TdStatsCounterTest, ActiveSetIsPerAccountSoSameOrderIdIsNotMerged) {
@@ -181,6 +197,7 @@ TEST(TdStatsCounterTest, ResetOverwritesValuesAndRebuildsActiveSetFromSnapshot) 
                                                  .volume = 5,
                                                  .volume_traded = 0});
     snapshot.watermarks = {{"ACC2", 99}};
+    snapshot.max_order_ids = {{"ACC2", 7}};
     counter.reset(snapshot);
     expect_values(counter, 10, 20, 3, 4);
 
@@ -188,7 +205,8 @@ TEST(TdStatsCounterTest, ResetOverwritesValuesAndRebuildsActiveSetFromSnapshot) 
     counter.apply("ACC2", DZ_ORDER_PART_TRADED, 7, 5, 2);
     expect_values(counter, 10, 20, 3, 2);
 
-    // 旧活动表已被覆盖：ACC1/1 不再在活动表 → 视为新委托。
+    // 旧活动表已被覆盖；快照里 ACC1 没有 `order_id` 水位（缺失 = 0）→ order 1 越过水位，
+    // 按真新委托计入。
     counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 2, 0);
     expect_values(counter, 11, 22, 4, 4);
 }
@@ -196,6 +214,7 @@ TEST(TdStatsCounterTest, ResetOverwritesValuesAndRebuildsActiveSetFromSnapshot) 
 TEST(TdStatsCounterTest, ResetDropsNonUnfilledSeedsFromActiveSet) {
     TdStatsSnapshot snapshot;
     snapshot.values = TdStatsValues{.total_orders = 1, .total_volume = 5};
+    snapshot.max_order_ids = {{"ACC1", 1}};
     // 查询侧只应产出未成交行；即便喂入终态行也不进活动表（唯一判据 td_status_unfilled）。
     snapshot.active.push_back(TdStatsActiveOrder{.account_id = "ACC1",
                                                  .order_id = 1,
@@ -205,9 +224,33 @@ TEST(TdStatsCounterTest, ResetDropsNonUnfilledSeedsFromActiveSet) {
     TdStatsCounter counter;
     counter.reset(snapshot);
     expect_values(counter, 1, 5, 0, 0);
-    // 该 order_id 不在活动表 → 视为新委托。
-    counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 5, 0);
-    expect_values(counter, 2, 10, 1, 5);
+    // 终态委托不在活动表、且 order_id 在 DB 水位内 ⇒ 后续帧是「见过的委托」，
+    // 不重复计 total，也不把未成交口径重新塞回集合（终态不回退）。
+    counter.apply("ACC1", DZ_ORDER_CANCELLED, 1, 5, 5);
+    expect_values(counter, 1, 5, 0, 0);
+}
+
+/// 全量重算（`reset`）初始化 `max_order_id`（ADR 0050，AC：从 `MAX(order_id)`）：
+/// 重算后，DB 已含的委托（哪怕不在活动表）再来帧都不算新委托；越过水位的才是新委托。
+TEST(TdStatsCounterTest, ResetInitializesOrderIdWatermarkFromSnapshot) {
+    TdStatsSnapshot snapshot;
+    snapshot.values = TdStatsValues{.total_orders = 2, .total_volume = 8};
+    snapshot.max_order_ids = {{"ACC1", 10}};
+    TdStatsCounter counter;
+    counter.reset(snapshot);
+    expect_values(counter, 2, 8, 0, 0);
+
+    // 终态委托的均价刷新帧（order_id = 水位）：见过的委托，无口径变化。
+    counter.apply("ACC1", DZ_ORDER_ALL_TRADED, 10, 5, 5);
+    expect_values(counter, 2, 8, 0, 0);
+
+    // 越过水位 ⇒ 真新委托。
+    counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 11, 3, 0);
+    expect_values(counter, 3, 11, 1, 3);
+
+    // 另一账户的水位独立（order_id 只在账户内唯一）。
+    counter.apply("ACC2", DZ_ORDER_NOT_TRADED, 11, 2, 0);
+    expect_values(counter, 4, 13, 2, 5);
 }
 
 TEST(TdStatsCounterTest, WatermarkIsZeroWithoutRecordAndOnlyResetWritesIt) {

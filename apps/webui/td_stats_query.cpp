@@ -143,14 +143,23 @@ bool TdStatsQuery::query_active(sqlite3* db,
 
 bool TdStatsQuery::query_watermarks(sqlite3* db,
                                     const std::vector<std::string>& accounts,
-                                    std::map<std::string, uint64_t>& watermarks) const {
+                                    std::map<std::string, uint64_t>& watermarks,
+                                    std::map<std::string, int64_t>& max_order_ids) const {
     // 契约 td-data-sync §1/§5：水位 = 该账户四表 MAX(seq)，**不带 date 过滤**（账户级
     // 跨日累积，与 SDK ingest 一致）。四表共享取号器 → 取各表 GROUP BY 结果的最大值。
-    constexpr const char* kTables[] = {"orders", "trades", "positions", "trading_accounts"};
-    for (const char* table : kTables) {
-        const std::string sql = "SELECT account_id, MAX(seq) FROM " + std::string(table) +
-                                " WHERE account_id IN (" + placeholders(accounts.size()) +
-                                ") GROUP BY account_id";
+    // orders 表在**同一条 GROUP BY 查询**里再取 MAX(order_id)（首见判据，ADR 0050）：
+    // 不增加查询次数，且与 MAX(seq) 天然同一快照——两者分离会让「快照没有却被判定已含」
+    // 的静默误吞重新出现。
+    constexpr struct {
+        const char* table;
+        bool with_max_order_id;
+    } kTables[] = {
+        {"orders", true}, {"trades", false}, {"positions", false}, {"trading_accounts", false}};
+    for (const auto& table : kTables) {
+        const std::string sql = std::string("SELECT account_id, MAX(seq)") +
+                                (table.with_max_order_id ? ", MAX(order_id)" : "") + " FROM " +
+                                table.table + " WHERE account_id IN (" +
+                                placeholders(accounts.size()) + ") GROUP BY account_id";
         sqlite3_stmt* stmt = nullptr;
         if (!prepare(db, sql, &stmt)) {
             return false;
@@ -164,18 +173,26 @@ bool TdStatsQuery::query_watermarks(sqlite3* db,
             }
             const std::string account(reinterpret_cast<const char*>(account_text));
             // MAX(seq) 为空（该账户该表无行）时 SQL 给 NULL，跳过。
-            if (sqlite3_column_type(stmt, 1) == SQLITE_NULL) {
-                continue;
+            if (sqlite3_column_type(stmt, 1) != SQLITE_NULL) {
+                const auto seq = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
+                auto it = watermarks.find(account);
+                if (it == watermarks.end()) {
+                    watermarks.emplace(account, seq);
+                } else if (seq > it->second) {
+                    it->second = seq;
+                }
             }
-            const auto seq = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
-            auto it = watermarks.find(account);
-            if (it == watermarks.end()) {
-                watermarks.emplace(account, seq);
-            } else if (seq > it->second) {
-                it->second = seq;
+            if (table.with_max_order_id && sqlite3_column_type(stmt, 2) != SQLITE_NULL) {
+                const int64_t order_id = sqlite3_column_int64(stmt, 2);
+                auto it = max_order_ids.find(account);
+                if (it == max_order_ids.end()) {
+                    max_order_ids.emplace(account, order_id);
+                } else if (order_id > it->second) {
+                    it->second = order_id;
+                }
             }
         }
-        if (!finish(db, stmt, step, table)) {
+        if (!finish(db, stmt, step, table.table)) {
             return false;
         }
     }
@@ -202,7 +219,7 @@ std::optional<TdStatsSnapshot> TdStatsQuery::recompute(
     }
     sqlite3* db = conn.handle();
 
-    // 契约 td-data-sync §5：三样必须同一快照——分次独立查询会因写端在两次查询之间提交
+    // 契约 td-data-sync §5：四样必须同一快照——分次独立查询会因写端在两次查询之间提交
     // 而产生「快照没有却被水位判定已含」的静默误吞。BEGIN DEFERRED 起各 SELECT 共享同一
     // 读快照（读锁保持到 COMMIT），写端短暂阻塞由 busy_timeout 吸收。
     if (sqlite3_exec(db, "BEGIN DEFERRED", nullptr, nullptr, nullptr) != SQLITE_OK) {
@@ -213,7 +230,7 @@ std::optional<TdStatsSnapshot> TdStatsQuery::recompute(
 
     const bool ok = query_values(db, *trading_day, accounts, snapshot.values) &&
                     query_active(db, *trading_day, accounts, snapshot.active) &&
-                    query_watermarks(db, accounts, snapshot.watermarks);
+                    query_watermarks(db, accounts, snapshot.watermarks, snapshot.max_order_ids);
     if (!ok) {
         rollback();
         return std::nullopt;

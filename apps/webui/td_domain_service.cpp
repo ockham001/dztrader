@@ -161,15 +161,6 @@ void TdDomainService::set_stats_query(std::shared_ptr<TdStatsQuery> query) {
     reconcile_stats();
 }
 
-void TdDomainService::set_reconcile_scheduler(
-    std::function<void(double interval, std::function<void()> task)> scheduler) {
-    if (!scheduler) {
-        return;
-    }
-    // 契约 rest §2.9.5：周期对账（建议 30s，实现可调）。任务即全部重算路径的唯一入口。
-    scheduler(kTdStatsReconcileIntervalSec, [this]() { reconcile_stats(); });
-}
-
 void TdDomainService::reconcile_stats() {
     if (!stats_query_) {
         // 未装配统计查询（API-only / 测试）：统计恒 not_ready，不影响委托列表。
@@ -179,7 +170,7 @@ void TdDomainService::reconcile_stats() {
     const auto snapshot = stats_query_->recompute(online_accounts(), current_trading_day());
     if (!snapshot.has_value()) {
         // 契约 rest §2.9.5：计数器就绪后即使交易库暂时不可读也不降级——保持既有计数器
-        // 与 ready 状态，等下一次对账。
+        // 与 ready 状态，等下一次触发点重算。
         return;
     }
     stats_.reset(*snapshot);
@@ -214,7 +205,7 @@ void TdDomainService::on_account_status(const DzAccountStatus& status) {
             // 契约 rest §2.9.5 重算触发点：账户 Ready——**无条件**，不跟 data_changed 的
             // 「有变化才广播」条件合并。Ready 是**重同步点**而非优化机会：td 崩溃重启时
             // 来不及推 Offline，重登后 `was_online` 仍为 true、日切也未发生，若按「有变化才
-            // 重算」就会漏掉这次重同步，让计数器停留在重启前的旧值直到下一次周期对账
+            // 重算」就会漏掉这次重同步，让计数器停留在重启前的旧值直到下一次触发点重算
             // （测试锁定：RepeatedReadyResyncsBecauseTdRestartSkipsOffline）。
             reconcile_stats();
             break;
@@ -251,9 +242,11 @@ void TdDomainService::on_order_report(const DzOrderReport& report) {
     if (account.empty() || online_date_.find(account) == online_date_.end()) {
         return;
     }
-    // 契约 rest §2.9.5 增量来源 + td-data-sync §2 第 4 条：跳过判断只准用**重算查得的 DB 水位**
-    // （`seq <= watermark` 的帧已由重算纳入；登录「重推最后一条」用原 seq，靠这条避免重复计数）。
-    // 注意 apply 不推进水位——水位只由 reconcile_stats() 的全量重算写入。
+    // 契约 rest §2.9.5 增量来源 + td-data-sync §2 第 4 条：跳过判断只准用**重算查得的 DB
+    // seq 水位**（`seq <= watermark` 的帧已由重算纳入；登录「重推最后一条」用原 seq，靠这条
+    // 避免重复计数）。注意 apply 不推进 seq 水位——它只由 reconcile_stats() 的全量重算写入。
+    // 首见判据在 apply 内部：每账户 `order_id` 单调水位（真新委托才计 total，终态委托的
+    // 成交均价刷新帧不会多计，ADR 0050）。
     if (report.seq > stats_.watermark(account)) {
         stats_.apply(account, static_cast<int>(report.status), report.order_id,
                      static_cast<int>(report.volume), static_cast<int>(report.volume_traded));
