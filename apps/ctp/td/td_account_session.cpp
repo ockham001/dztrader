@@ -427,9 +427,10 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
     // 先处理数据, 再判 is_last (避免 null instrument + is_last 时状态机卡死)
     if (f.instrument) {
         // C2: 存储 instrument_id -> exchange_id/price_tick, 供 place_order 查表与 Task 7 用
-        instrument_exchange_map_[f.instrument->InstrumentID] =
-            InstrumentBrief{f.instrument->ExchangeID, f.instrument->PriceTick,
-                            static_cast<double>(f.instrument->VolumeMultiple)};
+        instrument_exchange_map_[f.instrument->InstrumentID] = InstrumentBrief{
+            f.instrument->ExchangeID, f.instrument->PriceTick,
+            static_cast<double>(f.instrument->VolumeMultiple),
+            static_cast<DzProductClass>(product_class_from_ctp(f.instrument->ProductClass))};
         try {
             // 持久化合约信息 (供审计/复盘/策略查询)
             // update_day[9]: "YYYYMMDD" 文本 (从 DzDate 距纪元天数转换)
@@ -565,6 +566,18 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
             return;
         }
 
+        // 实时流观测 (ADR 0049 外部单假设): 记录最后一条**实时**回报的柜台时间, 供后续登录
+        // 重放判定「某笔外部单是否只在重放里出现」. 取 UpdateTime (本次状态变化时刻),
+        // 缺失时回落 InsertTime; 重放回报不更新 (否则判据基准会被重放数据污染).
+        if (!replaying_) {
+            note_live_report_time(rpt.update_time > 0 ? rpt.update_time : rpt.insert_time);
+        }
+        // 外部单「只在登录重放出现」告警: 放在过滤器之后 —— 已命中基准的记录是此前见过并
+        // 落库的, 不构成「私有流非投资者级」的证据.
+        if (rpt.is_external) {
+            check_replay_external_order(rpt);
+        }
+
         // ③ 转发: 分配 seq -> 更新基准 -> 推帧 -> 落库 (同一事件 shm 帧与 DB 行同 seq).
         // 均价不来自柜台 (CTP 无该字段): 有当日成交累计 → 用累计值; 否则保留基准行均价
         // (跨日 GFD 单不得被清零); 两者都没有 → 0 (无成交语义). 顺序无关: 成交先到时
@@ -582,8 +595,16 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
 
         // 活动平仓挂单 → 冻结重算 (kReplay 阶段同样应用; 基准未就绪时跳过)
         if (position_baseline_ready_) {
-            if (auto* h = ensure_holding(rpt.base.instrument_id, std::string(rpt.base.exchange_id));
-                h != nullptr) {
+            if (is_spread_instrument(rpt.base.instrument_id)) {
+                // 套利 / 组合合约不参与持仓统计 (ADR 0049 决策 6): 组合合约的持仓行本身不入账,
+                // 冻结推导也只对单腿合约有意义. 委托回报照常推帧/落库 (上面已完成).
+                SPDLOG_DEBUG(
+                    "td spread order not applied to position | account={} instrument={} "
+                    "order_id={}",
+                    account_id_, rpt.base.instrument_id, rpt.base.order_id);
+            } else if (auto* h = ensure_holding(rpt.base.instrument_id,
+                                                std::string(rpt.base.exchange_id));
+                       h != nullptr) {
                 ActiveOrderUpdate upd{std::string(rpt.base.instrument_id),
                                       std::string(rpt.order_ref),
                                       rpt.base.direction,
@@ -638,6 +659,12 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
             return;
         }
 
+        // 实时流观测 (同 on_rtn_order): 成交的柜台时间 = 交易日 × 86400 + TradeTime 秒.
+        // 只记实时回报, 登录重放不更新 —— 它是外部单「只在重放出现」告警的判据基准.
+        if (!replaying_ && rpt.base.date > 0 && rpt.base.time >= 0) {
+            note_live_report_time(static_cast<int64_t>(rpt.base.date) * 86400 + rpt.base.time);
+        }
+
         // 转发: 分配 seq -> 更新基准 -> 推帧 -> 落库 (与委托同取号器, 全类型共享).
         rpt.base.seq = ++seq_counter_;
         report_filter_->accept_trade(rpt);
@@ -650,9 +677,16 @@ void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
         refresh_order_avg(rpt.base.order_id);
 
         // 盘中持仓增量 (基准就绪且非缓冲重放; 重放成交已含在查询快照中)
+        // 套利 / 组合合约成交照常落库/推帧 (上面已完成), 但不参与持仓统计 (ADR 0049 决策 6):
+        // 组合持仓行本身不入账, 单腿合约是普通期货合约, 由各自的成交正常增量维护.
         // 未知开平标志不参与持仓增量: 当成平仓会平掉对方真实持仓, 当开仓会凭空放大敞口
         // (apply_trade 内部也有同一道防御, 这里判定是为了留下可定位的 ERROR 证据).
-        if (rpt.base.position_effect == DZ_POSITION_EFFECT_UNKNOWN) {
+        if (is_spread_instrument(rpt.base.instrument_id)) {
+            SPDLOG_DEBUG(
+                "td spread trade excluded from position | account={} instrument={} trade_id={} "
+                "volume={}",
+                account_id_, f.trade.InstrumentID, f.trade.TradeID, f.trade.Volume);
+        } else if (rpt.base.position_effect == DZ_POSITION_EFFECT_UNKNOWN) {
             SPDLOG_ERROR(
                 "td rtn trade skipped for unknown position effect | account={} instrument={} "
                 "trade_id={} volume={}",
@@ -850,6 +884,10 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
 }
 
 void AccountSession::set_trading_day(int32_t trading_day) {
+    if (trading_day != trading_day_) {
+        // 跨交易日: 上一交易日的实时回报柜台时间不再可比 (时间戳含交易日), 清掉基准.
+        last_live_report_epoch_s_ = 0;
+    }
     trading_day_ = trading_day;
     // 每单成交累计只含当日成交 (契约 §3): 跨日后上一交易日的累计必须清空, 否则会话
     // 存活跨日时均价会混入昨日成交 (重启场景由 load_trading_day_baseline 重新 seed).
@@ -1290,7 +1328,7 @@ void AccountSession::report_unknown_enums(const UnknownEnumSink& unknown) {
                               std::chrono::steady_clock::now().time_since_epoch())
                               .count();
     const bool report_due =
-        unknown_enum_report_due(now_s, unknown_enum_last_report_s_, kUnknownEnumReportIntervalS);
+        alert_report_due(now_s, unknown_enum_last_report_s_, kUnknownEnumReportIntervalS);
     bool first_of_batch = true;
     for (size_t i = 0; i < unknown.count; ++i) {
         const UnknownEnumInfo& info = unknown.items[i];
@@ -1439,6 +1477,53 @@ PositionHolding* AccountSession::ensure_holding(const std::string& instrument_id
     }
     auto ins = holdings_.emplace(instrument_id, PositionHolding(instrument_id, exchange_id)).first;
     return &ins->second;
+}
+
+bool AccountSession::is_spread_instrument(const std::string& instrument_id) const {
+    auto it = instrument_exchange_map_.find(instrument_id);
+    // 合约表未命中 (尚未加载 / 柜台没返回该合约): 按普通合约处理, 不猜 —— 漏判比误判成
+    // 组合合约安全 (误判会让一笔真实单腿持仓静默消失).
+    return it != instrument_exchange_map_.end() && it->second.product_class == DZ_PRODUCT_SPREAD;
+}
+
+void AccountSession::note_live_report_time(int64_t report_epoch_s) {
+    if (report_epoch_s > last_live_report_epoch_s_) {
+        last_live_report_epoch_s_ = report_epoch_s;
+    }
+}
+
+void AccountSession::check_replay_external_order(const OrderRecord& rpt) {
+    if (!replay_external_only_alarm(replaying_, rpt.insert_time, last_live_report_epoch_s_)) {
+        return;
+    }
+    ++replay_external_missed_count_;
+    // 逐笔 ERROR 留证 (假设失效时重放会成批命中, 需要能追到具体委托); 通知按最小间隔限频,
+    // 避免一次重放风暴把前端通知环刷爆.
+    SPDLOG_ERROR(
+        "td external order only in login replay | account={} instrument={} order_ref={} "
+        "insert_time={} last_live_time={} missed_count={}",
+        account_id_, rpt.base.instrument_id, rpt.order_ref, rpt.insert_time,
+        last_live_report_epoch_s_, replay_external_missed_count_);
+    const int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    if (!alert_report_due(now_s, replay_external_last_alert_s_, kReplayExternalAlertIntervalS)) {
+        return;
+    }
+    replay_external_last_alert_s_ = now_s;
+    if (!notify_) {
+        return;
+    }
+    try {
+        notify_(DZ_NOTIFY_ERROR,
+                std::format("外部单仅出现在登录重放中（实时流未推送，累计 {} 笔）：私有流可能不是"
+                            "投资者级或存在推送缺口，持仓偏差将持续到下次登录",
+                            replay_external_missed_count_),
+                /*popup=*/false);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td replay external alert notify failed | account={} error=\"{}\"",
+                     account_id_, e.what());
+    }
 }
 
 void AccountSession::fill_position_info(DzPositionInfo& pos,
@@ -1690,45 +1775,66 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
         const bool has_row = f.investor_position && f.investor_position->Position > 0;
         if (has_row) {
             const auto& p = *f.investor_position;
-            // 均价换算需合约乘数 (PositionCost 为金额); 合约表未命中/缺失时留 0 -> 均价 0.
-            double volume_multiple = 0.0;
-            if (auto ex = instrument_exchange_map_.find(p.InstrumentID);
-                ex != instrument_exchange_map_.end()) {
-                volume_multiple = ex->second.volume_multiple;
-            }
-            DzPositionInfo pos = to_dz_position(p, account_id_, trading_day_, volume_multiple);
-            // TodayPosition 越界 = 柜台坏数据: 映射层已按契约 td-data-sync §3 夹取并派生非负
-            // yd, 这里补 WARN 留证 (映射层保持纯函数, 不自己记日志). 判据直接用映射结果
-            // 与原始字段的差异, 不重复夹取边界; 带方向使同合约多空两行可区分.
-            if (pos.today_volume != p.TodayPosition) {
-                SPDLOG_WARN(
-                    "td position today/yd anomalous, clamped | account={} instrument={} "
-                    "position={} today_position={} direction={}",
-                    account_id_, p.InstrumentID, p.Position, p.TodayPosition,
-                    static_cast<int>(pos.direction));
-            }
-            // 未知方向不能当多头写进持仓 (那会把空头写成多头, 净敞口反向), 也不能只把这一行
-            // 丢掉——那会让本轮快照看起来「这个合约空了」，apply_position_query 会把它的
-            // 已知持仓清零（幽灵空仓, ADR 0045 决策 3 判定的最危险形态）。读不懂的一行
-            // 等价于本轮快照不可信: 整轮不应用, 保留上次已知快照。
-            if (pos.direction == DZ_DIRECTION_UNKNOWN) {
-                UnknownEnumSink unknown;
-                unknown.add(kUnknownCategoryDirection, p.PosiDirection);
-                report_unknown_enums(unknown);
-                position_query_unknown_direction_ = true;
+            // 套利 / 组合合约的持仓行跳过: 不入库、不推帧, 只记 DEBUG 说明「为什么持仓比柜台
+            // 少一行」(ADR 0049 决策 6). 盘后自动组合是交易所行为, 客户未申请也会生成组合
+            // 持仓; 若当普通合约聚合, 会凭空造出一条「净持仓→多头、均价 0」的持仓.
+            if (is_spread_instrument(p.InstrumentID)) {
+                SPDLOG_DEBUG("td position spread row skipped | account={} instrument={} volume={}",
+                             account_id_, p.InstrumentID, p.Position);
             } else {
-                PositionQueryKey key{std::string(pos.instrument_id),
-                                     static_cast<int8_t>(pos.direction)};
-                PositionQueryAgg& agg = position_query_agg_[key];
-                // 今昨以映射层的 TodayPosition 口径为准 (契约 td-data-sync §3): 逐行先算
-                // today/yd 再累加, YdPosition 是静态昨仓, 不参与当前昨仓
-                // (多行合并也不能只累加 Position).
-                agg.volume += pos.volume;
-                agg.yd += pos.yd_volume;
-                agg.cost += p.PositionCost;
-                agg.volume_multiple = volume_multiple;
-                agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
-                if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
+                // 均价换算需合约乘数 (PositionCost 为金额); 合约表未命中/缺失时留 0 -> 均价 0.
+                double volume_multiple = 0.0;
+                if (auto ex = instrument_exchange_map_.find(p.InstrumentID);
+                    ex != instrument_exchange_map_.end()) {
+                    volume_multiple = ex->second.volume_multiple;
+                }
+                const std::optional<DzPositionInfo> mapped =
+                    to_dz_position(p, account_id_, trading_day_, volume_multiple);
+                // 净持仓('1'): 合法 CTP 枚举但 DZ 只有多/空两态, 且持仓查询实际按多/空返回
+                // (ADR 0049 决策 9) —— 跳过该行 + WARN, 不产生持仓记录.
+                // **不得**走未知方向分支: 那会作废整轮快照 → 基准查询失败 → 账户登录不上,
+                // 等于让一个实际不存在的输入把账户打死; 也**不得**归为多头 (凭空造持仓).
+                if (!mapped.has_value()) {
+                    SPDLOG_WARN(
+                        "td position net direction row skipped | account={} instrument={} "
+                        "volume={}",
+                        account_id_, p.InstrumentID, p.Position);
+                } else {
+                    const DzPositionInfo& pos = *mapped;
+                    // TodayPosition 越界 = 柜台坏数据: 映射层已按契约 td-data-sync §3 夹取并
+                    // 派生非负 yd, 这里补 WARN 留证 (映射层保持纯函数, 不自己记日志). 判据直接
+                    // 用映射结果与原始字段的差异, 不重复夹取边界; 带方向使同合约多空两行可区分.
+                    if (pos.today_volume != p.TodayPosition) {
+                        SPDLOG_WARN(
+                            "td position today/yd anomalous, clamped | account={} instrument={} "
+                            "position={} today_position={} direction={}",
+                            account_id_, p.InstrumentID, p.Position, p.TodayPosition,
+                            static_cast<int>(pos.direction));
+                    }
+                    // 未知方向不能当多头写进持仓 (那会把空头写成多头, 净敞口反向), 也不能只把
+                    // 这一行丢掉——那会让本轮快照看起来「这个合约空了」，apply_position_query
+                    // 会把它的已知持仓清零（幽灵空仓, ADR 0045 决策 3 判定的最危险形态）。
+                    // 读不懂的一行等价于本轮快照不可信: 整轮不应用, 保留上次已知快照。
+                    if (pos.direction == DZ_DIRECTION_UNKNOWN) {
+                        UnknownEnumSink unknown;
+                        unknown.add(kUnknownCategoryDirection, p.PosiDirection);
+                        report_unknown_enums(unknown);
+                        position_query_unknown_direction_ = true;
+                    } else {
+                        PositionQueryKey key{std::string(pos.instrument_id),
+                                             static_cast<int8_t>(pos.direction)};
+                        PositionQueryAgg& agg = position_query_agg_[key];
+                        // 今昨以映射层的 TodayPosition 口径为准 (契约 td-data-sync §3): 逐行先
+                        // 算 today/yd 再累加, YdPosition 是静态昨仓, 不参与当前昨仓
+                        // (多行合并也不能只累加 Position).
+                        agg.volume += pos.volume;
+                        agg.yd += pos.yd_volume;
+                        agg.cost += p.PositionCost;
+                        agg.volume_multiple = volume_multiple;
+                        agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;
+                        if (agg.exchange_id.empty()) agg.exchange_id = p.ExchangeID;
+                    }
+                }
             }
         } else if (f.rsp_info && f.rsp_info->ErrorID != 0) {
             SPDLOG_ERROR("td qry position error | account={} error_id={} error=\"{}\"", account_id_,

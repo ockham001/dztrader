@@ -289,24 +289,58 @@ TEST(ParseMaxOrderRefTest, NonDigitReturnsZero) {
 }
 
 // ============================================================================
-// unknown_enum_report_due (未知枚举通知限频, issue #367 上报口径)
+// alert_report_due (持续异常告警的通知限频: 未知枚举 / 外部单重放告警共用)
 // ============================================================================
 
-TEST(UnknownEnumReportDueTest, NeverReportedIsDue) {
+TEST(AlertReportDueTest, NeverReportedIsDue) {
     // 0 / 负值 = 尚未上报过 -> 首次必发 (否则计数器涨了但界面永远收不到通知).
-    EXPECT_TRUE(unknown_enum_report_due(1000, 0, 300));
-    EXPECT_TRUE(unknown_enum_report_due(1000, -5, 300));
+    EXPECT_TRUE(alert_report_due(1000, 0, 300));
+    EXPECT_TRUE(alert_report_due(1000, -5, 300));
 }
 
-TEST(UnknownEnumReportDueTest, WithinIntervalIsThrottled) {
+TEST(AlertReportDueTest, WithinIntervalIsThrottled) {
     // 间隔内只计数不通知: 未知枚举可能每条回报都带, 逐条通知会刷爆前端通知环.
-    EXPECT_FALSE(unknown_enum_report_due(1299, 1000, 300));
-    EXPECT_FALSE(unknown_enum_report_due(1000, 1000, 300));
+    EXPECT_FALSE(alert_report_due(1299, 1000, 300));
+    EXPECT_FALSE(alert_report_due(1000, 1000, 300));
 }
 
-TEST(UnknownEnumReportDueTest, AtOrBeyondIntervalIsDue) {
-    EXPECT_TRUE(unknown_enum_report_due(1300, 1000, 300));
-    EXPECT_TRUE(unknown_enum_report_due(2000, 1000, 300));
+TEST(AlertReportDueTest, AtOrBeyondIntervalIsDue) {
+    EXPECT_TRUE(alert_report_due(1300, 1000, 300));
+    EXPECT_TRUE(alert_report_due(2000, 1000, 300));
+}
+
+// ============================================================================
+// replay_external_only_alarm (外部单「只在登录重放出现」告警, ADR 0049)
+// ============================================================================
+
+TEST(ReplayExternalOnlyAlarmTest, RecordNotAfterLastLiveReportIsAlarmed) {
+    // 该记录的柜台时间早于最后一条实时回报 → 那时本会话已在收实时流, 按投资者级假设
+    // 它本应实时到达并落库；仍以新记录出现在重放里 = 假设可能失效.
+    const int64_t last_live = 100000;  // 交易日当天 10:00 前后 (值域只要求可比)
+    EXPECT_TRUE(
+        replay_external_only_alarm(/*in_replay=*/true, /*record_epoch_s=*/99000, last_live));
+    EXPECT_TRUE(replay_external_only_alarm(true, last_live, last_live))
+        << "同一秒内的记录同样应已到达 (同秒边界不豁免)";
+}
+
+TEST(ReplayExternalOnlyAlarmTest, RecordAfterLastLiveReportIsNotAlarmed) {
+    // 晚于最后实时回报的记录无法判定: 可能是断线窗口内别的终端下的单, 只能靠重放补发.
+    EXPECT_FALSE(replay_external_only_alarm(true, /*record_epoch_s=*/100001, 100000));
+    EXPECT_FALSE(replay_external_only_alarm(true, 110000, 100000));
+}
+
+TEST(ReplayExternalOnlyAlarmTest, RealTimeRecordIsNeverAlarmed) {
+    // 实时流记录不是本告警的取证对象 (判据只针对「只出现在重放里」).
+    EXPECT_FALSE(replay_external_only_alarm(/*in_replay=*/false, 100000, 200000));
+}
+
+TEST(ReplayExternalOnlyAlarmTest, UnknownTimestampsAreNotAlarmed) {
+    // 柜台时间未知 (InsertTime 解析失败) 或尚未观测到实时回报 (进程刚启动 / 跨日清空)
+    // 时无从比较, 保守不告警.
+    EXPECT_FALSE(replay_external_only_alarm(true, /*record_epoch_s=*/0, 100000));
+    EXPECT_FALSE(replay_external_only_alarm(true, /*record_epoch_s=*/-1, 100000));
+    EXPECT_FALSE(replay_external_only_alarm(true, 100000, /*last_live_epoch_s=*/0));
+    EXPECT_FALSE(replay_external_only_alarm(true, 100000, /*last_live_epoch_s=*/-1));
 }
 
 // ============================================================================

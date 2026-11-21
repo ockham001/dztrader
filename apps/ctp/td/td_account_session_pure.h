@@ -73,13 +73,31 @@ int64_t sync_order_ref(int64_t current_ref, int64_t ctp_max) noexcept;
 /// 解析 CTP MaxOrderRef 字符串为 int64. 非数字/空返回 0.
 int64_t parse_max_order_ref(const char* max_order_ref) noexcept;
 
-/// 未知枚举「通知」的限频判定 (issue #367 上报口径).
-/// 未知枚举可能每条回报都带: 逐条通知会刷爆前端通知环.
+/// 持续异常告警的**通知**限频判定 (未知枚举 / 外部单「只在登录重放出现」共用).
+/// 这类异常可能每条回报都带: 逐条通知会刷爆前端通知环, 间隔内只计数与记日志.
 /// @param now_s 当前单调时钟秒
 /// @param last_report_s 上次上报时刻 (<=0 = 尚未上报过)
 /// @param interval_s 最小间隔秒
 /// @return true = 本次应当通知
-bool unknown_enum_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept;
+bool alert_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept;
+
+/// 外部单「只在登录重放中出现」告警判据 (ADR 0049：私有流投资者级假设的运行期可观测性).
+///
+/// 该假设（同账号其他终端的单也实时推给本会话）无一手明文. 若柜台实际按**会话**推送,
+/// 外部单只会在登录重放里出现, 持仓偏差持续到下次登录; 本判据把「假设失效」变成可观测事件.
+///
+/// 判据 = 记录来自登录重放, 且其柜台时间不晚于本会话最后一条**实时**回报的柜台时间:
+/// 后者证明那一刻本会话已在接收实时流, 按投资者级假设该记录本应实时到达并落库
+/// (落库后在重放过滤器里命中基准被吞, 走不到本判定) —— 走到这里即假设可能失效,
+/// 或实时流出现缺口 (两者都值得告警).
+/// 保守性 (有意): 柜台时间晚于最后实时回报的记录无法判定——它可能是断线窗口内别的终端
+/// 下的单, 只能靠重放补发; 进程重启后基准为 0, 同样不告警. 因此本告警只会**漏报**, 不误报.
+/// @param in_replay 该记录是否来自登录重放 (实时流记录恒 false)
+/// @param record_epoch_s 记录柜台时间 (交易日 × 86400 + HH:MM:SS 秒; <=0 = 未知)
+/// @param last_live_epoch_s 本会话最后一条实时回报的柜台时间 (<=0 = 尚未观测)
+bool replay_external_only_alarm(bool in_replay,
+                                int64_t record_epoch_s,
+                                int64_t last_live_epoch_s) noexcept;
 
 /// 登录响应的会话交易日是否可用 (纯判定便于断言).
 ///
