@@ -360,6 +360,49 @@ TEST_F(TdStatsQueryTest, WatermarkIsMaxSeqAcrossFourTablesPerAccount) {
     EXPECT_EQ(snapshot->watermarks.at("ACC2"), 3U);
 }
 
+// ===== order_id 水位 = orders 表 MAX(order_id)（ADR 0050 / 契约 rest §2.9.5）=====
+
+TEST_F(TdStatsQueryTest, SnapshotCarriesPerAccountMaxOrderId) {
+    create_db();
+    insert_order(OrderSeed{.order_id = 1, .seq = 1});
+    insert_order(OrderSeed{.order_id = 3, .seq = 2});
+    insert_order(OrderSeed{.account_id = "ACC2", .order_id = 7, .seq = 3});
+
+    const auto snapshot = recompute();
+    ASSERT_TRUE(snapshot.has_value());
+    // 账户内最大 order_id（首见判据的水位，ADR 0050）。
+    EXPECT_EQ(snapshot->max_order_ids.at("ACC1"), 3);
+    EXPECT_EQ(snapshot->max_order_ids.at("ACC2"), 7);
+}
+
+TEST_F(TdStatsQueryTest, MaxOrderIdIgnoresDateFilterAndAccumulatesAcrossDays) {
+    create_db();
+    // order_id 是账户级全局单调计数器分配的（跨交易日不回退），水位不能按交易日截断：
+    // 否则日切后第一笔新委托的 order_id 可能小于旧日最大值而被误判成「见过的委托」。
+    OrderSeed old_day;
+    old_day.order_id = 42;
+    old_day.date = "20261008";
+    old_day.seq = 7;
+    insert_order(old_day);
+
+    const auto snapshot = recompute();
+    ASSERT_TRUE(snapshot.has_value());
+    // 旧日委托不计入当日聚合，但其 order_id 必须进入水位。
+    expect_values(snapshot->values, 0, 0, 0, 0);
+    EXPECT_EQ(snapshot->max_order_ids.at("ACC1"), 42);
+}
+
+TEST_F(TdStatsQueryTest, MaxOrderIdIsAbsentForAccountWithoutOrders) {
+    create_db();
+    // ACC2 只有成交行、没有委托行 → 无 order_id 水位（apply 侧缺失按 0 处理）。
+    insert_trade(SeqRow{.account_id = "ACC2", .seq = 3}, "T2");
+
+    const auto snapshot = recompute();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->max_order_ids.count("ACC1"), 0U);
+    EXPECT_EQ(snapshot->max_order_ids.count("ACC2"), 0U);
+}
+
 TEST_F(TdStatsQueryTest, WatermarkIgnoresDateFilterAndAccumulatesAcrossDays) {
     create_db();
     // 旧交易日的行：水位是账户级跨日累积（不带 date 过滤），必须取到。
@@ -396,6 +439,7 @@ TEST_F(TdStatsQueryTest, NoOnlineAccountsYieldsZeroSnapshotWithoutReadingDb) {
     expect_values(snapshot->values, 0, 0, 0, 0);
     EXPECT_TRUE(snapshot->active.empty());
     EXPECT_TRUE(snapshot->watermarks.empty());
+    EXPECT_TRUE(snapshot->max_order_ids.empty());
 }
 
 TEST_F(TdStatsQueryTest, NoTradingDayYieldsZeroSnapshot) {
@@ -405,6 +449,7 @@ TEST_F(TdStatsQueryTest, NoTradingDayYieldsZeroSnapshot) {
     ASSERT_TRUE(snapshot.has_value());
     expect_values(snapshot->values, 0, 0, 0, 0);
     EXPECT_TRUE(snapshot->watermarks.empty());
+    EXPECT_TRUE(snapshot->max_order_ids.empty());
 }
 
 TEST_F(TdStatsQueryTest, EmptyDatabaseForOnlineAccountsYieldsZeroValuesButWatermarks) {

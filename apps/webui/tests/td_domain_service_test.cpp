@@ -726,7 +726,7 @@ TEST_F(TdDomainServiceTest, RepeatedReadyResyncsBecauseTdRestartSkipsOffline) {
 
     // td 崩溃重启来不及推 Offline，重登后直接再来一条**同账户同日** Ready：
     // 账户本就在线、日切也没发生，但这次 Ready 是重同步点——期间可能有别的终端
-    // 或重启前未落库的委托已进库，计数器必须重算到最新，而不是等到周期对账。
+    // 或重启前未落库的委托已进库，计数器必须重算到最新，而不是等下一次触发点。
     insert_order_row("ACC1", "20261009", 2, DZ_ORDER_ALL_TRADED, 3, 3, 12);
     ready("ACC1", day_epoch(2026, 10, 9));
 
@@ -791,6 +791,22 @@ TEST_F(TdDomainServiceTest, OrderReportIncrementCountsNewOrderAndReachesStatsBod
     expect_stats(1, 5, 0, 0);
 }
 
+TEST_F(TdDomainServiceTest, AveragePriceRefreshFrameForTerminalOrderDoesNotDoubleCount) {
+    const std::string path = create_stats_db();
+    inject_stats_query(path);
+    ready("ACC1", day_epoch(2026, 10, 9));
+
+    // 新委托 → 终态（全成）。
+    feed_order(make_order_with(1, DZ_ORDER_NOT_TRADED, 5, 0, 1, day_epoch(2026, 10, 9)));
+    feed_order(make_order_with(1, DZ_ORDER_ALL_TRADED, 5, 5, 2, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 0, 0);
+
+    // td 在成交均价变化时以**新 seq** 刷新同一委托并再推一帧（契约 td-data-sync §3）：
+    // 该 order_id 已在 `max_order_id` 水位内 ⇒ 不得计成第二笔（#410 的真实多计）。
+    feed_order(make_order_with(1, DZ_ORDER_ALL_TRADED, 5, 5, 3, day_epoch(2026, 10, 9)));
+    expect_stats(1, 5, 0, 0);
+}
+
 TEST_F(TdDomainServiceTest, OrderReportCancelAndRejectAreCountedInTotalOnly) {
     const std::string path = create_stats_db();
     inject_stats_query(path);
@@ -834,6 +850,21 @@ TEST_F(TdDomainServiceTest, OrderReportFromOfflineAccountDoesNotTouchStats) {
     expect_stats(0, 0, 0, 0);
 }
 
+// ===== 周期对账已删除（契约 rest §2.9.5 / ADR 0050）=====
+
+// 统计不再有周期对账：服务**不提供**任何「注册重算调度器」入口，因此不存在可注册的
+// 定时任务、残留注册调用点无法编译（原 `InjectedSchedulerRegistersTaskAndManualTickReconciles`
+// 用例随 `set_reconcile_scheduler` 删除而移除）。下面的 concept + static_assert 是编译期
+// 护栏：入口若被静默加回，这里先失败，逼人回答「周期对账是否重新成立」。
+//
+// 用依赖类型（concept）而不是直接写 requires(TdDomainService&)：非模板上下文里的
+// requires-expression 缺成员是硬编译错误，不会求值为 false。
+template <typename T>
+concept HasReconcileScheduler =
+    requires(T& service) { service.set_reconcile_scheduler([](double, std::function<void()>) {}); };
+
+static_assert(!HasReconcileScheduler<TdDomainService>);
+
 TEST_F(TdDomainServiceTest, OrderReportIncrementAndReconcileAgreeOnSameData) {
     const std::string path = create_stats_db();
     inject_stats_query(path);
@@ -858,34 +889,7 @@ TEST_F(TdDomainServiceTest, OrderReportIncrementAndReconcileAgreeOnSameData) {
     expect_stats(2, 9, 1, 4);
 }
 
-// ===== 周期对账：可注入调度器（设计 §2.4 / §5.3）=====
-
-TEST_F(TdDomainServiceTest, InjectedSchedulerRegistersTaskAndManualTickReconciles) {
-    // 假调度器：记录注册的 interval 与 task，测试直接 tick（不 sleep）。
-    double registered_interval = 0.0;
-    std::function<void()> registered_task;
-    int registrations = 0;
-    service_->set_reconcile_scheduler([&registered_interval, &registered_task, &registrations](
-                                          double interval, std::function<void()> task) {
-        ++registrations;
-        registered_interval = interval;
-        registered_task = std::move(task);
-    });
-    ASSERT_EQ(registrations, 1);
-    // 契约 rest §2.9.5：建议 30s（实现可调，常量单源）。
-    EXPECT_DOUBLE_EQ(registered_interval, kTdStatsReconcileIntervalSec);
-    ASSERT_TRUE(registered_task != nullptr);
-
-    const std::string path = create_stats_db();
-    inject_stats_query(path);
-    ready("ACC1", day_epoch(2026, 10, 9));
-    expect_stats(0, 0, 0, 0);
-
-    // 库在两次重算之间多了一笔（例如 td 直写 / 上一轮失败后恢复）：tick 后收敛。
-    insert_order_row("ACC1", "20261009", 1, DZ_ORDER_NOT_TRADED, 6, 0, 21);
-    registered_task();
-    expect_stats(1, 6, 1, 6);
-}
+// ===== 重算降级（契约 rest §2.9.5）=====
 
 TEST_F(TdDomainServiceTest, ReconcileKeepsCounterWhenDatabaseBecomesUnreadable) {
     const std::string path = create_stats_db();

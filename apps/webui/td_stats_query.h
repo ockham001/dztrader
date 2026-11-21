@@ -6,9 +6,10 @@
  * @brief 统计计数器重算查询（契约 rest §2.9.5 / §2.9.8 / td-data-sync §5）。
  *
  * 与 `TdOrdersQuery` 同型：每请求独立只读连接（`TdReadConnection`）、`busy_timeout`
- * 200ms，同步查询、无共享状态。**单只读事务**（`BEGIN DEFERRED`）内一次取齐三样：
- * 聚合 4 值 + 活动（未成交）委托种子 + 每账户四表 `MAX(seq)` 水位——三者必须同一快照，
- * 否则会出现「快照没有却被水位判定已含」的静默误吞（契约 td-data-sync §5）。
+ * 200ms，同步查询、无共享状态。**单只读事务**（`BEGIN DEFERRED`）内一次取齐四样：
+ * 聚合 4 值 + 活动（未成交）委托种子 + 每账户四表 `MAX(seq)` 水位 + orders 表
+ * `MAX(order_id)` 水位——必须同一快照，否则会出现「快照没有却被水位判定已含」的静默
+ * 误吞（契约 td-data-sync §5）。
  *
  * 表名/列名以 `libs/tdstore/src/schema_catalog.cpp` 为唯一真相源；schema 版本校验复用
  * `kTdOrdersReadSchemaVersion`（同一 `td_read_db` 实现）。
@@ -36,7 +37,7 @@ public:
     explicit TdStatsQuery(std::function<std::string()> trade_db_path,
                           int busy_timeout_ms = kTdReadBusyTimeoutMs);
 
-    /// 从交易库重算（**单只读事务**内取聚合 + 活动委托 + 每账户 MAX(seq)，三者同一快照）。
+    /// 从交易库重算（**单只读事务**内取聚合 + 活动委托 + 每账户两个水位，全部同一快照）。
     /// @param online_accounts 在线（Ready）账户集合（空 = 直接返回全 0 快照，不读库）
     /// @param trading_day 当前交易日 "YYYYMMDD"（nullopt = 无当前交易日 → 全 0 快照）
     /// @return nullopt = 库不可读 / 版本不符 / 查询失败（调用方保持旧计数器）
@@ -56,10 +57,14 @@ private:
                       const std::vector<std::string>& accounts,
                       std::vector<TdStatsActiveOrder>& active) const;
 
-    /// 单只读事务内的每账户水位：四表 `MAX(seq)` 逐账户取最大（不带 date 过滤）。
+    /// 单只读事务内的每账户水位（都**不带 date 过滤**）：
+    /// - 四表 `MAX(seq)` 逐账户取最大（`seq` 重放守卫）；
+    /// - orders 表 `MAX(order_id)`（首见判据，ADR 0050）——与 orders 的 `MAX(seq)`
+    ///   同一条 GROUP BY 查询，不增加查询次数。
     bool query_watermarks(sqlite3* db,
                           const std::vector<std::string>& accounts,
-                          std::map<std::string, uint64_t>& watermarks) const;
+                          std::map<std::string, uint64_t>& watermarks,
+                          std::map<std::string, int64_t>& max_order_ids) const;
 
     std::function<std::string()> trade_db_path_;
     int busy_timeout_ms_ = kTdReadBusyTimeoutMs;
