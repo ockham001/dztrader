@@ -269,6 +269,8 @@ void AccountSession::disconnect() {
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
+    cancel_position_query_retry_timer();
+    cancel_position_query_timeout_timer();
     ++generation_;  // 使已挂起定时器回调失效
     api_->RegisterSpi(nullptr);
     api_->Release();
@@ -307,6 +309,8 @@ void AccountSession::on_front_disconnected(int reason) {
     cancel_connect_timer();
     cancel_login_timer();
     cancel_instruments_load_timer();
+    cancel_position_query_retry_timer();
+    cancel_position_query_timeout_timer();
     ++generation_;  // 使已挂起定时器回调失效
     // 终检发现 1: 作废在途登录收尾查询链 (CTP 断连后在途查询响应作废)。
     // 否则首次登录已收尾 (finalizer 停在 kDone), 重连重登的持仓 is_last 被
@@ -316,6 +320,7 @@ void AccountSession::on_front_disconnected(int reason) {
     position_query_group_.clear();
     position_rebuild_consumed_ = false;
     position_query_ok_ = false;
+    position_query_retries_ = 0;
     position_baseline_ready_ = false;
     position_query_in_flight_ = false;
     // 清空持仓 map, 重连后主动查询重建 (设计 §6)
@@ -1034,6 +1039,14 @@ void AccountSession::cancel_connect_timer() {
 }
 
 void AccountSession::req_qry_investor_position() {
+    // 登录 / 重连后的基准查询起点: 重置重试预算, 开始首次尝试 (ADR 0049 决策 3).
+    cancel_position_query_retry_timer();
+    cancel_position_query_timeout_timer();
+    position_query_retries_ = 0;
+    req_qry_investor_position_once();
+}
+
+void AccountSession::req_qry_investor_position_once() {
     ++position_query_token_;
     query_gen_ = generation_;
     position_query_agg_.clear();
@@ -1042,54 +1055,107 @@ void AccountSession::req_qry_investor_position() {
     position_query_unknown_direction_ = false;
     position_query_in_flight_ = true;
     if (api_ == nullptr) {
-        position_query_in_flight_ = false;
-        finalizer_.on_position_failed();
-        position_query_ok_ = false;
-        req_qry_trading_account();
+        on_position_query_attempt_failed("trader api is null");
         return;
     }
     CThostFtdcQryInvestorPositionField qry{};
     position_query_request_id_ = ++request_id_;
     int ret = api_->ReqQryInvestorPosition(&qry, position_query_request_id_);
     if (ret != 0) {
-        position_query_in_flight_ = false;
-        if (ret == -3) {
-            SPDLOG_WARN("td qry position flow control, retry in 1.5s | account={}", account_id_);
-            uint64_t gen = generation_;
-            std::weak_ptr<void> weak = alive_token_;
-            timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, weak, gen]() {
-                if (weak.expired()) return;
-                if (gen != generation_) return;
-                if (finalizer_.phase() == Phase::kQueryPosition) {
-                    req_qry_investor_position();
-                }
-            });
-            return;
-        }
-        SPDLOG_ERROR("td req qry position failed | account={} ret={}", account_id_, ret);
-        finalizer_.on_position_failed();
-        position_query_ok_ = false;
-        req_qry_trading_account();
+        // -1 / -2 / -3 都算一次失败; -3 流控同样计入重试预算 (ADR 0049 决策 3).
+        on_position_query_attempt_failed(std::format("ReqQryInvestorPosition ret={}", ret));
         return;
     }
     // 超时兜底: 登录阶段 5 分钟 (查询只在登录收尾链发起, 不存在 Ready 阶段的查询).
+    cancel_position_query_timeout_timer();
     uint64_t gen = generation_;
     uint64_t token = position_query_token_;
     std::weak_ptr<void> weak = alive_token_;
-    timer_queue_.schedule_after(std::chrono::minutes(5), [this, weak, gen, token]() {
-        if (weak.expired()) return;
-        if (gen != generation_) return;
-        if (token != position_query_token_) return;  // 已有更新的查询, 本次超时作废
-        if (!position_query_in_flight_) return;      // 响应已到, 超时作废
-        position_query_in_flight_ = false;
-        if (state_machine_.state() == TdState::LoadingInstruments &&
-            finalizer_.phase() == Phase::kQueryPosition) {
-            SPDLOG_ERROR("td qry position timeout, degrade | account={}", account_id_);
-            finalizer_.on_position_failed();
-            position_query_ok_ = false;
-            req_qry_trading_account();
-        }
-    });
+    position_query_timeout_timer_id_ =
+        timer_queue_.schedule_after(std::chrono::minutes(5), [this, weak, gen, token]() {
+            if (weak.expired()) return;
+            if (gen != generation_) return;
+            position_query_timeout_timer_id_ = 0;
+            if (token != position_query_token_) return;  // 已有更新的查询, 本次超时作废
+            if (!position_query_in_flight_) return;      // 响应已到, 超时作废
+            if (state_machine_.state() != TdState::LoadingInstruments ||
+                finalizer_.phase() != Phase::kQueryPosition) {
+                return;
+            }
+            SPDLOG_ERROR("td qry position timeout | account={}", account_id_);
+            on_position_query_attempt_failed("query timeout 5min");
+        });
+}
+
+void AccountSession::on_position_query_attempt_failed(std::string_view reason) {
+    if (finalizer_.position_failed()) {
+        // 本次登录已判失败: 重复/迟到失败不再计数或重复弹窗 (幂等防御).
+        return;
+    }
+    position_query_in_flight_ = false;
+    position_query_ok_ = false;
+    cancel_position_query_timeout_timer();
+    if (position_query_retry_allowed(position_query_retries_)) {
+        ++position_query_retries_;
+        SPDLOG_WARN(
+            "td position baseline query failed, retry scheduled | account={} retry={}"
+            " max_retries={} reason=\"{}\"",
+            account_id_, position_query_retries_, kPositionQueryMaxRetries, reason);
+        cancel_position_query_retry_timer();
+        uint64_t gen = generation_;
+        std::weak_ptr<void> weak = alive_token_;
+        position_query_retry_timer_id_ =
+            timer_queue_.schedule_after(kPositionQueryRetryInterval, [this, weak, gen]() {
+                if (weak.expired()) return;
+                if (gen != generation_) return;
+                position_query_retry_timer_id_ = 0;
+                // 断连 / 已收尾时不再重试 (与超时回调同一道防御).
+                if (state_machine_.state() != TdState::LoadingInstruments ||
+                    finalizer_.phase() != Phase::kQueryPosition) {
+                    return;
+                }
+                req_qry_investor_position_once();
+            });
+        return;
+    }
+    // 重试预算用尽 → 本次登录失败: 停在当前进度 (LoadingInstruments)、不转 Ready、
+    // 推 ERROR 通知, 且不再排任何定时器 —— 不自动恢复, 等用户处理 (ADR 0049 决策 3).
+    cancel_position_query_retry_timer();
+    finalizer_.on_position_failed();
+    SPDLOG_ERROR(
+        "td position baseline query failed, account not ready | account={} retries={}"
+        " reason=\"{}\"",
+        account_id_, position_query_retries_, reason);
+    notify_position_query_failed();
+}
+
+void AccountSession::notify_position_query_failed() {
+    if (!notify_) {
+        return;  // 未注入 (测试/无 UI): 仅日志, 上文已记 ERROR
+    }
+    try {
+        notify_(DZ_NOTIFY_ERROR, position_query_failed_message(), /*popup=*/true);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td position query failed notify failed | account={} error=\"{}\"",
+                     account_id_, e.what());
+    } catch (...) {
+        SPDLOG_ERROR("td position query failed notify failed | account={} error=unknown_exception",
+                     account_id_);
+    }
+}
+
+void AccountSession::cancel_position_query_retry_timer() {
+    if (position_query_retry_timer_id_ != 0) {
+        timer_queue_.cancel(position_query_retry_timer_id_);
+        position_query_retry_timer_id_ = 0;
+    }
+}
+
+void AccountSession::cancel_position_query_timeout_timer() {
+    if (position_query_timeout_timer_id_ != 0) {
+        timer_queue_.cancel(position_query_timeout_timer_id_);
+        position_query_timeout_timer_id_ = 0;
+    }
 }
 
 void AccountSession::req_qry_trading_account() {
@@ -1178,7 +1244,8 @@ void AccountSession::drive_finalizer() {
 }
 
 void AccountSession::finalize_login() {
-    // 双查询完成 (含失败降级) 后进入收尾序列. 防御: 未达前置时 no-op.
+    // 持仓查询成功 + 资金查询完结后才进入收尾序列. 防御: 未达前置时 no-op
+    // (持仓查询重试耗尽时 can_reach_ready() 恒 false → 不转 Ready).
     if (!finalizer_.can_reach_ready()) {
         return;
     }
@@ -1567,8 +1634,9 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
             //    MAX(date)；持仓查询失败时若资金行仍写当日，锚点推进到当日而 positions
             //    当日无行 → 持仓 REST 返回空数组 = 假空仓（ADR 0045 决策 3 判定最危险的形态）。
             // 2) 「资金行与持仓行同日」——锚点推进到当日时持仓行集已一致。
-            // 持仓失败时查询本身照发（收尾链需要资金查询的 is_last 才能推进到 Ready），
-            // 只是不落库、不推帧：定型数据与帧一起跳过，避免 UI 看到资金而持仓缺失。
+            // ADR 0049 后持仓查询失败会有限重试、可能停住 (不再发起资金查询); 本守卫仍是
+            // 唯一写入点的最终防线——若资金响应在失败窗口意外到达, 同样不落库、不推帧
+            // (定型数据与帧一起跳过, 避免 UI 看到资金而持仓缺失).
             if (position_query_ok_) {
                 DzTradingAccount acct =
                     to_dz_trading_account(*f.trading_account, account_id_, trading_day_);
@@ -1608,11 +1676,13 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
 }
 
 // === on_rsp_qry_investor_position: 持仓查询响应 ===
-// Task 5 (spec §4.2 查询链路响应侧): 逐行累加 (同 key 多行合并), is_last 收口应用 —
+// 登录收尾阶段一 (spec §4.2 查询链路响应侧): 逐行累加 (同 key 多行合并), is_last 收口应用 —
 // 聚合模型 diff 推帧 / 全平零帧 / 活动委托重灌 / PositionRebuild 全量重灌落库.
-// Task 6: is_last 完成持仓查询 -> 发起资金查询 (CTP 流控串行).
+// 失败按有限重试处理 (ADR 0049 决策 3); 成功后才发起资金查询 (CTP 流控串行).
 void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPositionField& f) {
     if (query_gen_ != generation_ || f.request_id != position_query_request_id_) return;
+    // 本次登录已判失败 (重试耗尽): 迟到/重复响应一律忽略, 不再触发任何查询.
+    if (finalizer_.position_failed()) return;
     try {
         // 只处理当前持仓 > 0 的行: CTP 会返回 Position=0 的「已全平」行 (其他字段可能非 0),
         // 它对今昨/总量没有贡献; 消失的合约由整组原子替换移除, 不落 0 量行.
@@ -1666,11 +1736,22 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
         }
         if (f.is_last) {
             position_query_in_flight_ = false;
-            // 未知方向让整轮快照不可信 -> 按查询失败处理 (不改表, 保留上次已知快照),
-            // 与 rsp_info 报错的处置同形。
-            position_query_ok_ =
-                !(f.rsp_info && f.rsp_info->ErrorID != 0) && !position_query_unknown_direction_;
-            if (position_query_ok_ && !position_rebuild_consumed_) {
+            cancel_position_query_timeout_timer();
+            // 本分支负责的失败判据: is_last 带 ErrorID, 或本轮出现读不懂的方向
+            // (整轮快照不可信 → 等价「查询结果不可用」). 其余判据 (请求返回非 0 /
+            // 超时) 在发起侧处理, 完整清单见 on_position_query_attempt_failed 注释.
+            // **零行不是失败**: is_last 无错即成功, 空账户合法, 由 apply_position_query
+            // 整组替换为当日空集. 注意这里不把「查不到」和「查失败」混为一谈.
+            if ((f.rsp_info && f.rsp_info->ErrorID != 0) || position_query_unknown_direction_) {
+                const std::string reason =
+                    position_query_unknown_direction_
+                        ? std::string("unknown position direction")
+                        : std::format("is_last ErrorID={}", f.rsp_info ? f.rsp_info->ErrorID : -1);
+                on_position_query_attempt_failed(reason);
+                return;
+            }
+            position_query_ok_ = true;
+            if (!position_rebuild_consumed_) {
                 position_rebuild_consumed_ = true;
                 apply_position_query();
             }

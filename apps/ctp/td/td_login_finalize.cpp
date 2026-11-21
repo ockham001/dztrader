@@ -34,6 +34,17 @@ void LoginFinalizer::on_position_done() noexcept {
     phase_ = Phase::kQueryAccount;
 }
 
+void LoginFinalizer::on_position_failed() noexcept {
+    if (phase_ != Phase::kQueryPosition) {
+        // 防重复/乱序回调: 非查询阶段到达时忽略 (不破坏线性推进).
+        return;
+    }
+    // 重试预算已由调用方在调本方法前用尽 (td_account_session_pure.h 的
+    // kPositionQueryMaxRetries). 停在 kQueryPosition: next() 不推进,
+    // can_reach_ready() 恒 false —— 本次登录终止, 等用户处理.
+    position_failed_ = true;
+}
+
 void LoginFinalizer::on_account_done() noexcept {
     if (phase_ != Phase::kQueryAccount) {
         // 防重复/乱序回调: 迟到/重复 is_last 到达时忽略, 不破坏相位 (幂等).
@@ -44,8 +55,9 @@ void LoginFinalizer::on_account_done() noexcept {
 }
 
 bool LoginFinalizer::can_reach_ready() const noexcept {
-    // 两查询都完成 (含失败降级) 才 true. 查询失败不阻塞 Ready (spec §4.2).
-    return position_done_ && account_done_;
+    // 持仓查询必须成功 (它建的是持仓基准, ADR 0049 决策 3);
+    // 资金查询失败降级不阻塞 Ready (资金行只在持仓成功后写入, ADR 0045 决策 4).
+    return position_done_ && !position_failed_ && account_done_;
 }
 
 Phase LoginFinalizer::next() noexcept {

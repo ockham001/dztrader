@@ -360,3 +360,47 @@ TEST(LoginFailedMessageTest, EmptyReasonOmitsParentheses) {
     // 空原因不得产出「（）」这种残缺文案; 逐字锁定, 防止改成 ASCII () 后静默通过.
     EXPECT_EQ(login_failed_message(""), "交易登录失败，本进程不会自动重试该账户");
 }
+
+// ============================================================================
+// position_query_retry_allowed / position_query_failed_message
+// (基准持仓查询有限重试策略, ADR 0049 决策 3)
+// ============================================================================
+
+TEST(PositionQueryRetryTest, RetriesUntilBudgetExhausted) {
+    // 语义: retries_done = 已重试次数 (0 = 首次尝试刚失败). 预算 = 3 次重试,
+    // 即总尝试 4 次; 第 4 次失败后不再重试 (重试耗尽 → 登录失败).
+    EXPECT_EQ(kPositionQueryMaxRetries, 3) << "ADR 0049: retry 3 times, 3s apart";
+    EXPECT_TRUE(position_query_retry_allowed(0));
+    EXPECT_TRUE(position_query_retry_allowed(1));
+    EXPECT_TRUE(position_query_retry_allowed(kPositionQueryMaxRetries - 1));
+    EXPECT_FALSE(position_query_retry_allowed(kPositionQueryMaxRetries));
+    EXPECT_FALSE(position_query_retry_allowed(kPositionQueryMaxRetries + 1));
+}
+
+TEST(PositionQueryRetryTest, NegativeCounterIsNotTreatedAsUnlimited) {
+    // 防御: 计数被写坏成负值时同样不再追加重试 (返回 false 由调用方判失败),
+    // 不能因为 -1 < 3 就退化成无限重试.
+    EXPECT_FALSE(position_query_retry_allowed(-1));
+}
+
+TEST(PositionQueryRetryTest, IntervalIsThreeSeconds) {
+    // 3 秒节奏: ADR 0049 决策 3, 沿用旧版 DzTrader3 的节奏 (#413).
+    EXPECT_EQ(kPositionQueryRetryInterval, std::chrono::seconds(3));
+}
+
+TEST(PositionQueryFailedMessageTest, StatesFactWithRetryCount) {
+    // 文案只陈述事实: 查询失败 + 账户未就绪 + 已重试几次. 逐字锁定.
+    const std::string msg = position_query_failed_message();
+    EXPECT_EQ(msg, "持仓查询失败，账户未就绪（已重试 3 次）");
+    EXPECT_NE(msg.find(std::to_string(kPositionQueryMaxRetries)), std::string::npos)
+        << "retry count must follow the policy constant, not be hard-coded twice";
+}
+
+TEST(PositionQueryFailedMessageTest, DoesNotPromiseOperationsTheUiLacks) {
+    // 不承诺「请登出后重新登录」: WebUI 没有 td 连接/断开入口 (#409)
+    // —— 与 login_failed_message 同一口径, 不把用户指向界面上不存在的操作.
+    for (const char* forbidden : {"请登出", "重新登录", "断开"}) {
+        EXPECT_EQ(position_query_failed_message().find(forbidden), std::string::npos)
+            << "must not tell the user to do something the UI cannot do (#409): " << forbidden;
+    }
+}

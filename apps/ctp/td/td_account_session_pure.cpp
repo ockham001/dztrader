@@ -143,4 +143,13 @@ std::string login_failed_message(const std::string& reason) {
     return std::format("交易登录失败（{}），本进程不会自动重试该账户", reason);
 }
 
+bool position_query_retry_allowed(int retries_done) noexcept {
+    return retries_done >= 0 && retries_done < kPositionQueryMaxRetries;
+}
+
+std::string position_query_failed_message() {
+    // 与 login_failed_message 同一口径: 只陈述事实, 不承诺 UI 上不存在的操作 (#409).
+    return std::format("持仓查询失败，账户未就绪（已重试 {} 次）", kPositionQueryMaxRetries);
+}
+
 }  // namespace dztrader::ctp
