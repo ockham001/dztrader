@@ -14,8 +14,6 @@ namespace {
 /// 辅助: 取一个固定的 trading_day (DzDate 距纪元天数) 用于测试.
 /// 对应 2026-07-27, 用 Date 类构造, 保证与生产转换路径一致.
 constexpr int32_t kTradingDay = dztrader::Date{2026, 7, 27}.days_since_epoch();
-/// 下一交易日 (2026-07-28), 用于验证 InsertDate/TradeDate 优先于 trading_day 参数.
-constexpr int32_t kNextTradingDay = dztrader::Date{2026, 7, 28}.days_since_epoch();
 
 /// 辅助: 构造一个最小可用的 CThostFtdcOrderField
 CThostFtdcOrderField make_order_field() {
@@ -464,23 +462,25 @@ TEST(ToOrderRecordTest, BasicFields) {
 
     // 时间/交易日字段 (TD 数据同步去重键依赖)
     EXPECT_STREQ(r.trading_day, "20260727");
-    // InsertDate 为空 -> 回退 trading_day; 09:30:45 = 34245 秒
+    // insert_time / update_time 的日期部分都取会话交易日; 09:30:45 = 34245 秒
     EXPECT_EQ(r.insert_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
-    // UpdateTime 无对应 UpdateDate -> 日期部分取 trading_day; 09:31:00 = 34260 秒
+    // 09:31:00 = 34260 秒
     EXPECT_EQ(r.update_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 31 * 60);
 }
 
-TEST(ToOrderRecordTest, InsertDateOverridesTradingDayForInsertTime) {
-    // 夜盘场景: InsertDate 与 trading_day 不同, insert_time 必须用 InsertDate.
+TEST(ToOrderRecordTest, InsertDateIgnoredInFavorOfTradingDay) {
+    // 夜盘场景: CTP InsertDate 是自然日, 与归属交易日不同 —— 会话交易日才是唯一时间锚,
+    // insert_time 必须与 base.date / trading_day[9] / update_time 同源, 不采信 InsertDate.
     auto of = make_order_field();
     std::strcpy(of.InsertDate, "20260728");
 
     auto r = to_order_record(of, "acc1", kTradingDay);
-    EXPECT_EQ(r.insert_time,
-              static_cast<int64_t>(kNextTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
-    // trading_day 文本/字段仍取参数, update_time 仍以 trading_day 为日期部分
+    // insert_time 09:30:45 / update_time 09:31:00, 日期部分同为会话交易日 2026-07-27
+    // (若采信 InsertDate 2026-07-28, 两者会分属两天: 差 86400-15 秒而非 15 秒).
+    EXPECT_EQ(r.insert_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 30 * 60 + 45);
     EXPECT_STREQ(r.trading_day, "20260727");
     EXPECT_EQ(r.update_time, static_cast<int64_t>(kTradingDay) * 86400 + 9 * 3600 + 31 * 60);
+    EXPECT_EQ(r.update_time - r.insert_time, 15) << "insert_time 与 update_time 必须同属一个交易日";
 }
 
 TEST(ToOrderRecordTest, EmptyTimesFallBackToZero) {

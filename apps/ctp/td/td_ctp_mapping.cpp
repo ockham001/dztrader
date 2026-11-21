@@ -336,18 +336,16 @@ OrderRecord to_order_record(const CThostFtdcOrderField& o,
         *end = '\0';
     }
 
-    // insert_time / update_time: epoch seconds = 日期 * 86400 + HH:MM:SS 秒数
-    // 优先用 CTP InsertDate (夜盘场景下 InsertDate 与 trading_day 可能不同),
-    // 失败回退到 trading_day 参数
-    int32_t insert_date = parse_ctp_date(o.InsertDate);
-    int32_t day_date = (insert_date != DZ_DATE_NA) ? insert_date : trading_day;
-    int64_t day_secs = static_cast<int64_t>(day_date) * 86400;
+    // insert_time / update_time: epoch seconds = 交易日 * 86400 + HH:MM:SS 秒数
+    // 日期部分一律取会话交易日 (trading_day 参数), 不用 CTP 自带的自然日字段:
+    // 夜盘 (21:00 起) 的 InsertDate 是自然日 D, 但整笔委托归属交易日 D+1, 用 InsertDate
+    // 会让同一行的 insert_time 与 update_time 分属两天. 会话交易日只有登录响应一个来源
+    // (见 AccountSession::on_rsp_user_login), 这里与 base.date / trading_day[9] 同源.
+    int64_t day_secs = static_cast<int64_t>(trading_day) * 86400;
     int32_t insert_secs = parse_ctp_time(o.InsertTime);
     int32_t update_secs = parse_ctp_time(o.UpdateTime);
     r.insert_time = (insert_secs >= 0) ? day_secs + insert_secs : 0;
-    // UpdateTime 没有对应 UpdateDate, 用 trading_day 作为日期部分
-    int64_t trade_day_secs = static_cast<int64_t>(trading_day) * 86400;
-    r.update_time = (update_secs >= 0) ? trade_day_secs + update_secs : 0;
+    r.update_time = (update_secs >= 0) ? day_secs + update_secs : 0;
 
     return r;
 }
