@@ -377,8 +377,9 @@ TEST_F(TdStatsQueryTest, SnapshotCarriesPerAccountMaxOrderId) {
 
 TEST_F(TdStatsQueryTest, MaxOrderIdIgnoresDateFilterAndAccumulatesAcrossDays) {
     create_db();
-    // order_id 是账户级全局单调计数器分配的（跨交易日不回退），水位不能按交易日截断：
-    // 否则日切后第一笔新委托的 order_id 可能小于旧日最大值而被误判成「见过的委托」。
+    // 水位回答的是「这个 order_id 在此账户是否出现过」，而 order_id 由**平台全局**计数器
+    // 单调分配、跨交易日不回退——已见集合是全历史的事实。因此 MAX 必须与 seq 水位同型，
+    // 不带 date 过滤；按交易日截断得到的是「当日已见」而不是「账户已见」。
     OrderSeed old_day;
     old_day.order_id = 42;
     old_day.date = "20261008";

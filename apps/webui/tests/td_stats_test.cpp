@@ -205,7 +205,8 @@ TEST(TdStatsCounterTest, ResetOverwritesValuesAndRebuildsActiveSetFromSnapshot) 
     counter.apply("ACC2", DZ_ORDER_PART_TRADED, 7, 5, 2);
     expect_values(counter, 10, 20, 3, 2);
 
-    // 旧活动表已被覆盖：ACC1/1 不再在活动表 → 视为新委托。
+    // 旧活动表已被覆盖；快照里 ACC1 没有 `order_id` 水位（缺失 = 0）→ order 1 越过水位，
+    // 按真新委托计入。
     counter.apply("ACC1", DZ_ORDER_NOT_TRADED, 1, 2, 0);
     expect_values(counter, 11, 22, 4, 4);
 }

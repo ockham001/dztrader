@@ -10,7 +10,8 @@
  * 库形态用**真 schema**（`tdstore::ensure_trade_db`）：精度派生依赖
  * `instruments.price_tick` 列名，手抄 DDL 会让 schema 漂移静默通过。
  *
- * 时序一律用注入调度器 / 直接调用 `reconcile_stats()` 触发，不 sleep（设计 §2.6）。
+ * 时序一律用触发帧（Ready / Offline / 日切 / ORDER_REPORT）或直接调用 `reconcile_stats()`
+ * 触发，不 sleep（设计 §2.6）；统计无周期对账，不存在可注入的调度器（ADR 0050）。
  */
 
 #include "td_domain_service.h"
