@@ -53,7 +53,7 @@
 - **成交**：`(account_id, date, exchange_id, trade_id)` 存在性 → 已存在忽略；不存在转发 + 落库。`trade_id` 仅交易所内唯一，`exchange_id` 入键消除多交易所同号丢成交。
 - **成交均价（`ORDER_REPORT` 派生字段 avg_price）**：柜台不直接提供（CTP 订单回报无均价），由 td 从成交回报实时累计 `Σ价×量 / Σ量`；每笔成交到达且均价变化时，刷新该订单记录（**新 seq**，与订单行同 seq）并推 `ORDER_REPORT`，不依赖柜台回调顺序；**无成交时帧/DB 值为 0，REST/WS JSON 为 `null`**（序列化与显示精度是视图层语义，ADR 0043）。重启后由登录日装载的当日成交按 `order_id` 聚合重建。DB/帧保留 double 全精度。该字段使 `ORDER_REPORT` **布局变化**——公开面不变量测试（帧大小/字段）须同步更新。
 - **持仓写端（`POSITION_INFO`）为纯增量模型**（[ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md)）：登录基准查询（`ReqQryInvestorPosition`）建唯一权威初始值；成交回报增量维护今昨/量/均价；活动平仓挂单（含外部单）本地推导冻结（今仓优先、溢出到昨）。**无周期查询**；**会话不跨交易日**（日切由次日重新登录承载，不在会话内迁 today→yd）。
-  - **今昨口径**：`today = TodayPosition`、`yd = Position - TodayPosition`。CTP 的 `YdPosition` 是交易日开始时的静态昨仓（平昨后不减少），**不得**用于当前昨仓。**多行合并时聚合需同时累加 `TodayPosition`**（不能只累加 `Position` 再套公式，否则 SHFE/INE 的双行会算错，等价做法是逐行先算 today/yd 再累加）。异常数据 `TodayPosition > Position`（柜台坏数据）按 `today` 夹到 `[0, Position]`、`yd` 不小于 0 处理并记 WARN。
+  - **今昨口径**：`today = TodayPosition`、`yd = Position - TodayPosition`。CTP 的 `YdPosition` 是交易日开始时的静态昨仓（平昨后不减少），**不得**用于当前昨仓。**多行合并时聚合需同时累加 `TodayPosition`**（不能只累加 `Position` 再套公式，否则 SHFE/INE 的双行会算错，等价做法是逐行先算 today/yd 再累加）。异常数据处理：`Position = 0` 的行（CTP 会返回已全平行，其他字段可能非 0）视为无持仓——不参与聚合、不落 0 量行；`TodayPosition` 越界时 `today` 夹到 `[0, Position]`（`Position` 为负时先夹到 0），`yd` 由减法派生必不小于 0，并记 WARN（带账户 / 合约 / 方向）。
   - **写入只有两条路径**：(a) **完整成功查询**（`is_last` 且无错）→ 单事务"删除该账户当日行 + 写入查询快照"整组原子替换；该查询只在登录 / 重连时发起；(b) **日内增量**（成交、活动挂单冻结）→ 单行 upsert（含 `volume=0`）。
   - 查询失败不改表；**登录不清零、不预置 0**——首个完整成功查询之前保留上次已知快照（含跨会话、删户重加、换柜台），读者只会看到旧快照或新快照，没有中间态。
   - **基准查询失败即登录失败**：重试 3 次、间隔 3 秒；仍失败停在当前进度、不转 Ready、推 ERROR 通知，由用户处理。`is_last` 正常到达但零行 = 成功（空账户合法）。

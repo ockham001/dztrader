@@ -359,17 +359,35 @@ TEST_F(TdPositionLifecycleTest, QueryAggregationUsesTodayPositionNotStaticYdPosi
 
 TEST_F(TdPositionLifecycleTest, ShfeTwoRowQueryAggregatesTodayRowAndYesterdayRow) {
     // SHFE/INE 同一（合约, 方向）分两行返回：今仓行（Position=TodayPosition=5）+ 昨仓行
-    // （Position=剩余昨 3、TodayPosition=0）。聚合后 = 总 8 / 今 5 / 昨 3。
+    // （Position=剩余昨 3、TodayPosition=0、静态 YdPosition=5，即今日已平昨 2 手）。
+    // 聚合后 = 总 8 / 今 5 / 昨 3；旧聚合口径（累加 YdPosition）会得今 3 / 昨 5。
     feed_position_snapshot({
         position_row("rb2510", 5, 0, 5.0 * 10.0 * 3500.0, /*is_last=*/false, THOST_FTDC_PD_Long,
                      /*exchange_id=*/"SHFE"),
         position_row("rb2510", 3, 3, 3.0 * 10.0 * 3500.0, /*is_last=*/true, THOST_FTDC_PD_Long,
-                     /*exchange_id=*/"SHFE"),
+                     /*exchange_id=*/"SHFE", /*yd_static=*/5),
     });
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261009'"), 8);
     EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE date='20261009'"), 5);
     EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE date='20261009'"), 3);
+}
+
+TEST_F(TdPositionLifecycleTest, ZeroPositionRowIsNotWrittenAsZeroVolumeRow) {
+    // CTP 会返回 Position=0 的「已全平」行（其他字段可能非 0，静态 YdPosition 仍 >0 表示
+    // 开盘曾有昨仓）。它不代表当前持仓：不落 0 量行，已平合约由整组原子替换移除
+    // （契约 td-data-sync §3「消失的合约由原子替换移除」）。
+    raw_exec(
+        "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, volume,"
+        " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+        " VALUES ('acc1','20261009','IF2506','CFFEX',1,4,0,4,0,3900.0,20,'dztd_test')");
+
+    // 旧实现用静态 YdPosition>0 判「有持仓行」，会把这一行聚合出一条 0 量行并重灌落库。
+    feed_position_snapshot({position_row("IF2506", 0, 0, 0.0, /*is_last=*/true, THOST_FTDC_PD_Long,
+                                         /*exchange_id=*/"CFFEX",
+                                         /*yd_static=*/5)});
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 0);
 }
 
 TEST_F(TdPositionLifecycleTest, EmptySuccessfulQueryClearsCurrentDayRowsOnly) {

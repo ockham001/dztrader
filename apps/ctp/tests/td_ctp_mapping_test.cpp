@@ -935,17 +935,17 @@ TEST(ToDzPositionTest, ShfeTodayRowMapsAllVolumeToToday) {
 }
 
 TEST(ToDzPositionTest, ShfeYesterdayRowMapsAllVolumeToYesterday) {
-    // SHFE/INE 昨仓行: Position = 剩余昨仓, TodayPosition = 0, YdPosition = 开盘静态昨仓
-    // (已平掉的昨仓不减少它) → today = 0, yd = 剩余昨仓.
+    // SHFE/INE 昨仓行: Position = 剩余昨仓, TodayPosition = 0; YdPosition 是开盘静态昨仓,
+    // 已平掉的昨仓不减少它 → today = 0, yd = 剩余昨仓 (不是 YdPosition).
     auto pf = make_position_field();
     std::strcpy(pf.ExchangeID, "SHFE");
-    pf.Position = 5;
+    pf.Position = 3;  // 剩余昨仓 3
     pf.TodayPosition = 0;
-    pf.YdPosition = 5;
+    pf.YdPosition = 5;  // 开盘静态昨仓 5: 今日已平昨 2 手
     auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
-    EXPECT_EQ(p.volume, 5);
+    EXPECT_EQ(p.volume, 3);
     EXPECT_EQ(p.today_volume, 0);
-    EXPECT_EQ(p.yd_volume, 5);
+    EXPECT_EQ(p.yd_volume, 3);  // 旧口径会答 YdPosition=5
 }
 
 TEST(ToDzPositionTest, TodayPositionOutOfRangeIsClamped) {
