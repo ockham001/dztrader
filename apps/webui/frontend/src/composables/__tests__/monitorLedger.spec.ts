@@ -90,6 +90,7 @@ function ledgerInput(
     network: snapshot.network ?? [],
     shmDir: snapshot.shm_dir,
     clock: snapshot.clock,
+    cpuCores: snapshot.cpu?.cores ?? [],
     cpuContextSwitchesPerSec: snapshot.cpu?.context_switches_per_sec ?? null,
     cpuInterruptsPerSec: snapshot.cpu?.interrupts_per_sec ?? null,
     thresholds: cfg.thresholds,
@@ -192,10 +193,44 @@ describe('buildMonitorLedger · 分组与行序（固定顺序，不按使用率
 })
 
 describe('buildMonitorLedger · CPU 组（#370：上下文切换 / 中断移出 CPU 宽卡）', () => {
-  it('CPU 组恒在最前，含 cpu.rates 行', () => {
+  it('CPU 组恒在最前，含 cpu.cores → cpu.rates 两行（行序稳定）', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
     expect(groups[0].id).toBe('cpu')
-    expect(rowsOf(groups, 'cpu').map(row => row.id)).toEqual(['cpu.rates'])
+    expect(rowsOf(groups, 'cpu').map(row => row.id)).toEqual(['cpu.cores', 'cpu.rates'])
+  })
+
+  it('cpu.cores 行值给最高核占用率与核数摘要，明细给饱和核数，阈值/余量为 —，无量程', () => {
+    const { groups } = ledgerFrom({ metrics: allAvailable() })
+    const row = rowById(groups, 'cpu.cores')
+    expect(row.state).toBe('ok')
+    expect(row.value).toContain('16 核')
+    expect(row.value).toMatch(/最高 \d+(\.\d+)?% · 16 核/)
+    expect(row.detail).toBe('0 核饱和 / 16 核')
+    expect(row.thresholdText).toBe(NO_THRESHOLD_TEXT)
+    expect(row.headroomText).toBe(NO_THRESHOLD_TEXT)
+    expect(row.ratio).toBeNull()
+    expect(row.level).toBeNull()
+    expect(row.levelText).toBe(UNRATED_LEVEL_TEXT)
+    expect(row.historyKey).toBeNull()
+  })
+
+  it('cpu.cores 的饱和核计入明细，行值仍是最高占用率（饱和不改变主列口径）', () => {
+    const { groups } = ledgerFrom({ metrics: allAvailable(), saturatedCores: [2, 5] })
+    const row = rowById(groups, 'cpu.cores')
+    expect(row.detail).toBe('2 核饱和 / 16 核')
+    expect(row.state).toBe('ok')
+  })
+
+  it('cpu.cores 能力不可用时是 unavailable 空态；可用但无读数时是 empty 空态', () => {
+    const unavailable = ledgerFrom({
+      metrics: { 'cpu.cores': { available: false, reason: 'no_permission' } },
+    })
+    expect(rowById(unavailable.groups, 'cpu.cores').state).toBe('unavailable')
+
+    const empty = ledgerFrom({ metrics: allAvailable(), cpuCores: [] })
+    const row = rowById(empty.groups, 'cpu.cores')
+    expect(row.state).toBe('empty')
+    expect(row.value).toBe('')
   })
 
   it('cpu.rates 行值是「上下文切换 · 中断」两段速率，明细列写明这个顺序', () => {

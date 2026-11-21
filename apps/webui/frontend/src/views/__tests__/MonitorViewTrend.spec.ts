@@ -74,6 +74,11 @@ async function toggle(wrapper: VueWrapper, testId: string): Promise<void> {
   await wrapper.vm.$nextTick()
 }
 
+/** #370：每核条形从 CPU 宽卡移入台账 cpu.cores 行的展开区，需先点开才能断言逐核读数 */
+async function openCores(wrapper: VueWrapper): Promise<void> {
+  await toggle(wrapper, 'ledger-expand-cpu.cores')
+}
+
 /** assets/css 下某个文件的绝对路径（从本 spec 文件位置推导，不依赖 cwd） */
 function cssPath(name: string): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'css', name)
@@ -309,21 +314,25 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     vi.restoreAllMocks()
   })
 
-  it('每核条形常驻（#362），每核频率明细默认收起、点开展开后显示全部', async () => {
+  it('每核条形收在台账 cpu.cores 行展开区（#370），每核频率明细默认收起、点开展开后显示全部', async () => {
     const wrapper = await mountView()
 
-    // #362：每核使用率条形是 CPU 宽卡的主信息（一眼看形态），不再收进折叠区
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+    // #370：每核使用率条形从 CPU 宽卡移入台账 cpu.cores 行的展开区，默认收起
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="monitor-cpu-cores"]').exists()).toBe(false)
     // 每核频率同属维度明细，仍默认收起
     expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
+
+    await openCores(wrapper)
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
     const summary = wrapper.find('[data-test="monitor-cpu-detail-summary"]')
     expect(summary.exists()).toBe(true)
     // 夹具每核使用率 0.05 + index*0.031，最大在 15 号核：0.515
     expect(summary.text()).toBe('16 核 · 最高 51.5%')
-    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
 
-    await toggle(wrapper, 'monitor-cpu-detail-toggle')
     // 频率明细展开后出现；条形数量不随折叠变化
+    await toggle(wrapper, 'monitor-cpu-detail-toggle')
     expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(16)
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
     expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('true')
@@ -331,6 +340,10 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     await toggle(wrapper, 'monitor-cpu-detail-toggle')
     expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
+
+    // 收起 cpu.cores 行后条形回到折叠态（展开状态不持久化、由按钮控制）
+    await openCores(wrapper)
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
   })
 
   it('每传感器明细默认收起：卡片显示最高温作为主数值，展开后按芯片分组显示全部', async () => {
@@ -386,12 +399,14 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
       expect(label, button.attributes('data-test')).toContain(button.text())
     }
 
-    // 收起时不指向不存在的元素（aria-controls 条件绑定），展开后指向真实存在的字段表 id
-    const first = buttons[0]
-    const rowId = (first.attributes('data-test') ?? '').replace('ledger-expand-', '')
-    expect(first.attributes('aria-controls')).toBeUndefined()
+    // 收起时不指向不存在的元素（aria-controls 条件绑定），展开后指向真实存在的字段表 id。
+    // cpu.cores 行的展开区是逐核条形（data-test 为 monitor-cpu-cores，不是字段表），
+    // 因此这里取一个渲染字段表的按钮来验这条绑定。
+    const fieldsButton = buttons.find(button => !(button.attributes('data-test') ?? '').includes('cpu.cores'))!
+    const rowId = (fieldsButton.attributes('data-test') ?? '').replace('ledger-expand-', '')
+    expect(fieldsButton.attributes('aria-controls')).toBeUndefined()
     await toggle(wrapper, `ledger-expand-${rowId}`)
-    expect(first.attributes('aria-controls')).toBe(`ledger-fields-${rowId}`)
+    expect(fieldsButton.attributes('aria-controls')).toBe(`ledger-fields-${rowId}`)
     const fields = wrapper.find(`[data-test="ledger-fields"]`)
     expect(fields.attributes('id')).toBe(`ledger-fields-${rowId}`)
   })
@@ -442,8 +457,11 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
       network: [],
     }))
 
-    // 不需要展开就能看到「不可用」空态与原因（no_permission 由共享映射给出可读文案）
-    expect(wrapper.find('[data-test="monitor-cores-empty"]').text()).toContain('权限不足，无法读取该指标')
+    // 不需要展开就能看到「不可用」空态与原因（no_permission 由共享映射给出可读文案）。
+    // #370：每核条形移入台账 cpu.cores 行的展开区，但**可用性事实**落在行本身的明细列，
+    // 不藏在折叠后面（展开区里另有逐核读数的空态）。
+    expect(wrapper.find('[data-row-id="cpu.cores"] [data-test="row-state"]').text())
+      .toContain('权限不足，无法读取该指标')
     // #363：磁盘 I/O 与网卡的不可用是台账行上的说明文字，行本身平铺可见
     expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text())
       .toContain('磁盘性能计数器不可用')
@@ -481,6 +499,9 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     const refreshed = await mountView()
 
     expect(refreshed.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
+    // #370：每核条形默认收起 → 点开后数量与摘要照旧（折叠状态不持久化）
+    expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(0)
+    await openCores(refreshed)
     expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(16)
     expect(refreshed.find('[data-test="monitor-cpu-detail-summary"]').exists()).toBe(true)
     expect(refreshed.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
@@ -964,6 +985,8 @@ describe('MonitorView CPU 自适应趋势（#362：纵轴随序列变化 + 三�
 
     expect(wrapper.find('[data-test="monitor-cpu-trend"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
+    // #370：每核条形在台账 cpu.cores 行的展开区，点开后照常可见
+    await openCores(wrapper)
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
   })
 })

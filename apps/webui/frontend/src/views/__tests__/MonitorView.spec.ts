@@ -37,6 +37,9 @@ async function mountView() {
     const toggle = wrapper.find(`[data-test="${toggleTest}"]`)
     if (toggle.exists()) await toggle.trigger('click')
   }
+  // #370：每核条形从 CPU 宽卡移入台账 cpu.cores 行的展开区，挂载后自动展开以便断言逐核读数
+  const coresToggle = wrapper.find('[data-test="ledger-expand-cpu.cores"]')
+  if (coresToggle.exists()) await coresToggle.trigger('click')
   await wrapper.vm.$nextTick()
   return wrapper
 }

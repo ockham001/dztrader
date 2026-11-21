@@ -380,6 +380,7 @@ const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   network: sysmon.network,
   shmDir: sysmon.shmDirInfo,
   clock: sysmon.clock,
+  cpuCores: sysmon.cpuCores,
   cpuContextSwitchesPerSec: sysmon.cpuContextSwitchesPerSec,
   cpuInterruptsPerSec: sysmon.cpuInterruptsPerSec,
   thresholds: sysmon.config?.thresholds ?? null,
@@ -1037,50 +1038,6 @@ const cpuTrendAriaLabel = computed(
             </p>
           </div>
 
-          <!-- 每核条形（#362）：容器自适应网格，柱在上、号在下，一条规则覆盖 4–128 核
-               （不写断点、不用 JS 测量）。饱和核用 error 色；柱的形状不随状态变化，灰度截屏下
-               靠旁边的「饱和」文字区分状态（颜色之外只有文字这一层差异）。正常核用 success 色。
-               柱数与顺序取 `cpuCores`（即快照 `cpu.cores`）：契约 sysmon §2.3 保证可用时数组长度
-               等于 `system.logical_cores`；两者不一致时以**数组**为准——逐核读数的唯一事实源是数组，
-               按 `logical_cores` 补齐或截断都会凭空造出没有读数的核。 -->
-          <div class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-cpu-cores">
-            <div class="monitor-view__panel-head">
-              <h3 class="monitor-view__panel-title">每核使用率</h3>
-              <p v-if="cpuCores.length > 0" class="monitor-view__meta" data-test="monitor-cpu-detail-summary">{{ cpuDetailSummary }}</p>
-            </div>
-            <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
-              <li
-                v-for="core in cpuCores"
-                :key="core.index"
-                class="monitor-view__core"
-                :class="{ 'monitor-view__core--saturated': core.saturated }"
-                data-test="monitor-core"
-                :data-core-index="core.index"
-              >
-                <span class="monitor-view__core-bar" aria-hidden="true">
-                  <span
-                    class="monitor-view__core-bar-fill"
-                    :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
-                    :style="coreBarStyle(core.usage_ratio)"
-                  ></span>
-                </span>
-                <span class="monitor-view__core-label">
-                  <span class="monitor-view__core-index">核 {{ core.index }}</span>
-                  <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
-                </span>
-                <span
-                  v-if="core.saturated"
-                  class="monitor-view__core-tag"
-                  data-test="monitor-core-saturated"
-                >饱和</span>
-              </li>
-            </ul>
-            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
-              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
-              <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
-            </div>
-          </div>
-
           <!-- 每核频率明细（#73 / #362）：由「当前频率」那格的开关展开，但以**整卡宽**渲染——
                128 核的列表塞进 1/4 格会挤成一列窄条。不可用（cpu.frequency 不可用）时整块不渲染。 -->
           <div v-if="frequencyAvailable && coreFrequencies.length > 0 && cpuDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-frequency-detail">
@@ -1281,7 +1238,7 @@ const cpuTrendAriaLabel = computed(
                 <!-- 明细展开按钮挂在明细列内（不另占一整行）：语义上它是「这段话还有下文」，
                      不是第八列，也不该把每行的行高翻倍。时钟行的按钮在它自己的结构化明细里。 -->
                 <button
-                  v-if="row.fields.length > 0 && row.id !== 'clock'"
+                  v-if="(row.fields.length > 0 || row.id === 'cpu.cores') && row.id !== 'clock'"
                   class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__ledger-expand-btn"
                   type="button"
                   :aria-expanded="isLedgerRowOpen(row.id)"
@@ -1366,6 +1323,53 @@ const cpuTrendAriaLabel = computed(
                   <dd class="monitor-view__ledger-field-value" data-test="ledger-field-value">{{ field.value }}</dd>
                 </div>
               </dl>
+
+              <!-- 每核使用率（#370）：逐核条形从 CPU 宽卡移入本行的展开区（行值只给
+                   「最高核占用率 · N 核」摘要）。网格规则沿用 #362 的一条 `auto-fit`
+                   （一条规则覆盖 4–128 核，不写断点、不用 JS 测量），只挪位置不改规则。
+                   饱和核用 error 色 + 「饱和」文字——颜色之外还有文字这一层差异。
+                   逐核读数与顺序仍取 `cpuCores`（快照 `cpu.cores` 数组是唯一事实源，
+                   契约 sysmon §2.3 保证可用时长度等于 `system.logical_cores`，
+                   两者不一致时以数组为准）。 -->
+              <div
+                v-if="row.id === 'cpu.cores' && isLedgerRowOpen(row.id)"
+                :id="`ledger-fields-${row.id}`"
+                class="monitor-view__ledger-cores"
+                data-test="monitor-cpu-cores"
+              >
+                <p v-if="cpuCores.length > 0" class="monitor-view__meta" data-test="monitor-cpu-detail-summary">{{ cpuDetailSummary }}</p>
+                <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
+                  <li
+                    v-for="core in cpuCores"
+                    :key="core.index"
+                    class="monitor-view__core"
+                    :class="{ 'monitor-view__core--saturated': core.saturated }"
+                    data-test="monitor-core"
+                    :data-core-index="core.index"
+                  >
+                    <span class="monitor-view__core-bar" aria-hidden="true">
+                      <span
+                        class="monitor-view__core-bar-fill"
+                        :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
+                        :style="coreBarStyle(core.usage_ratio)"
+                      ></span>
+                    </span>
+                    <span class="monitor-view__core-label">
+                      <span class="monitor-view__core-index">核 {{ core.index }}</span>
+                      <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
+                    </span>
+                    <span
+                      v-if="core.saturated"
+                      class="monitor-view__core-tag"
+                      data-test="monitor-core-saturated"
+                    >饱和</span>
+                  </li>
+                </ul>
+                <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
+                  <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
+                  <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
+                </div>
+              </div>
 
               <!-- 时钟行的辅助信息（#302）：方向说明 / 测量质量提示 / 同步服务检测。
                    偏差着色与质量提示是两个独立判定对象（契约 §2.8）：质量提示不改变着色。 -->

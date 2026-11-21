@@ -55,6 +55,7 @@ import type {
   SysmonAvailabilityEntry,
   SysmonClockConfigPayload,
   SysmonClockInfo,
+  SysmonCpuCore,
   SysmonDiskIoInfo,
   SysmonMemoryInfo,
   SysmonNetworkInfo,
@@ -181,6 +182,12 @@ export interface MonitorLedgerInput {
   network: readonly SysmonNetworkInfo[]
   shmDir: SysmonShmDirInfo | null
   clock: SysmonClockInfo | null
+  /**
+   * 每核读数（契约 sysmon §2.3），与 store 的 `cpuCores` 同形态（已净化：`index` /
+   * `usage_ratio` / `saturated`）。`cpu.cores` 不可用时为空数组。#370 起每核条形从 CPU 宽卡
+   * 移入台账 `cpu.cores` 行的展开区，行值只给最高核占用率与核数摘要，逐核读数仍在展开区。
+   */
+  cpuCores: readonly SysmonCpuCore[]
   /**
    * 每秒上下文切换 / 每秒中断（契约 sysmon §2.3、§2.5）。两者共用可用性键
    * `cpu.context_switches`；值不可用时为 null，不得用 0 冒充（与 store 同口径）。
@@ -369,6 +376,51 @@ function unavailableRow(
  */
 function cpuGroup(input: MonitorLedgerInput): LedgerGroup {
   const rows: LedgerRow[] = []
+
+  // 每核使用率（#370）：每核条形从 CPU 宽卡移入本行的展开区（视图按行 id 渲染同一份
+  // `cpuCores`，网格规则沿用 #362 的一条 `auto-fit` 规则，不改）。主列只给「最高核占用率 +
+  // 核数」摘要——逐核读数不是单一分母，不套量程轨道（与网卡 / 共享内存目录同一口径）。
+  const coresBase = {
+    id: 'cpu.cores',
+    group: 'cpu' as const,
+    label: '每核使用率',
+    contractKey: 'cpu.cores',
+  }
+  const { available: coresAvailable } = availabilityState(input.availability, 'cpu.cores')
+  if (!coresAvailable) {
+    rows.push(unavailableRow(coresBase, 'cpu.cores', input))
+  } else if (input.cpuCores.length === 0) {
+    rows.push(blankRow(coresBase, 'empty', '暂无数据：本帧未采集到每核读数'))
+  } else {
+    let peak: number | null = null
+    let saturated = 0
+    for (const core of input.cpuCores) {
+      if (typeof core.usage_ratio === 'number' && Number.isFinite(core.usage_ratio)) {
+        if (peak === null || core.usage_ratio > peak) peak = core.usage_ratio
+      }
+      if (core.saturated) saturated += 1
+    }
+    const coreCount = input.cpuCores.length
+    rows.push({
+      ...coresBase,
+      state: 'ok',
+      stateText: '',
+      stateLabel: '',
+      // 每核使用率是**一组**读数，没有单一的可归一化分母：不画量程轨道、不套状态色
+      level: null,
+      levelText: ledgerLevelText(null),
+      ratio: null,
+      // 行值给最高核占用率与核数摘要；最高读数缺失时不伪造 0，只给核数
+      value: peak === null ? `${coreCount} 核` : `最高 ${formatPercent(peak)} · ${coreCount} 核`,
+      detail: `${saturated} 核饱和 / ${coreCount} 核`,
+      thresholdText: NO_THRESHOLD_TEXT,
+      headroomText: NO_THRESHOLD_TEXT,
+      historyKey: null,
+      detailParts: [],
+      fields: [],
+      badges: [],
+    })
+  }
 
   const ratesBase = {
     id: 'cpu.rates',
