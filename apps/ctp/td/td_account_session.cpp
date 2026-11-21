@@ -1808,6 +1808,14 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
                 volume_multiple = ex->second.volume_multiple;
             }
             DzPositionInfo pos = to_dz_position(p, account_id_, trading_day_, volume_multiple);
+            // TodayPosition 越界 = 柜台坏数据: 映射层已按契约 §3 夹到 [0, Position] 并派生
+            // 非负 yd, 这里补 WARN 留证 (映射层保持纯函数, 不自己记日志).
+            if (p.TodayPosition < 0 || p.TodayPosition > p.Position) {
+                SPDLOG_WARN(
+                    "td position today/yd anomalous, clamped | account={} instrument={} "
+                    "position={} today_position={}",
+                    account_id_, p.InstrumentID, p.Position, p.TodayPosition);
+            }
             // 未知方向不能当多头写进持仓 (那会把空头写成多头, 净敞口反向), 也不能只把这一行
             // 丢掉——那会让本轮快照看起来「这个合约空了」，apply_position_query 会把它的
             // 已知持仓清零（幽灵空仓, ADR 0045 决策 3 判定的最危险形态）。读不懂的一行
@@ -1821,8 +1829,10 @@ void AccountSession::on_rsp_qry_investor_position(const OnRspQryInvestorPosition
                 PositionQueryKey key{std::string(pos.instrument_id),
                                      static_cast<int8_t>(pos.direction)};
                 PositionQueryAgg& agg = position_query_agg_[key];
-                agg.volume += p.Position;
-                agg.yd += p.YdPosition;
+                // 今昨以映射层的 TodayPosition 口径为准 (契约 §3): 逐行先算 today/yd 再累加,
+                // YdPosition 是静态昨仓, 不参与当前昨仓 (多行合并也不能只累加 Position).
+                agg.volume += pos.volume;
+                agg.yd += pos.yd_volume;
                 agg.cost += p.PositionCost;
                 agg.volume_multiple = volume_multiple;
                 agg.ctp_frozen += static_cast<int64_t>(p.LongFrozen) + p.ShortFrozen;

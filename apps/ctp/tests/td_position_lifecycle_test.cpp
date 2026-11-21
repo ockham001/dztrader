@@ -152,22 +152,27 @@ protected:
         ASSERT_TRUE(persist_->wait_flush(token, std::chrono::seconds(5)));
     }
 
-    /// 一条持仓查询响应行（`volume` 含昨仓；`cost` 为持仓成本金额）。
-    /// `posi_direction` 缺省 = CTP 多('2')：本 fixture 全仓按多头语义断言，
+    /// 一条持仓查询响应行（`volume` 为总持仓、`yd` 为**当前**昨仓；`cost` 为持仓成本金额）。
+    /// CTP 字段按 ADR 0049 口径填：`TodayPosition` = 当前今仓 = volume - yd，
+    /// `YdPosition` = 交易日开始时静态昨仓（默认取 `yd`，即当日未平昨；`yd_static` 显式给
+    /// 已平昨的场景）。`posi_direction` 缺省 = CTP 多('2')：本 fixture 全仓按多头语义断言，
     /// 必须显式给（未知方向现在落成 UNKNOWN 且整行被丢弃，不再兜成多头）。
     static OnRspQryInvestorPositionField position_row(const std::string& instrument,
                                                       int32_t volume,
                                                       int32_t yd,
                                                       double cost,
                                                       bool is_last,
-                                                      char posi_direction = THOST_FTDC_PD_Long) {
+                                                      char posi_direction = THOST_FTDC_PD_Long,
+                                                      const char* exchange_id = "CFFEX",
+                                                      int32_t yd_static = -1) {
         OnRspQryInvestorPositionField f{};
         CThostFtdcInvestorPositionField p{};
         std::strcpy(p.InstrumentID, instrument.c_str());
-        std::strcpy(p.ExchangeID, "CFFEX");
+        std::strcpy(p.ExchangeID, exchange_id);
         std::strcpy(p.InvestorID, "acc1");
         p.Position = volume;
-        p.YdPosition = yd;
+        p.TodayPosition = volume - yd;
+        p.YdPosition = yd_static >= 0 ? yd_static : yd;
         p.PositionCost = cost;
         p.PosiDirection = posi_direction;
         f.investor_position = p;
@@ -334,6 +339,37 @@ TEST_F(TdPositionLifecycleTest, SuccessfulQueryReplacesWholeDayGroupAndKeepsHist
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261008'"), 1);
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261008'"), 9);
     EXPECT_EQ(scalar_int("SELECT seq FROM positions WHERE date='20261008'"), 5);
+}
+
+// ============================================================================
+// AC(#411): 今昨按 TodayPosition 计算（YdPosition 是静态昨仓，不得用于当前昨仓）
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, QueryAggregationUsesTodayPositionNotStaticYdPosition) {
+    // CTP 单行（非 SHFE/INE）：开盘昨仓 6，盘中开 6 手今仓、平昨 2 手 →
+    // Position=10 / TodayPosition=6 / YdPosition=6（静态）。当前应为 今 6 / 昨 4。
+    feed_position_snapshot({position_row("IF2506", 10, 4, 10.0 * 300.0 * 3900.0, /*is_last=*/true,
+                                         THOST_FTDC_PD_Long, /*exchange_id=*/"CFFEX",
+                                         /*yd_static=*/6)});
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261009'"), 10);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE date='20261009'"), 6);
+    EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE date='20261009'"), 4)
+        << "current yd = Position - TodayPosition, not the static YdPosition (6)";
+}
+
+TEST_F(TdPositionLifecycleTest, ShfeTwoRowQueryAggregatesTodayRowAndYesterdayRow) {
+    // SHFE/INE 同一（合约, 方向）分两行返回：今仓行（Position=TodayPosition=5）+ 昨仓行
+    // （Position=剩余昨 3、TodayPosition=0）。聚合后 = 总 8 / 今 5 / 昨 3。
+    feed_position_snapshot({
+        position_row("rb2510", 5, 0, 5.0 * 10.0 * 3500.0, /*is_last=*/false, THOST_FTDC_PD_Long,
+                     /*exchange_id=*/"SHFE"),
+        position_row("rb2510", 3, 3, 3.0 * 10.0 * 3500.0, /*is_last=*/true, THOST_FTDC_PD_Long,
+                     /*exchange_id=*/"SHFE"),
+    });
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE date='20261009'"), 8);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE date='20261009'"), 5);
+    EXPECT_EQ(scalar_int("SELECT yd_volume FROM positions WHERE date='20261009'"), 3);
 }
 
 TEST_F(TdPositionLifecycleTest, EmptySuccessfulQueryClearsCurrentDayRowsOnly) {

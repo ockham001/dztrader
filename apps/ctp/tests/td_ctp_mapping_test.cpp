@@ -97,8 +97,9 @@ CThostFtdcInvestorPositionField make_position_field() {
     std::strcpy(f.InstrumentID, "IF2506");
     std::strcpy(f.ExchangeID, "CFFEX");
     f.PosiDirection = THOST_FTDC_PD_Long;
-    f.Position = 10;   // 总持仓
-    f.YdPosition = 6;  // 昨仓
+    f.Position = 10;      // 该行当前总持仓 (今 + 昨)
+    f.TodayPosition = 6;  // 当前今仓
+    f.YdPosition = 6;     // 交易日开始时静态昨仓: 今日已平昨 2 手, 静态值不随之减少
     f.LongFrozen = 2;
     f.ShortFrozen = 1;
     f.PositionCost = 39000.0;  // 10 手 @ 3900
@@ -899,9 +900,72 @@ TEST(ToDzPositionTest, LongPositionMapsFields) {
     EXPECT_EQ(p.volume, 10);
     EXPECT_EQ(p.frozen_volume, 3);      // LongFrozen(2) + ShortFrozen(1)
     EXPECT_DOUBLE_EQ(p.price, 3900.0);  // PositionCost / (Position * 1.0)
-    EXPECT_EQ(p.yd_volume, 6);
-    EXPECT_EQ(p.today_volume, 4);  // 总 - 昨
+    EXPECT_EQ(p.today_volume, 6);       // TodayPosition
+    EXPECT_EQ(p.yd_volume, 4);          // Position - TodayPosition (不是静态 YdPosition=6)
     EXPECT_EQ(p.date, kTradingDay);
+}
+
+TEST(ToDzPositionTest, StaticYdPositionIsNotCurrentYesterdayVolume) {
+    // YdPosition 是交易日开始时的静态昨仓, 平昨后不减少. 当前昨仓 = Position - TodayPosition.
+    // 夹具历史: 开盘昨仓 6, 盘中开 6 手今仓、平昨 2 手 → 当前今 6 / 昨 4 / 总 10.
+    auto pf = make_position_field();
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    ASSERT_EQ(pf.YdPosition, 6);  // 静态值仍是 6, 不能当作当前昨仓
+    EXPECT_EQ(p.yd_volume, 4);
+    EXPECT_EQ(p.today_volume, 6);
+
+    // 静态值本身变化不影响当前今昨拆分 (只由 Position / TodayPosition 决定).
+    pf.YdPosition = 2;
+    auto p2 = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    EXPECT_EQ(p2.yd_volume, 4);
+    EXPECT_EQ(p2.today_volume, 6);
+}
+
+TEST(ToDzPositionTest, ShfeTodayRowMapsAllVolumeToToday) {
+    // SHFE/INE 今仓行: Position = 今天, TodayPosition = 今天, YdPosition = 0 → yd = 0.
+    auto pf = make_position_field();
+    std::strcpy(pf.ExchangeID, "SHFE");
+    pf.Position = 6;
+    pf.TodayPosition = 6;
+    pf.YdPosition = 0;
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    EXPECT_EQ(p.volume, 6);
+    EXPECT_EQ(p.today_volume, 6);
+    EXPECT_EQ(p.yd_volume, 0);
+}
+
+TEST(ToDzPositionTest, ShfeYesterdayRowMapsAllVolumeToYesterday) {
+    // SHFE/INE 昨仓行: Position = 剩余昨仓, TodayPosition = 0, YdPosition = 开盘静态昨仓
+    // (已平掉的昨仓不减少它) → today = 0, yd = 剩余昨仓.
+    auto pf = make_position_field();
+    std::strcpy(pf.ExchangeID, "SHFE");
+    pf.Position = 5;
+    pf.TodayPosition = 0;
+    pf.YdPosition = 5;
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    EXPECT_EQ(p.volume, 5);
+    EXPECT_EQ(p.today_volume, 0);
+    EXPECT_EQ(p.yd_volume, 5);
+}
+
+TEST(ToDzPositionTest, TodayPositionOutOfRangeIsClamped) {
+    // 柜台坏数据: TodayPosition > Position 时 today 夹到 [0, Position], yd 由减法派生必 >= 0.
+    auto pf = make_position_field();
+    pf.Position = 5;
+    pf.TodayPosition = 8;
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    EXPECT_EQ(p.volume, 5);
+    EXPECT_EQ(p.today_volume, 5);
+    EXPECT_EQ(p.yd_volume, 0);
+    EXPECT_GE(p.today_volume, 0);
+    EXPECT_GE(p.yd_volume, 0);
+
+    // 另一侧越界同样夹取: 负 TodayPosition → today = 0, 全部计入昨仓.
+    pf.TodayPosition = -3;
+    auto p2 = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    EXPECT_EQ(p2.volume, 5);
+    EXPECT_EQ(p2.today_volume, 0);
+    EXPECT_EQ(p2.yd_volume, 5);
 }
 
 TEST(ToDzPositionTest, VolumeMultipleScalesAveragePrice) {
@@ -933,7 +997,9 @@ TEST(ToDzPositionTest, ZeroPositionHasZeroPrice) {
     auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
     EXPECT_EQ(p.volume, 0);
     EXPECT_DOUBLE_EQ(p.price, 0.0);  // 避免除零
-    EXPECT_EQ(p.today_volume, -6);   // 0 - YdPosition
+    // Position=0 时 TodayPosition 一并夹到 [0, 0]: 旧口径的负今仓 (today = -YdPosition) 是 bug.
+    EXPECT_EQ(p.today_volume, 0);
+    EXPECT_EQ(p.yd_volume, 0);
 }
 
 TEST(ToDzPositionTest, UnknownPosiDirectionBecomesUnknown) {

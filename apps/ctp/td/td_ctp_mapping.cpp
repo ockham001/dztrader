@@ -1,5 +1,6 @@
 #include "td/td_ctp_mapping.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -558,8 +559,10 @@ DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
             break;
     }
 
-    // 持仓量: CTP 持仓查询响应中 Position 为总持仓口径 (含今昨), 映射到 DZ 总持仓.
-    r.volume = p.Position;
+    // 持仓量: CTP 持仓查询响应中 Position 为该行的当前总持仓 (含今昨), 映射到 DZ 总持仓.
+    // 负值是坏数据 (CTP 量字段非负), 夹到 0: 保证下面的 today + yd == volume 且两者非负.
+    const int64_t volume = std::max<int64_t>(0, p.Position);
+    r.volume = volume;
     // 冻结量: 多/空冻结合并 (DZ 单值)
     r.frozen_volume = static_cast<int64_t>(p.LongFrozen) + static_cast<int64_t>(p.ShortFrozen);
     // 均价: 无直接字段. PositionCost 为金额 (vnpy: cost/(volume*size)),
@@ -567,8 +570,23 @@ DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
     if (p.Position > 0 && volume_multiple > 0) {
         r.price = p.PositionCost / (static_cast<double>(p.Position) * volume_multiple);
     }
-    r.yd_volume = p.YdPosition;
-    r.today_volume = p.Position - p.YdPosition;  // 今仓 = 总 - 昨 (CTP 无直接今仓字段在此结构)
+    // 今昨口径 (ADR 0049 / 契约 td-data-sync §3): 今仓 = TodayPosition, 昨仓 = Position - 今仓.
+    //
+    // 为什么不用 YdPosition: 它是交易日开始时的**静态**昨仓, 平昨后不减少, 不是当前昨仓.
+    // 反例 (知乎《CTP 程序化交易入门系列之十二: 持仓的查询与更新(上)》a2101 例):
+    // Position=26 / TodayPosition=25 / YdPosition=14 —— 当前昨仓 = 26-25 = 1 手,
+    // 用 YdPosition 会算成 14 手.
+    //
+    // 三种形态均成立 (ADR 0049 决策 4):
+    // - 非 SHFE/INE 单行: Position=今+昨, TodayPosition=今 → 减出来是昨
+    // - SHFE/INE 今仓行: Position=今天, TodayPosition=今天 → yd=0
+    // - SHFE/INE 昨仓行: Position=剩余昨, TodayPosition=0 → today=0, yd=剩余昨
+    //
+    // 异常数据 (TodayPosition 越界 = 柜台坏数据): today 夹到 [0, Position], yd 由减法派生
+    // 故必 >= 0. 映射层保持纯函数, 异常 WARN 由调用方 (查询聚合层) 记.
+    const int64_t today_volume = std::clamp<int64_t>(p.TodayPosition, 0, volume);
+    r.today_volume = today_volume;
+    r.yd_volume = volume - today_volume;
     r.date = trading_day;
 
     return r;
