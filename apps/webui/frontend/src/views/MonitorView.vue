@@ -792,6 +792,24 @@ const cpuTrendAriaLabel = computed(
           </p>
         </div>
       </header>
+      <!-- 主机条（#362）：原在下方网格内，#370 步骤 4 并入顶栏——与页头同处一条带，省掉
+            两者之间整块的高度。字段一个未删（删哪个重复字段是 #373 的决定，本票不做）。
+            只在实时视图且快照到达时渲染，与原先在网格内的时机一致。 -->
+      <section
+        v-if="viewMode === 'realtime' && snapshot"
+        class="monitor-view__host"
+        :class="{ 'monitor-view__host--stale': snapshotStale }"
+        data-test="monitor-host"
+        aria-label="主机"
+      >
+        <span class="monitor-view__host-dot" aria-hidden="true"></span>
+        <span class="monitor-view__host-name">{{ hostName }}</span>
+        <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
+        <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
+        <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
+        <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
+        <span v-if="!snapshotStale" class="monitor-view__host-live">实时</span>
+      </section>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
            tabpanel、aria-controls、方向键与 roving tabindex——读屏按 tabs 报语义、键盘却按按钮走，
            比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
@@ -848,27 +866,9 @@ const cpuTrendAriaLabel = computed(
     </div>
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
-      <!-- 主机条（#362）：取代原「系统信息」整张卡——一条紧凑的行，字段全部来自既有快照，
-           无可显示值的字段显示 `—`。脉冲点 + 右端「实时」表达快照在推进（本区只在有快照时渲染）。
-           #371：脉冲点与右端「实时」是**存活信号**，一律中性色——绿色只留给指标状态
-           （DESIGN.md One Job Rule：同一色族只承担一个含义）。停推时两处随状态行一起说明，
-           不再由这两个哨兵各自声称「实时」。 -->
-      <section
-        class="monitor-view__host"
-        :class="{ 'monitor-view__host--stale': snapshotStale }"
-        data-test="monitor-host"
-        aria-label="主机"
-      >
-        <span class="monitor-view__host-dot" aria-hidden="true"></span>
-        <span class="monitor-view__host-name">{{ hostName }}</span>
-        <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
-        <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
-        <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
-        <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
-        <span v-if="!snapshotStale" class="monitor-view__host-live">实时</span>
-      </section>
+      <!-- 主机条已并入上方顶栏（#370 步骤 4），网格里不再重复渲染。
 
-      <!-- CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
+       CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
            每核使用率条形常驻（一眼看形态）；每核频率与每传感器读数收进各自的可展开区——
            「不可用就不渲染」「可用但本帧无数据要空态」的既有语义不变。 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-cpu">
@@ -1704,6 +1704,9 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
+   #370 步骤 4：从下方网格挪进顶栏，与页头同处一条带——原先它是网格里的独立行，
+   页头与它之间有整块间距；合并后顶栏一行装下「标题组 / 主机条 / 视图切换」，
+   省掉两者之间的整块高度。字段一个未删（删哪个重复字段是 #373 的决定，本票不做）。
    脉冲点 + 主机名 + 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数 + 右端「实时」。
    窄屏换行而不是横向滚动：字段都允许收缩，型号过长先折行。 */
 .monitor-view__host {
@@ -1711,9 +1714,7 @@ const cpuTrendAriaLabel = computed(
   align-items: center;
   flex-wrap: wrap;
   gap: var(--spacer-4) var(--spacer-12);
-  grid-column: 1 / -1;
   min-width: 0;
-  margin-bottom: var(--spacer-4);
   padding: var(--spacer-8) var(--spacer-12);
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-8);
@@ -2866,8 +2867,8 @@ const cpuTrendAriaLabel = computed(
     grid-column: auto;
   }
 
-  /* 窄屏：主机条与 CPU 宽卡的内层块也要让回单列（宽卡本身已 `grid-column: auto`） */
-  .monitor-view__host,
+  /* 窄屏：CPU 宽卡的内层块让回单列（宽卡本身已 `grid-column: auto`）。
+     主机条已在顶栏（#370 步骤 4），不再是网格项，不在此处列。 */
   .monitor-view__stats,
   .monitor-view__trend {
     grid-column: auto;

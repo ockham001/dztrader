@@ -568,10 +568,12 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
     expect(grid).toContain('align-items: start')
 
-    // 三个子元素都跨满整行：主机条与宽卡由 CSS 声明，台账 section 靠同一个修饰类
-    expect(ruleBody('.monitor-view__host')).toContain('grid-column: 1 / -1')
+    // 网格里的子元素跨满整行：宽卡与台账由 CSS 声明跨列（#370 步骤 4 后主机条已移入顶栏，
+    // 不再是网格项——它的跨行由顶栏的 flex 布局承担，不在这里断言）。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
     expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
+    // 主机条已不在网格里：它的规则不得再声明跨列（否则是死规则，会误导下一个人以为它在网格内）
+    expect(ruleBody('.monitor-view__host'), '主机条移入顶栏后不得残留网格跨列规则').not.toContain('grid-column')
 
     // 不存在为 `.monitor-view__grid` 单独改列数的媒体规则（列数不是版面变量了）。
     // 媒体块按「行首 `}` 收尾」切分，与上面的 mediaRuleBody 同一假设。
