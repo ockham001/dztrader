@@ -891,7 +891,7 @@ TEST(ToDzTradingAccountTest, BasicFields) {
 
 TEST(ToDzPositionTest, LongPositionMapsFields) {
     auto pf = make_position_field();
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
 
     EXPECT_STREQ(p.instrument_id, "IF2506");
     EXPECT_STREQ(p.exchange_id, "CFFEX");
@@ -909,14 +909,14 @@ TEST(ToDzPositionTest, StaticYdPositionIsNotCurrentYesterdayVolume) {
     // YdPosition 是交易日开始时的静态昨仓, 平昨后不减少. 当前昨仓 = Position - TodayPosition.
     // 夹具历史: 开盘昨仓 6, 盘中开 6 手今仓、平昨 2 手 → 当前今 6 / 昨 4 / 总 10.
     auto pf = make_position_field();
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     ASSERT_EQ(pf.YdPosition, 6);  // 静态值仍是 6, 不能当作当前昨仓
     EXPECT_EQ(p.yd_volume, 4);
     EXPECT_EQ(p.today_volume, 6);
 
     // 静态值本身变化不影响当前今昨拆分 (只由 Position / TodayPosition 决定).
     pf.YdPosition = 2;
-    auto p2 = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p2 = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p2.yd_volume, 4);
     EXPECT_EQ(p2.today_volume, 6);
 }
@@ -928,7 +928,7 @@ TEST(ToDzPositionTest, ShfeTodayRowMapsAllVolumeToToday) {
     pf.Position = 6;
     pf.TodayPosition = 6;
     pf.YdPosition = 0;
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p.volume, 6);
     EXPECT_EQ(p.today_volume, 6);
     EXPECT_EQ(p.yd_volume, 0);
@@ -942,7 +942,7 @@ TEST(ToDzPositionTest, ShfeYesterdayRowMapsAllVolumeToYesterday) {
     pf.Position = 3;  // 剩余昨仓 3
     pf.TodayPosition = 0;
     pf.YdPosition = 5;  // 开盘静态昨仓 5: 今日已平昨 2 手
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p.volume, 3);
     EXPECT_EQ(p.today_volume, 0);
     EXPECT_EQ(p.yd_volume, 3);  // 旧口径会答 YdPosition=5
@@ -953,7 +953,7 @@ TEST(ToDzPositionTest, TodayPositionOutOfRangeIsClamped) {
     auto pf = make_position_field();
     pf.Position = 5;
     pf.TodayPosition = 8;
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p.volume, 5);
     EXPECT_EQ(p.today_volume, 5);
     EXPECT_EQ(p.yd_volume, 0);
@@ -962,7 +962,7 @@ TEST(ToDzPositionTest, TodayPositionOutOfRangeIsClamped) {
 
     // 另一侧越界同样夹取: 负 TodayPosition → today = 0, 全部计入昨仓.
     pf.TodayPosition = -3;
-    auto p2 = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p2 = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p2.volume, 5);
     EXPECT_EQ(p2.today_volume, 0);
     EXPECT_EQ(p2.yd_volume, 5);
@@ -971,30 +971,34 @@ TEST(ToDzPositionTest, TodayPositionOutOfRangeIsClamped) {
 TEST(ToDzPositionTest, VolumeMultipleScalesAveragePrice) {
     // PositionCost 是金额: 均价 = PositionCost / (持仓量 × 合约乘数)
     auto pf = make_position_field();
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 300.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 300.0).value();
     EXPECT_DOUBLE_EQ(p.price, 13.0);  // 39000 / (10 * 300)
 }
 
 TEST(ToDzPositionTest, ShortPositionMapsDirection) {
     auto pf = make_position_field();
     pf.PosiDirection = THOST_FTDC_PD_Short;
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p.direction, DZ_DIRECTION_SHORT);
 }
 
-TEST(ToDzPositionTest, NetPositionTreatedAsLong) {
-    // CTP 净持仓 (组合等) 归为多头 (DZ 仅多/空两态)
+TEST(ToDzPositionTest, NetPositionIsSkippedInsteadOfForcedLong) {
+    // 净持仓('1') 是 CTP 文档定义的合法枚举, 但持仓查询实际按多/空返回 (ADR 0049 决策 9):
+    // 返回 nullopt 由会话跳过该行 + WARN. 既不得归为多头 (凭空造持仓), 也不得登记成
+    // 未知方向 (那会作废整轮快照, 进而让账户登录不上).
     auto pf = make_position_field();
     pf.PosiDirection = THOST_FTDC_PD_Net;
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
-    EXPECT_EQ(p.direction, DZ_DIRECTION_LONG);
+
+    UnknownEnumSink unknown;
+    EXPECT_FALSE(to_dz_position(pf, "acc1", kTradingDay, 1.0, &unknown).has_value());
+    EXPECT_TRUE(unknown.empty()) << "net direction is a legal enum, not unknown evidence";
 }
 
 TEST(ToDzPositionTest, ZeroPositionHasZeroPrice) {
     auto pf = make_position_field();
     pf.Position = 0;
     pf.PositionCost = 39000.0;
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0);
+    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0).value();
     EXPECT_EQ(p.volume, 0);
     EXPECT_DOUBLE_EQ(p.price, 0.0);  // 避免除零
     // Position=0 时 TodayPosition 一并夹到 [0, 0]: 旧口径的负今仓 (today = -YdPosition) 是 bug.
@@ -1008,8 +1012,9 @@ TEST(ToDzPositionTest, UnknownPosiDirectionBecomesUnknown) {
     pf.PosiDirection = 'Z';
 
     UnknownEnumSink unknown;
-    auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0, &unknown);
-    EXPECT_EQ(p.direction, DZ_DIRECTION_UNKNOWN);
+    const auto p = to_dz_position(pf, "acc1", kTradingDay, 1.0, &unknown);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_EQ(p->direction, DZ_DIRECTION_UNKNOWN);
     ASSERT_EQ(unknown.count, 1u);
     EXPECT_STREQ(unknown.items[0].category, kUnknownCategoryDirection);
     EXPECT_EQ(unknown.items[0].raw_char, 'Z');
@@ -1018,17 +1023,14 @@ TEST(ToDzPositionTest, UnknownPosiDirectionBecomesUnknown) {
 TEST(ToDzPositionTest, KnownDirectionsHaveNoUnknownEvidence) {
     UnknownEnumSink unknown;
     auto long_field = make_position_field();  // 缺省 Long('2')
-    EXPECT_EQ(to_dz_position(long_field, "acc1", kTradingDay, 1.0, &unknown).direction,
-              DZ_DIRECTION_LONG);
-
-    auto net_field = make_position_field();
-    net_field.PosiDirection = THOST_FTDC_PD_Net;
-    EXPECT_EQ(to_dz_position(net_field, "acc1", kTradingDay, 1.0, &unknown).direction,
-              DZ_DIRECTION_LONG);
+    const auto long_pos = to_dz_position(long_field, "acc1", kTradingDay, 1.0, &unknown);
+    ASSERT_TRUE(long_pos.has_value());
+    EXPECT_EQ(long_pos->direction, DZ_DIRECTION_LONG);
 
     auto short_field = make_position_field();
     short_field.PosiDirection = THOST_FTDC_PD_Short;
-    EXPECT_EQ(to_dz_position(short_field, "acc1", kTradingDay, 1.0, &unknown).direction,
-              DZ_DIRECTION_SHORT);
+    const auto short_pos = to_dz_position(short_field, "acc1", kTradingDay, 1.0, &unknown);
+    ASSERT_TRUE(short_pos.has_value());
+    EXPECT_EQ(short_pos->direction, DZ_DIRECTION_SHORT);
     EXPECT_TRUE(unknown.empty());
 }

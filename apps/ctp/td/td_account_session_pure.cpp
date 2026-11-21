@@ -116,12 +116,24 @@ int64_t parse_max_order_ref(const char* max_order_ref) noexcept {
     }
 }
 
-bool unknown_enum_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept {
+bool alert_report_due(int64_t now_s, int64_t last_report_s, int64_t interval_s) noexcept {
     // 从未上报过 (含初始 0 与负值) -> 立即上报; 否则看是否已过最小间隔.
     if (last_report_s <= 0) {
         return true;
     }
     return now_s - last_report_s >= interval_s;
+}
+
+bool replay_external_only_alarm(bool in_replay,
+                                int64_t record_epoch_s,
+                                int64_t last_live_epoch_s) noexcept {
+    // 实时流记录不是本告警的取证对象; 柜台时间未知 / 尚未观测到实时回报时无法判定.
+    if (!in_replay || record_epoch_s <= 0 || last_live_epoch_s <= 0) {
+        return false;
+    }
+    // 记录成立于最后一条实时回报之前/同时 → 那一刻本会话在收实时流, 按投资者级假设
+    // 它本应已实时到达并落库 (于是重放会命中基准被吞); 仍以「新记录」出现在重放里 = 告警.
+    return record_epoch_s <= last_live_epoch_s;
 }
 
 bool trading_day_usable(int32_t days_since_epoch) noexcept {

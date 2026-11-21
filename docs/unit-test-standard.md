@@ -92,6 +92,7 @@
 | `apps/webui/tests/td_order_row_writer.h` | 按 schema v1 `orders` 表列清单写一行委托（`TdOrderRowSeed` + `insert_td_order_row`）：委托列表 / 统计 / WS 转发测试共用，列清单唯一实现 |
 | `apps/webui/tests/td_trade_row_writer.h` | 按 schema v1 `trades` 表列清单写一行成交（`TdTradeRowSeed` + `insert_td_trade_row`）：成交列表测试共用，列清单唯一实现 |
 | `apps/ctp/tests/td_config_fixture.h` | `dztd_ctp.json` 的 `td` section 唯一实现（`TdConfigSeed` + `make_td_config_json()`）：先构造 `TdConfig` 再经宏 `to_json` 出 JSON，零手写键字面量；形状漂移在夹具使用方 target（`dztd_ctp_td_config_test`）编译期暴露。`td_config_test` 与 smoke 共用（#281） |
+| `apps/ctp/tests/shm_frame_reader.h` | td 会话层测试的 SHM 帧读取/解码：`read_frames(shm::Reader&)`（拷贝新增帧，Reader 只前进不回头）+ `position_frame_instruments()` / `trade_frame_instruments()`（按帧类型取合约代码）。解码走生产读端同款 `shm::FrameView`，不手写 `reinterpret_cast` + `memcpy`。`td_position_lifecycle_test` / `td_place_order_validation_test` 共用 |
 | `libs/shm/tests/test_util.h` | shm 测试工具函数：`unique_channel_name`（进程+时间戳唯一通道名）、`test_shm_dir`（进程唯一临时 shm 目录）、`create_page_file`、`cleanup_channel` / `cleanup_test_dir`；不含 GTest，PerfBench 也能用 |
 | `libs/shm/tests/test_fixture.h` | `ShmTestBase`：shm 用例共用的 gtest fixture（SetUp 分配唯一通道名与临时目录，TearDown 清理）。单独成头而非并入 `test_util.h`：PerfBench 包含工具头但不链 GTest，夹具头不能把 gtest 带进基准目标 |
 | `libs/shm/tests/test_ipc_util.h` | 多进程 IPC 用例的辅助进程框架：`spawn_helper`（测试二进制自派 `--dz-test-helper` 子进程）、`wait_with_timeout` / `wait_for_file`，以及 `--dz-test-helper` 子命令分发的 `run`；含 `mutex_lock_and_hold`、`sem_notify`、`sem_wait`、`sem_wait_for_and_notify`、`channel_writer_write` 等子进程侧动作 |

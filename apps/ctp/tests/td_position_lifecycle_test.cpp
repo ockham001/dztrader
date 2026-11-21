@@ -26,10 +26,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,13 +44,16 @@
 #include <dztrader/shm/common.h>
 #include <dztrader/shm/named_semaphore.h>
 #include <dztrader/shm/order_id_meta.h>
+#include <dztrader/shm/reader.h>
 #include <dztrader/shm/writer.h>
 #include <dztrader/tdstore/trade_db.h>
+#include <dztrader/struct.h>
 
 #include "common/ctp_events.h"
 #include "td/td_account_session.h"
 #include "td/td_events.h"
 #include "td/td_persist_writer.h"
+#include "shm_frame_reader.h"
 #include "test_temp_dir.h"
 #include "test_util.h"
 
@@ -62,6 +68,9 @@ protected:
     std::filesystem::path shm_dir_;
 
     std::unique_ptr<shm::NamedSemaphore> sem_;
+    /// 帧读取器：Reader::create 从**创建时刻**的写位置开始读，必须在首个用例动作之前建好，
+    /// 否则「组合持仓行不推帧」的断言会退化成空转（读到 0 帧恒真）。
+    std::optional<shm::Reader> reader_;
     std::unique_ptr<shm::MultiWriter> writer_;
     std::unique_ptr<shm::OrderIdMeta> order_id_meta_;
     std::unique_ptr<PersistWriter> persist_;
@@ -119,9 +128,12 @@ protected:
         session_ = make_session();
         // 交易日固定，避免断言随真实当天漂移（会话用它填 DzPositionInfo.date）。
         session_->set_trading_day(kDay);
+        // 帧读取器必须在任何写帧动作之前创建（见成员注释）。
+        reader_.emplace(shm::Reader::create(channel_name_, shm_dir_, "lifecycle_reader"));
     }
 
     void TearDown() override {
+        reader_.reset();
         session_.reset();
         if (persist_) {
             persist_->stop();
@@ -245,6 +257,72 @@ protected:
             session_->on_rsp_qry_investor_position(position_row("", 0, 0, 0.0, /*is_last=*/true));
         }
         flush_persist();
+    }
+
+    /// 一条合约查询响应行（`product_class` 决定套利/组合判定；缺省 = 普通期货）。
+    /// 未登录会话里 `on_rsp_qry_instrument` 的数据行也会写进合约映射表（is_last 才要求
+    /// LoadingInstruments 状态），用它给会话注入 product_class。
+    static OnRspQryInstrumentField instrument_row(const std::string& instrument,
+                                                  const char* exchange_id,
+                                                  char product_class = THOST_FTDC_PC_Futures) {
+        OnRspQryInstrumentField f{};
+        CThostFtdcInstrumentField inst{};
+        std::strcpy(inst.InstrumentID, instrument.c_str());
+        std::strcpy(inst.ExchangeID, exchange_id);
+        std::strcpy(inst.InstrumentName, instrument.c_str());
+        std::strcpy(inst.ProductID, instrument.c_str());
+        inst.ProductClass = product_class;
+        inst.VolumeMultiple = 300;
+        inst.PriceTick = 0.2;
+        f.instrument = inst;
+        f.is_last = false;
+        f.request_id = 0;
+        f.account_id = "acc1";
+        return f;
+    }
+
+    /// 登记一条合约（会话据 product_class 判定套利/组合合约）。
+    void register_instrument(const std::string& instrument,
+                             const char* exchange_id,
+                             char product_class = THOST_FTDC_PC_Futures) {
+        session_->on_rsp_qry_instrument(instrument_row(instrument, exchange_id, product_class));
+        flush_persist();
+    }
+
+    /// 一条成交回报（缺省 = 开仓买; 套利/单腿用例共用）。
+    static OnRtnTradeField trade_row(const std::string& instrument,
+                                     const char* trade_id,
+                                     int32_t volume = 1,
+                                     double price = 3900.0,
+                                     const char* exchange_id = "CFFEX",
+                                     char direction = THOST_FTDC_D_Buy) {
+        OnRtnTradeField f{};
+        std::strcpy(f.trade.InstrumentID, instrument.c_str());
+        std::strcpy(f.trade.ExchangeID, exchange_id);
+        std::strcpy(f.trade.TradeID, trade_id);
+        std::strcpy(f.trade.TradeTime, "10:00:00");
+        f.trade.Direction = direction;
+        f.trade.OffsetFlag = THOST_FTDC_OF_Open;
+        f.trade.Volume = volume;
+        f.trade.Price = price;
+        f.account_id = "acc1";
+        return f;
+    }
+
+    /// 读出 reader_ 里新增的帧并一次分类：Reader 只前进不回头，分两次读会把后一类的帧漏掉
+    /// （帧读取/解码的共享实现见 shm_frame_reader.h）。
+    struct FrameInstruments {
+        std::vector<std::string> positions;
+        std::vector<std::string> trades;
+    };
+    FrameInstruments read_frame_instruments() {
+        const auto frames = dztrader::test::read_frames(*reader_);
+        return FrameInstruments{dztrader::test::position_frame_instruments(frames),
+                                dztrader::test::trade_frame_instruments(frames)};
+    }
+
+    static bool contains(const std::vector<std::string>& values, const std::string& needle) {
+        return std::find(values.begin(), values.end(), needle) != values.end();
     }
 };
 
@@ -645,6 +723,122 @@ TEST_F(TdPositionLifecycleTest, ZeroRowSuccessfulQueryIsNotFailureAndSchedulesNo
     EXPECT_TRUE(notifications_.empty()) << "success must not raise any notification";
     // 成功查询整组替换为当日空集 (当日旧行被删, 历史不受影响).
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 0);
+}
+
+// ============================================================================
+// AC(#414): 套利/组合合约不参与持仓统计 (ADR 0049 决策 6)
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, SpreadPositionRowIsSkippedWhileLegRowIsKept) {
+    // 组合合约（CTP ProductClass='3' -> DZ_PRODUCT_SPREAD）的持仓行不入库、不推帧；
+    // 单腿合约是普通期货合约，照常入库/推帧。这正是「盘后自动组合」在库里表现为
+    // 「持仓比柜台少一行」的原因（DEBUG 日志留证）。
+    register_instrument("SP m2501&m2505", "DCE", THOST_FTDC_PC_Combination);
+    register_instrument("m2501", "DCE", THOST_FTDC_PC_Futures);
+
+    feed_position_snapshot({
+        position_row("SP m2501&m2505", 2, 0, 0.0, /*is_last=*/false, THOST_FTDC_PD_Long, "DCE"),
+        position_row("m2501", 3, 1, 3.0 * 300.0 * 3100.0, /*is_last=*/true, THOST_FTDC_PD_Long,
+                     "DCE"),
+    });
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='SP m2501&m2505'"), 0);
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='m2501'"), 1);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='m2501'"), 3);
+    const auto frames = read_frame_instruments();
+    EXPECT_FALSE(contains(frames.positions, "SP m2501&m2505"))
+        << "spread rows must not be pushed as positions";
+    EXPECT_TRUE(contains(frames.positions, "m2501"))
+        << "leg rows are ordinary futures and must be pushed";
+    // 跳过组合行不影响整轮查询的成功判定（否则账户会登录失败）。
+    EXPECT_TRUE(session_->position_query_ok());
+}
+
+TEST_F(TdPositionLifecycleTest, SpreadTradeIsRecordedButNotAppliedToPosition) {
+    // 组合合约成交照常落库/推帧，但不参与持仓统计；两条腿（普通期货合约）的持仓按各自
+    // 成交正常增量维护——这是 AC「套利成交后两腿持仓正确」的回归。
+    register_instrument("SP m2501&m2505", "DCE", THOST_FTDC_PC_Combination);
+    register_instrument("m2501", "DCE", THOST_FTDC_PC_Futures);
+    register_instrument("m2505", "DCE", THOST_FTDC_PC_Futures);
+    // 基准：价差两腿 = m2501 多 2 手 + m2505 空 2 手（全今仓）。
+    feed_position_snapshot({position_row("m2501", 2, 0, 2.0 * 300.0 * 3100.0, /*is_last=*/false,
+                                         THOST_FTDC_PD_Long, "DCE"),
+                            position_row("m2505", 2, 0, 2.0 * 300.0 * 3050.0, /*is_last=*/true,
+                                         THOST_FTDC_PD_Short, "DCE")});
+    (void)read_frame_instruments();  // 丢弃基准帧，只看后面的增量
+
+    session_->on_rtn_trade(trade_row("SP m2501&m2505", "T001", 2, 3000.0, /*exchange_id=*/"DCE"));
+    session_->on_rtn_trade(trade_row("m2501", "T002", 1, 3100.0, /*exchange_id=*/"DCE"));
+    session_->on_rtn_trade(
+        trade_row("m2505", "T003", 1, 3050.0, /*exchange_id=*/"DCE", THOST_FTDC_D_Sell));
+    flush_persist();
+
+    // 三笔成交都照常落库（套利成交不丢）。
+    for (const char* trade_id : {"T001", "T002", "T003"}) {
+        EXPECT_EQ(
+            scalar_int(std::format("SELECT COUNT(*) FROM trades WHERE trade_id='{}'", trade_id)), 1)
+            << trade_id;
+    }
+    // 组合合约不产生持仓行/持仓帧。
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='SP m2501&m2505'"), 0);
+    // 两腿各自按成交增量维护（多头买开 2 -> 3；空头卖开 2 -> 3），今昨拆分同为全今仓。
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='m2501' AND"
+                         " direction=1"),
+              3);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE instrument_id='m2501'"), 3);
+    EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='m2505' AND"
+                         " direction=-1"),
+              3);
+    EXPECT_EQ(scalar_int("SELECT today_volume FROM positions WHERE instrument_id='m2505'"), 3);
+    const auto frames = read_frame_instruments();
+    EXPECT_FALSE(contains(frames.positions, "SP m2501&m2505"));
+    EXPECT_TRUE(contains(frames.positions, "m2501"));
+    EXPECT_TRUE(contains(frames.positions, "m2505"));
+    // 成交帧照常推送（含组合合约）。
+    EXPECT_TRUE(contains(frames.trades, "SP m2501&m2505"));
+    EXPECT_TRUE(contains(frames.trades, "m2501"));
+    EXPECT_TRUE(contains(frames.trades, "m2505"));
+}
+
+// ============================================================================
+// AC(#414): 净持仓('1') 跳过该行 + WARN，不触发整轮作废 (ADR 0049 决策 9)
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, NetDirectionRowIsSkippedWithoutFailingTheQuery) {
+    // 喂一行净持仓('1') + 一行正常多头：正常行照常入库、净持仓行不出现，该轮查询**仍判成功**
+    // —— 净持仓是合法 CTP 枚举，不能落进「未知方向 → 整轮快照不可信」分支，否则账户会因
+    // 一个实际不存在的输入登录不上（ADR 0049 决策 9）。
+    feed_position_snapshot({
+        position_row("IF2506", 4, 0, 4.0 * 300.0 * 3900.0, /*is_last=*/false, THOST_FTDC_PD_Net),
+        position_row("rb2510", 2, 1, 2.0 * 10.0 * 3500.0, /*is_last=*/true, THOST_FTDC_PD_Long,
+                     "SHFE"),
+    });
+
+    EXPECT_TRUE(session_->position_query_ok())
+        << "net direction is a legal enum and must not invalidate the snapshot";
+    EXPECT_TRUE(timer_queue_.empty()) << "a legal enum must not schedule a query retry";
+    EXPECT_TRUE(notifications_.empty()) << "a legal enum must not raise an ERROR notification";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
+    EXPECT_EQ(scalar_text("SELECT instrument_id FROM positions WHERE date='20261009'"), "rb2510");
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE instrument_id='IF2506'"), 0)
+        << "net direction must be skipped, not mapped to long";
+}
+
+TEST_F(TdPositionLifecycleTest, NetAndSpreadRowsAreBothSkippedInTheSameQuery) {
+    // 组合行与净持仓行同时出现：两条跳过路径互不干扰，都不登记未知枚举，整轮查询仍成功。
+    register_instrument("SP m2501&m2505", "DCE", THOST_FTDC_PC_Combination);
+    feed_position_snapshot({
+        position_row("SP m2501&m2505", 2, 0, 0.0, /*is_last=*/false, THOST_FTDC_PD_Long, "DCE"),
+        position_row("IF2506", 4, 0, 4.0 * 300.0 * 3900.0, /*is_last=*/false, THOST_FTDC_PD_Net),
+        position_row("rb2510", 2, 1, 2.0 * 10.0 * 3500.0, /*is_last=*/true, THOST_FTDC_PD_Long,
+                     "SHFE"),
+    });
+
+    EXPECT_TRUE(session_->position_query_ok());
+    EXPECT_TRUE(timer_queue_.empty()) << "neither skip path may schedule a query retry";
+    EXPECT_TRUE(notifications_.empty()) << "neither skip path is an unknown-enum error";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
+    EXPECT_EQ(scalar_text("SELECT instrument_id FROM positions WHERE date='20261009'"), "rb2510");
 }
 
 }  // namespace

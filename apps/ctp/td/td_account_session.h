@@ -254,6 +254,20 @@ private:
     PositionHolding* ensure_holding(const std::string& instrument_id,
                                     const std::string& exchange_hint = {});
 
+    /// 该合约是否为套利 / 组合合约 (product_class == DZ_PRODUCT_SPREAD).
+    /// 组合合约不参与持仓统计 (ADR 0049 决策 6): 持仓查询行 / 成交 / 委托冻结一律跳过;
+    /// 合约表未命中 (未加载) 返回 false —— 按普通合约处理, 不猜.
+    bool is_spread_instrument(const std::string& instrument_id) const;
+
+    /// 记录一条**实时流**回报的柜台时间 (交易日 × 86400 + HH:MM:SS 秒; 0 = 未知不记).
+    /// 登录重放回报不调用. 供外部单「只在登录重放出现」告警比对 (ADR 0049 外部单假设).
+    void note_live_report_time(int64_t report_epoch_s);
+
+    /// 外部单「只在登录重放中出现」告警 (ADR 0049 外部单假设的运行期可观测性):
+    /// 重放到达、且柜台时间不晚于最后一条实时回报的外部委托 → ERROR + 限频通知.
+    /// 必须在重放过滤器之后调用 (已在基准里的记录不构成假设失效证据).
+    void check_replay_external_order(const OrderRecord& rpt);
+
     /// 用 PositionHolding 单方向状态填充 DzPositionInfo (account/trading_day/seq).
     void fill_position_info(DzPositionInfo& pos, const PositionHolding& h, DzDirection dir);
 
@@ -338,6 +352,16 @@ private:
     static constexpr int64_t kUnknownEnumReportIntervalS = 300;
     /// 上次通知的时刻 (steady_clock 秒; 0 = 尚未发生过).
     int64_t unknown_enum_last_report_s_ = 0;
+    /// 最近一条**实时流**回报的柜台时间 (交易日 × 86400 + HH:MM:SS 秒; 0 = 尚未观测).
+    /// 跨登录重连保留 (会话对象不变); 登录重放回报不更新它. 外部单「只在登录重放出现」的
+    /// 判据基准 —— 晚于它的无法判定 (可能是断线窗口内别的终端下的单), 不告警 (ADR 0049).
+    int64_t last_live_report_epoch_s_ = 0;
+    /// 外部单「只在登录重放出现」告警的通知限频窗口 (steady_clock 秒; 0 = 尚未告警过).
+    int64_t replay_external_last_alert_s_ = 0;
+    /// 该告警命中的累计笔数 (日志/通知取证).
+    int64_t replay_external_missed_count_ = 0;
+    /// 告警通知最小间隔 (5 分钟, 与未知枚举同量级; 假设失效时重放会成批命中, 逐笔通知会刷屏).
+    static constexpr int64_t kReplayExternalAlertIntervalS = 300;
     /// 重放过滤器基准 (登录/重连时 CTP 私有流去重, spec §4.1).
     std::unique_ptr<ReportFilter> report_filter_;
     /// 每单成交累计 (委托成交均价的唯一累源; 登录日装载时由当日成交重建, 契约 §3).
@@ -403,7 +427,8 @@ private:
     struct InstrumentBrief {
         std::string exchange_id;
         double price_tick = 0.0;
-        double volume_multiple = 0.0;  ///< 合约乘数 (PositionCost -> 均价换算)
+        double volume_multiple = 0.0;                       ///< 合约乘数 (PositionCost -> 均价换算)
+        DzProductClass product_class = DZ_PRODUCT_UNKNOWN;  ///< 套利/组合判定 (ADR 0049)
     };
     std::unordered_map<std::string, InstrumentBrief> instrument_exchange_map_;
 

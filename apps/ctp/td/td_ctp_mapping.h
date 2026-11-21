@@ -82,6 +82,11 @@ struct UnknownEnumSink {
     [[nodiscard]] bool empty() const noexcept { return count == 0; }
 };
 
+/// CTP ProductClass -> DZ_PRODUCT_* (未知暴露为 UNKNOWN, 不再伪装期货).
+/// 注意: 商品期权是 SpotOption('6') 而非 Options('2'); EFP('5')/TAS('7')/MI('I') 暴露为 UNKNOWN.
+/// 会话层用它判定套利 / 组合合约 (ADR 0049 决策 6: 持仓行与成交不参与持仓统计).
+int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept;
+
 /// CTP OrderStatus -> DzOrderStatus 映射 (设计 §12.3).
 /// 未知状态返回 DZ_ORDER_UNKNOWN (不猜成任何真实状态: 猜成 SUBMITTING 会让委托永久停在
 /// 非终态、冻结持仓不释放), 并把原始字符登记到 `unknown`.
@@ -146,19 +151,22 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 
 /// CTP InvestorPositionField -> DzPositionInfo (spec §4.2 2002 写端).
 /// trading_day 为 DzDate (距纪元天数).
-/// PosiDirection: 净('1') 归为多头 (持仓方向仅多/空两态); 多('2') -> LONG, 空('3') -> SHORT;
-/// 未知方向 -> DZ_DIRECTION_UNKNOWN 并把原始字符登记到 `unknown` (绝不猜成多头——那会把
-/// 空头写成多头, 净敞口符号反向).
+/// PosiDirection: 多('2') -> LONG, 空('3') -> SHORT; 未知方向 -> DZ_DIRECTION_UNKNOWN 并把原始
+/// 字符登记到 `unknown` (绝不猜成多头——那会把空头写成多头, 净敞口符号反向).
+/// **净持仓('1', THOST_FTDC_PD_Net) 返回 nullopt** —— 合法的 CTP 枚举, 但持仓记账只有多/空
+/// 两侧 (查询聚合键 / PositionHolding / positions 唯一键; Net 是回报/展示的兼容口径);
+/// 持仓查询实际按多/空返回 (ADR 0049 决策 9), 调用方跳过该行并记 WARN, 不能把它当未知方向
+/// (那会作废整轮快照) 也不能归为多头 (那会凭空造持仓).
 /// 持仓量取 Position (该行的当前总持仓, 含今昨; 负值坏数据夹到 0).
 /// 今昨口径 (ADR 0049 / 契约 td-data-sync §3): today = TodayPosition (夹到 [0, Position]),
 /// yd = Position - today; YdPosition 是交易日开始时的静态昨仓 (平昨后不减少), 不参与计算.
 /// volume_multiple 为合约乘数 (CTP PositionCost 是金额, 非单价):
 /// 均价 = PositionCost / (Position × volume_multiple); Position 或乘数 <= 0 时留 0.
-DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
-                              const std::string& account_id,
-                              int32_t trading_day,
-                              double volume_multiple,
-                              UnknownEnumSink* unknown = nullptr) noexcept;
+std::optional<DzPositionInfo> to_dz_position(const CThostFtdcInvestorPositionField& p,
+                                             const std::string& account_id,
+                                             int32_t trading_day,
+                                             double volume_multiple,
+                                             UnknownEnumSink* unknown = nullptr) noexcept;
 
 }  // namespace dztrader::ctp
 

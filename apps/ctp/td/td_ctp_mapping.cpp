@@ -429,25 +429,6 @@ TradeRecord to_trade_record(const CThostFtdcTradeField& t,
 
 namespace {
 
-/// CTP ProductClass -> DZ_PRODUCT_* (未知暴露为 UNKNOWN, 不再伪装期货).
-/// 注意: 商品期权是 SpotOption('6') 而非 Options('2'); EFP('5')/TAS('7')/MI('I') 暴露为 UNKNOWN
-int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept {
-    switch (pc) {
-        case THOST_FTDC_PC_Futures:
-            return DZ_PRODUCT_FUTURES;
-        case THOST_FTDC_PC_Options:
-            return DZ_PRODUCT_OPTION;
-        case THOST_FTDC_PC_SpotOption:
-            return DZ_PRODUCT_OPTION;
-        case THOST_FTDC_PC_Combination:
-            return DZ_PRODUCT_SPREAD;
-        case THOST_FTDC_PC_Spot:
-            return DZ_PRODUCT_SPOT;
-        default:
-            return DZ_PRODUCT_UNKNOWN;
-    }
-}
-
 /// CTP OptionsType -> DZ_OPTION_* (0=非期权).
 /// 这里刻意保持 `default -> 0` 而不是引入「未知」取值, 理由（#367 审查 F11 复核结论）:
 /// - CTP 只定义了两个取值 (CallOptions '1' / PutOptions '2'); **非期权合约（绝大多数）**
@@ -469,6 +450,23 @@ int32_t option_type_from_ctp(TThostFtdcOptionsTypeType type) noexcept {
 }
 
 }  // namespace
+
+int32_t product_class_from_ctp(TThostFtdcProductClassType pc) noexcept {
+    switch (pc) {
+        case THOST_FTDC_PC_Futures:
+            return DZ_PRODUCT_FUTURES;
+        case THOST_FTDC_PC_Options:
+            return DZ_PRODUCT_OPTION;
+        case THOST_FTDC_PC_SpotOption:
+            return DZ_PRODUCT_OPTION;
+        case THOST_FTDC_PC_Combination:
+            return DZ_PRODUCT_SPREAD;
+        case THOST_FTDC_PC_Spot:
+            return DZ_PRODUCT_SPOT;
+        default:
+            return DZ_PRODUCT_UNKNOWN;
+    }
+}
 
 tdstore::InstrumentRecord to_instrument_record(const CThostFtdcInstrumentField& f,
                                                const std::string& update_day) noexcept {
@@ -530,27 +528,32 @@ DzTradingAccount to_dz_trading_account(const CThostFtdcTradingAccountField& a,
 // to_dz_position: CTP InvestorPositionField -> DzPositionInfo
 // ============================================================================
 
-DzPositionInfo to_dz_position(const CThostFtdcInvestorPositionField& p,
-                              const std::string& account_id,
-                              int32_t trading_day,
-                              double volume_multiple,
-                              UnknownEnumSink* unknown) noexcept {
+std::optional<DzPositionInfo> to_dz_position(const CThostFtdcInvestorPositionField& p,
+                                             const std::string& account_id,
+                                             int32_t trading_day,
+                                             double volume_multiple,
+                                             UnknownEnumSink* unknown) noexcept {
     DzPositionInfo r{};
 
     copy_to_dz(r.instrument_id, p.InstrumentID);
     copy_to_dz(r.exchange_id, p.ExchangeID);
     copy_to_dz(r.account_id, account_id.c_str());
 
-    // 持仓方向: CTP 净持仓('1') 归为多头 (DZ 仅两态); 多('2') -> LONG, 空('3') -> SHORT.
-    // 未知方向返回 UNKNOWN —— 兜成 LONG 会把空头写成多头, 净敞口符号反向.
+    // 持仓方向: 多('2') -> LONG, 空('3') -> SHORT.
+    // 净持仓('1') 返回 nullopt: 它是 CTP 文档定义的合法枚举, 但持仓记账只有多/空两侧
+    // (查询聚合键 / PositionHolding / positions 唯一键; Net 是回报/展示的兼容口径), 且持仓
+    // 查询实际按多/空返回 (ADR 0049 决策 9) —— 跳过该行 + 由会话记 WARN. 不能归为多头
+    // (凭空造持仓), 也不能走未知方向分支 (合法枚举不该让整轮快照作废 → 账户登录不上).
+    // 真正读不懂的码返回 UNKNOWN —— 兜成 LONG 会把空头写成多头, 净敞口符号反向.
     switch (p.PosiDirection) {
         case THOST_FTDC_PD_Short:
             r.direction = DZ_DIRECTION_SHORT;
             break;
         case THOST_FTDC_PD_Long:
-        case THOST_FTDC_PD_Net:
             r.direction = DZ_DIRECTION_LONG;
             break;
+        case THOST_FTDC_PD_Net:
+            return std::nullopt;
         default:
             if (unknown != nullptr) {
                 unknown->add(kUnknownCategoryDirection, p.PosiDirection);
