@@ -36,8 +36,8 @@ struct OrderRecord {
     int8_t is_external;          ///< 是否外部订单 (CTP 返回的, 非本系统发出)
     char reserved[7];            ///< 对齐 int32_t volume_canceled 到 8 字节边界
     int32_t volume_canceled;     ///< 已撤数量
-    int64_t insert_time;         ///< epoch seconds (CTP InsertTime)
-    int64_t update_time;         ///< epoch seconds (CTP UpdateTime)
+    int64_t insert_time;         ///< epoch seconds (会话交易日 + CTP InsertTime, 不采信 InsertDate)
+    int64_t update_time;         ///< epoch seconds (会话交易日 + CTP UpdateTime)
     int32_t error_id;            ///< CTP ErrorID
     char error_msg[128];         ///< CTP ErrorMsg (GBK->UTF8)
 };
