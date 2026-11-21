@@ -205,6 +205,17 @@ private:
     void req_authenticate();
     void req_login();
     void req_settlement_confirm();
+
+    /// 登录失败统一出口 (#407): 状态机回滚 + 失败原因上浮 UI 通知.
+    ///
+    /// 登录失败后状态回滚到 Authenticated/Connected, 两者都是**正常中间态**——前端与用户
+    /// 无法与「正在登录」区分, 也拿不到原因; 而本进程不会自动重发登录 (见 #406), 用户须
+    /// 先登出再登录才能恢复。因此失败必须让用户看得见, 否则账户会静默卡住。
+    ///
+    /// @param reason 失败场景 (中文, 供通知正文; 如「交易日解析失败」)。不复用
+    ///   on_login_failed() 的通用文案「交易登录失败」——只说失败不说原因, 用户无从处置。
+    /// 时序: 必须先 on_login_failed() 转状态再通知 (与 md 一致)。异常不逃逸 (notify_ 可能抛)。
+    void notify_login_failed(const std::string& reason);
     /// 触发合约查询 (设计 §7.2), 进入 LoadingInstruments 状态.
     /// 失败/超时调 on_instruments_load_failed 回退到 LoggedIn (设计 §2.4.1).
     void req_qry_instrument();

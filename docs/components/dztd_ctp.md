@@ -49,6 +49,7 @@
 连接 → 认证（`ReqAuthenticate`）→ 登录（`ReqUserLogin`）→ 结算确认（`ReqSettlementInfoConfirm`）→ 合约加载（`ReqQryInstrument`）→ Ready。状态保护：仅特定状态可发起下一步；合约加载受流控约束重试。
 
 - **本进程暂无登录链自动重试**（缺口，见 #406）：认证失败 / 登录失败 / 结算确认失败都回滚到 `Authenticated` / `Connected` / `LoggedIn`，但从这些状态**没有任何路径重发请求**——`AccountSession::req_login()` 只在前置刚连上（`on_front_connected`）与认证刚成功（`on_rsp_authenticate`）两处被调用；`on_sched_timer` / `try_recover_login` / `connect_account_by_id` 都按 `find_session() == nullptr` 过滤，session 已存在时一律跳过。因此失败后账户停在帧侧 `LoggingIn`（`account_state_of` 把 `Authenticated`/`Connected` 都映射为 `LoggingIn`），须**人工断开重连**或等前置断线才会重新走登录链。md 侧有 `can_login()` 重登能力（契约 md-status 失败语义），td 尚未对齐。
+- **登录失败必须让用户看得见**（#407）：正因为上一条——失败后停在正常中间态、且不自动重试——失败若不上浮，账户就会静默卡住。四条失败路径（柜台拒绝 / 交易日无效 / 当日基准装载失败 / 登录超时）统一经 `notify_login_failed()` 出口：先 `on_login_failed()` 转状态，再以 `DZ_NOTIFY_ERROR` + 弹窗推送 `NOTIFY_UI`，正文带上**具体场景**与**恢复动作**（「请登出后重新登录」），不用状态机的通用文案「交易登录失败」——只说失败不说原因，用户无从处置。文案构造在 `login_failed_message()`（纯函数可单测）。状态机拒绝转移（非 `LoggingIn`）时不推送，避免弹一条对不上状态的告警。
 
 - 本进程不发起登出：UI 登出即彻底释放 CTP SDK API（直接断开），回 Idle；不存在"已登出、连接保留"的稳定状态。
 - 例外：若收到服务器主动登出的回调，状态已偏离预期，属异常情况，非本进程主动为之。此时保留前置连接，由自动调度重新登录恢复，并记录错误日志、上报告警，供排查。

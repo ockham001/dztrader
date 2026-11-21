@@ -117,6 +117,16 @@ ResyncRetryAction decide_resync_retry(bool is_ready,
 ///   与全部负数同样判不可用, 因此实现是 `> 0` 而非仅比哨兵。
 bool trading_day_usable(int32_t days_since_epoch) noexcept;
 
+/// 登录失败通知正文 (纯构造便于断言, #407).
+///
+/// 为什么需要场景说明而不是直接转发状态机的通用文案: 登录失败后状态回滚到
+/// Authenticated/Connected —— 两者都是**正常中间态**, 前端无法与「正在登录」区分,
+/// 而本进程不会自动重发登录 (#406), 用户唯一的恢复路径是先登出再登录。所以通知必须
+/// 自己说清「发生了什么 + 该怎么办」, 只说「交易登录失败」等于让用户无从处置。
+/// @param reason 失败场景的中文说明 (如「交易日无效（原始值 "00000000"）」)
+/// @return 形如「交易登录失败（交易日无效（原始值 "00000000"）），请登出后重新登录」
+std::string login_failed_message(const std::string& reason);
+
 }  // namespace dztrader::ctp
 
 #endif  // DZTRADER_CTP_TD_ACCOUNT_SESSION_PURE_H_

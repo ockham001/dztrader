@@ -380,3 +380,34 @@ TEST(TradingDayUsableTest, RejectsEpochDayCollidingWithNa) {
     EXPECT_FALSE(trading_day_usable(0));
     EXPECT_FALSE(trading_day_usable(-1));
 }
+
+// ============================================================================
+// login_failed_message (登录失败通知正文, #407)
+// ============================================================================
+
+TEST(LoginFailedMessageTest, IncludesReasonAndRecoveryAction) {
+    // 登录失败后状态回滚到 Authenticated/Connected (正常中间态), 前端无法与「正在登录」
+    // 区分; 且本进程不自动重发登录 (#406), 用户唯一恢复路径是先登出再登录.
+    // 因此正文必须同时给出「发生了什么」与「该怎么办」.
+    const std::string msg = login_failed_message("交易日无效（原始值 \"00000000\"）");
+    EXPECT_NE(msg.find("交易登录失败"), std::string::npos);
+    EXPECT_NE(msg.find("交易日无效"), std::string::npos) << "must say why";
+    EXPECT_NE(msg.find("请登出后重新登录"), std::string::npos) << "must say what to do";
+}
+
+TEST(LoginFailedMessageTest, PropagatesScenarioVerbatim) {
+    // 四种失败场景的说明各自原样带入, 不被归一成同一句通用文案.
+    for (const char* reason : {"柜台拒绝，错误码 3：CTP:用户不存在", "当日订单/成交基准装载失败",
+                               "10 秒内未收到柜台的登录响应"}) {
+        const std::string msg = login_failed_message(reason);
+        EXPECT_NE(msg.find(reason), std::string::npos) << reason;
+    }
+}
+
+TEST(LoginFailedMessageTest, EmptyReasonOmitsParentheses) {
+    // 空原因不得产出「（）」这种残缺文案.
+    const std::string msg = login_failed_message("");
+    EXPECT_EQ(msg.find("（）"), std::string::npos);
+    EXPECT_NE(msg.find("交易登录失败"), std::string::npos);
+    EXPECT_NE(msg.find("请登出后重新登录"), std::string::npos);
+}
