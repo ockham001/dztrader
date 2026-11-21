@@ -368,15 +368,20 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
         int64_t ctp_max = parse_max_order_ref(f.rsp_user_login->MaxOrderRef);
         order_ref_ = sync_order_ref(order_ref_, ctp_max);
     }
-    // I4: 同步 trading_day, 解析失败 (INT32_MIN) 时记 WARN 但不中断登录.
+    // 同步 trading_day. 解析失败按登录失败处理, 不进 LoggedIn (对齐 md 的
+    // LoginParseError 分支): 会话交易日是本会话全部业务数据的时间锚, 它缺失时若继续登录,
+    // 订单/成交/持仓/资金会盖上一个无效日期, 而 ACCOUNT_STATUS 帧的 date 会回落 0 ——
+    // 日切判定 (should_push_account_status 比 date 变化) 随之误判. 宁可回退重试登录,
+    // 也不带着错误的会话交易日进入 Ready.
     // 发现 3 (评审 Important): 走 set_trading_day 而非直接赋值 — 日切/重连后新交易日的
     // 持仓为绝对态, 旧镜像 (key 不含日期) 会拦截新日首报, 必须在登录时清空 (spec §4.1 跨日清空).
-    if (f.days_since_epoch != std::numeric_limits<int32_t>::min()) {
-        set_trading_day(f.days_since_epoch);
-    } else {
-        SPDLOG_WARN("td trading_day parse failed, keep previous | account={} trading_day={}",
-                    account_id_, trading_day_);
+    if (!trading_day_usable(f.days_since_epoch)) {
+        SPDLOG_ERROR("td login trading day invalid | account={} trading_day=\"{}\"", account_id_,
+                     f.rsp_user_login ? f.rsp_user_login->TradingDay : "");
+        state_machine_.on_login_failed();
+        return;
     }
+    set_trading_day(f.days_since_epoch);
     // 契约 td-data-sync §3 / ADR 0045 决策 5: 登录成功且交易日已更新后、处理首条
     // 重放回报前装载当日订单/成交基准. 装载失败按登录失败路径处理 (重试登录):
     // 空基准会让重放风暴整批误判转发, 宁可重试也不带错基准进入 Ready.

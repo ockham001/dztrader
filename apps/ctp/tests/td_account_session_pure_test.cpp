@@ -1,6 +1,10 @@
 #include "td/td_account_session_pure.h"
 
+#include <limits>
+
 #include <gtest/gtest.h>
+
+#include <dztrader/date_time/date.h>
 
 using namespace dztrader::ctp;
 
@@ -351,4 +355,28 @@ TEST(DecideResyncRetryTest, WaitsInsteadOfConcurrentQueryChain) {
     // 已有查询链在途时必须等: CTP 在途查询流控 1 笔, 并发双查询链会污染累加器与冻结对账.
     // 且等待优先于发起 —— 顺序写反就会在在途窗口里再插一条查询.
     EXPECT_EQ(decide_resync_retry(true, false, true), ResyncRetryAction::kWait);
+}
+
+// ============================================================================
+// trading_day_usable (登录响应的会话交易日可用性)
+// ============================================================================
+
+TEST(TradingDayUsableTest, AcceptsRealTradingDay) {
+    // 2026-07-27 距纪元天数 (与 mapping 测试同一常量口径).
+    EXPECT_TRUE(trading_day_usable(dztrader::Date{2026, 7, 27}.days_since_epoch()));
+    EXPECT_TRUE(trading_day_usable(1));
+    EXPECT_TRUE(trading_day_usable(20000));
+}
+
+TEST(TradingDayUsableTest, RejectsParseFailureSentinel) {
+    // TdSpi::OnRspUserLogin 在 parse_ctp_date 返回 DZ_DATE_NA 时保留的哨兵.
+    // 判为不可用 = 调用方按登录失败处置 (对齐 md 的 LoginParseError), 不进 LoggedIn.
+    EXPECT_FALSE(trading_day_usable(std::numeric_limits<int32_t>::min()));
+}
+
+TEST(TradingDayUsableTest, RejectsEpochDayCollidingWithNa) {
+    // 0 = DZ_DATE_NA; "19700101" 解析结果与哨兵重合, 业务上不存在 1970 年的真实交易日,
+    // 同样判为不可用 —— 否则登录会把整会话数据锚在纪元日.
+    EXPECT_FALSE(trading_day_usable(0));
+    EXPECT_FALSE(trading_day_usable(-1));
 }

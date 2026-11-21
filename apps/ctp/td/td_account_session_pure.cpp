@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace dztrader::ctp {
 
@@ -148,6 +149,13 @@ ResyncRetryAction decide_resync_retry(bool is_ready,
         return ResyncRetryAction::kWait;
     }
     return ResyncRetryAction::kResync;
+}
+
+bool trading_day_usable(int32_t days_since_epoch) noexcept {
+    // INT32_MIN 是 OnRspTdUserLoginField::days_since_epoch 的「解析失败」哨兵
+    // (td_events.h), 由 TdSpi::OnRspUserLogin 在 parse_ctp_date 返回 DZ_DATE_NA 时保留.
+    // 0 是 DZ_DATE_NA 且业务上不存在 1970 年的真实交易日, 同样视为不可用.
+    return days_since_epoch != std::numeric_limits<int32_t>::min() && days_since_epoch > 0;
 }
 
 }  // namespace dztrader::ctp
