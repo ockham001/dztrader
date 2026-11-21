@@ -4,6 +4,8 @@
 
 Accepted
 
+决策 4「漂移自愈：Ready 后每 `qry_position_interval_s` 重查一次」已被 [ADR 0049](0049-position-pure-incremental-no-periodic-query.md) 废止（取消周期查询）；本 ADR 其余决策（聚合查询建基准、`PositionHolding` 模型、成交/委托增量、不接入明细查询）全部保留。
+
 ## Context
 
 td 侧存在两套"持仓计算"的雏形：

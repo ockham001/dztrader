@@ -52,7 +52,7 @@
 | `SetAccountEnabled` | `account_id`\*、`enabled`\* | 否 | 启用/禁用只影响后续连接请求（禁用后连接被拒），不强制断开已有会话（断开由连接控制帧负责） |
 | `SetAccountRiskControl` | `account_id`\*、`enabled`\* | 否 | 账户级风控开关（`enabled` = 是否启用风控） |
 | `SetAccountCurrency` | `account_id`\*、`currency_id`\* | 否 | 账户币种 |
-| `SetQryIntervals` | `qry_account_interval_s`、`qry_position_interval_s`、`qry_flush_interval_ms` | 否 | 查询间隔；缺失字段保留旧值，提供值必须 > 0 |
+| `SetQryIntervals` | `qry_account_interval_s`、`qry_flush_interval_ms` | 否 | 查询间隔；缺失字段保留旧值，提供值必须 > 0。**持仓查询间隔已随 [ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md) 删除**（持仓无周期查询） |
 | `SetExt` | `ext`\* | 否 | 进程级柜台特有配置的字段级补丁（缺失字段保留旧值） |
 
 > `*` 标注的字段为必填，缺失或类型不匹配为校验失败。
@@ -103,7 +103,6 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `qry_account_interval_s` | int | 资金查询间隔（秒），> 0；本轮未接入周期资金查询，保留配置 |
-| `qry_position_interval_s` | int | 持仓查询间隔（秒），> 0 |
 | `qry_flush_interval_ms` | int | 流控队列间隔（毫秒），> 0 |
 | `accounts` | array\<AccountConfig\> | 账户配置列表（2.2 + 2.3） |
 | `ext` | object | 进程级柜台特有配置（2.3 进程级 ext） |
@@ -111,7 +110,6 @@
 ```json
 {
   "qry_account_interval_s": 5,
-  "qry_position_interval_s": 60,
   "qry_flush_interval_ms": 1500,
   "accounts": [{
     "account_id": "account_001",
@@ -149,7 +147,7 @@
 ```json
 {"op": "AddAccount", "params": {"account_id": "account_001", "enabled": true, "ext": {"broker_id": "9999", "user_id": "00001", "password": "123456", "product_info": ""}}}
 {"op": "UpdateAccount", "params": {"account_id": "account_001", "ext": {"password": "****"}}}
-{"op": "SetQryIntervals", "params": {"qry_position_interval_s": 30}}
+{"op": "SetQryIntervals", "params": {"qry_account_interval_s": 10}}
 {"op": "SetExt", "params": {"ext": {"enable_lock_mode": false}}}
 ```
 
