@@ -4,14 +4,17 @@
 
 Accepted（2026-11-21，持仓模型定位变更）
 
-Supersedes（**仅"周期查询"这一支**，其余决策全部保留）：
+Supersedes（精确到句；未列出的决策与句子全部保留）：
 
-- [ADR 0008](0008-td-position-model.md) 决策 4「漂移自愈：Ready 后每 `qry_position_interval_s` 重查一次，有差异才修正」——整条废止；
-- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 2 末句「已就绪后的周期查询仅在有差异 / 消失时整组重建」——周期查询这一支废止，首个完整成功查询的整组原子替换保留；
-- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 6 中「持仓由周期查询收敛（≤ `qry_position_interval_s`）」与「非本会话外部单可能晚到（下次登录）或缺失」两句——废止，改为「外部单与自营单同权、实时进账」；
-- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 7「由下一次周期查询收敛（≤ 持仓查询间隔）」——废止，该收敛窗不再存在。
+- [ADR 0008](0008-td-position-model.md) 决策 4「漂移自愈：Ready 后每 `qry_position_interval_s` 重查一次，有差异才修正」——**整条废止**；
+- [ADR 0008](0008-td-position-model.md) Consequences 中「均由下轮查询（≤ 一个查询间隔，默认 60s）收敛」「登录重放不重复计数」里「周期查询单次失败不解除」一句——废止（无下轮查询了）；
+- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 2 末句「已就绪后的周期查询仅在有差异 / 消失时整组重建」——周期查询这一支废止，首个完整成功查询的整组原子替换**保留**；
+- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 4 括号内「失败补查链同序」一句——随两条补查链删除而废止；该决策主体「资金行只允许在持仓查询成功之后写入」**保留**（登录收尾链仍是唯一写入路径）；
+- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 6 中「持仓由周期查询收敛（≤ `qry_position_interval_s`）」「非本会话外部单可能晚到（下次登录）或缺失」两句——废止，改为「外部单与自营单同权、实时进账」；
+- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 7「由下一次周期查询收敛（≤ 持仓查询间隔）」——**整条废止**，该收敛窗不再存在；
+- [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) Consequences 中「持仓精度的收敛受查询间隔约束」「由下一次周期查询收敛」——废止。
 
-契约同步：`td-data-sync` §3 持仓写端与 §7 边界表、`td-config`（删 `qry_position_interval_s`）、`GLOSSARY`「收敛窗」、`docs/components/dztd_ctp.md`。ADR 0008 / 0045 正文不改，只在其 Status 段加本末行引用。
+契约同步：《帧契约：TD 数据同步》§3 持仓写端 / §4 查询链路 / §7 边界表，《帧契约：交易网关配置》删 `qry_position_interval_s`，`GLOSSARY`「收敛窗」废止，`docs/components/dztd_ctp.md`。ADR 0008 / 0045 正文不改，只在各自 Status 段加一段引用注记。代码侧删除见 #412 与 #413。
 
 ## Context
 
@@ -49,7 +52,7 @@ Supersedes（**仅"周期查询"这一支**，其余决策全部保留）：
 - **期权行权 / 履约 / 到期零回调**，正确性依赖"次日登录基准"。同理，盘后自动组合持仓会凭空出现。两者都使"会话不跨交易日"成为**正确性前提**而非优化。
 - **资金仍无周期查询**（ADR 0045 决策 6 保留），盘中资金停在最近一次查询。
 
-**契约影响**：`td-data-sync` §3 持仓写端由"混合模型"改为"纯增量"；§7 边界表删除依赖查询间隔的两行、新增上述限制；`td-config` 删 `qry_position_interval_s`（`SetQryIntervals` op 保留另外两个字段）；`GLOSSARY`「收敛窗」废止或改写。
+**契约影响**：《帧契约：TD 数据同步》§3 持仓写端由「混合模型」改为「纯增量」、§4 查询链路改为「失败即登录失败，无定时补查」、§7 边界表改写 3 行（旧会话残留写入 / 其他终端交易 / 资金盘中不刷新）、删除 1 行（查询在途窗口成交）、新增 4 行（无自愈 / 非 SHFE 今昨归属 / 期权与盘后自动组合 / 套利组合不统计）；《帧契约：交易网关配置》删 `qry_position_interval_s`（`SetQryIntervals` op 保留另外两个字段）；`GLOSSARY`「收敛窗」废止、新增「持仓基准」；`docs/components/dztd_ctp.md` 与 `dzweb.md` 同步。**代码侧删除见 #412 / #413**——本 ADR 只改契约，契约先于实现是仓库明文要求（`general.md` §11.3）。
 
 ## References
 
