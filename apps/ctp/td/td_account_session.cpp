@@ -1047,15 +1047,14 @@ void AccountSession::notify_login_failed(const std::string& reason) {
     // 先转状态 (回滚到 Authenticated/Connected), 再通知 —— 与 md 的
     // 「先 set_last_error + set_state, 再返回通知」时序一致.
     auto notif = state_machine_.on_login_failed();
-    if (!notify_) {
-        return;  // 未注入 (测试/无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
-    }
-    // 正文带场景说明: 通用文案「交易登录失败」只说失败不说原因, 用户无从处置.
-    // level/popup 沿用状态机的判定 (ERROR + 弹窗), 只把 message 换成可处置的说明.
-    // notif 为空 = 状态机拒绝了这次转移 (非 LoggingIn, 已由状态机记 WARN): 本次失败
-    // 不是一次真实登录尝试的终局, 不弹窗, 避免给用户看一条对不上状态的告警.
+    // 状态机拒绝了这次转移 (此刻不在 LoggingIn: 典型为前置已断线 / 已登出, 已由状态机
+    // 记 WARN): 此刻弹窗对不上界面状态, 不推送。注意这只是「不在 LoggingIn」, 不保证
+    // 等于「非真实登录尝试」——该情形同样静默, 属有意取舍 (断线场景由 Offline/重连反馈兜底).
     if (!notif) {
         return;
+    }
+    if (!notify_) {
+        return;  // 未注入 (测试/无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
     }
     const std::string message = login_failed_message(reason);
     try {

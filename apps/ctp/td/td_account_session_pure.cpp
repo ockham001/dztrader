@@ -160,11 +160,15 @@ bool trading_day_usable(int32_t days_since_epoch) noexcept {
 }
 
 std::string login_failed_message(const std::string& reason) {
+    // 不承诺「请登出后重新登录」: WebUI 目前没有 td 的连接/断开入口
+    // (DZ_FRAME_TD_CONNECT/TD_DISCONNECT 无生产端, 无 REST/WS 控制消息, 见 #409),
+    // 让用户去做一件界面上做不到的事, 比只说事实更糟. 这里只陈述「发生了什么 + 会怎样」,
+    // 具体恢复路径由运维侧处置 (等自动调度窗口 / 重启网关), 见 docs/components/dztd_ctp.md.
     if (reason.empty()) {
-        // 空原因不产出「（）」这种残缺文案: 只说失败并给出恢复动作, 不比编一句假原因更差.
-        return "交易登录失败，请登出后重新登录";
+        // 空原因不产出「（）」这种残缺文案.
+        return "交易登录失败，本进程不会自动重试该账户";
     }
-    return std::format("交易登录失败（{}），请登出后重新登录", reason);
+    return std::format("交易登录失败（{}），本进程不会自动重试该账户", reason);
 }
 
 }  // namespace dztrader::ctp

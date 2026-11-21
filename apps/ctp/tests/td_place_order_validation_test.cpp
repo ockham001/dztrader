@@ -428,5 +428,34 @@ TEST_F(TdPlaceOrderValidationTest, UnknownOrderStatusKeepsOrderActiveAndFrozen) 
     EXPECT_EQ(scalar_int("SELECT volume FROM positions WHERE instrument_id='IF2506'"), 2);
 }
 
+// ============================================================================
+// 登录失败通知的边界 (#407): 状态机不在 LoggingIn 时不推送
+//
+// 为什么放在本目标: 这里是全仓唯一「真 AccountSession + 已注入 notify 回调」的夹具;
+// 登录成功路径要连柜台 (api_ 为 null 会崩), 但本用例只走 on_rsp_user_login 的拒登分支
+// —— 它只访问 cancel_login_timer 与状态机, 不碰 api_, 因此不需要任何生产代码改测试接缝.
+// ============================================================================
+
+TEST_F(TdPlaceOrderValidationTest, LoginFailureOutsideLoggingInPushesNoNotification) {
+    // 会话停在 Idle (未 open, 状态机从未进入 LoggingIn).
+    ASSERT_EQ(session_->state(), TdState::Idle);
+    notifications_.clear();
+
+    OnRspTdUserLoginField f{};
+    CThostFtdcRspInfoField info{};
+    info.ErrorID = 3;
+    std::strcpy(info.ErrorMsg, "CTP:用户不存在");
+    f.rsp_info = info;
+    f.request_id = 1;
+    session_->on_rsp_user_login(f);
+
+    // 状态机拒绝转移 (非 LoggingIn) -> 不推送: 此刻弹窗对不上界面状态.
+    // 这条钉住 dztd_ctp.md 的「状态机拒绝转移时不推送」, 也防止将来把 push 提到 guard 之前.
+    EXPECT_TRUE(notifications_.empty())
+        << "a login failure arriving outside LoggingIn must not raise a notification";
+    EXPECT_EQ(session_->state(), TdState::Idle)
+        << "state machine must not move on a rejected transition";
+}
+
 }  // namespace
 }  // namespace dztrader::ctp
