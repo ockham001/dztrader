@@ -74,11 +74,6 @@ async function toggle(wrapper: VueWrapper, testId: string): Promise<void> {
   await wrapper.vm.$nextTick()
 }
 
-/** #370：每核条形从 CPU 宽卡移入台账 cpu.cores 行的展开区，需先点开才能断言逐核读数 */
-async function openCores(wrapper: VueWrapper): Promise<void> {
-  await toggle(wrapper, 'ledger-expand-cpu.cores')
-}
-
 /** assets/css 下某个文件的绝对路径（从本 spec 文件位置推导，不依赖 cwd） */
 function cssPath(name: string): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'css', name)
@@ -102,12 +97,13 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     vi.restoreAllMocks()
   })
 
-  it('5 个标量指标各有一条趋势，维度指标（温度 / 每核 / 每盘 / 每网卡）没有', async () => {
+  it('4 个趋势指标各有一条趋势（CPU 块宽图 + 3 条内联 sparkline），负载与维度指标没有', async () => {
     const wrapper = await mountView()
 
-    // #362：CPU 使用率的趋势升级为宽卡内的「刻度列 + 折线」（不再是内联 sparkline 组件），
-    // 其余四个标量指标仍是内联 sparkline。5 条趋势的数据源与时间窗口径不变。
-    expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(4)
+    // #435：CPU 使用率的趋势是 CPU 块内的固定 0–100% 宽图（不是内联 sparkline 组件）；
+    // 负载的迷你趋势已按用户拍板移除；其余三个标量指标（内存 / 交换 / 共享内存目录）仍是内联 sparkline。
+    expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(3)
+    expect(wrapper.find('[data-test="monitor-sparkline-load"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').exists()).toBe(true)
     for (const metric of SYSMON_TREND_METRIC_KEYS) {
       expect(vi.mocked(sysmonApi.getHistory).mock.calls.some(([params]) => params?.metric === metric)).toBe(true)
@@ -123,7 +119,6 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
 
     // 数据层：末点就是 store 的当前值（不是另一次采样）
     expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('data-last-value')).toBe('0.187')
-    expect(wrapper.find('[data-test="monitor-sparkline-load"]').attributes('data-last-value')).toBe('0.42')
     expect(wrapper.find('[data-test="monitor-sparkline-memory"]').attributes('data-last-value')).toBe('0.5')
     expect(wrapper.find('[data-test="monitor-sparkline-swap"]').attributes('data-last-value')).toBe('0.25')
     expect(wrapper.find('[data-test="monitor-sparkline-shm"]').attributes('data-last-value')).toBe(String(720 * 1024 * 1024))
@@ -314,39 +309,22 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     vi.restoreAllMocks()
   })
 
-  it('每核条形收在台账 cpu.cores 行展开区（#370），每核频率明细默认收起、点开展开后显示全部', async () => {
+  it('每核条形常驻 CPU 块（#435）：不在折叠区；台账 CPU 组与每核频率明细入口均已删除', async () => {
     const wrapper = await mountView()
 
-    // #370：每核使用率条形从 CPU 宽卡移入台账 cpu.cores 行的展开区，默认收起
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="monitor-cpu-cores"]').exists()).toBe(false)
-    // 每核频率同属维度明细，仍默认收起
-    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
-
-    await openCores(wrapper)
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-    const summary = wrapper.find('[data-test="monitor-cpu-detail-summary"]')
-    expect(summary.exists()).toBe(true)
-    // 夹具每核使用率 0.05 + index*0.031，最大在 15 号核：0.515
-    expect(summary.text()).toBe('16 核 · 最高 51.5%')
-
-    // 频率明细展开后出现；条形数量不随折叠变化
-    await toggle(wrapper, 'monitor-cpu-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(16)
+    expect(wrapper.find('[data-test="monitor-cpu-cores"]').exists()).toBe(true)
+    // 台账不再有 CPU 组：cpu.cores / cpu.rates 两行都不存在
+    expect(wrapper.find('[data-row-id="cpu.cores"]').exists()).toBe(false)
+    expect(wrapper.find('[data-row-id="cpu.rates"]').exists()).toBe(false)
+    // 每核频率明细入口已删除（频率进条形 tooltip）
+    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-core"]').attributes('title')).toContain('GHz')
+    // 条形不属于任何折叠内容（CPU 块已没有折叠区）：始终全部渲染
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('true')
-
-    await toggle(wrapper, 'monitor-cpu-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-
-    // 收起 cpu.cores 行后条形回到折叠态（展开状态不持久化、由按钮控制）
-    await openCores(wrapper)
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(0)
   })
 
-  it('每传感器明细默认收起：卡片显示最高温作为主数值，展开后按芯片分组显示全部', async () => {
+  it('温度明细不进页面 DOM：全部传感器通过 title / aria 可达，四数字行没有折叠按钮（#435 验收收敛）', async () => {
     const wrapper = await mountView(makeSysmonSnapshot({
       sensorData: true,
       temperatures: [
@@ -357,15 +335,16 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     }))
 
     expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
-    // 主数值 = 最高温度；关键数字 = 传感器 / 芯片数量（不伪造 0 °C）
+    expect(wrapper.find('[data-test="monitor-temperature-detail-toggle"]').exists()).toBe(false)
+    // 主数值 = 最高温度；归属 = 该读数的芯片与通道
     expect(wrapper.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
-    // 主数值带归属（哪颗芯片 / 哪个通道），不丢可读命名口径
-    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text())
-      .toBe('最高温度 · CPU · Package id 0 · 3 个传感器 · 2 个芯片')
-
-    await toggle(wrapper, 'monitor-temperature-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(3)
-    expect(wrapper.findAll('[data-test="monitor-temperature-group"]')).toHaveLength(2)
+    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
+    // 全部传感器在 title 里（悬停可看；读屏用同一份 aria-label）
+    const title = wrapper.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
+    expect(title).toContain('CPU · Package id 0 45.5 °C')
+    expect(title).toContain('CPU · Core 0 41.5 °C')
+    expect(title).toContain('主板 ACPI · temp1 27.8 °C')
+    expect(wrapper.find('[data-test="monitor-temperature"]').attributes('aria-label')).toBe(`温度 45.5 °C；${title}`)
   })
 
   it('每盘七项明细默认收起：行本身平铺可见，「展开明细」给出完整七项', async () => {
@@ -400,9 +379,7 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     }
 
     // 收起时不指向不存在的元素（aria-controls 条件绑定），展开后指向真实存在的字段表 id。
-    // cpu.cores 行的展开区是逐核条形（data-test 为 monitor-cpu-cores，不是字段表），
-    // 因此这里取一个渲染字段表的按钮来验这条绑定。
-    const fieldsButton = buttons.find(button => !(button.attributes('data-test') ?? '').includes('cpu.cores'))!
+    const fieldsButton = buttons[0]
     const rowId = (fieldsButton.attributes('data-test') ?? '').replace('ledger-expand-', '')
     expect(fieldsButton.attributes('aria-controls')).toBeUndefined()
     await toggle(wrapper, `ledger-expand-${rowId}`)
@@ -458,10 +435,10 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     }))
 
     // 不需要展开就能看到「不可用」空态与原因（no_permission 由共享映射给出可读文案）。
-    // #370：每核条形移入台账 cpu.cores 行的展开区，但**可用性事实**落在行本身的明细列，
-    // 不藏在折叠后面（展开区里另有逐核读数的空态）。
-    expect(wrapper.find('[data-row-id="cpu.cores"] [data-test="row-state"]').text())
+    // #435：每核条形在 CPU 块里常驻；不可用事实直接显示在条形区的空态上，台账不再有 CPU 行。
+    expect(wrapper.find('[data-test="monitor-cores-empty"]').text())
       .toContain('权限不足，无法读取该指标')
+    expect(wrapper.find('[data-row-id="cpu.cores"]').exists()).toBe(false)
     // #363：磁盘 I/O 与网卡的不可用是台账行上的说明文字，行本身平铺可见
     expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text())
       .toContain('磁盘性能计数器不可用')
@@ -489,23 +466,7 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     expect(Object.keys(localStorage).filter(key => key.includes('ledger'))).toEqual([])
   })
 
-  it('折叠状态不持久化：重新挂载（等价刷新）回到默认收起', async () => {
-    const wrapper = await mountView()
-    await toggle(wrapper, 'monitor-cpu-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(16)
 
-    // 重新挂载 = 刷新的组件生命周期：不读写任何持久化存储，必须回到产品认为重要的默认视图
-    wrapper.unmount()
-    const refreshed = await mountView()
-
-    expect(refreshed.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
-    // #370：每核条形默认收起 → 点开后数量与摘要照旧（折叠状态不持久化）
-    expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(0)
-    await openCores(refreshed)
-    expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-    expect(refreshed.find('[data-test="monitor-cpu-detail-summary"]').exists()).toBe(true)
-    expect(refreshed.find('[data-test="monitor-cpu-detail-toggle"]').attributes('aria-expanded')).toBe('false')
-  })
 })
 
 describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）', () => {
@@ -559,7 +520,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   }
 
-  it('监控页网格是单列纵向：宽卡与台账跨满整行，没有任何媒体规则为网格改列数（#363）', () => {
+  it('监控页网格是单列纵向：CPU 块与台账跨满整行，没有任何媒体规则为网格改列数（#363）', () => {
     // 基础规则即单列。必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
     const grid = ruleBody('.monitor-view__grid')
@@ -568,7 +529,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
     expect(grid).toContain('align-items: start')
 
-    // 网格里的子元素跨满整行：宽卡与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
+    // 网格里的子元素跨满整行：CPU 块与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
     // 独立一条，不是网格项——它不在网格里断言，见下一条）。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
     expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
@@ -586,15 +547,58 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   })
 
-  it('每核条形容器自适应：一条 auto-fit 规则覆盖 4–128 核，不写断点、不用 JS 测量（#362）', () => {
-    // #362：CPU 卡内不再是「多面板网格」，而是三块纵向排布（四数字 / 趋势 / 每核条形），
-    // 因此原来「面板数 == 列数」的断言失去意义，改为断言每核条形这一条规则的容器自适应口径。
+  it('每核条形按容器实测自适应：列数由纯函数算好经 --core-columns 注入，不用 auto-fit（#435）', () => {
+    // #435：多行时每行数量尽量相等 → 列数必须由 JS 实测容器宽度后计算（纯函数在
+    // composables/monitorCpu.ts）；auto-fit 会把余数甩给末行（16 核可能折成 11 + 5）。
     const cores = ruleBody('.monitor-view__cores')
-    expect(cores).toContain('repeat(auto-fit, minmax(var(--core-cell-min-width), 1fr))')
-    // 不写断点：全文件里没有任何规则为每核网格单独改列数（一条规则覆盖 4–128 核）
-    expect(source).not.toMatch(/\.monitor-view__cores[^{]*\{[^}]*grid-template-columns:\s*repeat\(\d/)
-    // 不用 JS 测量：模板里不出现对每核网格的 clientWidth / getBoundingClientRect 计算
-    expect(source).not.toMatch(/clientWidth|getBoundingClientRect/)
+    expect(cores).toContain('grid-template-columns: repeat(var(--core-columns, 1), minmax(0, 1fr))')
+    expect(cores).not.toContain('auto-fit')
+    // 不写断点：一条规则覆盖 4–128 核（折行由列数决定，不由媒体查询决定）
+    expect(source).not.toMatch(/\.monitor-view__cores[^{]*\{[^}]*repeat\(\d/)
+    // 列数来源：视图用 ResizeObserver 实测容器宽度，交给纯函数 coreBarColumns
+    // 列数来源与卸载清理由行为用例覆盖（MonitorView.spec：ResizeObserver 桩驱动列数 / 卸载 disconnect），
+    // 这里只锁 CSS 契约，不断言私有实现表达式（unit-test-standard §1.2）
+    // 条形高度 / 四数字字号对齐参照（主机面板 54px / 19px）：都是几何量，走 token
+    const tokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
+    expect(tokens.get('--core-bar-height')).toBe('54px')
+    expect(tokens.get('--card-stat-value-font-size')).toBe('19px')
+  })
+
+  it('占用率主数值按 resourceLevel 的 70/90 着色，文字用 -on-surface 配对档（#435 决策 7）', () => {
+    // 实体 -default 只给点 / 条 / 图标；大字号文本也必须走 -on-surface（浅色 -default 绿 2.79:1）
+    const cases = [
+      ['normal', 'var(--status-success-on-surface)'],
+      ['warn', 'var(--status-warning-on-surface)'],
+      ['danger', 'var(--status-error-on-surface)'],
+    ] as const
+    for (const [level, token] of cases) {
+      const selector = `.monitor-view__value-btn.monitor-view__cpu-usage[data-level='${level}']`
+      expect(ruleBody(selector), selector).toContain(`color: ${token}`)
+    }
+    // 温度 / 频率 / 负载的主数值不套色（契约没有对应阈值，不编造判据）
+    expect(source).not.toMatch(/monitor-view__(metric|value-btn)[^{]*\[data-level\]/)
+    expect(ruleBody('.monitor-view__metric')).toContain('color: var(--text-default)')
+  })
+
+  it('频率主值是「大号数字 + 12px 单位」，曲线区有分层底色、网格线更弱（#435 8080 验收）', () => {
+    // 频率：数值 19px，单位 12px/secondary（主机面板同款两段排版）
+    const withUnit = ruleBody('.monitor-view__metric--with-unit')
+    expect(withUnit).toContain('display: inline-flex')
+    expect(withUnit).toContain('align-items: baseline')
+    const unit = ruleBody('.monitor-view__stat-unit')
+    expect(unit).toContain('font-size: var(--body-sm-font-size)')
+    expect(unit).toContain('color: var(--text-secondary)')
+    // 曲线绘图区底色与卡片分层
+    const chart = ruleBody('.monitor-view__chart')
+    expect(chart).toContain('background: var(--bg-overlay-l1)')
+    expect(chart).toContain('border-radius: var(--radius-6)')
+    // 网格线弱化：叠 0.6 不透明度（不改轴色 token）
+    expect(ruleBody('.monitor-view__chart-gridline')).toContain('opacity: 0.6')
+    // 每核填充按等级着色；「饱和」专属修饰类已删除
+    expect(ruleBody(".monitor-view__core-bar-fill[data-level='warn']")).toContain('var(--status-warning-default)')
+    expect(ruleBody(".monitor-view__core-bar-fill[data-level='danger']")).toContain('var(--status-error-default)')
+    expect(source).not.toContain('core-bar-fill--saturated')
+    expect(source).not.toContain('monitor-core-saturated')
   })
 
   it('长 token 在台账里按列收口：名称 / 明细 / 展开值可断行，读数列不折（#321 / #363）', () => {
@@ -884,7 +888,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   })
 })
 
-describe('MonitorView CPU 自适应趋势（#362：纵轴随序列变化 + 三档刻度 + 如实时间窗）', () => {
+describe('MonitorView CPU 固定 0–100% 趋势（#435：单曲线 + 网格线 + 横轴时刻 + 如实时间窗）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
@@ -896,47 +900,74 @@ describe('MonitorView CPU 自适应趋势（#362：纵轴随序列变化 + 三�
     vi.restoreAllMocks()
   })
 
-  it('三档刻度标签 + 纵轴范围说明：19%→21% 的波动不被压成一条直线', async () => {
-    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) => {
-      const to = Math.floor(NOW_MS / 1000)
-      return Promise.resolve({
-        available: true,
-        level: 'raw',
-        metric: params.metric ?? 'cpu.usage_ratio',
-        from: to - 120,
-        to,
-        interval_sec: 60,
-        truncated: false,
-        series: [{
-          dimension: '',
-          points: [
-            { ts: to - 120, min: 0.19, max: 0.19, avg: 0.19, last: 0.19, n: 1 },
-            { ts: to - 60, min: 0.21, max: 0.21, avg: 0.21, last: 0.21, n: 1 },
-          ],
-        }],
-        marks: [],
-        gaps: [],
-      } satisfies SysmonHistoryAvailable)
-    })
+  /** 两条 60 秒桶的 CPU 历史（值由调用方给，用于构造不同的曲线形状） */
+  function cpuHistory(values: [number, number]): SysmonHistoryAvailable {
+    const to = Math.floor(NOW_MS / 1000)
+    return {
+      available: true,
+      level: 'raw',
+      metric: 'cpu.usage_ratio',
+      from: to - 120,
+      to,
+      interval_sec: 60,
+      truncated: false,
+      series: [{
+        dimension: '',
+        points: [
+          { ts: to - 120, min: values[0], max: values[0], avg: values[0], last: values[0], n: 1 },
+          { ts: to - 60, min: values[1], max: values[1], avg: values[1], last: values[1], n: 1 },
+        ],
+      }],
+      marks: [],
+      gaps: [],
+    }
+  }
+
+  it('纵轴固定 0–100%：19%→21% 的波动贴近底边，不再被自适应轴拉伸；无刻度列 / 无轴说明', async () => {
+    vi.mocked(sysmonApi.getHistory).mockImplementation((params = {}) =>
+      Promise.resolve({ ...cpuHistory([0.19, 0.21]), metric: params.metric ?? 'cpu.usage_ratio' }))
     const wrapper = await mountView()
 
-    const ticks = wrapper.findAll('.monitor-view__chart-tick')
-    expect(ticks).toHaveLength(3)
-    // 三档整数百分点标签，自上而下递减（上界 / 中点 / 下界）
-    const labels = ticks.map(tick => Number(tick.text().replace('%', '')))
-    expect(labels.every(value => Number.isInteger(value))).toBe(true)
-    expect(labels[0]).toBeGreaterThan(labels[1])
-    expect(labels[1]).toBeGreaterThan(labels[2])
-    // 轴范围随 19–21% 的序列收窄：绝不是 0–100 的固定轴
-    expect(labels[0] - labels[2]).toBeLessThanOrEqual(10)
-    expect(labels[0]).toBeGreaterThanOrEqual(20)
-    // 说明行必须点明「自适应，不是 0–100」——刻度不是从 0 起的轴
+    // #435 决策 2：删掉左侧刻度标签与说明里的「纵轴 …%」，网格线承担尺度感
+    expect(wrapper.findAll('.monitor-view__chart-tick')).toHaveLength(0)
+    expect(wrapper.find('.monitor-view__chart-axis').exists()).toBe(false)
     const caption = wrapper.find('[data-test="monitor-cpu-trend-caption"]').text()
-    expect(caption).toMatch(/纵轴 \d+–\d+%（自适应，不是 0–100）/)
-    // 折线在 100px 高度内用满绘图区（不是一条平线）
+    expect(caption).not.toContain('纵轴')
+    expect(caption).not.toContain('自适应')
+
+    // 网格线是静态几何：0/25/50/75/100 五条
+    expect(wrapper.findAll('.monitor-view__chart-gridline')).toHaveLength(5)
+    expect(wrapper.find('.monitor-view__chart-gridline').attributes('vector-effect')).toBe('non-scaling-stroke')
+
+    // 19%–21% 在固定轴上接近底边（y∈(25,27)），而不是像自适应轴那样铺满绘图区
     const points = wrapper.find('[data-test="monitor-sparkline-cpu"] polyline').attributes('points') ?? ''
     const ys = points.split(' ').map(pair => Number(pair.split(',')[1]))
-    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(15)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(1)
+    expect(Math.min(...ys)).toBeGreaterThan(25)
+  })
+
+  it('横轴两端给真实时刻（与序列首末点同源，不是另行采样）', async () => {
+    const wrapper = await mountView()
+
+    const startText = wrapper.find('[data-test="monitor-cpu-trend-start"]').text()
+    const endText = wrapper.find('[data-test="monitor-cpu-trend-end"]').text()
+    expect(startText).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    expect(endText).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    // 夹具历史覆盖 2 分钟 + 实时点：两端必须不同（同值说明没按首末点取）
+    expect(startText).not.toBe(endText)
+  })
+
+  it('横轴两端取自曲线的有效首末点，并并入趋势按钮的读屏文案', async () => {
+    const wrapper = await mountView()
+
+    const startText = wrapper.find('[data-test="monitor-cpu-trend-start"]').text()
+    const endText = wrapper.find('[data-test="monitor-cpu-trend-end"]').text()
+    const aria = wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('aria-label') ?? ''
+    // 可见刻度列已删除（拍板 2），但时刻与轴口径必须对读屏用户可达
+    expect(aria).toContain('纵轴固定 0–100%')
+    expect(aria).toContain(`从 ${startText} 到 ${endText}`)
+    // 首末点不同（来自序列两端，不是同一时刻）
+    expect(startText).not.toBe(endText)
   })
 
   it('时间窗按实际覆盖标注：未满 15 分钟不写「最近 15 分钟」（默认夹具只覆盖 2 分钟）', async () => {
@@ -997,8 +1028,7 @@ describe('MonitorView CPU 自适应趋势（#362：纵轴随序列变化 + 三�
 
     expect(wrapper.find('[data-test="monitor-cpu-trend"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
-    // #370：每核条形在台账 cpu.cores 行的展开区，点开后照常可见
-    await openCores(wrapper)
+    // #435：每核条形常驻 CPU 块（不需要点开任何折叠）
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
   })
 })

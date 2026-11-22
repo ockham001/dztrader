@@ -36,7 +36,6 @@ import {
   formatClockHeadroom,
   formatClockThreshold,
   formatCount,
-  formatCountPerSec,
   formatDecimal,
   formatIops,
   formatLatency,
@@ -55,7 +54,6 @@ import type {
   SysmonAvailabilityEntry,
   SysmonClockConfigPayload,
   SysmonClockInfo,
-  SysmonCpuCore,
   SysmonDiskIoInfo,
   SysmonMemoryInfo,
   SysmonNetworkInfo,
@@ -73,8 +71,13 @@ export const LEDGER_DEFAULT_MEMORY_USED_PCT = 90
 export const LEDGER_DEFAULT_SWAP_USED_PCT = 50
 export const LEDGER_DEFAULT_VOLUME_FREE_PCT = 10
 
-/** 台账分组标识（四组，顺序固定：CPU → 内存 → 存储 → 网络与时钟） */
-export type LedgerGroupId = 'cpu' | 'memory' | 'storage' | 'network_clock'
+/**
+ * 台账分组标识（三组，顺序固定：内存 → 存储 → 网络与时钟）。
+ *
+ * CPU 组曾在这里（#370），#435 起整组移入 CPU 块：每核条形归 CPU 卡，上下文切换 / 中断
+ * 从实时页移除（历史视图两项都可查），台账不再有 CPU 组——同一区域只留一套实现。
+ */
+export type LedgerGroupId = 'memory' | 'storage' | 'network_clock'
 
 /**
  * 行状态。`ok` 之外的四类是**四种不同的事实**，文案与着色都不同：
@@ -182,18 +185,6 @@ export interface MonitorLedgerInput {
   network: readonly SysmonNetworkInfo[]
   shmDir: SysmonShmDirInfo | null
   clock: SysmonClockInfo | null
-  /**
-   * 每核读数（契约 sysmon §2.3），与 store 的 `cpuCores` 同形态（已净化：`index` /
-   * `usage_ratio` / `saturated`）。`cpu.cores` 不可用时为空数组。#370 起每核条形从 CPU 宽卡
-   * 移入台账 `cpu.cores` 行的展开区，行值只给最高核占用率与核数摘要，逐核读数仍在展开区。
-   */
-  cpuCores: readonly SysmonCpuCore[]
-  /**
-   * 每秒上下文切换 / 每秒中断（契约 sysmon §2.3、§2.5）。两者共用可用性键
-   * `cpu.context_switches`；值不可用时为 null，不得用 0 冒充（与 store 同口径）。
-   */
-  cpuContextSwitchesPerSec: number | null
-  cpuInterruptsPerSec: number | null
   /** 生效配置的 `thresholds` 段；null = 镜像未到达，按契约默认值回退 */
   thresholds: SysmonThresholdsConfigPayload | null
   /** 生效配置的 `clock` 段；null = 镜像未到达，按契约默认值回退 */
@@ -361,107 +352,6 @@ function unavailableRow(
   const state = reason === 'disabled_by_config' ? 'disabled' : 'unavailable'
   // metric 一并传入：磁盘 I/O 的 no_permission 有可操作的专属文案（见 `unavailableReasonText`）
   return blankRow(base, state, `${UNAVAILABLE_TEXT}：${unavailableReasonText(reason, metric)}`)
-}
-
-// ---- CPU 组（#370）：每核使用率 + 上下文切换/中断，从 CPU 宽卡内移出 ----
-// 契约 sysmon §2.3 没有为这两类读数定义阈值，因此阈值与余量两列一律 `—`：台账不为了让列整齐
-// 而编造阈值（见本模块顶部「阈值列只写契约里真实存在的阈值」）。
-
-/**
- * CPU 组（#370）：从 CPU 宽卡内部移出的「每核使用率」与「上下文切换 / 中断」各成一行。
- *
- * 两行都**没有**契约阈值：阈值列与余量列写 `—`，等级为 `null`（无判定基准，不冒充「正常」）；
- * 每核条形不在主列里铺开，而是收进 `cpu.cores` 行的展开区（视图按行 id 渲染，数据仍是同一份
- * `cpuCores`）。
- */
-function cpuGroup(input: MonitorLedgerInput): LedgerGroup {
-  const rows: LedgerRow[] = []
-
-  // 每核使用率（#370）：每核条形从 CPU 宽卡移入本行的展开区（视图按行 id 渲染同一份
-  // `cpuCores`，网格规则沿用 #362 的一条 `auto-fit` 规则，不改）。主列只给「最高核占用率 +
-  // 核数」摘要——逐核读数不是单一分母，不套量程轨道（与网卡 / 共享内存目录同一口径）。
-  const coresBase = {
-    id: 'cpu.cores',
-    group: 'cpu' as const,
-    label: '每核使用率',
-    contractKey: 'cpu.cores',
-  }
-  const { available: coresAvailable } = availabilityState(input.availability, 'cpu.cores')
-  if (!coresAvailable) {
-    rows.push(unavailableRow(coresBase, 'cpu.cores', input))
-  } else if (input.cpuCores.length === 0) {
-    rows.push(blankRow(coresBase, 'empty', '暂无数据：本帧未采集到每核读数'))
-  } else {
-    let peak: number | null = null
-    let saturated = 0
-    for (const core of input.cpuCores) {
-      if (typeof core.usage_ratio === 'number' && Number.isFinite(core.usage_ratio)) {
-        if (peak === null || core.usage_ratio > peak) peak = core.usage_ratio
-      }
-      if (core.saturated) saturated += 1
-    }
-    const coreCount = input.cpuCores.length
-    rows.push({
-      ...coresBase,
-      state: 'ok',
-      stateText: '',
-      stateLabel: '',
-      // 每核使用率是**一组**读数，没有单一的可归一化分母：不画量程轨道、不套状态色
-      level: null,
-      levelText: ledgerLevelText(null),
-      ratio: null,
-      // 行值给最高核占用率与核数摘要；最高读数缺失时不伪造 0，只给核数
-      value: peak === null ? `${coreCount} 核` : `最高 ${formatPercent(peak)} · ${coreCount} 核`,
-      detail: `${saturated} 核饱和 / ${coreCount} 核`,
-      thresholdText: NO_THRESHOLD_TEXT,
-      headroomText: NO_THRESHOLD_TEXT,
-      historyKey: null,
-      detailParts: [],
-      fields: [],
-      badges: [],
-    })
-  }
-
-  const ratesBase = {
-    id: 'cpu.rates',
-    group: 'cpu' as const,
-    label: '上下文切换 / 中断',
-    contractKey: 'cpu.rates',
-  }
-  const ratesAvailability = availabilityState(input.availability, 'cpu.context_switches')
-  if (!ratesAvailability.available) {
-    rows.push(unavailableRow(ratesBase, 'cpu.context_switches', input))
-  } else if (input.cpuContextSwitchesPerSec === null && input.cpuInterruptsPerSec === null) {
-    rows.push(blankRow(ratesBase, 'empty', '暂无数据：本帧未采集到上下文切换 / 中断速率'))
-  } else {
-    // 行值按「上下文切换 · 中断」的顺序并列，明细列写明这个顺序：两个 `N/s` 读数并列时
-    // 读者不必靠列的先后去猜哪个数是谁。
-    rows.push({
-      ...ratesBase,
-      state: 'ok',
-      stateText: '',
-      stateLabel: '',
-      // 速率没有可归一化的分母：无阈值、不套状态色，等级文字给「无阈值」而非空串
-      level: null,
-      levelText: ledgerLevelText(null),
-      ratio: null,
-      value: `${formatCountPerSec(input.cpuContextSwitchesPerSec)} · ${formatCountPerSec(input.cpuInterruptsPerSec)}`,
-      detail: '上下文切换 · 中断',
-      thresholdText: NO_THRESHOLD_TEXT,
-      headroomText: NO_THRESHOLD_TEXT,
-      historyKey: null,
-      detailParts: [],
-      fields: [],
-      badges: [],
-    })
-  }
-
-  return {
-    id: 'cpu',
-    title: 'CPU',
-    note: `${rows.length} 行 · 阈值列不适用`,
-    rows,
-  }
 }
 
 /** 内存组：内存已用 + 交换已用（两行都是可点跳历史的标量） */
@@ -918,13 +808,16 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
 }
 
 /**
- * 构造资源监控台账（四组、固定顺序：CPU → 内存 → 存储 → 网络与时钟）。
+ * 构造资源监控台账（三组、固定顺序：内存 → 存储 → 网络与时钟）。
  *
- * 行数由数据决定（核数 / 卷数 / 盘数 / 网卡数），不是常量：8 个卷就是 8 行，0 张网卡就是 0 行。
+ * CPU 组已随 #435 移入 CPU 块（每核条形进 CPU 卡、上下文切换 / 中断从实时页移除），台账不再
+ * 产出 CPU 行——同一区域只留一套实现。
+ *
+ * 行数由数据决定（卷数 / 盘数 / 网卡数），不是常量：8 个卷就是 8 行，0 张网卡就是 0 行。
  * 视图只负责按行渲染，不写任何「该不该显示」的判断。
  */
 export function buildMonitorLedger(input: MonitorLedgerInput): LedgerGroup[] {
-  return [cpuGroup(input), memoryGroup(input), storageGroup(input), networkClockGroup(input)]
+  return [memoryGroup(input), storageGroup(input), networkClockGroup(input)]
 }
 
 // ---- 内存组成带（#363）----
@@ -1012,147 +905,5 @@ export function buildMemoryComposition(memory: SysmonMemoryInfo | null): MemoryC
     ],
     degraded: false,
     degradedText: '',
-  }
-}
-
-// ---- CPU 趋势的自适应纵轴 ----
-
-/** 自适应纵轴的取值：上下界 + 三档刻度（刻度是渲染用的标签，不是数据点） */
-export interface AdaptiveAxis {
-  /** 纵轴下界（含外扩） */
-  lo: number
-  /** 纵轴上界（含外扩） */
-  hi: number
-  /** 三档刻度：下界 / 中点 / 上界 */
-  labels: { value: number; text: string }[]
-}
-
-/** 外扩比例：序列满幅上下各留 10%，读数不会贴着上下边框 */
-const AXIS_PADDING_RATIO = 0.1
-/** 等值序列的最小外扩（比率口径 0.1 个百分点）：防止「一直 19%」把轴压成一条线 */
-const AXIS_MIN_PADDING = 0.001
-/**
- * 窄轴判据（比率口径 2 个百分点）：跨度小于此值时三档标签改用 1 位小数。
- *
- * 刻度列的三档必须互相可区分；轴越窄，整数标签越容易撞成同一个数——等值 19% 的轴
- * （19.0 ± 0.1）三档全写 `19%`，19.0→19.2 的轴同样三档全写 `19%`，读者看到的是一个
- * 有三条刻度却没有任何信息量的轴。1 位小数的分辨率是 0.1 个百分点，恰是
- * {@link AXIS_MIN_PADDING} 撑出的最小轴宽，因此最窄的轴也不会撞号。
- */
-const AXIS_TIGHT_LABEL_SPAN = 0.02
-
-/**
- * 计算 CPU 使用率趋势的自适应纵轴（#361）。
- *
- * 为什么不用固定 0–100%：盯盘时 CPU 常年在 10–25% 之间波动，固定轴会把真实波动压成一条
- * 直线，等于把「趋势」这个信息删掉。自适应轴保留形状，代价是需要显式刻度——因此本函数同时
- * 给出三档标签，左侧刻度列直接渲染它。
- *
- * 外扩量按**序列跨度**算（10% of span），不按绝对读数算：按读数算会让「19% 附近 ±0.2% 的
- * 波动」被外扩成 ±1.9% 的轴，等于把波动又压回去。等值序列（跨度为 0）退回最小外扩，
- * 此时轴范围只由 `AXIS_MIN_PADDING` 决定，曲线落在中线附近。
- *
- * 下界不低于 0（使用率不可能是负数），上界不超过 1（比率口径的物理上限）。
- *
- * @param points 序列（Unix 秒 + 比率）；非有限值逐点丢弃
- * @returns 有效点少于 1 个时为 null（画不出轴，调用方不渲染趋势）
- */
-export function adaptiveAxisTicks(points: readonly { ts: number; value: number }[]): AdaptiveAxis | null {
-  let min = Number.POSITIVE_INFINITY
-  let max = Number.NEGATIVE_INFINITY
-  for (const point of points) {
-    if (!Number.isFinite(point.value)) continue
-    if (point.value < min) min = point.value
-    if (point.value > max) max = point.value
-  }
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return null
-
-  const span = max - min
-  const padding = Math.max(span * AXIS_PADDING_RATIO, AXIS_MIN_PADDING)
-  const lo = Math.max(0, min - padding)
-  const hi = Math.min(1, max + padding)
-  // 上界被 1 夹住、或数据本身贴着 1 时，夹取会让 hi 落到 lo 以下：保底抬到 max（曲线不能画到
-  // 轴外），仍不足最小跨度时再抬 AXIS_MIN_PADDING。
-  const safeHi = hi - lo >= AXIS_MIN_PADDING
-    ? hi
-    : Math.min(1, Math.max(max, lo + AXIS_MIN_PADDING))
-  const mid = lo + (safeHi - lo) / 2
-  return {
-    lo,
-    hi: safeHi,
-    labels: axisTickLabels(lo, mid, safeHi),
-  }
-}
-
-/**
- * 三档刻度标签：**精度随轴跨度自适应**，宽轴用整数、窄轴用 1 位小数（见
- * {@link AXIS_TIGHT_LABEL_SPAN}）。
- *
- * 1 位小数仍撞号的只有一种情形：轴被 0 或 1 夹到极窄（如恒在 99.95%，轴是 99.9–100.0，
- * 下界与中点都落到 `99.9%`）。此时再进一位到 2 位小数，保证「可区分」这条不变量恒成立。
- */
-function axisTickLabels(lo: number, mid: number, hi: number): { value: number; text: string }[] {
-  const values = [lo, mid, hi]
-  const tight = hi - lo < AXIS_TIGHT_LABEL_SPAN
-  const texts = values.map(value => (tight ? formatPercent(value) : `${Math.round(value * 100)}%`))
-  const distinct = new Set(texts).size === texts.length
-  return values.map((value, position) => ({
-    value,
-    text: distinct ? texts[position] : `${formatDecimal(value * 100)}%`,
-  }))
-}
-
-/** 自适应趋势折线的几何：`points` 可直接给 `<polyline points="...">` */
-export interface AdaptiveTrendGeometry {
-  points: string
-  /** 末点值（与旁边的当前数字同源，供末点断言） */
-  lastValue: number
-}
-
-/** 趋势绘图区的 viewBox：横向 100 单位由 CSS 拉伸到容器宽度，纵向 34 单位 */
-const TREND_SVG_WIDTH = 100
-const TREND_SVG_HEIGHT = 34
-/** 上下留白：折线不贴上下边框（上下各 2 单位） */
-const TREND_PAD = 2
-const TREND_PLOT_HEIGHT = TREND_SVG_HEIGHT - TREND_PAD * 2
-
-/**
- * 序列 + 自适应纵轴 → SVG 折线（#362）。
- *
- * 与 `sysmonSparkline.sparklineGeometry` 的关键区别：**y 由传入的轴范围决定**，不是按序列
- * 自身 min/max 拉满。轴标签与曲线必须来自同一份范围，否则「纵轴 19–21%」旁边画着一条
- * 贴满上下的曲线，读者会把外扩留白读成真实波动。
- *
- * x 仍按时间比例（混合桶距 / 采集缺口如实反映为横向疏密）；时间跨度为零时退回序号等距。
- * 有效点少于 2 个（或轴不可用）时返回 null —— 一个点画不出趋势，调用方据此不渲染。
- */
-export function adaptiveTrendGeometry(
-  points: readonly { ts: number; value: number }[],
-  axis: AdaptiveAxis | null,
-): AdaptiveTrendGeometry | null {
-  if (!axis) return null
-  const valid = points.filter(point => Number.isFinite(point?.ts) && Number.isFinite(point?.value))
-  if (valid.length < 2) return null
-
-  const span = axis.hi - axis.lo
-  const firstTs = valid[0].ts
-  const timeSpan = valid[valid.length - 1].ts - firstTs
-  const indexWidth = valid.length - 1
-  const round2 = (value: number): number => Math.round(value * 100) / 100
-
-  const coordinates = valid.map((point, index) => {
-    const x = timeSpan > 0
-      ? ((point.ts - firstTs) / timeSpan) * TREND_SVG_WIDTH
-      : (index / indexWidth) * TREND_SVG_WIDTH
-    // span 为 0 只可能出现在轴上下文异常时（adaptiveAxisTicks 保底给 AXIS_MIN_PADDING），等值落中线
-    const ratio = span === 0 ? 0.5 : (point.value - axis.lo) / span
-    const clamped = Math.min(1, Math.max(0, ratio))
-    const y = TREND_PAD + TREND_PLOT_HEIGHT * (1 - clamped)
-    return `${round2(x)},${round2(y)}`
-  })
-
-  return {
-    points: coordinates.join(' '),
-    lastValue: valid[valid.length - 1].value,
   }
 }

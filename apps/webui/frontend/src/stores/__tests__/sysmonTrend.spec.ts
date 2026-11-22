@@ -133,10 +133,9 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
     }
   })
 
-  it('sparkline 只覆盖 5 个标量指标（维度指标第一版不做）', () => {
+  it('趋势只覆盖 4 个标量指标（维度指标第一版不做；负载的迷你趋势已随 #435 移除）', () => {
     expect([...SYSMON_TREND_METRIC_KEYS]).toEqual([
       'cpu.usage_ratio',
-      'cpu.load_average.one',
       'memory.used_ratio',
       'swap.used_ratio',
       'shm_dir.total_bytes',
@@ -249,7 +248,7 @@ describe('useSysmonTrendStore：WS 增量推进（末点 = 当前实时值）', 
     expect(points[points.length - 1].value).toBe(0.187)
   })
 
-  it('每个标量指标各取自己的实时值（负载 / 内存 / 交换 / 共享内存目录）', async () => {
+  it('每个标量指标各取自己的实时值（内存 / 交换 / 共享内存目录）', async () => {
     mockAllAvailable()
     const trend = await initTrend()
     const sysmon = useSysmonStore()
@@ -257,7 +256,6 @@ describe('useSysmonTrendStore：WS 增量推进（末点 = 当前实时值）', 
     sysmon.applySnapshot(makeSysmonSnapshot())
     sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.5 }))
 
-    expect(lastValue(trend.seriesOf('cpu.load_average.one'))).toBe(sysmon.cpuLoadAverage?.one)
     expect(lastValue(trend.seriesOf('memory.used_ratio'))).toBe(sysmon.memoryInfo?.used_ratio)
     expect(lastValue(trend.seriesOf('swap.used_ratio'))).toBe(sysmon.swapInfo?.used_ratio)
     expect(lastValue(trend.seriesOf('shm_dir.total_bytes'))).toBe(sysmon.shmDirInfo?.total_bytes)
