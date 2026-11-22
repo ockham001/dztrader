@@ -661,6 +661,30 @@ const hostStatusText = computed(() => {
   if (typeof timestamp !== 'number') return '—'
   return `更新于 ${formatClockTime(timestamp, nowMs.value)}`
 })
+/**
+ * 「更新于」的悬停补充（#432）：采样间隔与累计漏拍。两者是**数据质量**事实（采样是否在跑、
+ * 有没有漏拍），不是主机身份，所以只进 title、不占版面。字段缺失或非法时不拼半句、不拿 0 冒充：
+ * `measure_interval_ms` 是计量间隔（基线 1000，非正值视为没有），`missed_ticks` 是累计漏拍（0 是合法值）。
+ */
+const hostSamplingTitle = computed(() => {
+  const sampling = snapshot.value?.sampling
+  if (!sampling) return ''
+  const parts: string[] = []
+  const interval = sampling.measure_interval_ms
+  if (typeof interval === 'number' && Number.isFinite(interval) && interval > 0) {
+    parts.push(`采样间隔 ${interval} ms`)
+  }
+  const missed = sampling.missed_ticks
+  if (typeof missed === 'number' && Number.isFinite(missed)) parts.push(`累计漏拍 ${missed}`)
+  return parts.join(' · ')
+})
+
+/** 「已运行」的悬停补充（#432）：启动时刻，由 `boot_time_unix_sec` 换算（与已运行同一事实）。 */
+const hostStartTimeTitle = computed(() => {
+  const boot = system.value?.boot_time_unix_sec
+  if (typeof boot !== 'number' || !Number.isFinite(boot) || boot <= 0) return ''
+  return `启动于 ${formatDateTime(boot * 1_000)}`
+})
 
 /** 逻辑核数文案（CPU 四数字的小字上下文用；主机条不再显示 CPU 型号 · 核数，#429 决策 6） */
 const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
@@ -829,10 +853,18 @@ const cpuTrendAriaLabel = computed(
       </span>
       <span class="monitor-view__host-item">
         <span class="monitor-view__host-label">已运行</span>
-        <span class="monitor-view__host-value" data-test="monitor-host-uptime" :title="hostUptime">{{ hostUptime }}</span>
+        <span
+          class="monitor-view__host-value"
+          data-test="monitor-host-uptime"
+          :title="hostStartTimeTitle || undefined"
+        >{{ hostUptime }}</span>
       </span>
       <span class="monitor-view__host-spacer" aria-hidden="true"></span>
-      <span class="monitor-view__host-status" data-test="monitor-host-status">{{ hostStatusText }}</span>
+      <span
+        class="monitor-view__host-status"
+        data-test="monitor-host-status"
+        :title="hostSamplingTitle || undefined"
+      >{{ hostStatusText }}</span>
     </section>
 
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
@@ -1706,7 +1738,8 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* 右端状态槽：正常「更新于 HH:MM:SS」，停推「快照已停 N 秒」（数据龄并入，不再单起一行）。
-   与脉冲点同源的中性色（#371）；tabular-nums 让停推时每秒变化的秒数不左右跳。 */
+   文字保持中性色（#371：承载数据龄这一事实）；着色只给脉冲点（#432）。
+   tabular-nums 让停推时每秒变化的秒数不左右跳。 */
 .monitor-view__host-status {
   flex: none;
   color: var(--text-secondary);
@@ -1719,16 +1752,22 @@ const cpuTrendAriaLabel = computed(
   font-weight: var(--body-xs-strong-font-weight);
 }
 
-/* 脉冲点：实时快照在推进（纯装饰，状态文字由状态槽承担，故 aria-hidden）。
-   #371：存活信号走中性色。脉冲动画本身仍在——「条在推进」是**动作**而不是**状态**，
-   动作可以保留动效；颜色则归指标状态用。
-   深浅两套都对各自底色 ≥ 5.86:1（secondary：浅 #404040 对 #F5F5F5、深 #a1a1a1 对 #262626）。 */
+/* 脉冲点：发送方是否仍在推进数据（辅助信号——同一事实由状态槽文案承担，故 aria-hidden）。
+   #432（2026-11-22 用户拍板「绿黄」）：数据在流动 = success 绿，停推 = warning 黄。
+   #371 的「存活信号一律中性色」是旧方向口径，由本票的拍板记录反转（不是 #429 重定——#429 只定义了
+   布局方向）。DESIGN.md 的 One Job Rule 把状态色定义为 process state（DESIGN.md:225），
+   Status hues 段（:214）将其展开为「进程与连接状态」；「数据在流动」属于该事实。
+   它与台账的**指标绿**同族不同义（存活绿 = 数据在推，指标绿 = 读数健康），语义不得互换，
+   见 DESIGN.md「Liveness signals」一句与 GLOSSARY.md「存活信号」词条。
+   已知限制（#434）：success/warning 的 `-default` 6px 图形在浅色卡片底上只有 2.79 / 2.76:1，
+   低于 3:1——与台账 normal 点同一既存口径；两处信息都不依赖颜色，属冗余图形信号，
+   是否引入图形专用 token 由 #434 决定。 */
 .monitor-view__host-dot {
   flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: var(--radius-full);
-  background: var(--text-secondary);
+  background: var(--status-success-default);
   animation: monitor-view-host-pulse 2s ease-in-out infinite;
 }
 
@@ -1737,9 +1776,10 @@ const cpuTrendAriaLabel = computed(
   50% { opacity: 0.4; }
 }
 
-/* 停推时脉冲点停止脉动：它代表「在推进」，数据不再推进时继续跳就是在撒谎。
-   颜色不变（仍是中性灰），信息由状态槽那句话承担——两处同时说同一件事，且不靠色相。 */
+/* 停推时脉冲点停止脉动并转 warning 黄：它代表「在推进」，数据不再推进时继续跳就是在撒谎；
+   颜色变化是冗余信号——停推事实本身由状态槽的「快照已停 N 秒」承担（不靠色相才可读）。 */
 .monitor-view__host--stale .monitor-view__host-dot {
+  background: var(--status-warning-default);
   animation: none;
 }
 

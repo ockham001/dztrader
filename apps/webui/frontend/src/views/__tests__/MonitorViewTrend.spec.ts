@@ -737,24 +737,27 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toContain('background: var(--status-error-default)')
   })
 
-  it('#371 存活信号走中性色，绿色只留给指标状态（One Job Rule）', () => {
-    // #430：存活信号只剩主机条上的两处（脉冲点 / 右端状态槽）与信息标签；
-    // 一律中性色：绿色在页面上只意味着「指标正常」，不能再兼作「快照到了」「条在推进」。
-    for (const selector of ['.monitor-view__host-dot', '.monitor-view__host-status',
-      '.monitor-view__host-label']) {
+  it('#432 存活信号着色：在流动=success 绿、停推=warning 黄；文字与标签仍中性（与指标绿分工见 DESIGN.md）', () => {
+    // 脉冲点是**连接/进程事实**（数据在推），#432 起着色；#371 的「中性色」是旧方向口径。
+    const dot = ruleBody('.monitor-view__host-dot')
+    expect(dot).toContain('background: var(--status-success-default)')
+    expect(dot).toContain('animation: monitor-view-host-pulse')
+    // 状态槽文字与标签保持中性色：颜色只是冗余信号，停推事实由文案承担（不靠色相才可读）
+    for (const selector of ['.monitor-view__host-status', '.monitor-view__host-label']) {
       const body = ruleBody(selector)
-      expect(body, `${selector} 不得再占用状态色`).not.toContain('--status-success-default')
+      expect(body, `${selector} 不得占用存活/状态色`).not.toContain('--status-success-default')
       expect(body, `${selector} 不得借用警示色`).not.toContain('--status-warning-default')
-      // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到 6px 图形的 3:1 下限）
+      // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到正文 4.5:1）
       expect(body, `${selector} 应用 --text-secondary`).toContain('var(--text-secondary)')
     }
-    // 停推只加字重，不加色块 / 背景 / 动画
+    // 停推：脉冲点转 warning 黄并停跳；状态槽只加字重，不加背景 / 彩色 / 动画
+    const staleDot = ruleBody('.monitor-view__host--stale .monitor-view__host-dot')
+    expect(staleDot).toContain('background: var(--status-warning-default)')
+    expect(staleDot).toContain('animation: none')
     const stale = ruleBody('.monitor-view__host--stale .monitor-view__host-status')
     expect(stale).toContain('font-weight: var(--body-xs-strong-font-weight)')
     expect(stale).not.toContain('background')
     expect(stale).not.toContain('animation')
-    // 停推时脉冲点停跳：它说的是「在推进」，数据不推进时继续动就是撒谎
-    expect(ruleBody('.monitor-view__host--stale .monitor-view__host-dot')).toContain('animation: none')
     // 主机条单条内容不换行（换行只发生在条与条之间，#430）：值 nowrap + 省略号
     const value = ruleBody('.monitor-view__host-value')
     expect(value).toContain('white-space: nowrap')
@@ -768,14 +771,16 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(ruleBody('.monitor-view__host-status')).toContain('flex: none')
   })
 
-  it('#371 中性色与绿色在**解析后**确实不同：token 名匹配之外，颜色值也要分开', () => {
-    // 上一条只 grep token 名（源码文本匹配），挡不住「token 被重新定义成绿色」这种改动。
-    // 这里把三个 token 的名字解析成实际字面值，断言存活信号用的中性色与状态绿**不同值**。
-    // 解析口径复用 tokenContrast.spec.ts 的同一套（theme.css 三段结构 → 每段的 token 表），
-    // 不在本文件另写一份，否则两份会漂移（review-checklist §2.4）。
-    // 两处来源都要读：状态色（--status-*）定义在 design-tokens.css 的 :root 里，
-    // 主题色（--text-secondary）在 theme.css 的两段里。合并顺序照 src/main.ts 的导入顺序
-    // （design-tokens 在前、theme 在后，同名由主题段胜），与 tokenContrast.spec.ts 同一口径。
+  it('#432 存活点与指标点共用 success 绿：同色族不同义，语义分工由 DESIGN / GLOSSARY 承担', () => {
+    // #371 曾要求「存活信号与状态绿解析后必须不同值」。#432 起这条被反转（用户拍板「绿黄」）：
+    // 存活点用 success 绿，与台账 normal 点同族；两件事靠**语义文档**区分（DESIGN.md 的
+    // Liveness signals 一句 + GLOSSARY.md「存活信号」），不再靠颜色差异承担。
+    // 这里做两件事：① 源码级确认两处都指向同一个 token（不是各造一套绿）；
+    // ② 解析后确认 token 在两套主题下都有定义（挡「token 被删/改名」这类改动）。
+    expect(ruleBody('.monitor-view__host-dot')).toContain('background: var(--status-success-default)')
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
+      .toContain('background: var(--status-success-default)')
+
     const designTokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
     const themeRoot = parseCssFile(themePath())
     const scopes = {
@@ -783,19 +788,12 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       dark: new Map([...designTokens, ...tokenDeclarationsOf(themeRoot, '.dark', false)]),
     }
     for (const [theme, scope] of Object.entries(scopes)) {
-      const neutral = scope.get('--text-secondary')
-      const success = scope.get('--status-success-default')
-      expect(neutral, `${theme} 段缺 --text-secondary`).toBeDefined()
-      expect(success, `${theme} 段缺 --status-success-default`).toBeDefined()
-      // 直白但有效的断言：两者不是同一个字面值。若有人把 --text-secondary 重新定义成
-      // 状态绿（或反过来），存活信号与指标状态就又会同色，One Job Rule 当场失效。
-      expect(neutral, `${theme} 段的中性色与状态绿同值，存活信号会与指标状态撞色`)
-        .not.toBe(success)
+      expect(scope.get('--status-success-default'), `${theme} 段缺 --status-success-default`).toBeDefined()
+      expect(scope.get('--status-warning-default'), `${theme} 段缺 --status-warning-default`).toBeDefined()
     }
   })
 
-  it('#371 台账的 normal 状态点与轨道填充仍然保持绿色（绿只属于指标状态）', () => {
-    // 与上一条成对：存活信号撤出之后，绿色必须仍然在它唯一正当的位置
+  it('#432 台账的 normal 状态点与轨道填充仍用指标绿（与存活绿同族，语义靠文档区分）', () => {
     expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
       .toContain('background: var(--status-success-default)')
     expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-track-fill'))
