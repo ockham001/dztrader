@@ -46,10 +46,13 @@ const toast = useToastStore()
 const canWrite = computed(() => auth.isAdmin)
 const READ_ONLY_HINT = '仅管理员可添加/修改/删除交易账户'
 const GATEWAY_NOT_RUNNING_HINT = '交易接口未运行，请先点击「启动进程」恢复'
+const REMOVING_HINT = '交易接口移除请求已下发，正在等待进程配置回报'
 
 const running = computed(() => props.tdInterface.running)
 const startPending = computed(() => store.gatewayStartPending(props.tdInterface.name))
 const removePending = computed(() => store.gatewayRemovePending(props.tdInterface.name))
+/** 本接口「添加账户」在途态（按网关隔离，见 store.addPendingFor） */
+const addingAccount = computed(() => store.addPendingFor(props.tdInterface.name))
 const stateText = computed(() => processStateText(props.tdInterface.state))
 const stateColor = computed(() => processStateColor(props.tdInterface.state))
 
@@ -61,12 +64,14 @@ const stateColor = computed(() => processStateColor(props.tdInterface.state))
  */
 const accountWriteBlockedText = computed<string>(() => {
   if (!canWrite.value) return READ_ONLY_HINT
+  // 移除在途时接口即将消失：同页再下发 Start / 账户写会与 Remove 竞态（契约 rest §2.10 无此序）
+  if (removePending.value) return REMOVING_HINT
   if (!running.value) return GATEWAY_NOT_RUNNING_HINT
   return ''
 })
 
 const canAddAccount = computed(
-  () => accountWriteBlockedText.value === '' && !store.addPending)
+  () => accountWriteBlockedText.value === '' && !addingAccount.value)
 
 /** 账户行内写按钮的 title：被禁用时给原因，可用时给动作说明 */
 function accountActionTitle(actionText: string): string {
@@ -75,12 +80,13 @@ function accountActionTitle(actionText: string): string {
 
 // ===== 启动进程（崩溃/重启耗尽恢复；ADR 0053：不得以删除重加代替恢复） =====
 const startProcessTitle = computed(() => {
+  if (removePending.value) return REMOVING_HINT
   if (startPending.value) return '启动请求已下发，等待进程状态回报'
   return '启动该交易接口进程（崩溃重启耗尽或 spawn 失败后的恢复入口）'
 })
 
 async function startProcess(): Promise<void> {
-  if (startPending.value) return
+  if (startPending.value || removePending.value) return
   const result = await store.startGateway(props.tdInterface.name)
   if (result.ok) {
     toast.success(`已提交启动请求：${props.tdInterface.name}`)
@@ -330,7 +336,7 @@ function canLogoutRow(row: TdAccountRow): boolean {
 
 function loginDisabledTitle(row: TdAccountRow): string {
   if (!auth.isAdmin) return '仅管理员可登录/登出交易账户'
-  if (!row.gatewayRunning) return '交易网关未运行，请先启动网关'
+  if (!row.gatewayRunning) return GATEWAY_NOT_RUNNING_HINT
   if (!row.enabled) return '账户已禁用，不能登录'
   if (!canLoginTd(row)) return '当前不是未登录状态；如需重新登录请先登出（失败恢复 = 先登出再登录）'
   return '登录该交易账户（建立会话并重走完整登录链）'
@@ -338,7 +344,7 @@ function loginDisabledTitle(row: TdAccountRow): string {
 
 function logoutDisabledTitle(row: TdAccountRow): string {
   if (!auth.isAdmin) return '仅管理员可登录/登出交易账户'
-  if (!row.gatewayRunning) return '交易网关未运行，请先启动网关'
+  if (!row.gatewayRunning) return GATEWAY_NOT_RUNNING_HINT
   if (!canLogoutTd(row)) return '当前未登录'
   return '登出该交易账户（连接中/登录中/重连中时点此可强制中断）'
 }
@@ -415,7 +421,7 @@ function progressPercent(row: TdAccountRow): number {
           class="ds-btn ds-btn--sm ds-btn--primary"
           type="button"
           data-test="td-interface-start"
-          :disabled="startPending"
+          :disabled="startPending || removePending"
           :title="startProcessTitle"
           @click="startProcess"
         >
@@ -438,7 +444,7 @@ function progressPercent(row: TdAccountRow): number {
           :title="accountActionTitle('添加账户到该交易接口')"
           @click="openAdd"
         >
-          <span v-if="store.addPending" class="ds-btn__spinner"></span>
+          <span v-if="addingAccount" class="ds-btn__spinner"></span>
           <Icon v-else name="Plus" :size="14" />
           添加账户
         </button>

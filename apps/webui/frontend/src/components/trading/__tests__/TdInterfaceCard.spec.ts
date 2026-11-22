@@ -54,6 +54,8 @@ vi.mock('@/api/tdGateways', async (importOriginal) => {
  */
 const stubs = {
   Icon: { props: ['name', 'size'], template: '<span class="icon" :data-icon="name" />' },
+  // 若账户表单重新引入网关下拉，Dropdown 会以 .dropdown-stub 出现，使「无网关下拉」断言有效
+  Dropdown: { template: '<div class="dropdown-stub" />' },
   Modal: {
     props: ['open', 'title'],
     template: '<div v-if="open" class="modal-stub" :data-title="title"><slot /><div class="modal-footer-stub"><slot name="footer" /></div></div>',
@@ -323,6 +325,34 @@ describe('TdInterfaceCard · 删除交易接口（ADR 0053 决策 3 / 契约 res
   })
 })
 
+  it('移除请求在途：启动/添加/编辑/启停/删除账户全部禁用并提示原因（堵同页竞态）', async () => {
+    const store = await prepare({ running: false, accounts: [] })
+    vi.mocked(tdGatewaysApi.remove).mockResolvedValue({ ok: true })
+    await store.removeGateway('dztd_ctp')
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(true)
+
+    const { wrapper } = mountCard(store)
+
+    // 启动进程：remove 在途时禁用并提示原因，点击不下发
+    const start = wrapper.find('[data-test="td-interface-start"]')
+    expect(start.attributes('disabled')).toBeDefined()
+    expect(start.attributes('title')).toContain('移除请求已下发')
+    await start.trigger('click')
+    await flushPromises()
+    expect(tdGatewaysApi.start).not.toHaveBeenCalled()
+
+    // 添加账户：禁用并提示原因，点击不打开表单
+    const addAccount = wrapper.find('[data-test="td-card-add-account"]')
+    expect(addAccount.attributes('disabled')).toBeDefined()
+    expect(addAccount.attributes('title')).toContain('移除请求已下发')
+    await addAccount.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="td-form-gateway"]').exists()).toBe(false)
+
+    // 删除接口按钮本身也处于 pending 禁用态
+    expect(wrapper.find('[data-test="td-interface-remove"]').attributes('disabled')).toBeDefined()
+  })
+
 describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0051）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -347,9 +377,10 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     // gateway 由卡片固定传入并只读展示，不再有下拉选择（ADR 0053）
     expect(wrapper.find('[data-test="td-form-gateway"]').text()).toBe('dztd_ctp')
     expect(wrapper.find('.dropdown-stub').exists()).toBe(false)
+    expect(wrapper.find('.ds-dropdown').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(false)
 
-    await wrapper.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('account_new')
+    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('account_new')
     await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
     await wrapper.find('input[placeholder="user_id"]').setValue('00001')
     await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
@@ -410,13 +441,67 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(tdApi.logoutAccount).toHaveBeenCalledWith('account_001')
   })
 
+  it('启停走 UpdateAccount 的 {enabled}（契约 rest §2.9.7 唯一写端点）并提示等待回报', async () => {
+    const store = await prepare()
+    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    const successSpy = vi.spyOn(useToastStore(), 'success')
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-toggle-account_001"]').trigger('click')
+    await flushPromises()
+
+    expect(tdApi.updateAccount).toHaveBeenCalledWith('account_001', { enabled: false })
+    expect(successSpy).toHaveBeenCalledWith(
+      expect.stringContaining('等待交易网关回报配置') as unknown as string)
+  })
+
+  it('progress 中间态（current < max）登出可点 = 强制中断，登录禁用（ADR 0051）', async () => {
+    const store = await prepare()
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 2 })
+    const { wrapper } = mountCard(store)
+
+    expect(wrapper.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="td-logout-account_001"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('网关未运行：登录/登出双按钮禁用并提示先启动接口进程', async () => {
+    const store = await prepare({ running: false })
+    const { wrapper } = mountCard(store)
+
+    const login = wrapper.find('[data-test="td-login-account_001"]')
+    const logout = wrapper.find('[data-test="td-logout-account_001"]')
+    expect(login.attributes('disabled')).toBeDefined()
+    expect(logout.attributes('disabled')).toBeDefined()
+    expect(login.attributes('title')).toContain('交易接口未运行，请先点击「启动进程」')
+    expect(logout.attributes('title')).toContain('交易接口未运行，请先点击「启动进程」')
+  })
+
+  it('本卡添加在途时添加按钮禁用（spinner），不影响其他卡片入口（addPendingFor 按网关）', async () => {
+    const store = await prepare({ accounts: [] })
+    vi.mocked(tdApi.addAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('account_new')
+    await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
+    await wrapper.find('input[placeholder="user_id"]').setValue('00001')
+    await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(store.addPendingFor('dztd_ctp')).toBe(true)
+    expect(wrapper.find('[data-test="td-card-add-account"]').attributes('disabled')).toBeDefined()
+  })
+
   it('表单校验拦住缺失必填项：不填 broker_id 时提交按钮禁用（本地预检）', async () => {
     const store = await prepare({ accounts: [] })
     const { wrapper } = mountCard(store)
 
     await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
     await flushPromises()
-    await wrapper.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('account_new')
+    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('account_new')
     await flushPromises()
 
     expect(wrapper.find('[data-test="td-form-submit"]').attributes('disabled')).toBeDefined()
@@ -433,7 +518,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
     await flushPromises()
-    await wrapper.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('taken')
+    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('taken')
     await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
     await wrapper.find('input[placeholder="user_id"]').setValue('00001')
     await wrapper.find('input[placeholder="登录密码"]').setValue('secret')

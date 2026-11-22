@@ -208,13 +208,13 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
             v-model="form.account_id"
             type="text"
             :readonly="isEditing"
-            :placeholder="isEditing ? '' : '账户唯一标识，跨全部交易网关唯一'"
+            :placeholder="isEditing ? '' : '账户唯一标识，全部交易接口间唯一'"
             autocomplete="off"
           >
         </div>
         <span class="dialog-field__hint" :class="{ 'td-form__hint--warn': accountIdTooLong }">
           <template v-if="isEditing">账户 ID 是不可变标识，不可修改</template>
-          <template v-else>跨全部交易网关唯一（含已禁用/离线账户），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节</template>
+          <template v-else>全部交易接口间唯一（含已禁用/离线账户），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节</template>
           <template v-if="!isEditing"> · 当前 {{ accountIdBytes }}/{{ ACCOUNT_ID_MAX_BYTES }}</template>
         </span>
       </div>

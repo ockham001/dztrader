@@ -173,7 +173,7 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
     expect(store.rows[1].enabled).toBe(false)
   })
 
-  it('available:false → 进降级态，且**不**把列表当空（isEmpty 保持 false）', async () => {
+  it('available:false → 进降级态（"无账户"不可信，页面不得当空展示）', async () => {
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: false,
       reason: 'no_gateway_snapshot',
@@ -185,8 +185,8 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
     expect(store.available).toBe(false)
     expect(store.degradedReason).toBe('no_gateway_snapshot')
     expect(store.degradedText).toContain('账户注册表暂不可用')
-    // 关键契约：降级 ≠ 空列表（用户会以为账户被删了）
-    expect(store.isEmpty).toBe(false)
+    // 关键契约：降级 ≠ 空列表（用户会以为账户被删了）。空态判定已随卡片化上移到页面
+    // （接口级空态由进程镜像就绪 + 卡片数决定），store 不再提供 account-level isEmpty。
   })
 
   it('降级时保留旧条目并以配置镜像为骨架展示（不出现空屏）', async () => {
@@ -932,6 +932,11 @@ describe('useTdAccountsStore · 交易接口生命周期（契约 rest §2.10 / 
     expect(tdGatewaysApi.start).toHaveBeenCalledWith('dztd_ctp')
     expect(store.gatewayStartPending('dztd_ctp')).toBe(true)
 
+    // 无关配置帧（该接口仍在配置中）不得提前清掉在途 start：只认 未注册 → 已注册 的迁移
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe', display_name: '改名' } })
+    await nextTick()
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(true)
+
     process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 100 })
     await nextTick()
 
@@ -968,6 +973,13 @@ describe('useTdAccountsStore · 交易接口生命周期（契约 rest §2.10 / 
 
     expect(result).toEqual({ ok: true })
     expect(tdGatewaysApi.remove).toHaveBeenCalledWith('dztd_ctp')
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(true)
+
+    // 条目仍在配置里时，任何配置帧都不算「移除完成」（只认 已注册 → 未注册 的迁移）
+    process.applyProcessConfig({
+      dztd_ctp: { exe: 'dztd_ctp.exe' }, dztd_xtp: { exe: 'dztd_xtp.exe' },
+    })
+    await nextTick()
     expect(store.gatewayRemovePending('dztd_ctp')).toBe(true)
 
     // 契约 process：process_config 条目消失 = 移除完成
@@ -1108,5 +1120,38 @@ describe('useTdAccountsStore · 交易接口生命周期（契约 rest §2.10 / 
     expect(store.gatewayAvailable).toHaveLength(1)
     expect(store.gatewayAvailableLoading).toBe(false)
     store.clearError()
+  })
+})
+
+describe('useTdAccountsStore · 添加账户 pending 按网关隔离（#439 审查收敛）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  it('addPendingFor 只看本网关：一台接口添加中不锁另一张卡片，配置帧按网关清除', async () => {
+    registerGateway('dztd_ctp')
+    registerGateway('dztd_ctp_2')
+    vi.mocked(tdApi.addAccount).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+    await store.init()
+
+    await store.addAccount('dztd_ctp', { account_id: 'account_a1' })
+    expect(store.addPendingFor('dztd_ctp')).toBe(true)
+    expect(store.addPendingFor('dztd_ctp_2')).toBe(false)
+
+    await store.addAccount('dztd_ctp_2', { account_id: 'account_a2' })
+    expect(store.addPendingFor('dztd_ctp_2')).toBe(true)
+
+    // 配置帧是整网关全量：只清自己网关的 pending
+    store.applyTdConfig('dztd_ctp', configPayload([]))
+    expect(store.addPendingFor('dztd_ctp')).toBe(false)
+    expect(store.addPendingFor('dztd_ctp_2')).toBe(true)
   })
 })

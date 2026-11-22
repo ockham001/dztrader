@@ -23,11 +23,13 @@ import SyncSelect from '@/components/shared/SyncSelect.vue'
 import TdInterfaceCard from '@/components/trading/TdInterfaceCard.vue'
 import { useFieldId } from '@/composables/useFieldId'
 import { useTdAccountsStore } from '@/stores/tdAccounts'
+import { useProcessStore } from '@/stores/process'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import type { SelectItem } from '@/components/shared/SyncSelect.vue'
 
 const store = useTdAccountsStore()
+const processStore = useProcessStore()
 const auth = useAuthStore()
 const toast = useToastStore()
 
@@ -55,7 +57,16 @@ const interfaces = computed(() => store.interfaces)
 const interfaceCount = computed(() => interfaces.value.length)
 const accountCount = computed(
   () => interfaces.value.reduce((sum, item) => sum + item.accountCount, 0))
-const showEmpty = computed(() => interfaces.value.length === 0)
+
+/**
+ * process_config 镜像是否已就绪（首次快照到达）。
+ *
+ * 首屏若在快照前就判「无接口」会闪一下空态（用户看到「还没有添加任何交易接口」，
+ * 以为配置丢了）。就绪前给加载占位：卡片来源是进程镜像，镜像到达后才谈得上空态。
+ */
+const interfacesReady = computed(() => processStore.configsInitialized)
+const showLoading = computed(() => !interfacesReady.value)
+const showEmpty = computed(() => interfacesReady.value && interfaces.value.length === 0)
 
 // ===== 添加交易接口（与行情源页同构：SyncSelect + 显示名弹窗 + 添加即 start）=====
 // modelValue 始终保持空字符串：每次选择都触发添加弹窗，完成后回到 placeholder
@@ -173,8 +184,13 @@ async function confirmAdd(): Promise<void> {
       <span>{{ READ_ONLY_HINT }}；你仍可查看交易接口与账户配置</span>
     </div>
 
-    <!-- 空态：没有任何交易接口（卡片来自进程镜像，镜像到达前短暂为空属正常） -->
-    <div v-if="showEmpty" class="td-page__empty" data-test="td-interfaces-empty">
+    <!-- 首屏：进程配置快照未到达 → 加载占位（不判空态，避免闪「还没有交易接口」） -->
+    <div v-if="showLoading" class="td-page__empty" data-test="td-interfaces-loading">
+      <span class="ds-btn__spinner"></span> 正在读取交易接口进程配置…
+    </div>
+
+    <!-- 空态：镜像已就绪且确实没有任何交易接口 -->
+    <div v-else-if="showEmpty" class="td-page__empty" data-test="td-interfaces-empty">
       还没有添加任何交易接口
       <span class="td-page__empty-hint">
         <template v-if="canWrite">点击右上角「添加交易接口」创建第一个接口；接口可零账户运行</template>

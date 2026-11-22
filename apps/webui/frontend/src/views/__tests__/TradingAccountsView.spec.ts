@@ -112,7 +112,18 @@ describe('TradingAccountsView · 空态与卡片渲染（ADR 0053 / 契约 rest 
     useTdAccountsStore().dispose()
   })
 
-  it('无任何交易接口：空态 + 页面级唯一入口「添加交易接口」，标题仍是「交易账户」', async () => {
+  it('进程配置快照未到达：先给加载占位，不闪「还没有交易接口」空态', async () => {
+    const w = mountPage()
+    await flushPromises()
+
+    expect(w.find('[data-test="td-interfaces-loading"]').exists()).toBe(true)
+    expect(w.find('[data-test="td-interfaces-loading"]').text()).toContain('正在读取交易接口进程配置')
+    expect(w.find('[data-test="td-interfaces-empty"]').exists()).toBe(false)
+  })
+
+  it('无任何交易接口（镜像已就绪）：空态 + 页面级唯一入口「添加交易接口」，标题仍是「交易账户」', async () => {
+    // process_config 全量帧到达 = 镜像就绪（空配置也是有效快照，之后才允许判空）
+    useProcessStore().applyProcessConfig({})
     const w = mountPage()
     await flushPromises()
 

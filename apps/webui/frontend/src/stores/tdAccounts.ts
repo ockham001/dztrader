@@ -82,7 +82,7 @@ export const TD_ACCOUNT_OP_TIMEOUT_MS = 5_000
 
 /**
  * pending key 前缀（`td:{gateway}:{account}:{op}`）。三处使用点——`opKey()` 构造、
- * `addPending` 的前缀扫描、`applyTdConfig` 的整网关清除——必须共用本常量：
+ * `addPendingFor()` 的前缀扫描、`applyTdConfig` 的整网关清除——必须共用本常量：
  * 各写一份字面量时，改前缀会静默漏改其中一处（例如清除用了新前缀而构造还在用旧前缀，
  * pending 就永远清不掉、只能等 5s 超时）。
  *
@@ -272,7 +272,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   /** 注册表可用性；false = 降级（契约 rest §2.9.9，**不是**空列表） */
   const available = ref(true)
   const degradedReason = ref<TdAccountsDegradedReason | null>(null)
-  const loading = ref(false)
   const initialized = ref(false)
   const error = ref<string | null>(null)
 
@@ -401,10 +400,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       a.account_id === b.account_id ? 0 : (a.account_id < b.account_id ? -1 : 1))
   })
 
-  /** 是否「确实没有账户」空态：注册表可用且请求无错且行数为 0（降级/失败都不算空） */
-  const isEmpty = computed<boolean>(
-    () => available.value && error.value === null && rows.value.length === 0)
-
   /** 降级提示文案（可用时为空串） */
   const degradedText = computed<string>(() => (available.value ? '' : TD_ACCOUNTS_DEGRADED_TEXT))
 
@@ -484,10 +479,17 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     return tdAccountsPending.pending[opKey(gateway, accountId, op)] === true
   }
 
-  /** 添加操作的在途态（新账户尚未进注册表，不能用 accountPending 判定） */
-  const addPending = computed<boolean>(() =>
-    Object.keys(tdAccountsPending.pending).some(key =>
-      key.startsWith(TD_PENDING_PREFIX) && key.endsWith(':add') && tdAccountsPending.pending[key] === true))
+  /**
+   * 指定交易接口的「添加账户」在途态（新账户尚未进注册表，不能用 accountPending 判定）。
+   *
+   * **按网关隔离**：key 前缀 = `td:{gateway}:`，A 卡添加中不应禁用 B 卡的添加入口
+   *（多张卡片同页，全局 addPending 会把所有卡片一起锁住）。
+   */
+  function addPendingFor(gateway: string): boolean {
+    const prefix = `${TD_PENDING_PREFIX}${gateway}:`
+    return Object.keys(tdAccountsPending.pending).some(key =>
+      key.startsWith(prefix) && key.endsWith(':add') && tdAccountsPending.pending[key] === true)
+  }
 
   // === 会话 pending 清除（契约 td-connection 前端义务 2 / 契约 progress 网关会话进度骨架） ===
 
@@ -534,9 +536,15 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // 页面级「添加交易接口」与卡片级「启动进程 / 删除交易接口」共用本段。pending 语义：
   // HTTP 200 只表示已写入事件通道（契约 rest §2.10），清除信号是 WS 进程镜像——
   //   - start：`process_config` 出现该条目，或 `process_status` 到 Running；
-  //   - remove：`process_config` 条目消失（移除完成的权威信号，契约 process），或 RemoveSucceeded；
+  //   - remove：`process_config` 条目消失（移除完成的权威信号，契约 process），或 RemoveSucceeded。
   // 失败（StartFailed / RemoveFailed）静默清 pending：失败反馈由 NOTIFY_UI 弹窗承载
   //（与 process store 的进程操作同一口径，避免双提示）。
+  //
+  // **注意未注册的 start（添加新接口）**：process store 在 `configsInitialized` 后过滤
+  // 不在配置镜像里的进程帧（`applyProcessStatus` 对未注册进程不写镜像），因此新接口的
+  // StartFailed 不会进入本 store 的 status 镜像——该路径没有失败信号，只能等
+  // {@link TD_GATEWAY_OP_TIMEOUT_MS} 兜底超时（`usePending` 会 toast「启动交易接口超时」），
+  // 服务端的失败原因由 NOTIFY_UI 弹窗承载。start 的**恢复**（已注册接口）以 status Running 为主。
 
   /** 可用交易接口列表（`GET /api/td/gateways/available`；添加下拉数据源） */
   const gatewayAvailable = ref<TdGatewayAvailable[]>([])
@@ -658,10 +666,16 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     { deep: true },
   )
 
-  // 清除信号 2：process_config —— start 条目出现清；remove 条目消失（权威信号）清
+  // 清除信号 2：process_config —— 只认**真实的状态迁移**，不认当前快照（权威信号，契约 process）：
+  //   - start：仅 `未注册 → 已注册`（`!old.has → new.has`）清 pending——接口本就在配置里时
+  //     任何无关配置帧都不该把在途 start 提前清掉（恢复路径以 status Running 为主）；
+  //   - remove：仅 `已注册 → 未注册`（`old.has → !new.has`）清 pending——条目一直不存在的
+  //     配置帧不能冒充「移除完成」。
   watch(
     () => processStore.configs,
-    (processConfigs) => {
+    (processConfigs, previousConfigs) => {
+      const has = (map: Record<string, unknown> | undefined, name: string): boolean =>
+        map !== undefined && Object.prototype.hasOwnProperty.call(map, name)
       for (const key of Object.keys(tdGatewayPending.pending)) {
         if (tdGatewayPending.pending[key] !== true) continue
         const rest = key.slice(TD_GATEWAY_PENDING_PREFIX.length)
@@ -669,9 +683,10 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
         if (separator <= 0) continue
         const name = rest.slice(0, separator)
         const op = rest.slice(separator + 1)
-        const present = Object.prototype.hasOwnProperty.call(processConfigs, name)
-        if (op === 'start' && present) tdGatewayPending.resolve(key)
-        else if (op === 'remove' && !present) tdGatewayPending.resolve(key)
+        const wasPresent = has(previousConfigs, name)
+        const isPresent = has(processConfigs, name)
+        if (op === 'start' && !wasPresent && isPresent) tdGatewayPending.resolve(key)
+        else if (op === 'remove' && wasPresent && !isPresent) tdGatewayPending.resolve(key)
       }
     },
     { deep: true },
@@ -900,7 +915,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   async function loadRegistry(): Promise<void> {
     if (disposed) return
     const seq = ++requestSeq
-    loading.value = true
     try {
       const response = await tdApi.listAccounts()
       if (disposed || seq !== requestSeq) return
@@ -923,10 +937,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       error.value = e instanceof Error ? e.message : String(e)
       scheduleRetry()
     } finally {
-      if (seq === requestSeq) {
-        loading.value = false
-        initialized.value = true
-      }
+      if (seq === requestSeq) initialized.value = true
     }
   }
 
@@ -957,22 +968,20 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     registry,
     available,
     degradedReason,
-    loading,
     initialized,
     error,
     configs,
     statuses,
     rows,
     interfaces,
-    isEmpty,
     degradedText,
-    addPending,
     accountIdConflict,
     registryEntry,
     gatewayOf,
     accountPending,
     sessionPending,
     isOpPending,
+    addPendingFor,
     addAccount,
     updateAccount,
     removeAccount,
