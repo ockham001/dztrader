@@ -91,10 +91,10 @@ export function percentTrendGeometry(
  */
 export const CORE_BAR_MIN_WIDTH = 56
 /**
- * 每核条形的格间距（px）：与间距 token `--spacer-8` 的实际值一致（token 名是步进序号，不是像素值）。
- * 单测会解析 `design-tokens.css` 交叉校验这个常量，防止 JS 与 CSS 各排一份间距。
+ * 每核条形的格间距（px）：与间距 token `--spacer-3` 的实际值一致（token 名是步进序号，不是像素值；
+ * 参考主机面板的 3px 紧凑条形）。单测会解析 `design-tokens.css` 交叉校验此常量，防止 JS 与 CSS 各排一份。
  */
-export const CORE_BAR_GAP = 10
+export const CORE_BAR_GAP = 3
 /** 为凑整行最多允许多出来的行数（见 {@link coreBarColumns}） */
 const MAX_EXTRA_ROWS = 2
 
@@ -109,8 +109,8 @@ const MAX_EXTRA_ROWS = 2
  *    （空格为 0 即每行数量完全相等）；同空格数时取行数少的。允许最多多 2 行，是为了避免为了
  *    「恰好整除」把 16 核从 3 行拖成 16 行；找不到等分才退回最少行数，由 CSS 网格把余数摊到末行。
  *    在常见核数（8/16/32/48/64/96/128）与常见容器宽度下不会出现 23 + 1 那种极端失衡
- *    （单测矩阵覆盖）；**已知边界**：容器极窄而核数极高时（如 128 核 × 500px），要完全等分
- *    只能把每格压到最小格宽以下或折出 30+ 行，本实现选择「少行 + 末行偏短」，不为此牺牲可读性。
+ *    （单测矩阵覆盖）；**已知边界**：容器极窄而核数极高时（如 128 核 × 350px），要完全等分
+ *    只能把每格压到最小格宽以下或折出 30+ 行，本实现选择「少行 + 末行偏短」，不为此牺牲可读性（3px 间距下 128 × 500 已能 8 列 × 16 行等分）。
  *
  * @param count 条形总数（核数）；非正数返回 0
  * @param containerWidth 容器实测宽度（px）；未测量（0 / NaN）时返回 `count`（单行）

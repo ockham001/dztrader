@@ -22,18 +22,11 @@ const stubs = {
 // onUnmounted 一起清。
 enableAutoUnmount(afterEach)
 
-/** CPU 块里仍可展开的明细（#435：每核频率明细入口已删除，只剩温度传感器明细） */
-const DETAIL_TOGGLES = ['monitor-temperature-detail-toggle']
-
 async function mountView() {
   const wrapper = mount(MonitorView, { global: { stubs } })
   await flushPromises()
-  // #363 起维度行（卷 / 盘 / 网卡）平铺进台账，不需要先展开就能断言数据；温度传感器明细
-  // 是 CPU 块里的可展开区，挂载后自动展开以便断言逐传感器读数（默认收起态由 Trend spec 覆盖）。
-  for (const toggleTest of DETAIL_TOGGLES) {
-    const toggle = wrapper.find(`[data-test="${toggleTest}"]`)
-    if (toggle.exists()) await toggle.trigger('click')
-  }
+  // #363 起维度行（卷 / 盘 / 网卡）平铺进台账，不需要先展开就能断言数据；
+  // #435 起 CPU 块没有折叠区（温度明细在 title / aria），挂载即最终形态。
   await wrapper.vm.$nextTick()
   return wrapper
 }
@@ -314,35 +307,26 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ sensorData: true }))
     const wrapper = await mountView()
 
-    // #362：温度不再是一张独立卡片，而是 CPU 块内「最高温度」那格 + 可展开的明细区
+    // #435 验收收敛：温度主值 + 归属留在格里，逐传感器明细进 title / aria（不再有只这一格才有的折叠按钮）
     const temperatureCell = wrapper.find('[data-test="monitor-temperature"]')
     expect(temperatureCell.exists()).toBe(true)
-    expect(wrapper.find('.ds-card [data-test="monitor-temperature"]').exists()).toBe(true)
-    // #126：芯片名做友好映射（coretemp → CPU），组内逐通道显示 label 与温度
-    const groups = wrapper.findAll('[data-test="monitor-temperature-group"]')
-    expect(groups).toHaveLength(1)
-    expect(groups[0].attributes('data-chip')).toBe('coretemp')
-    expect(wrapper.find('[data-test="monitor-temperature-group-name"]').text()).toBe('CPU')
-    // 主数值（最高温）在那格里，逐传感器读数在展开的明细区里
-    expect(temperatureCell.text()).toContain('45.5 °C')
-    const detail = wrapper.find('[data-test="monitor-temperature-detail"]')
-    expect(detail.exists()).toBe(true)
-    expect(detail.text()).toContain('45.5 °C')
-    expect(detail.text()).toContain('41.5 °C')
-    const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
-    expect(sensors).toHaveLength(2)
-    // 行内展示的是 label（组内按 label 字典序），组的友好名取代了原始标识；
-    // 原始 sensor 标识降级到 title（tooltip），仍可查到。
-    const rows = sensors.map(sensor => sensor.text())
-    expect(rows).toEqual(['Core 041.5 °C', 'Package id 045.5 °C'])
-    expect(detail.text()).not.toContain('coretemp#hwmon3')
-    expect(sensors[0].attributes('title')).toBe('coretemp#hwmon3:Core 0')
-    expect(sensors[1].attributes('title')).toBe('coretemp#hwmon3:Package id 0')
+    expect(temperatureCell.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
+    expect(temperatureCell.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
+    const sensorTitle = temperatureCell.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
+    // 友好名 + 通道 + 温度，全部传感器都在（组内按 label 字典序）
+    expect(sensorTitle).toContain('CPU · Package id 0 45.5 °C')
+    expect(sensorTitle).toContain('CPU · Core 0 41.5 °C')
+    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
+    // 读屏名挂在统计格的 group 上（裸 div 的 aria-label 会被读屏忽略），内容与 title 同源
+    expect(temperatureCell.attributes('role')).toBe('group')
+    expect(temperatureCell.attributes('aria-label')).toBe(`温度 45.5 °C；${sensorTitle}`)
+    // 四数字行里不再有只有温度格才有的按钮（四格同一高度）
+    expect(temperatureCell.find('button').exists()).toBe(false)
 
     // #435：主值是全部有读数核的平均（3600 + index×100 → 平均 4350 MHz），逐核读数在条形 tooltip
     expect(wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-frequency"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4350 MHz')
-    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 —')
+    expect(wrapper.find('[data-test="monitor-frequency-context"]').exists()).toBe(false)
     const coreBars = wrapper.findAll('[data-test="monitor-core"]')
     expect(coreBars[0].attributes('title')).toContain('3600 MHz')
     expect(coreBars[15].attributes('title')).toContain('5100 MHz')
@@ -362,30 +346,18 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
-    // 芯片排序：CPU → GPU → 无线网卡 → 主板 ACPI
-    const groups = wrapper.findAll('[data-test="monitor-temperature-group"]')
-    expect(groups.map(group => group.attributes('data-chip')))
-      .toEqual(['coretemp', 'amdgpu', 'iwlwifi_1_2', 'acpitz_0'])
-    // 友好映射：coretemp → CPU、amdgpu → GPU、iwlwifi* → 无线网卡、acpitz* → 主板 ACPI
-    expect(wrapper.findAll('[data-test="monitor-temperature-group-name"]').map(name => name.text()))
-      .toEqual(['CPU', 'GPU', '无线网卡', '主板 ACPI'])
-
-    // 不过滤任何传感器：四条读数全部渲染（ACPI 只是排在后面）
-    const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
-    expect(sensors).toHaveLength(4)
-
-    // label 缺失（空串）时回退通道名，不退化为空行
-    const iwlwifiRow = sensors.find(row => row.attributes('data-sensor') === 'iwlwifi_1_2#hwmon2:temp1')
-    expect(iwlwifiRow?.text()).toContain('temp1')
-    expect(iwlwifiRow?.text()).toContain('38.0 °C')
-
-    // 原始 sensor 标识在 tooltip（title）里仍可查到
-    expect(sensors.map(row => row.attributes('title'))).toEqual([
-      'coretemp#hwmon3:Package id 0',
-      'amdgpu#hwmon4:edge',
-      'iwlwifi_1_2#hwmon2:temp1',
-      'acpitz_0#hwmon0:temp1',
-    ])
+    // 排在 title 里的顺序 = 芯片排序 CPU → GPU → 无线网卡 → 主板 ACPI（与发送顺序无关）
+    const title = wrapper.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
+    const orderedParts = ['CPU · Package id 0 45.5 °C', 'GPU · edge 52.0 °C', '无线网卡 · temp1 38.0 °C', '主板 ACPI · temp1 27.8 °C']
+    let last = -1
+    for (const part of orderedParts) {
+      const at = title.indexOf(part)
+      expect(at, `${part} 缺失或顺序不对`).toBeGreaterThan(last)
+      last = at
+    }
+    // 最高温来自 GPU（52.0）：主值与归属都跟着最高温走
+    expect(wrapper.find('[data-test="monitor-temperature-max"]').text()).toBe('52.0 °C')
+    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toBe('GPU · edge')
   })
 
   it('#126 旧版本发送方（无 chip/label）：从 sensor 回退解析，仍分组且标签非空', async () => {
@@ -399,12 +371,10 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
-    expect(wrapper.findAll('[data-test="monitor-temperature-group"]').map(g => g.attributes('data-chip')))
-      .toEqual(['coretemp', 'acpitz'])
-    const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
-    expect(sensors).toHaveLength(2)
-    expect(sensors[0].text()).toContain('Package id 0')
-    expect(sensors[1].text()).toContain('temp1')  // 无 label 时回退通道名
+    const title = wrapper.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
+    expect(title).toContain('CPU · Package id 0 45.5 °C')
+    expect(title).toContain('主板 ACPI · temp1 27.8 °C')  // 无 label 时回退通道名
+    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
   })
 
   it('不可用：温度与每核频率区块整块不渲染（不显示 0 / 不可用占位）', async () => {
@@ -497,11 +467,11 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
-    const sensors = wrapper.findAll('[data-test="monitor-temperature-sensor"]')
-    expect(sensors).toHaveLength(1)
-    // 展示的是通道标签，原始标识在 title 里（#126）
-    expect(sensors[0].attributes('title')).toBe('coretemp:Valid')
-    expect(sensors[0].text()).toContain('45.5 °C')
+    const title = wrapper.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
+    // 只有合法读数进入明细（空 sensor / NaN 温度被 normalizer 过滤）
+    expect(title.split('；')).toHaveLength(1)
+    expect(title).toContain('45.5 °C')
+    expect(title).not.toContain('30.0 °C')
 
     // 非法频率条目不参与平均；唯一有效读数（核 3 · 3600 MHz）出现在该核条形的 title 里
     expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('3600 MHz')
@@ -2157,26 +2127,27 @@ describe('MonitorView 主机条与 CPU 块（#430 / #435）', () => {
     expect(wrapper.find('.monitor-view__topbar').classes()).toContain('monitor-view__topbar--host-follows')
   })
 
-  it('四数字各带一行小字上下文：逻辑核 / 5 分 15 分量程 / 型号标注 / 芯片与传感器数', async () => {
+  it('四数字的小字上下文：逻辑核 / 5 分钟与 15 分钟 / 温度归属（无效重复与自造术语已删）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ sensorData: true }))
     const wrapper = await mountView()
 
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
-    expect(wrapper.find('[data-test="monitor-cpu-context"]').text()).toBe('16 逻辑核 · 无核饱和')
+    // 「无核饱和」是零信息，不写；饱和真的发生时才补一句
+    expect(wrapper.find('[data-test="monitor-cpu-context"]').text()).toBe('16 逻辑核')
 
-    expect(wrapper.find('[data-test="monitor-load-context"]').text()).toBe('5 分 0.51 · 15 分 0.63（16 逻辑核量程）')
+    // 参照主机面板的「5 分钟 x · 15 分钟 y」；核数不在这里重复
+    expect(wrapper.find('[data-test="monitor-load-context"]').text()).toBe('5 分钟 0.51 · 15 分钟 0.63')
 
-    // 型号字符串里没有 GHz 标注时退回「—」，不拿当前频率冒充型号标注
-    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 —')
+    // 频率不再有「型号标注」这类自造小字（基准频率已在标题行的型号字符串里）
+    expect(wrapper.find('[data-test="monitor-frequency-context"]').exists()).toBe(false)
     // #435：主值 = 全核平均（3600 + index×100 的 16 个读数 → 4350 MHz），不再取最高核
     expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4350 MHz')
 
-    // 温度卡不再是独立卡片：它的主数值与明细都收进 CPU 块内的那一格
+    // 温度：主值 + 归属（芯片 · 通道），不再堆传感器/芯片计数
     const temperature = wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-temperature"]')
     expect(temperature.exists()).toBe(true)
     expect(temperature.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
-    expect(temperature.find('[data-test="monitor-temperature-summary"]').text())
-      .toContain('2 个传感器 · 1 个芯片')
+    expect(temperature.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
   })
 
   it('饱和核计数进入占用率上下文（饱和是快照事实，不在前端重新判定）', async () => {
@@ -2365,15 +2336,16 @@ describe('MonitorView CPU 块（#435：型号 / 等级着色 / 自适应列数 /
     expect(disconnects, '组件卸载时必须断开 RO（与 Topbar 的既有纪律一致）').toBe(1)
   })
 
-  it('型号字符串里的 @ x.xxGHz 解析成「型号标注」小字（不把实测频率冒充基准频率）', async () => {
+  it('型号字符串里的 @ 3.40GHz 只出现在标题行的型号里，不再有「型号标注」这类自造小字', async () => {
     const snapshot = makeSysmonSnapshot({ sensorData: true })
     snapshot.system.cpu_model = 'Intel(R) Core(TM) i7-6700 CPU @ 3.40GHz'
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
     const wrapper = await mountView()
 
-    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 3.40 GHz')
     // 型号字符串在标题行原样保留（含 @ 后缀）
     expect(wrapper.find('[data-test="monitor-cpu-model"]').text()).toContain('@ 3.40GHz')
+    // 频率格不再有人造的「型号标注 …」小字
+    expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('型号标注')
   })
 
   it('每核条形区没有标题行（#435 决策 5：曲线下方直接是条形）', async () => {

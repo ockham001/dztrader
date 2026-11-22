@@ -605,15 +605,9 @@ async function onProbeClock(): Promise<void> {
   }
 }
 
-// ---- 卡片折叠（#127）：维度明细默认收起，展开后显示全部 ----
-// 折叠状态只存组件本地 ref：**不持久化**，刷新（组件重新挂载）回到产品认为重要的默认视图
-//（验收标准）。不可用 / 空数据的空态不进折叠——可用性事实不藏在展开按钮后面。
-// #435 起 CPU 块只剩「温度传感器明细」一个折叠：每核频率明细的入口已删除（频率进了条形 tooltip），
-// 逐传感器读数没有别处可展示，保留。
-const temperatureDetailOpen = ref(false)
-
-/** 温度读数摊平：分组只用于展开后的展示，摘要取全局最高温与数量 */
-const temperatureReadings = computed(() => temperatureGroups.value.flatMap(group => group.readings))
+// ---- 温度读数（#120 / #435）：主值取全局最高温，逐传感器明细改为悬停 / 读屏可达 ----
+// #435 验收反馈：四数字行里只有温度格带一个「展开明细」按钮，视觉上多出一行、和其余三格
+// 不齐；改为把逐传感器读数放进值的 title / aria（四格同一高度，信息仍可达，不丢能力）。
 
 /** 最高温度的读数与其归属（芯片分组名 + 通道标签，不丢可读命名口径，见 #120 故事 37/38） */
 interface TemperaturePeak {
@@ -634,9 +628,27 @@ const temperaturePeak = computed<TemperaturePeak | null>(() => {
   }
   return peak
 })
-const temperatureDetailSummary = computed(
-  () => `${temperatureReadings.value.length} 个传感器 · ${temperatureGroups.value.length} 个芯片`,
-)
+/**
+ * 温度格的 hover / 读屏补充：逐传感器读数按「芯片 · 通道 温度」列出。
+ * 主值是全部传感器里的最高温（#120 的归属口径），这里给全量明细，避免为看另一颗
+ * 传感器的读数去展开一个只有这一格才有的折叠按钮。
+ */
+const temperatureSensorTitle = computed(() => {
+  const rows = temperatureGroups.value.flatMap(group =>
+    group.readings.map(reading => `${group.displayName} · ${reading.label} ${formatTemperature(reading.celsius)}`),
+  )
+  return rows.length > 0 ? `全部传感器：${rows.join('；')}` : ''
+})
+
+/**
+ * 温度格的读屏名：`aria-label` 挂在 `role="group"` 的统计格上。
+ * 裸 div 的 aria-label 会被读屏忽略（ARIA 规范禁止在 generic 角色上命名），因此不能只写在值上；
+ * 值本身保留 `title` 供鼠标悬停，group 的 aria-label 负责把「主值 + 全部传感器」一次念完。
+ */
+const temperatureAriaLabel = computed(() => {
+  const value = formatTemperature(temperaturePeak.value?.celsius ?? null)
+  return temperatureSensorTitle.value === '' ? `温度 ${value}` : `温度 ${value}；${temperatureSensorTitle.value}`
+})
 
 // ---- 主机条（#430）：一条通栏主机信息条（主机 / 系统 / 内核 / 已运行 + 右端状态槽） ----
 // 字段全部来自既有快照的 `system` / `platform_description` / `platform.kernel`，不新增接口。
@@ -692,7 +704,6 @@ const hostStartTimeTitle = computed(() => {
 
 /** 逻辑核数文案（CPU 四数字的小字上下文用；主机条不再显示 CPU 型号 · 核数，#429 决策 6） */
 const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
-const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
 
 // ---- CPU 块（#435）：型号 · 四数字 · 固定 0–100% 单曲线 · 自适应每核条形 ----
 
@@ -702,10 +713,13 @@ const cpuModel = computed(() => system.value?.cpu_model?.trim() ?? '')
 /** 饱和核数（快照的 `saturated` 标记就是唯一判据，不在视图里另算阈值） */
 const saturatedCoreCount = computed(() => cpuCores.value.filter(core => core.saturated).length)
 
-/** 占用率的小字上下文：N 逻辑核 · 无核饱和 / N 核饱和（饱和是快照事实，不在前端重判） */
+/**
+ * 占用率的小字上下文：只写逻辑核数；饱和只在**真的发生**时补一句（「无核饱和」是零信息——
+ * 没有饱和时这半句既不加判断也不加动作，徒占一行；#435 验收反馈）。
+ */
 const coresContextText = computed(() => {
   if (logicalCoreCount.value <= 0) return '—'
-  if (saturatedCoreCount.value === 0) return `${logicalCoreCount.value} 逻辑核 · 无核饱和`
+  if (saturatedCoreCount.value === 0) return `${logicalCoreCount.value} 逻辑核`
   return `${logicalCoreCount.value} 逻辑核 · ${saturatedCoreCount.value} 核饱和`
 })
 
@@ -715,16 +729,6 @@ const coresContextText = computed(() => {
  * 始终可读；未知值不套色。
  */
 const cpuUsageLevel = computed(() => (cpuRatio.value === null ? null : resourceLevel(cpuRatio.value)))
-
-/**
- * CPU 型号里标注的基准频率：**型号字符串的一部分**（如 `... @ 3.40GHz`），不是实测读数。
- * 取不到时退回「—」——不拿当前频率冒充型号标注（那是两件事）。
- */
-const cpuModelFrequency = computed(() => {
-  const model = system.value?.cpu_model ?? ''
-  const match = /@\s*([\d.]+)\s*GHz/i.exec(model)
-  return match ? `${match[1]} GHz` : '—'
-})
 
 /**
  * 当前频率（主数值）：全部有读数核的**平均**（#435 决策 3）。
@@ -1009,7 +1013,7 @@ const cpuTrendAriaLabel = computed(() => {
             <!-- 占用率：主数值可点跳历史（#127）；颜色是按等级的冗余信号（#435 决策 7），
                  数字本身始终可读，未知值不套色。 -->
             <div class="monitor-view__stat">
-              <p class="monitor-view__stat-label">占用率</p>
+              <p class="monitor-view__stat-label">总占用</p>
               <template v-if="cpuRatio !== null">
                 <button
                   type="button"
@@ -1031,7 +1035,7 @@ const cpuTrendAriaLabel = computed(() => {
             <!-- 系统负载：语义由 semantic 字段 + semantic_hints 承载，不与另一口径同轴比较。
                  #435 起不再带迷你趋势（用户拍板：负载只保留文字）。 -->
             <div class="monitor-view__stat" data-test="monitor-load">
-              <p class="monitor-view__stat-label">系统负载</p>
+              <p class="monitor-view__stat-label">负载</p>
               <template v-if="loadAverage">
                 <div v-if="loadIsProcessorQueue" class="monitor-view__metric">
                   <button
@@ -1055,8 +1059,8 @@ const cpuTrendAriaLabel = computed(() => {
                 </div>
                 <!-- 小字上下文：处理器队列口径不冒充 1/5/15 分钟（文本里也不出现「1 分钟」） -->
                 <p class="monitor-view__stat-context" data-test="monitor-load-context">
-                  <template v-if="loadIsProcessorQueue">处理器队列长度 · {{ logicalCoreText }}</template>
-                  <template v-else>5 分 <span data-test="monitor-load-five">{{ formatDecimal(loadAverage.five) }}</span> · 15 分 <span data-test="monitor-load-fifteen">{{ formatDecimal(loadAverage.fifteen) }}</span>（{{ logicalCoreText }}量程）</template>
+                  <template v-if="loadIsProcessorQueue">处理器队列长度</template>
+                  <template v-else>5 分钟 <span data-test="monitor-load-five">{{ formatDecimal(loadAverage.five) }}</span> · 15 分钟 <span data-test="monitor-load-fifteen">{{ formatDecimal(loadAverage.fifteen) }}</span></template>
                 </p>
                 <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint" :title="loadHint.raw">语义提示：{{ loadHint.text }}</p>
               </template>
@@ -1069,10 +1073,9 @@ const cpuTrendAriaLabel = computed(() => {
             <!-- 当前频率（#73 / #435 决策 3）：主值 = 全部有读数核的平均；
                  cpu.frequency 不可用时整格不渲染（不是显示 0）。 -->
             <div v-if="frequencyAvailable" class="monitor-view__stat" data-test="monitor-frequency">
-              <p class="monitor-view__stat-label">当前频率</p>
+              <p class="monitor-view__stat-label">频率</p>
               <template v-if="coreFrequencies.length > 0">
                 <div class="monitor-view__metric" data-test="monitor-frequency-value">{{ formatFrequency(frequencyAverage) }}</div>
-                <p class="monitor-view__stat-context" data-test="monitor-frequency-context">型号标注 {{ cpuModelFrequency }}</p>
               </template>
               <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
                 <div class="ds-empty__title">暂无数据</div>
@@ -1082,23 +1085,27 @@ const cpuTrendAriaLabel = computed(() => {
 
             <!-- 最高温度（#73）：temperature 不可用时整格不渲染（不是显示 0）；
                  归属摘要跟着主数值走，逐传感器读数收在本格的小入口后面（#127 折叠语义不变）。 -->
-            <div v-if="temperatureAvailable" class="monitor-view__stat" data-test="monitor-temperature">
-              <p class="monitor-view__stat-label">最高温度</p>
+            <div
+              v-if="temperatureAvailable"
+              class="monitor-view__stat"
+              data-test="monitor-temperature"
+              role="group"
+              :aria-label="temperatureAriaLabel"
+            >
+              <p class="monitor-view__stat-label">温度</p>
               <template v-if="temperatureGroups.length > 0">
-                <div class="monitor-view__metric" data-test="monitor-temperature-max">
+                <!-- 主值 = 全部传感器最高温；逐传感器读数在 title / aria（悬停与读屏可达） -->
+                <div
+                  class="monitor-view__metric"
+                  data-test="monitor-temperature-max"
+                  :title="temperatureSensorTitle || undefined"
+                >
                   {{ formatTemperature(temperaturePeak?.celsius ?? null) }}
                 </div>
-                <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
+                <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「45.5 °C」不知道是哪颗芯片 -->
                 <p class="monitor-view__stat-context" data-test="monitor-temperature-summary">
-                  {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
+                  {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }}
                 </p>
-                <button
-                  class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__detail-toggle"
-                  type="button"
-                  :aria-expanded="temperatureDetailOpen"
-                  data-test="monitor-temperature-detail-toggle"
-                  @click="temperatureDetailOpen = !temperatureDetailOpen"
-                >{{ temperatureDetailOpen ? '收起明细' : '展开明细' }}</button>
               </template>
               <div v-else class="ds-empty monitor-view__empty" data-test="monitor-temperature-empty">
                 <div class="ds-empty__title">暂无数据</div>
@@ -1193,35 +1200,6 @@ const cpuTrendAriaLabel = computed(() => {
             </div>
           </div>
 
-          <!-- 温度明细（#126）：由「最高温度」那格的小入口展开，以整卡宽渲染；按芯片分组
-               （CPU / GPU / 无线网卡 / 主板 ACPI 等友好名），组内逐通道显示，原始 sensor 标识
-               降级到 title（tooltip）；不过滤任何传感器。 -->
-          <div v-if="temperatureAvailable && temperatureGroups.length > 0 && temperatureDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide monitor-view__temp-groups" data-test="monitor-temperature-detail">
-            <div
-              v-for="group in temperatureGroups"
-              :key="group.chip"
-              class="monitor-view__temp-group"
-              data-test="monitor-temperature-group"
-              :data-chip="group.chip"
-            >
-              <h3 class="monitor-view__panel-title" data-test="monitor-temperature-group-name">
-                {{ group.displayName }}
-              </h3>
-              <ul class="monitor-view__list">
-                <li
-                  v-for="reading in group.readings"
-                  :key="reading.sensor"
-                  class="monitor-view__list-row"
-                  data-test="monitor-temperature-sensor"
-                  :data-sensor="reading.sensor"
-                  :title="reading.sensor"
-                >
-                  <span class="monitor-view__list-label">{{ reading.label }}</span>
-                  <span class="monitor-view__list-value">{{ formatTemperature(reading.celsius) }}</span>
-                </li>
-              </ul>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -1871,6 +1849,13 @@ const cpuTrendAriaLabel = computed(() => {
   flex: none;
 }
 
+/* 标题字号对齐参照（主机面板 13px）：CPU 块是「仪器读数组」，标题不该压过四数字 */
+.monitor-view__cpu-head .monitor-view__card-title {
+  font-size: var(--heading-2xs-font-size);
+  line-height: var(--heading-2xs-line-height);
+  font-weight: var(--heading-2xs-font-weight);
+}
+
 /* 型号来自 system.cpu_model：取不到时整行不渲染（v-if），不显示「未知型号」占位 */
 .monitor-view__cpu-model {
   min-width: 0;
@@ -1889,7 +1874,7 @@ const cpuTrendAriaLabel = computed(() => {
 .monitor-view__stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(var(--stat-cell-min-width), 1fr));
-  gap: var(--spacer-16);
+  gap: var(--spacer-8);
   grid-column: 1 / -1;
 }
 
@@ -1902,15 +1887,15 @@ const cpuTrendAriaLabel = computed(() => {
 
 .monitor-view__stat-label {
   margin: 0;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
-  font-weight: var(--body-xs-strong-font-weight);
+  font-weight: var(--body-xs-font-weight);
 }
 
 .monitor-view__stat-context {
   margin: 0;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
 }
@@ -1928,12 +1913,6 @@ const cpuTrendAriaLabel = computed(() => {
 
 .monitor-view__value-btn.monitor-view__cpu-usage[data-level='danger'] {
   color: var(--status-error-on-surface);
-}
-
-/* 四数字里的明细开关：不设上边距（上下文小字已提供间隔），紧跟小字 */
-.monitor-view__detail-toggle {
-  align-self: flex-start;
-  margin-top: var(--spacer-4);
 }
 
 /* ---- 趋势（#435）：固定 0–100% 的单序列折线，整块是按钮 ----
@@ -1985,7 +1964,7 @@ const cpuTrendAriaLabel = computed(() => {
   justify-content: space-between;
   gap: var(--spacer-8);
   margin-top: var(--spacer-4);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-family: var(--font-family-metric);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
@@ -1994,6 +1973,7 @@ const cpuTrendAriaLabel = computed(() => {
 
 .monitor-view__chart-caption {
   margin: var(--spacer-2) 0 0;
+  color: var(--text-secondary);
 }
 
 /* 可点击数值（#127：点击跳转历史视图并预选指标）：只重置按钮外观，字号/颜色沿用所在行的样式，
@@ -2014,11 +1994,12 @@ const cpuTrendAriaLabel = computed(() => {
   text-underline-offset: 2px;
 }
 
+/* 四数字主值（#435 验收反馈：对齐主机面板的 19px/600 读数比例，不再用 heading-xl 的 26px） */
 .monitor-view__metric {
   font-family: var(--font-family-metric);
-  font-size: var(--heading-xl-font-size);
-  line-height: var(--heading-xl-line-height);
-  font-weight: var(--heading-xl-font-weight);
+  font-size: var(--card-stat-value-font-size);
+  line-height: var(--card-stat-value-line-height);
+  font-weight: var(--heading-2xs-font-weight);
   color: var(--text-default);
   font-variant-numeric: tabular-nums;
 }
@@ -2045,13 +2026,6 @@ const cpuTrendAriaLabel = computed(() => {
 /* 无容量挂载折叠组（#122）：正文之后、与列表之间留白（折叠按钮自带尺寸，不另设边框） */
 .monitor-view__zero-volumes {
   margin-top: var(--spacer-8);
-}
-
-/* 温度分组（#126）：每个芯片一组，组间留白；复用面板标题与列表样式，不新增视觉范式 */
-.monitor-view__temp-groups {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacer-12);
 }
 
 /* ---- 磁盘 I/O（#76）：每个物理盘一块，指标网格窄屏自动换行（auto-fit），全部走设计 token ---- */
@@ -2678,39 +2652,11 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 /* ---- CPU 块（#435）：四数字 / 固定 0–100% 单曲线 / 每核条形 三块纵向排布 ---- */
-/* 三块都跨满整卡（`grid-column: 1 / -1`），因此这里只需单列。 */
+/* 三块都跨满整卡（`grid-column: 1 / -1`），因此这里只需单列；块间距对齐主机面板的 10px。 */
 .monitor-view__cpu {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--spacer-16);
-}
-
-.monitor-view__cpu-panel {
-  min-width: 0;
-}
-
-.monitor-view__cpu-panel--wide {
-  grid-column: 1 / -1;
-}
-
-/* 面板头（#127）：标题与折叠按钮同排；标题不再需要下边距 */
-.monitor-view__panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: var(--spacer-8);
-}
-
-.monitor-view__panel-head .monitor-view__panel-title {
-  margin-bottom: 0;
-}
-
-.monitor-view__panel-title {
-  margin: 0 0 var(--spacer-8);
-  color: var(--text-secondary);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
-  font-weight: var(--body-sm-strong-font-weight);
 }
 
 /* 每核条形（#435 决策 6）：曲线下方直接渲染、无标题行。
@@ -2725,7 +2671,7 @@ const cpuTrendAriaLabel = computed(() => {
 .monitor-view__cores {
   display: grid;
   grid-template-columns: repeat(var(--core-columns, 1), minmax(0, 1fr));
-  gap: var(--spacer-8);
+  gap: var(--spacer-6) var(--spacer-3);
   align-items: start;
   margin: 0;
   padding: 0;
@@ -2753,7 +2699,7 @@ const cpuTrendAriaLabel = computed(() => {
   justify-content: flex-end;
   width: 100%;
   height: var(--core-bar-height);
-  border-radius: var(--radius-2);
+  border-radius: var(--radius-3);
   background: var(--bg-overlay-l2);
   overflow: hidden;
   /* 轨道外框（#381）：forced-colors 下轨道底与填充都被统一成 Canvas，柱的**满格高度**消失，
@@ -2776,7 +2722,7 @@ const cpuTrendAriaLabel = computed(() => {
   display: block;
   width: 100%;
   height: var(--core-fill, 0%);
-  border-radius: var(--radius-2);
+  border-radius: var(--radius-3);
   background: var(--status-success-default);
   outline: var(--border-width-default) solid transparent;
   outline-offset: calc(-1 * var(--border-width-default));
@@ -2953,10 +2899,6 @@ const cpuTrendAriaLabel = computed(() => {
      主机条是顶栏下方的独立一条（#430），不再是网格项，不在此处列。 */
   .monitor-view__stats,
   .monitor-view__trend {
-    grid-column: auto;
-  }
-
-  .monitor-view__cpu-panel--wide {
     grid-column: auto;
   }
 }

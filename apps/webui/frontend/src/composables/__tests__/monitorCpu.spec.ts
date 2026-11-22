@@ -140,8 +140,8 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
     expect(coreBarColumns(48, 1300)).toBe(16)
   })
 
-  it('窄容器更早折行，且优先选能整除的行数：16 核 500px → 4+4+4+4（不是 6+6+4）', () => {
-    expect(coreBarColumns(16, 500)).toBe(4)
+  it('窄容器更早折行，且优先选能整除的行数：16 核 500px → 8+8（不是 6+6+4）', () => {
+    expect(coreBarColumns(16, 500)).toBe(8)
   })
 
   it('128 核在 1300px 下 8 行 × 16（等于 128，完全等分）', () => {
@@ -150,10 +150,10 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
 
   it('最小格宽 / 间距常量与 design-tokens 的真实值一致（JS 与 CSS 不得各排一份间距）', () => {
     const tokens = designTokens()
-    // 间距：CSS 用 var(--spacer-8) 排格间距，JS 用同一个数值算列数
-    expect(tokens.get('--spacer-8')).toBe(`${CORE_BAR_GAP}px`)
-    // 最小格宽：CSS 侧仍走同一 token 名谱系（--core-bar-height 为轨道高度；格宽由 JS 计算）
-    expect(tokens.get('--core-bar-height')).toBe('72px')
+    // 间距：CSS 用 var(--spacer-3) 排格间距，JS 用同一个数值算列数
+    expect(tokens.get('--spacer-3')).toBe(`${CORE_BAR_GAP}px`)
+    // 条形轨道高度对齐主机面板（54px）
+    expect(tokens.get('--core-bar-height')).toBe('54px')
   })
 
   it('列数受最小格宽约束：1300px 下 64 核的每格宽度不窄于 CORE_BAR_MIN_WIDTH', () => {
@@ -165,17 +165,17 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
     expect(cellWidth).toBeGreaterThanOrEqual(56)
   })
 
-  it('窄容器 + 大核数：48/128 仍折行；128 × 500 的末行偏短是已登记的已知边界', () => {
+  it('窄容器 + 大核数：48/128 仍折行；只有极窄 + 128 核会末行偏短（已知边界）', () => {
     // 用户举的例子在窄屏仍能等分
     expect(coreBarColumns(48, 350)).toBe(4) // 12 行 × 4
-    expect(coreBarColumns(48, 500)).toBe(6) // 8 行 × 6
-    // 128 核：宽容器完全等分（8 行 × 16）；750/500 只能少行优先，末行偏短
+    expect(coreBarColumns(48, 500)).toBe(8) // 6 行 × 8
+    // 128 核：宽容器完全等分（8 行 × 16），500px 也能 16 行 × 8
     expect(coreBarColumns(128, 1300)).toBe(16)
     expect(coreBarColumns(128, 750)).toBe(10) // 13 行：12 × 10 + 8
-    expect(coreBarColumns(128, 500)).toBe(7) // 19 行：18 × 7 + 2（已知边界，见 coreBarColumns 注释）
-    expect(128 - (Math.ceil(128 / 7) - 1) * 7).toBe(2)
-    // 128 × 350 的候选里 5 列 × 26 行末行 3（≥ 半行）
+    expect(coreBarColumns(128, 500)).toBe(8) // 16 行 × 8（完全等分）
+    // 128 × 350 仍是已知边界：5 列 × 26 行、末行 3（≥ 半行）
     expect(coreBarColumns(128, 350)).toBe(5)
+    expect(128 - (Math.ceil(128 / 5) - 1) * 5).toBe(3)
   })
 
   it('典型核数在常见宽度下：末行至少占一半（不出现「23 + 1」）', () => {

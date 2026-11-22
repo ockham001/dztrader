@@ -320,12 +320,11 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     // 每核频率明细入口已删除（频率进条形 tooltip）
     expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-core"]').attributes('title')).toContain('MHz')
-    // 条形不属于任何折叠内容：展开温度明细后数量不变
-    await toggle(wrapper, 'monitor-temperature-detail-toggle')
+    // 条形不属于任何折叠内容（CPU 块已没有折叠区）：始终全部渲染
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
   })
 
-  it('每传感器明细默认收起：卡片显示最高温作为主数值，展开后按芯片分组显示全部', async () => {
+  it('温度明细不进页面 DOM：全部传感器通过 title / aria 可达，四数字行没有折叠按钮（#435 验收收敛）', async () => {
     const wrapper = await mountView(makeSysmonSnapshot({
       sensorData: true,
       temperatures: [
@@ -336,16 +335,16 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     }))
 
     expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
-    // 主数值 = 最高温度；关键数字 = 传感器 / 芯片数量（不伪造 0 °C）
+    expect(wrapper.find('[data-test="monitor-temperature-detail-toggle"]').exists()).toBe(false)
+    // 主数值 = 最高温度；归属 = 该读数的芯片与通道
     expect(wrapper.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
-    // 主数值带归属（哪颗芯片 / 哪个通道），不丢可读命名口径
-    // #435：标签本身已写「最高温度」，摘要不再重复这个词
-    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text())
-      .toBe('CPU · Package id 0 · 3 个传感器 · 2 个芯片')
-
-    await toggle(wrapper, 'monitor-temperature-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(3)
-    expect(wrapper.findAll('[data-test="monitor-temperature-group"]')).toHaveLength(2)
+    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
+    // 全部传感器在 title 里（悬停可看；读屏用同一份 aria-label）
+    const title = wrapper.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
+    expect(title).toContain('CPU · Package id 0 45.5 °C')
+    expect(title).toContain('CPU · Core 0 41.5 °C')
+    expect(title).toContain('主板 ACPI · temp1 27.8 °C')
+    expect(wrapper.find('[data-test="monitor-temperature"]').attributes('aria-label')).toBe(`温度 45.5 °C；${title}`)
   })
 
   it('每盘七项明细默认收起：行本身平铺可见，「展开明细」给出完整七项', async () => {
@@ -467,20 +466,7 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     expect(Object.keys(localStorage).filter(key => key.includes('ledger'))).toEqual([])
   })
 
-  it('折叠状态不持久化：重新挂载（等价刷新）回到默认收起', async () => {
-    const wrapper = await mountView()
-    await toggle(wrapper, 'monitor-temperature-detail-toggle')
-    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(2)
 
-    // 重新挂载 = 刷新的组件生命周期：不读写任何持久化存储，必须回到产品认为重要的默认视图
-    wrapper.unmount()
-    const refreshed = await mountView()
-
-    expect(refreshed.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
-    expect(refreshed.find('[data-test="monitor-temperature-detail-toggle"]').attributes('aria-expanded')).toBe('false')
-    // 每核条形不属于折叠内容：#435 起常驻 CPU 块，刷新前后都在
-    expect(refreshed.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-  })
 })
 
 describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）', () => {
@@ -572,9 +558,10 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 列数来源：视图用 ResizeObserver 实测容器宽度，交给纯函数 coreBarColumns
     // 列数来源与卸载清理由行为用例覆盖（MonitorView.spec：ResizeObserver 桩驱动列数 / 卸载 disconnect），
     // 这里只锁 CSS 契约，不断言私有实现表达式（unit-test-standard §1.2）
-    // 条形高度回到参考图的量级（36 → 72）：高度是图表几何量，走 token
+    // 条形高度 / 四数字字号对齐参照（主机面板 54px / 19px）：都是几何量，走 token
     const tokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
-    expect(tokens.get('--core-bar-height')).toBe('72px')
+    expect(tokens.get('--core-bar-height')).toBe('54px')
+    expect(tokens.get('--card-stat-value-font-size')).toBe('19px')
   })
 
   it('占用率主数值按 resourceLevel 的 70/90 着色，文字用 -on-surface 配对档（#435 决策 7）', () => {
