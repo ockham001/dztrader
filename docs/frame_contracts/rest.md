@@ -60,7 +60,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | 方法/路径 | 语义 | 帧/镜像联动 |
 |---|---|---|
 | GET `/api/market-sources` | 行情源列表（DB 真相源，返回 `is_added=1` 的 `dzmd_*` 行；运行状态由 WS `process_status` 表达） | 读取 DB（真相源，见 §3） |
-| GET `/api/market-sources/available` | 扫描可用网关 exe（`dzmd_*`/`dztd_*`）列表（`added` = DB 存在且 `is_added=1`） | 文件系统扫描 |
+| GET `/api/market-sources/available` | 扫描可用行情源 exe（`dzmd_*`）列表（`added` = DB 存在且 `is_added=1`）；交易接口见 §2.10 | 文件系统扫描 |
 | GET `/api/market-sources/{id}` | 详情 | DB + 进程镜像 |
 | POST `/api/market-sources` | 创建行情源条目 | DB；变更后广播 `data_changed{market_sources}` |
 | PUT `/api/market-sources/{id}` | 更新条目（DB 显示名等字段） | DB；变更后广播 `data_changed{market_sources}` |
@@ -523,6 +523,55 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 登出不发送柜台登出请求，直接释放 API（契约 td-connection）；登出后账户回到 `Idle`，自动登录排程可在下一个 `login_time` 重新登录。
 - 本端点不改变账户配置、不读交易库，不受 §2.9.8 降级影响。
 
+### 2.10 交易接口进程
+
+交易接口（td 网关，`dztd_*`）是交易账户页的一级对象：进程可**零账户**存在并运行，账户是接口内部配置项（§2.9.7）；接口生命周期由页面显式管理（ADR 0053），与行情源页同构——添加即动态注册 + 启动，不提供持久的「停止但保留」，删除 = 停止 + 移除进程配置条目。接口**未运行时**的「启动进程」入口用于崩溃恢复（与行情源同款）。
+
+| 方法/路径 | 语义 | 帧/生效信号 |
+|---|---|---|
+| GET `/api/td/gateways/available` | 可用交易接口列表：扫描 App Root 的 `dztd_*` exe（任意已认证用户） | 文件系统扫描 + 进程配置镜像（`added` / `running`） |
+| POST `/api/td/gateways/{name}/start` | 添加/启动交易接口（admin）。`name` = 进程名（= exe stem）；body 可选 `{"display_name":…}` | → `REQUEST_PROCESS_CONTROL{Start}`（未注册时 master 动态注册并持久化，契约 process；`display_name` 走配置 patch）；生效信号 = WS `process_config` + `process_status` |
+| POST `/api/td/gateways/{name}/stop` | 停止交易接口进程（admin；瞬态，不是持久期望态） | → `REQUEST_PROCESS_CONTROL{Stop}`；生效信号 = WS `process_status` |
+| DELETE `/api/td/gateways/{name}` | 移除交易接口（admin）：停止进程 + 删除进程配置条目（master 重启后不再拉起） | → `REQUEST_PROCESS_CONTROL{Remove}`；生效信号：`process_config` 条目消失 = 移除完成的权威信号（契约 process） |
+
+**`GET /api/td/gateways/available` 响应**：200，按 `name` 升序：
+
+```json
+[
+  { "name": "dztd_ctp", "display_name": "CTP 交易接口", "added": true, "running": true }
+]
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| name | string | 进程名（= exe stem = 接口身份，不可改名） |
+| display_name | string | 已注册时取进程配置 `display_name`；未注册时回退 `name` |
+| added | bool | 进程配置镜像中存在该 `dztd_*` 条目 |
+| running | bool | `process_status` 为 Running |
+
+**预检**（失败时不写帧）：
+
+1. 写端点要求 admin 角色；否则 403 `{"error":"admin required","code":"admin_required"}`。
+2. `name` 不是合法的交易接口进程名（不匹配 `dztd_*`，契约 process 命名）→ 400 `{"error":"invalid gateway","code":"invalid_gateway"}`。
+3. `start`：目标既未注册、App Root 下也扫描不到同名 exe → 400 `invalid_gateway`（master 的动态注册只接受可扫描到的网关 exe）。
+4. `stop` / `DELETE`：目标未注册 → 404 `{"error":"gateway not found","code":"gateway_not_found"}`（`Remove` 不幂等，已移除视为失败）。
+5. `DELETE` 的 **guard**：该网关在账户注册表（§2.9.9）中存在任意账户（含已禁用 / 离线）→ 409 `{"error":"gateway has accounts","code":"gateway_has_accounts"}`；注册表降级（`available:false`，无法确认是否为空）→ 503 `{"error":"account registry unavailable"}`（不带 `code`），**不得在无法确认时移除接口**。
+6. 写通道不可用：503 `{"error":"shm writer not available"}` / `{"error":"shm write failed"}`（不带 `code`，同 §2.9.7）。
+
+<!-- pending-symbol: gateway_has_accounts (#436) -->
+
+**响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表已生效**；成败以 WS `process_config` / `process_status` 为准（契约 process）。
+
+**约束**：
+
+- 接口身份 = 进程名 = exe stem；**不支持原地改名**（改名 = 删除后重新添加）。`display_name` 是进程配置字段，随 `dztraderd.json` 持久化，不是独立实体。
+- 接口可零账户存在与运行；账户增删改**不改变**接口进程生命周期（§2.9.7 的写入前置仍是「网关已注册且 Running」，由页面在 Running 时提供账户操作入口）。
+- 「停止」是瞬时状态：master 启动时按进程配置无差别拉起（契约 process 启动编排），故 `stop` 不是持久下线手段；持久下线 = `DELETE`。
+- `DELETE` 前必须先清空该接口账户（预检 5）：账户配置持久化在接口自身配置文件（契约 td-config §6），进程条目移除不删除该文件——带账户移除会导致重新添加时账户复活，并造成 `account_id` 全局唯一校验窗口（ADR 0045 / 契约 td-config §5）。
+- 未运行（Starting / Crashed / Stopped / Stopping）是瞬时 / 异常状态：崩溃按重启策略自动恢复，次数耗尽或 spawn 失败后由页面「启动进程」（本端点 `start`）人工恢复；不得以删除重加作为恢复手段。
+
+前端义务见 §4。
+
 ---
 
 ## 3. 真相源声明
@@ -532,6 +581,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - **配置与状态数据**：进程镜像（MirrorStore）为投影，真相源为对应帧契约的 RTN。
 - **用户/安全**：DB 为真相源，变更经 `data_changed` 广播。
 - **交易数据**：交易库 `trade.db` 为唯一真相源，dzweb 只读直查（ADR 0043）；WS 交易事件是帧转发（不落记录镜像），不构成记录快照；§2.9 的 REST 读端点是记录基线的唯一查询通路。
+- **交易接口进程**：master 进程配置（`$DZTRADER_HOME/configs/dztraderd.json`，契约 process）为存在性唯一真相源；dzweb 的进程配置镜像与 §2.10 列表是投影。
 - **交易账户配置**：目标 td 网关的配置文件为真相源（契约 td-config §6）；dzweb 的配置镜像与账户注册表是投影（契约 td-config §5）。
 
 ---
@@ -541,11 +591,14 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 设置类 REST 请求成功后进入 pending，以对应 WS 领域消息清除（契约 webui-ws §5）；REST 响应成功≠已生效。
 - `data_changed{scope}` 到达后按 scope 重新 REST 拉取对应列表；不得用本地缓存回填。
 - 行情源列表以 DB 为准（REST 拉取），进程卡片以 `process_config`/`process_status` 为准（WS 推送）。
+- **交易接口卡片**（§2.10）：交易账户页的卡片列表从 WS `process_config` / `process_status` 的 `dztd_*` 条目派生（不新增列表端点）；「添加交易接口」用 `GET /api/td/gateways/available`，确认后调 `start`。
+- 接口非 Running（启动中 / 崩溃重启窗口 / 重启耗尽 / spawn 失败 / 关机中）时展示「启动进程」（`start`），账户写操作禁用并说明原因（后端 §2.9.7 409 兜底）；**不得以删除重加代替恢复**。
+- 删除接口前前端先确认该卡片无账户，有账户时禁用删除并提示「先删除账户」（体验优化；权威 guard 在服务端 409 `gateway_has_accounts`）。
 - 交易数据（委托/成交/持仓/资金）基线一律由 REST 拉取（§2.9）：WS 交易事件与 `snapshot` 都不能替代基线（`snapshot` 不含交易记录，WS 只推增量）。合并、有界窗口、批量刷新、日切清空、精度格式化等行为义务见契约 webui-ws §5。
 - 账户筛选变化必须丢弃 cursor 从首页重拉；`available:false` 时展示统一降级提示（不得显示 0 冒充数据），按退避重试。
 - 统计（§2.9.5）无 WS 推送：前端按需轮询，建议与列表批量刷新同节流（≤1Hz），日切或 `data_changed{scope:"td"}` 后必须重拉。
 - **账户配置页**（§2.9.7/§2.9.9）：
-  - 账户列表以 `GET /api/td/accounts` 的注册表为视角（跨网关全集）；`available:false` 时展示降级提示，**不得**当作"无账户"。
+  - 账户列表以 `GET /api/td/accounts` 的注册表为视角（跨网关全集），按网关分发到各交易接口卡片；`available:false` 时展示降级提示，**不得**当作"无账户"。
   - **唯一性预检**：添加账户前先查注册表，发现 `account_id` 已被任何网关占用（含已禁用/离线）→ 前端直接提示冲突并**不发请求**。这只是体验优化，权威校验在 dzweb（409 `account_exists`）——两个客户端同时添加时只有服务端能裁决。
   - 编辑/启停/删除的 pending 以 WS `td_rtn_config` 清除（契约 webui-ws §2.2）；配置帧到达后整体覆盖本地镜像（全量，后到覆盖先到），不得用返回的 200 当作已生效。
   - 账户表单字段按网关的 `interface_type`（从 `instance_id` 派生，契约 td-config §1）选择；不展示明文密码（回报中恒为 `"****"`）。
