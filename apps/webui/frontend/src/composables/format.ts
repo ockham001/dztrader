@@ -24,9 +24,10 @@
  * - 毫秒（时钟偏差 / 误差界，契约 sysmon §2.9）1 位；偏差带符号（正 = 本地快）。
  *
  * 不可用语义（契约 sysmon §2.5）：`null` / `NaN` / `±Infinity` 一律返回
- * {@link UNAVAILABLE_TEXT}——**不得用 0 冒充**。非法负值只在**字节与速率**格式化器里视为
- * 不可用（负容量/负吞吐没有物理意义）；其余格式化器不臆断取值范围（比率/温度/延迟是否合法
- * 属于上层采集与校验语义）。「不可用」（单元格值缺失）与「暂无数据」（整块无数据）是两种
+ * {@link UNAVAILABLE_TEXT}——**不得用 0 冒充**。非法负值在**字节与速率**格式化器里视为
+ * 不可用（负容量/负吞吐没有物理意义），**时长类格式化器**（{@link formatAge} /
+ * {@link formatDuration} / {@link formatUptime}）同样把负值视为不可用（不存在负时长）；
+ * 其余格式化器不臆断取值范围（比率/温度/延迟是否合法属于上层采集与校验语义）。「不可用」（单元格值缺失）与「暂无数据」（整块无数据）是两种
  * 不同事实，后者由视图的空态承担，不经过本模块。
  */
 
@@ -371,8 +372,8 @@ export function formatNumberAuto(value: number | null | undefined): string {
  * 为什么需要派生：契约 §2.5 的 `platform_description` 在 Linux 上形如
  * `Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)`、Windows 上形如 `Windows 10 Pro (build 19045)`，
  * 而主机条把「内核」单列（`platform.kernel`），若系统字段直接用原值，同一事实会在一行里出现两次
- * （#373 的重复根因）。派生只发生在展示层：不改契约、不改发送方，原始值仍在 title 与
- * 历史/配置视图的副标题里可见。
+ * （#373 的重复根因）。派生只发生在展示层：不改契约、不改发送方，原始值仍原样显示在
+ * 历史 / 配置视图的副标题里（实时视图已无副标题，见 #430）。
  *
  * 规则：只剥**末尾**的 `(kernel …)` / `(build …)`（两段之间可以有空格），剥完为空则返回空串，
  * 由调用方决定占位（视图侧统一显示 `—`）。其它括号段（如发行版名自带的代号）不动。
@@ -388,8 +389,9 @@ export function formatPlatformName(description: string | null | undefined): stri
  * 运行时长（秒 → 参考图口径的「已运行」文案，#430）：`1 天 23 小时` / `22 小时 1 分` / `3 分钟`。
  *
  * 与 {@link formatDuration} 刻意不同：那个是「覆盖时长」（天/小时保留 1 位小数，用于
- * 「最近 15 分钟」这类口径），这里是**人类读的机器运行时长**——不保留小数、不显示秒
- * （秒级跳动对「这台机器跑了多久」没有信息量，反而让主机条每秒都在变）。向下取整。
+ * 「最近 15 分钟」这类口径），这里是**人类读的机器运行时长**——不保留小数；≥1 分钟不显示秒
+ * （秒级跳动对「这台机器跑了多久」没有信息量），不足 1 分钟才按秒（`59 秒`，否则会显示「0 分钟」）。
+ * 向下取整。
  */
 export function formatUptime(seconds: number | null | undefined): string {
   if (!isFiniteNumber(seconds) || seconds < 0) return UNAVAILABLE_TEXT
@@ -398,6 +400,22 @@ export function formatUptime(seconds: number | null | undefined): string {
   if (total >= 3_600) return `${Math.floor(total / 3_600)} 小时 ${Math.floor((total % 3_600) / 60)} 分`
   if (total >= 60) return `${Math.floor(total / 60)} 分钟`
   return `${total} 秒`
+}
+
+/**
+ * 完整日期时间（Unix 毫秒 → `YYYY-MM-DD HH:MM:SS`）。
+ *
+ * 与 {@link formatClockTime} 的分工：那个是主机条状态槽的紧凑时刻（跨日才带 `MM-DD`），
+ * 这个是历史 / 配置视图副标题的完整时间（日期必须始终可见——副标题回答「这份数据是哪天更新的」）。
+ * 非法时间戳返回不可用占位。
+ */
+export function formatDateTime(unixMs: number | null | undefined): string {
+  if (!isFiniteNumber(unixMs)) return UNAVAILABLE_TEXT
+  const date = new Date(unixMs)
+  if (Number.isNaN(date.getTime())) return UNAVAILABLE_TEXT
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
+    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 /**

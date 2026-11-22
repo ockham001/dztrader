@@ -27,6 +27,7 @@ import {
   UNAVAILABLE_TEXT,
   formatAge,
   formatClockTime,
+  formatDateTime,
   formatDecimal,
   formatFrequency,
   formatMilliseconds,
@@ -110,8 +111,8 @@ import { useToastStore } from '@/stores/toast'
 // 明细展开（#363）：每个台账行可展开完整明细（卷 / 盘 / 网卡 / 时钟各一套），折叠状态不持久化。
 // CPU 卡内的每核频率与每传感器明细仍是卡片级折叠（#127 的既有语义，未变）。
 // 卡片折叠（#127）：每核频率明细 / 每传感器明细默认收起、展开显示全部；
-// 折叠状态不持久化；可用性空态不进折叠。实时视图为单列纵向（#363：主机条 / CPU 宽卡 /
-// 指标台账三段都跨满整行，列数不再是版面变量），图表用容器自适应重排（沿用既有断点，
+// 折叠状态不持久化；可用性空态不进折叠。实时视图为「页头 + 通栏主机条（#430）+ 单列网格」：
+// 网格内 CPU 宽卡 / 指标台账跨满整行，列数不再是版面变量；图表用容器自适应重排（沿用既有断点，
 // 不使用容器查询）。
 // 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
 // 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向说明（#326：正 = 本地快于
@@ -279,14 +280,6 @@ function volumeReasonDesc(reason: string | undefined): string {
   if (reason === 'collect_failed') return '采集失败'
   if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
   return reason
-}
-
-function formatDateTime(unixMs: number): string {
-  const date = new Date(unixMs)
-  if (Number.isNaN(date.getTime())) return UNAVAILABLE_TEXT
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
-    + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 // ---- 可用性映射（契约 sysmon §2.5：按数据渲染，不按 OS 名硬编码分支）----
@@ -653,7 +646,7 @@ function displayOrDash(value: string | number | null | undefined): string {
 const hostName = computed(() => displayOrDash(system.value?.hostname))
 /**
  * 系统（发行版名）：`platform_description` 已含 `(kernel …)` / `(build …)`，主机条把内核单列，
- * 所以这里剥掉末尾括号段——纯展示层派生，规则与边界见 `formatPlatformName`（#430 决策 3）。
+ * 所以这里剥掉末尾括号段——纯展示层派生，规则与边界见 `formatPlatformName`（#429 决策 3）。
  */
 const hostSystem = computed(() => displayOrDash(formatPlatformName(platformDescription.value)))
 const hostKernel = computed(() => displayOrDash(snapshot.value?.platform?.kernel))
@@ -669,7 +662,7 @@ const hostStatusText = computed(() => {
   return `更新于 ${formatClockTime(timestamp, nowMs.value)}`
 })
 
-/** 逻辑核数文案（CPU 四数字的小字上下文用；主机条不再显示 CPU 型号 · 核数，#430 决策 6） */
+/** 逻辑核数文案（CPU 四数字的小字上下文用；主机条不再显示 CPU 型号 · 核数，#429 决策 6） */
 const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
 const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
 
@@ -757,7 +750,10 @@ const cpuTrendAriaLabel = computed(
   <div class="monitor-view">
     <!-- 顶栏容器（#328）：≥768 单行（标题组 + Tab）；<md 用 display:contents 拆开，
          让视图切换行成为滚动容器 .monitor-view 的直接子级，从而能单独吸顶（不钉整块 header）。 -->
-    <div class="monitor-view__topbar">
+    <div
+      class="monitor-view__topbar"
+      :class="{ 'monitor-view__topbar--host-follows': viewMode === 'realtime' && snapshot }"
+    >
       <header class="monitor-view__header">
         <div class="monitor-view__heading">
           <h1 class="monitor-view__title">资源监控</h1>
@@ -1556,6 +1552,12 @@ const cpuTrendAriaLabel = computed(
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: var(--spacer-16);
+  margin-bottom: var(--spacer-24);
+}
+
+/* 实时视图且有主机条时，页头与主机条读成一组（间距 12 而不是 24）；
+   历史 / 配置视图与「等待快照」空态没有主机条，保持原有 24 间距（#430）。 */
+.monitor-view__topbar--host-follows {
   margin-bottom: var(--spacer-12);
 }
 
@@ -1611,8 +1613,9 @@ const cpuTrendAriaLabel = computed(
   }
 }
 
-/* 实时视图是单列纵向（#363）：主机条 / CPU 宽卡 / 指标台账三段都跨满整行，
-   列数不再是版面变量——台账自身的七列（≥1024）/ 三行堆叠（<1024）才是分段的那一层。
+/* 实时视图的网格是单列纵向（#363）：CPU 宽卡 / 指标台账跨满整行（主机条在网格之外，
+   是页头下方的通栏一条，#430）。列数不再是版面变量——台账自身的七列（≥1024）/ 三行堆叠
+   （<1024）才是分段的那一层。
    沿用既有断点体系（xl=1280，#127 明确不使用容器查询），图表用容器自适应重排。
    卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
    造成大片卡内留白（实测温度 326px / 内存 169px / 网络 140px，1280 下网络还有 140px；#325）。 */

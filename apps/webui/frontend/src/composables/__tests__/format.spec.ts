@@ -6,6 +6,7 @@ import {
   formatClockHeadroom,
   formatClockThreshold,
   formatClockTime,
+  formatDateTime,
   formatCount,
   formatCountPerSec,
   formatDecimal,
@@ -425,6 +426,20 @@ describe('formatPlatformName：platform_description 剥掉末尾 (kernel …) / 
   it('只剥末尾那一段：发行版名自带的其它括号段不动', () => {
     expect(formatPlatformName('Fedora Linux 40 (Workstation Edition) (kernel 6.9.4)'))
       .toBe('Fedora Linux 40 (Workstation Edition)')
+  })
+})
+
+describe('formatDateTime：历史 / 配置副标题的完整日期时间', () => {
+  const at = (year: number, month: number, day: number, hour: number, minute: number, second: number): number =>
+    new Date(year, month - 1, day, hour, minute, second).getTime()
+
+  it('本地日期 + 时分秒（日期始终可见，与主机条的紧凑时刻不同）', () => {
+    expect(formatDateTime(at(2026, 10, 21, 15, 0, 0))).toBe('2026-10-21 15:00:00')
+  })
+
+  it('非有限值 / 非法时间戳 → 不可用', () => {
+    expect(formatDateTime(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatDateTime(Number.NaN)).toBe(UNAVAILABLE_TEXT)
   })
 })
 

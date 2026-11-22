@@ -1872,8 +1872,9 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
     expect(subtitle.exists()).toBe(true)
     expect(subtitle.text()).toContain('Ubuntu 24.04.1 LTS')
     expect(subtitle.text()).toContain('更新于')
-    // 主机条只属于实时视图
+    // 主机条只属于实时视图；没有主机条时顶栏不收紧间距
     expect(wrapper.find('[data-test="monitor-host"]').exists()).toBe(false)
+    expect(wrapper.find('.monitor-view__topbar').classes()).not.toContain('monitor-view__topbar--host-follows')
 
     await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
     await flushPromises()
@@ -2099,7 +2100,7 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     // 标签与值分开渲染（主机面板同一做法：名字次级色、值主色）
     expect(host.findAll('.monitor-view__host-label').map(label => label.text()))
       .toEqual(['主机', '系统', '内核', '已运行'])
-    // #430 决策 6：CPU 型号 · 逻辑核数已移出主机条（归 CPU 块），不再在主机条里出现
+    // #429 决策 6：CPU 型号 · 逻辑核数已移出主机条（归 CPU 块），不再在主机条里出现
     expect(host.text()).not.toContain('AMD Ryzen 9 7950X')
     expect(host.text()).not.toContain('逻辑核')
     vi.restoreAllMocks()
@@ -2133,6 +2134,8 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     expect(wrapper.find('.monitor-view__header [data-test="monitor-host"]').exists()).toBe(false)
     // 是滚动容器的直接子级（与顶栏平级）
     expect(wrapper.find('.monitor-view > [data-test="monitor-host"]').exists()).toBe(true)
+    // 有主机条时顶栏收紧下间距（历史 / 配置视图没有主机条，保持 24，见上一条用例）
+    expect(wrapper.find('.monitor-view__topbar').classes()).toContain('monitor-view__topbar--host-follows')
   })
 
   it('四数字各带一行小字上下文：逻辑核 / 5 分 15 分量程 / 型号标注 / 芯片与传感器数', async () => {

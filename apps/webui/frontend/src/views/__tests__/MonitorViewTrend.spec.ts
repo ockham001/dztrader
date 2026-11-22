@@ -559,7 +559,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   }
 
-  it('监控页是单列纵向：三段都跨满整行，没有任何媒体规则为页面网格改列数（#363）', () => {
+  it('监控页网格是单列纵向：宽卡与台账跨满整行，没有任何媒体规则为网格改列数（#363）', () => {
     // 基础规则即单列。必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
     const grid = ruleBody('.monitor-view__grid')
@@ -858,6 +858,9 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 单行由基础规则保证（topbar nowrap）；可收缩的是作为 flex item 的 header
     expect(ruleBody('.monitor-view__topbar')).toContain('flex-wrap: nowrap')
     expect(ruleBody('.monitor-view__header')).toContain('min-width: 0')
+    // 间距分档：有主机条时页头与它读成一组（12），其余视图 / 等待态保持 24（#430）
+    expect(ruleBody('.monitor-view__topbar')).toContain('margin-bottom: var(--spacer-24)')
+    expect(ruleBody('.monitor-view__topbar--host-follows')).toContain('margin-bottom: var(--spacer-12)')
     // 中档只收紧副标题：省略号而不是把 Tab 顶到下一行
     const subtitle = ruleInMedia('@media (min-width: 768px) and (max-width: 1279.98px)', '.monitor-view__subtitle')
     expect(subtitle).toContain('white-space: nowrap')
