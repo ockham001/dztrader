@@ -27,6 +27,7 @@ import {
   RESOURCE_WARN_RATIO,
   resourceLevel,
 } from '@/composables/useResourceLevel'
+import type { ResourceLevel } from '@/composables/useResourceLevel'
 import {
   UNAVAILABLE_TEXT,
   formatAge,
@@ -34,6 +35,7 @@ import {
   formatDateTime,
   formatDecimal,
   formatFrequency,
+  formatFrequencyParts,
   formatMilliseconds,
   formatPercent,
   formatPlatformName,
@@ -710,18 +712,12 @@ const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.
 /** 标题行右侧的 CPU 型号（原样展示，过长由 CSS 省略号 + title 兜底；#429 决策 6 从主机条移入） */
 const cpuModel = computed(() => system.value?.cpu_model?.trim() ?? '')
 
-/** 饱和核数（快照的 `saturated` 标记就是唯一判据，不在视图里另算阈值） */
-const saturatedCoreCount = computed(() => cpuCores.value.filter(core => core.saturated).length)
-
 /**
- * 占用率的小字上下文：只写逻辑核数；饱和只在**真的发生**时补一句（「无核饱和」是零信息——
- * 没有饱和时这半句既不加判断也不加动作，徒占一行；#435 验收反馈）。
+ * 占用率的小字上下文：只写逻辑核数。
+ * 8080 验收反馈：「无核饱和」零信息、真出现时也没人据此做动作——「饱和」这类信息不要了，
+ * 每核条形也不再标记饱和核（见 `coreBars` 的按等级着色）。
  */
-const coresContextText = computed(() => {
-  if (logicalCoreCount.value <= 0) return '—'
-  if (saturatedCoreCount.value === 0) return `${logicalCoreCount.value} 逻辑核`
-  return `${logicalCoreCount.value} 逻辑核 · ${saturatedCoreCount.value} 核饱和`
-})
+const coresContextText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
 
 /**
  * 占用率主数值的展示等级（#435 决策 7）：与顶栏 CPU 徽章共用 `useResourceLevel` 的 70 / 90
@@ -748,6 +744,12 @@ const frequencyAverage = computed(() => {
   return count === 0 ? null : Math.round(sum / count)
 })
 
+/**
+ * 频率主值的「数值 + 单位」两段排版（#435 8080 验收：对齐主机面板的 19px 数字 + 12px 单位，
+ * ≥1000 MHz 换成 GHz）。格式化口径只在 `formatFrequencyParts` 里定义。
+ */
+const frequencyDisplay = computed(() => formatFrequencyParts(frequencyAverage.value))
+
 /** 每核频率按 OS CPU 编号查表（tooltip 用；`cpu.core_frequencies[].index` 与 `cpu.cores[].index` 同源） */
 const frequencyByCoreIndex = computed(() => {
   const map = new Map<number, number>()
@@ -758,11 +760,12 @@ const frequencyByCoreIndex = computed(() => {
 /** 一条每核条形：数值、填充比例与 title / 读屏共用的文案（视图只负责摆，不再判断） */
 interface CoreBar {
   index: number
-  saturated: boolean
+  /** 本核占用率的展示等级（normal / warn / danger），与顶栏 CPU 徽章同一 70 / 90 分档 */
+  level: ResourceLevel | null
   /** 本帧是否有该核读数：false 时轨道加斜纹，避免「缺失」与「真的 0%」在图形层同形 */
   available: boolean
   style: Record<string, string>
-  /** `核 N · 45.0%`；频率可用时追加 ` · 3200 MHz`，饱和核追加 ` · 饱和` */
+  /** `核 N · 45.0%`；频率可用时追加 ` · 3.20 GHz` */
   text: string
 }
 
@@ -782,11 +785,10 @@ const coreBars = computed<CoreBar[]>(() => cpuCores.value.map(core => {
   if (typeof frequency === 'number' && Number.isFinite(frequency) && frequency > 0) {
     parts.push(formatFrequency(frequency))
   }
-  if (core.saturated) parts.push('饱和')
   const style: Record<string, string> = ratio === null ? {} : { '--core-fill': formatPercent(ratio) }
   return {
     index: core.index,
-    saturated: core.saturated,
+    level: ratio === null ? null : resourceLevel(ratio),
     available: ratio !== null,
     style,
     text: parts.join(' · '),
@@ -1075,7 +1077,10 @@ const cpuTrendAriaLabel = computed(() => {
             <div v-if="frequencyAvailable" class="monitor-view__stat" data-test="monitor-frequency">
               <p class="monitor-view__stat-label">频率</p>
               <template v-if="coreFrequencies.length > 0">
-                <div class="monitor-view__metric" data-test="monitor-frequency-value">{{ formatFrequency(frequencyAverage) }}</div>
+                <div
+                  class="monitor-view__metric monitor-view__metric--with-unit"
+                  data-test="monitor-frequency-value"
+                >{{ frequencyDisplay.value }} <span class="monitor-view__stat-unit">{{ frequencyDisplay.unit }}</span></div>
               </template>
               <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
                 <div class="ds-empty__title">暂无数据</div>
@@ -1159,7 +1164,8 @@ const cpuTrendAriaLabel = computed(() => {
           </div>
 
           <!-- 每核条形（#435 决策 6）：曲线下方直接渲染、无标题行；列数由容器宽度实测后交给纯函数
-               计算（多行时每行尽量等分）。title / 读屏文案：`核 N · X% · Y MHz`（频率不可用省略）。 -->
+               计算（多行时每行尽量等分）。title / 读屏文案：`核 N · X% · Y GHz`（频率不可用省略）；
+               填充颜色按占用率等级（70 / 90）与顶栏 CPU 徽章同判据，不再标记「饱和」核。 -->
           <div ref="coreBarsRef" class="monitor-view__core-bars" data-test="monitor-cpu-cores">
             <ul
               v-if="coreBars.length > 0"
@@ -1174,7 +1180,6 @@ const cpuTrendAriaLabel = computed(() => {
                 :aria-label="bar.text"
                 data-test="monitor-core"
                 :data-core-index="bar.index"
-                :data-saturated="bar.saturated ? 'true' : undefined"
               >
                 <span
                   class="monitor-view__core-bar"
@@ -1183,15 +1188,10 @@ const cpuTrendAriaLabel = computed(() => {
                 >
                   <span
                     class="monitor-view__core-bar-fill"
-                    :class="{ 'monitor-view__core-bar-fill--saturated': bar.saturated }"
+                    :data-level="bar.level ?? undefined"
                     :style="bar.style"
                   ></span>
                 </span>
-                <span
-                  v-if="bar.saturated"
-                  class="monitor-view__core-tag"
-                  data-test="monitor-core-saturated"
-                >饱和</span>
               </li>
             </ul>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
@@ -1923,14 +1923,18 @@ const cpuTrendAriaLabel = computed(() => {
   min-width: 0;
 }
 
+/* 绘图区底色比卡片略深/略浅一档（主机面板同款）：曲线与网格线要和页面底色分层，
+   否则固定 0–100% 轴的低位曲线会糊在卡片背景里。 */
 .monitor-view__chart {
   display: block;
   width: 100%;
   height: var(--chart-height-trend);
   padding: 0;
   border: none;
-  background: transparent;
+  border-radius: var(--radius-6);
+  background: var(--bg-overlay-l1);
   cursor: pointer;
+  overflow: hidden;
 }
 
 .monitor-view__chart-svg {
@@ -1940,10 +1944,13 @@ const cpuTrendAriaLabel = computed(() => {
   overflow: visible;
 }
 
-/* 网格线：颜色走图表轴 token；`vector-effect` 在非等比拉伸下保持 1px 线宽 */
+/* 网格线：颜色走图表轴 token；`vector-effect` 在非等比拉伸下保持 1px 线宽。
+   8080 验收反馈「格子线再弱一点」→ 叠 0.6 不透明度（主机面板同款做法），不新造颜色 token。
+   仍保留 `viz-ui-chart-axis` 语义（换轴色时一处生效）。 */
 .monitor-view__chart-gridline {
   stroke: var(--viz-ui-chart-axis);
   stroke-width: 1;
+  opacity: 0.6;
 }
 
 /* forced-colors（Windows 高对比度）：网格线与数据折线都会被系统强制成 CanvasText，
@@ -1992,6 +1999,20 @@ const cpuTrendAriaLabel = computed(() => {
 .monitor-view__value-btn:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+/* 频率主值：数字与单位分两段排版（主机面板同款：19px 数字 + 12px/secondary 单位） */
+.monitor-view__metric--with-unit {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--spacer-2);
+}
+
+.monitor-view__stat-unit {
+  color: var(--text-secondary);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-weight: var(--body-sm-strong-font-weight);
 }
 
 /* 四数字主值（#435 验收反馈：对齐主机面板的 19px/600 读数比例，不再用 heading-xl 的 26px） */
@@ -2678,9 +2699,8 @@ const cpuTrendAriaLabel = computed(() => {
   list-style: none;
 }
 
-/* 单核：只有柱与（饱和时的）文字标记；逐核读数由 title / aria 提供（#435 决策 6 不显示文字）。
-   同一行柱顶对齐由容器 `.monitor-view__cores` 的 `align-items: start` 保证——
-   饱和核多出的「饱和」文字不把其它柱往下拽。 */
+/* 单核：只有柱；逐核读数由 title / aria 提供（#435 决策 6 不显示文字）。
+   柱高由容器网格统一，同一行柱顶对齐。 */
 .monitor-view__core {
   display: flex;
   flex-direction: column;
@@ -2710,7 +2730,7 @@ const cpuTrendAriaLabel = computed(() => {
   outline-offset: 0;
 }
 
-/* 柱的填充：高度由 `--core-fill`（占用率）驱动，颜色区分饱和 / 正常两个状态 token。
+/* 柱的填充：高度由 `--core-fill`（占用率）驱动；默认成功色，≥70% / ≥90% 换警示 / 危险色。
    描边同台账轨道填充（#381）：`outline` 不占盒模型、不改变 `--core-fill` 的百分比语义，
    `outline-offset` 负值把它压进填充块内部，四边都随轨道 `overflow: hidden` 收口。
 
@@ -2728,7 +2748,13 @@ const cpuTrendAriaLabel = computed(() => {
   outline-offset: calc(-1 * var(--border-width-default));
 }
 
-.monitor-view__core-bar-fill--saturated {
+/* 每核填充按占用率等级着色（#435 8080 验收：饱和标记删除后，颜色仍与顶栏 CPU 徽章同判据——
+   70% / 90% 才变橙/红，正常核保持成功色；颜色只是冗余信号，读数在 tooltip / 读屏文案里）。 */
+.monitor-view__core-bar-fill[data-level='warn'] {
+  background: var(--status-warning-default);
+}
+
+.monitor-view__core-bar-fill[data-level='danger'] {
   background: var(--status-error-default);
 }
 
@@ -2743,15 +2769,6 @@ const cpuTrendAriaLabel = computed(() => {
   );
 }
 
-/* 饱和标记：文字（不是只有颜色）——灰度截屏下与正常核仍有明确差异。
-   只有饱和核渲染这一行，其它格不占位。 */
-.monitor-view__core-tag {
-  color: var(--status-error-default);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-  font-weight: var(--body-xs-strong-font-weight);
-  white-space: nowrap;
-}
 
 .monitor-view__hint {
   margin: var(--spacer-8) 0 0;

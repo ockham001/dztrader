@@ -319,7 +319,7 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
     expect(wrapper.find('[data-row-id="cpu.rates"]').exists()).toBe(false)
     // 每核频率明细入口已删除（频率进条形 tooltip）
     expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-core"]').attributes('title')).toContain('MHz')
+    expect(wrapper.find('[data-test="monitor-core"]').attributes('title')).toContain('GHz')
     // 条形不属于任何折叠内容（CPU 块已没有折叠区）：始终全部渲染
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
   })
@@ -578,6 +578,27 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 温度 / 频率 / 负载的主数值不套色（契约没有对应阈值，不编造判据）
     expect(source).not.toMatch(/monitor-view__(metric|value-btn)[^{]*\[data-level\]/)
     expect(ruleBody('.monitor-view__metric')).toContain('color: var(--text-default)')
+  })
+
+  it('频率主值是「大号数字 + 12px 单位」，曲线区有分层底色、网格线更弱（#435 8080 验收）', () => {
+    // 频率：数值 19px，单位 12px/secondary（主机面板同款两段排版）
+    const withUnit = ruleBody('.monitor-view__metric--with-unit')
+    expect(withUnit).toContain('display: inline-flex')
+    expect(withUnit).toContain('align-items: baseline')
+    const unit = ruleBody('.monitor-view__stat-unit')
+    expect(unit).toContain('font-size: var(--body-sm-font-size)')
+    expect(unit).toContain('color: var(--text-secondary)')
+    // 曲线绘图区底色与卡片分层
+    const chart = ruleBody('.monitor-view__chart')
+    expect(chart).toContain('background: var(--bg-overlay-l1)')
+    expect(chart).toContain('border-radius: var(--radius-6)')
+    // 网格线弱化：叠 0.6 不透明度（不改轴色 token）
+    expect(ruleBody('.monitor-view__chart-gridline')).toContain('opacity: 0.6')
+    // 每核填充按等级着色；「饱和」专属修饰类已删除
+    expect(ruleBody(".monitor-view__core-bar-fill[data-level='warn']")).toContain('var(--status-warning-default)')
+    expect(ruleBody(".monitor-view__core-bar-fill[data-level='danger']")).toContain('var(--status-error-default)')
+    expect(source).not.toContain('core-bar-fill--saturated')
+    expect(source).not.toContain('monitor-core-saturated')
   })
 
   it('长 token 在台账里按列收口：名称 / 明细 / 展开值可断行，读数列不折（#321 / #363）', () => {

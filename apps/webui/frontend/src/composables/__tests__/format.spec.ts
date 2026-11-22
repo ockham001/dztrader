@@ -12,6 +12,7 @@ import {
   formatDecimal,
   formatDuration,
   formatFrequency,
+  formatFrequencyParts,
   formatIops,
   formatLatency,
   formatAge,
@@ -331,10 +332,24 @@ describe('formatTemperature / formatFrequency：温度与频率', () => {
     expect(formatTemperature(null)).toBe(UNAVAILABLE_TEXT)
   })
 
-  it('频率取整 + MHz', () => {
-    expect(formatFrequency(3600)).toBe('3600 MHz')
-    expect(formatFrequency(3600.4)).toBe('3600 MHz')
+  it('频率取整 + MHz（<1000 MHz）', () => {
+    expect(formatFrequency(962)).toBe('962 MHz')
+    expect(formatFrequency(962.4)).toBe('962 MHz')
+    expect(formatFrequency(0)).toBe('0 MHz')
+  })
+
+  it('频率 ≥1000 MHz 换 GHz 两位小数（与主机面板同口径）', () => {
+    expect(formatFrequency(3600)).toBe('3.60 GHz')
+    expect(formatFrequency(3798)).toBe('3.80 GHz')
+    expect(formatFrequency(4350)).toBe('4.35 GHz')
+    expect(formatFrequency(5100)).toBe('5.10 GHz')
     expect(formatFrequency(null)).toBe(UNAVAILABLE_TEXT)
+  })
+
+  it('formatFrequencyParts 拆出数值与单位（主值大小两段排版用）', () => {
+    expect(formatFrequencyParts(3798)).toEqual({ value: '3.80', unit: 'GHz' })
+    expect(formatFrequencyParts(962)).toEqual({ value: '962', unit: 'MHz' })
+    expect(formatFrequencyParts(null)).toEqual({ value: UNAVAILABLE_TEXT, unit: '' })
   })
 })
 

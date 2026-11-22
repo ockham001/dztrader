@@ -135,17 +135,26 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
     expect(coreBarColumns(16, 1300)).toBe(16)
   })
 
-  it('核数多时折成多行且每行完全相等：32 → 16+16，48 → 16+16+16', () => {
+  it('核数多时折成多行且每行完全相等：32 → 16+16，48 → 24+24', () => {
     expect(coreBarColumns(32, 1300)).toBe(16)
-    expect(coreBarColumns(48, 1300)).toBe(16)
+    expect(coreBarColumns(48, 1300)).toBe(24)
   })
 
   it('窄容器更早折行，且优先选能整除的行数：16 核 500px → 8+8（不是 6+6+4）', () => {
     expect(coreBarColumns(16, 500)).toBe(8)
   })
 
-  it('128 核在 1300px 下 8 行 × 16（等于 128，完全等分）', () => {
-    expect(coreBarColumns(128, 1300)).toBe(16)
+  it('128 核在 1300px 下 26 + 26 + 26 + 26 + 24（末行 24，仍过半）', () => {
+    expect(coreBarColumns(128, 1300)).toBe(26)
+  })
+
+  it('8080 验收：柱更窄后更晚换行——16 核 750px 一行、640px 两行 8+8、手机宽度也 8+8', () => {
+    // 750px 容器：16 × 43px ≤ 750 → 一行（柱约 44px 宽，仍看得清高低）
+    expect(coreBarColumns(16, 750)).toBe(16)
+    // 640px 容器：一行最多 14 根 → 8 + 8（不是 6 + 6 + 4）
+    expect(coreBarColumns(16, 640)).toBe(8)
+    // 390px 手机卡片内层（约 354px）：8 + 8
+    expect(coreBarColumns(16, 354)).toBe(8)
   })
 
   it('最小格宽 / 间距常量与 design-tokens 的真实值一致（JS 与 CSS 不得各排一份间距）', () => {
@@ -157,25 +166,22 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
   })
 
   it('列数受最小格宽约束：1300px 下 64 核的每格宽度不窄于 CORE_BAR_MIN_WIDTH', () => {
-    // 用字面量 56/10 断言（而不是同一常量自证）：token 改了这条必须跟着改，挡「常量漂移」
+    // 用字面量 40/3 断言（而不是同一常量自证）：最小格宽 / 间距改了这条必须跟着改，挡「常量漂移」
     const width = 1300
     const columns = coreBarColumns(64, width)
     expect(columns).toBe(16)
-    const cellWidth = (width - (columns - 1) * 10) / columns
-    expect(cellWidth).toBeGreaterThanOrEqual(56)
+    const cellWidth = (width - (columns - 1) * 3) / columns
+    expect(cellWidth).toBeGreaterThanOrEqual(40)
   })
 
-  it('窄容器 + 大核数：48/128 仍折行；只有极窄 + 128 核会末行偏短（已知边界）', () => {
-    // 用户举的例子在窄屏仍能等分
-    expect(coreBarColumns(48, 350)).toBe(4) // 12 行 × 4
+  it('窄容器 + 大核数：48/128 仍折行且末行过半；350px 下 128 核刚好 16 行 × 8', () => {
+    expect(coreBarColumns(48, 350)).toBe(8) // 6 行 × 8
     expect(coreBarColumns(48, 500)).toBe(8) // 6 行 × 8
-    // 128 核：宽容器完全等分（8 行 × 16），500px 也能 16 行 × 8
-    expect(coreBarColumns(128, 1300)).toBe(16)
-    expect(coreBarColumns(128, 750)).toBe(10) // 13 行：12 × 10 + 8
-    expect(coreBarColumns(128, 500)).toBe(8) // 16 行 × 8（完全等分）
-    // 128 × 350 仍是已知边界：5 列 × 26 行、末行 3（≥ 半行）
-    expect(coreBarColumns(128, 350)).toBe(5)
-    expect(128 - (Math.ceil(128 / 5) - 1) * 5).toBe(3)
+    expect(coreBarColumns(128, 750)).toBe(16) // 8 行 × 16（完全等分）
+    expect(coreBarColumns(128, 500)).toBe(10) // 13 行：12 × 10 + 8（末行 8 / 10）
+    // 350px 下 8 列 × 16 行正好等分（40px 最小格宽让最窄容器也能放下 8 根）
+    expect(coreBarColumns(128, 350)).toBe(8)
+    expect(128 - (Math.ceil(128 / 8) - 1) * 8).toBe(8)
   })
 
   it('典型核数在常见宽度下：末行至少占一半（不出现「23 + 1」）', () => {

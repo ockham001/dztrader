@@ -167,23 +167,22 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('不可用')
   })
 
-  it('饱和核：仅饱和核带「饱和」标记与警示样式', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ saturatedCores: [2, 5] }))
+  it('每核填充按占用率等级着色（70 / 90，与顶栏 CPU 徽章同判据），不再有「饱和」标记', async () => {
+    const cores = makeSysmonCpuCores(6)
+    cores[1].usage_ratio = 0.75
+    cores[4].usage_ratio = 0.95
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuCores: cores }))
     const wrapper = await mountView()
 
-    const tags = wrapper.findAll('[data-test="monitor-core-saturated"]')
-    expect(tags).toHaveLength(2)
-    expect(tags.every(tag => tag.text() === '饱和')).toBe(true)
-
-    const coreItems = wrapper.findAll('[data-test="monitor-core"]')
-    const saturatedIndices = coreItems
-      .filter(core => core.find('[data-test="monitor-core-saturated"]').exists())
-      .map(core => core.attributes('data-core-index'))
-    expect(saturatedIndices).toEqual(['2', '5'])
-    // #435：饱和核用 error 色填充 + 「饱和」文字（颜色之外还有文字这一层差异）
-    expect(coreItems[2].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(true)
-    expect(coreItems[0].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(false)
-    expect(coreItems[2].attributes('title')).toContain('饱和')
+    // 8080 验收：「饱和」这类信息不要了——不再有文字标记 / 专属修饰类 / tooltip 里的「饱和」
+    expect(wrapper.findAll('[data-test="monitor-core-saturated"]')).toHaveLength(0)
+    expect(wrapper.find('.monitor-view__core-bar-fill--saturated').exists()).toBe(false)
+    const fills = wrapper.findAll('[data-test="monitor-core"] .monitor-view__core-bar-fill')
+    expect(fills[0].attributes('data-level')).toBe('normal')
+    expect(fills[1].attributes('data-level')).toBe('warn')
+    expect(fills[4].attributes('data-level')).toBe('danger')
+    expect(wrapper.findAll('[data-test="monitor-core"]').map(core => core.attributes('title')).join(' '))
+      .not.toContain('饱和')
   })
 
   it('部分不可用：单核 null 的 title 显示不可用、负载空态、台账无 CPU 速率行', async () => {
@@ -303,7 +302,7 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     vi.clearAllMocks()
   })
 
-  it('全部可用：温度卡片与每核频率面板渲染真实数据（45.5 °C / 3600 MHz）', async () => {
+  it('全部可用：温度卡片与每核频率面板渲染真实数据（45.5 °C / 4.35 GHz）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ sensorData: true }))
     const wrapper = await mountView()
 
@@ -323,13 +322,13 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     // 四数字行里不再有只有温度格才有的按钮（四格同一高度）
     expect(temperatureCell.find('button').exists()).toBe(false)
 
-    // #435：主值是全部有读数核的平均（3600 + index×100 → 平均 4350 MHz），逐核读数在条形 tooltip
+    // #435：主值是全部有读数核的平均（3600 + index×100 → 平均 4350 MHz = 4.35 GHz，数值与单位分开排版）
     expect(wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-frequency"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4350 MHz')
+    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4.35 GHz')
     expect(wrapper.find('[data-test="monitor-frequency-context"]').exists()).toBe(false)
     const coreBars = wrapper.findAll('[data-test="monitor-core"]')
-    expect(coreBars[0].attributes('title')).toContain('3600 MHz')
-    expect(coreBars[15].attributes('title')).toContain('5100 MHz')
+    expect(coreBars[0].attributes('title')).toContain('3.60 GHz')
+    expect(coreBars[15].attributes('title')).toContain('5.10 GHz')
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('不可用')
   })
 
@@ -389,6 +388,7 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     // 不可用不是 0：不出现温度 / 频率数字
     expect(wrapper.text()).not.toContain('°C')
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('MHz')
+    expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('GHz')
   })
 
   it('Windows 式快照（unsupported、数据为 null）：温度与每核频率区块整块不渲染', async () => {
@@ -439,6 +439,7 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     expect(frequencyEmpty.exists()).toBe(true)
     expect(frequencyEmpty.text()).toContain('暂无数据')
     expect(frequencyEmpty.text()).not.toContain('0 MHz')
+    expect(frequencyEmpty.text()).not.toContain('0.00 GHz')
 
     // 空数组同样走空态（温度允许空数组；消费方不得据此隐藏区块）
     useSysmonStore().applySnapshot(makeSysmonSnapshot({
@@ -473,11 +474,11 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     expect(title).toContain('45.5 °C')
     expect(title).not.toContain('30.0 °C')
 
-    // 非法频率条目不参与平均；唯一有效读数（核 3 · 3600 MHz）出现在该核条形的 title 里
-    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('3600 MHz')
+    // 非法频率条目不参与平均；唯一有效读数（核 3 · 3.60 GHz）出现在该核条形的 title 里
+    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('3.60 GHz')
     const coreBars = wrapper.findAll('[data-test="monitor-core"]')
-    expect(coreBars[3].attributes('title')).toContain('3600 MHz')
-    expect(coreBars[0].attributes('title')).not.toContain('MHz')
+    expect(coreBars[3].attributes('title')).toContain('3.60 GHz')
+    expect(coreBars[0].attributes('title')).not.toContain('GHz')
   })
 
   it('组合可用性：仅温度可用时只渲染温度卡，仅频率可用时只渲染频率面板', async () => {
@@ -2140,8 +2141,12 @@ describe('MonitorView 主机条与 CPU 块（#430 / #435）', () => {
 
     // 频率不再有「型号标注」这类自造小字（基准频率已在标题行的型号字符串里）
     expect(wrapper.find('[data-test="monitor-frequency-context"]').exists()).toBe(false)
-    // #435：主值 = 全核平均（3600 + index×100 的 16 个读数 → 4350 MHz），不再取最高核
-    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4350 MHz')
+    // #435：主值 = 全核平均（3600 + index×100 的 16 个读数 → 4350 MHz = 4.35 GHz，单位小字），不再取最高核
+    const frequencyValue = wrapper.find('[data-test="monitor-frequency-value"]')
+    expect(frequencyValue.text()).toBe('4.35 GHz')
+    // 数值与单位分两段：单位是单独的 12px/secondary 元素（不是和数字同字号的一整串）
+    expect(frequencyValue.find('.monitor-view__stat-unit').text()).toBe('GHz')
+    expect(frequencyValue.text().replace(' GHz', '')).toBe('4.35')
 
     // 温度：主值 + 归属（芯片 · 通道），不再堆传感器/芯片计数
     const temperature = wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-temperature"]')
@@ -2150,12 +2155,6 @@ describe('MonitorView 主机条与 CPU 块（#430 / #435）', () => {
     expect(temperature.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
   })
 
-  it('饱和核计数进入占用率上下文（饱和是快照事实，不在前端重新判定）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ saturatedCores: [2, 5] }))
-    const wrapper = await mountView()
-
-    expect(wrapper.find('[data-test="monitor-cpu-context"]').text()).toBe('16 逻辑核 · 2 核饱和')
-  })
 
   it('每核条形数量跟随快照（16 → 8 → 4），常驻 CPU 块', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuCores: makeSysmonCpuCores(16) }))
@@ -2171,24 +2170,19 @@ describe('MonitorView 主机条与 CPU 块（#430 / #435）', () => {
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(4)
   })
 
-  it('饱和核除颜色外还有「饱和」文字（灰度截屏可辨），柱高 = 该核占用率', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ saturatedCores: [3] }))
+  it('柱高 = 该核占用率（不是固定满格），且没有「饱和」文字标记（#435 8080 验收）', async () => {
     const wrapper = await mountView()
 
     const cores = wrapper.findAll('[data-test="monitor-core"]')
-    const saturated = cores.find(core => core.attributes('data-core-index') === '3')
-    expect(saturated?.find('[data-test="monitor-core-saturated"]').text()).toBe('饱和')
-    // 着色也不只靠颜色：饱和修饰类是两个状态 token 的分支点
-    expect(saturated?.find('.monitor-view__core-bar-fill--saturated').exists()).toBe(true)
-    expect(cores[0].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-core-saturated"]').exists()).toBe(false)
 
     // 柱高 = 该核占用率（不是固定满格）：断言**具体数值**，而不是「变量名出现过」——
     // 后者对任何有限 ratio 都成立，等于什么都没验证。默认夹具 usage_ratio = 0.05 + index*0.031：
     // 核 0 → 5.0%、核 3 → 14.3%（两位均由共享 formatPercent 产出，与条形 title 同源）。
     expect(coreFillPercent(cores[0])).toBe('5.0%')
-    expect(coreFillPercent(saturated!)).toBe('14.3%')
+    expect(coreFillPercent(cores[3])).toBe('14.3%')
     // 两核的填充必须真的不同（恒等值会让上面两条同时通过而柱形全一样）
-    expect(coreFillPercent(cores[0])).not.toBe(coreFillPercent(saturated!))
+    expect(coreFillPercent(cores[0])).not.toBe(coreFillPercent(cores[3]))
   })
 
   it('ratio 为 null 的核不注入 --core-fill，轨道加斜纹（缺失不是 0%）', async () => {

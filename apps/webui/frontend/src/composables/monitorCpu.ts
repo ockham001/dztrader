@@ -86,10 +86,11 @@ export function percentTrendGeometry(
 
 /**
  * 每核条形的最小格宽（px）：列数在 JS 里算，CSS 不再有对应的网格下限 token
- * （#435 取代 #362 的 auto-fit 规则）。56px 让 1440 视口下 16 核排成一行、32/48 核排成
- * 2–3 行；再窄（<lg 或手机）才继续折行。
+ * （#435 取代 #362 的 auto-fit 规则）。56 → 40 是 8080 验收反馈（「柱还可以再窄一点再换行」）：
+ * 40px 仍能看清单根柱的高低，也让 640px 下 16 核折成 8 + 8、手机宽度同样 8 + 8；
+ * 1440 下 16/32 核仍是一行 16 根，48 核从 3 行 × 16 变成 2 行 × 24。
  */
-export const CORE_BAR_MIN_WIDTH = 56
+export const CORE_BAR_MIN_WIDTH = 40
 /**
  * 每核条形的格间距（px）：与间距 token `--spacer-3` 的实际值一致（token 名是步进序号，不是像素值；
  * 参考主机面板的 3px 紧凑条形）。单测会解析 `design-tokens.css` 交叉校验此常量，防止 JS 与 CSS 各排一份。

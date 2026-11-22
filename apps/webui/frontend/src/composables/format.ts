@@ -304,10 +304,28 @@ export function formatTemperature(celsius: number | null | undefined): string {
   return `${celsius.toFixed(1)} °C`
 }
 
-/** 每核频率：整数 + `MHz`（`3600 MHz`） */
+/**
+ * 频率的「数值 + 单位」两段（#435 8080 验收：对齐主机面板的「大号数字 + 小号单位」样式）。
+ *
+ * 单位口径与主机面板一致：≥1000 MHz 用 `GHz` 两位小数（`3.80 GHz`），否则整数 `MHz`（`962 MHz`）。
+ * 主数值把两段分开排版（单位 12px secondary），tooltip / 其它调用方用 `formatFrequency` 拼回整串。
+ */
+export interface FrequencyParts {
+  value: string
+  unit: 'MHz' | 'GHz' | ''
+}
+
+/** 频率拆段：调用方把 value 用大字号、unit 用小字号单位排版；不可用时 unit 为空串 */
+export function formatFrequencyParts(mhz: number | null | undefined): FrequencyParts {
+  if (!isFiniteNumber(mhz)) return { value: UNAVAILABLE_TEXT, unit: '' }
+  if (mhz >= 1000) return { value: (mhz / 1000).toFixed(2), unit: 'GHz' }
+  return { value: String(Math.round(mhz)), unit: 'MHz' }
+}
+
+/** 频率整串（数值 + 单位）：`3.80 GHz` / `962 MHz`；tooltip / 台账等只需一句话的地方用 */
 export function formatFrequency(mhz: number | null | undefined): string {
-  if (!isFiniteNumber(mhz)) return UNAVAILABLE_TEXT
-  return `${Math.round(mhz)} MHz`
+  const parts = formatFrequencyParts(mhz)
+  return parts.unit === '' ? parts.value : `${parts.value} ${parts.unit}`
 }
 
 /** 每秒 I/O 操作数（IOPS）：取整 + `IOPS`（`2048 IOPS`） */
