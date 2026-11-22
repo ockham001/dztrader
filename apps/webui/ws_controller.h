@@ -16,6 +16,7 @@
 #include "ws_broadcaster.h"
 #include "data_change_notifier.h"
 #include "md_control_domain_service.h"
+#include "td_control_domain_service.h"
 #include "ws_log_tail.h"
 
 namespace dztrader::webui {
@@ -32,7 +33,8 @@ public:
                  std::shared_ptr<shm::MultiWriter> event_writer,
                  std::shared_ptr<dztrader::platform::LogConfig> self_log,
                  MirrorStore& mirror,
-                 MdControlDomainService& md_control);
+                 MdControlDomainService& md_control,
+                 TdControlDomainService& td_control);
     ~WsController() = default;
 
     // 禁止拷贝/移动（引用成员）
@@ -91,6 +93,10 @@ private:
     /// 出方向行情控制领域服务：md_connect/md_disconnect/query_md_subscriptions
     /// （P2 任务③：三个 C2S 分支下沉到服务，WsController 仅负责连接/鉴权/会话/routing）
     MdControlDomainService& md_control_;
+
+    /// 出方向交易账户会话控制领域服务：td_connect/td_disconnect（契约 td-connection，
+    /// 账户级寻址：payload account_id → 注册表解析网关）
+    TdControlDomainService& td_control_;
 
     /// 单连接会话状态（日志 tail 订阅由 LogTailManager 按连接身份维护）
     struct Session {

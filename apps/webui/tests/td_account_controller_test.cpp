@@ -576,5 +576,86 @@ TEST_F(TdAccountControllerTest, PrecheckFailureWritesNoFrame) {
     EXPECT_FALSE(cap.found) << "rejected requests must not write any frame";
 }
 
+// ============================================================================
+// POST /api/td/accounts/{account_id}/login|logout（契约 rest §2.9.10 / 契约 td-connection）
+// ============================================================================
+
+TEST_F(TdAccountControllerTest, LoginAsNonAdminReturns403) {
+    auto resp = invoke(&TdAccountCtrl::login, user_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "admin_required");
+}
+
+TEST_F(TdAccountControllerTest, LoginUnknownAccountReturns404AccountNotFound) {
+    registry_->note_config_frame_received();  // 注册表可用，但账户不在其中
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("nope"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "account_not_found");
+}
+
+TEST_F(TdAccountControllerTest, LoginRegistryUnavailableReturns503NoCode) {
+    // 注册表降级（尚未收到任何配置帧）：无法解析归属，属请求未被受理，不带 code。
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_FALSE(parse_body(resp).contains("code"));
+    EXPECT_EQ(parse_body(resp).at("error").get<std::string>(), "account registry unavailable");
+}
+
+TEST_F(TdAccountControllerTest, LoginGatewayNotRunningReturns409) {
+    seed_account("dztd_ctp", "acc_a");  // 已登记，但网关进程镜像非 Running
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k409Conflict);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "gateway_not_running");
+}
+
+TEST_F(TdAccountControllerTest, LoginWriterNotReadyReturns503NoCode) {
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_FALSE(parse_body(resp).contains("code"));
+    EXPECT_EQ(parse_body(resp).at("error").get<std::string>(), "shm writer not available");
+}
+
+TEST_F(TdAccountControllerTest, LoginPrecheckFailureWritesNoFrame) {
+    // 契约 rest §2.9.10：预检失败不写帧（失败不能变成对网关的误操作）。
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+    registry_->note_config_frame_received();
+
+    EXPECT_EQ(invoke(&TdAccountCtrl::login, admin_req(), std::string("nope"))->getStatusCode(),
+              drogon::k404NotFound);
+    EXPECT_FALSE(shm.capture_inst_frame(DZ_FRAME_TD_CONNECT, "dztd_ctp").found);
+}
+
+TEST_F(TdAccountControllerTest, LoginDispatchesConnectFrame) {
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    use_ready_shm(shm);
+
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(parse_body(resp).at("ok").get<bool>());
+
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_CONNECT, "dztd_ctp");
+    ASSERT_TRUE(cap.found) << "expect TD_CONNECT frame to dztd_ctp";
+    EXPECT_EQ(cap.payload, (nlohmann::json{{"account_id", "acc_a"}}));
+}
+
+TEST_F(TdAccountControllerTest, LogoutDispatchesDisconnectFrame) {
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    use_ready_shm(shm);
+
+    auto resp = invoke(&TdAccountCtrl::logout, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_DISCONNECT, "dztd_ctp");
+    ASSERT_TRUE(cap.found) << "expect TD_DISCONNECT frame to dztd_ctp";
+    EXPECT_EQ(cap.payload, (nlohmann::json{{"account_id", "acc_a"}}));
+}
+
 }  // namespace
 }  // namespace dztrader::webui

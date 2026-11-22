@@ -8,6 +8,8 @@
 - 订阅状态管理与查询：`libs/platform/include/dztrader/platform/subscription_manager.h`（`SubState`/`SubscriptionDetail`/`RtnMdSubscriptionsRsp`/`SUBSCRIPTION_QUERY_MAX`）
 - 订阅请求：`libs/core/include/dztrader/core/core_struct.h`（`SubscribeReq`/`SubscribeAction`）
 
+**命名（ADR 0051）**：用户/前端动作名为「登录 / 登出」（REST 路径与按钮用词）；本组帧 `REQUEST_MD_CONNECT/DISCONNECT` 是传输层命令名，与动作一一对应：登录 → `REQUEST_MD_CONNECT`，登出 → `REQUEST_MD_DISCONNECT`。「连接 / 断开」只描述帧内部的传输阶段，不作动作名。
+
 ---
 
 ## 数据结构

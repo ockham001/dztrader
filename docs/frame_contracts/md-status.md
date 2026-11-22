@@ -79,13 +79,13 @@ JSON 示例：
 - 设置：上述失败发生时随本帧推送（全量）。
 - 清空（置 `null` 并推送）：下一次连接/登录尝试开始时（`REQUEST_MD_CONNECT` 被受理即开始）；登录成功时。
 - 进入 `Idle`（用户主动登出）**不清空**：保留最近一次失败供用户查看；进程重启后为空（新进程状态）。
-- 失败后进程状态：`connect_timeout` 已断开回 `Idle`；其余失败仍持有前置连接，处于登录失败态，**可直接重试登录**（`REQUEST_MD_CONNECT` 在已连接/登录失败态等价于重新发起登录），不要求先登出。失败态 `RTN_PROGRESS` 的数值映射不变（与 `Connected` 同为 `current=2`），`desc` 为「登录失败」——状态判定仍以数值映射为准（契约 progress），`desc` 仅展示。
+- 失败后进程状态：`connect_timeout` 已断开回 `Idle`；其余失败仍持有前置连接，处于登录失败态。后端仍接受 `REQUEST_MD_CONNECT` 作为重登（自动调度 / `--recover` 使用），但 **WebUI 恢复路径统一为「先登出、再登录」**，不提供失败态原地重试（ADR 0051，前端义务③）。失败态 `RTN_PROGRESS` 的数值映射不变（与 `Connected` 同为 `current=2`），`desc` 为「登录失败」——状态判定仍以数值映射为准（契约 progress），`desc` 仅展示。
 
 **前端义务**：
 
 1. `last_error.timestamp` 变化且非 `null` 表示一次登录失败已结束：清除该实例的登录 pending，不等待超时兜底。
 2. 卡片持久展示「上次失败：`message` + 时间」；`message` 为空时按 `code` 映射固定文案；**不得把 `code` 原文直接展示给用户**。`timestamp` 非法/缺失时不展示时间（不得渲染 1970）。
-3. 失败态可重试判定：仅当 `last_error != null` 且 `RTN_PROGRESS` 处于「已连接/登录失败」数值档（`current=2`）时启用重试（下发 `REQUEST_MD_CONNECT`），不要求先登出；`Disconnected`（`current=1`）期间 `last_error` 可能保留，但此时进程自动重连中、不接受新的连接请求，前端**不得**据 `last_error` 启用重试（否则请求被拒、pending 悬挂至超时）。`Idle`（`current=0`）由常规「登录」按钮承担。
+3. 失败态不提供原地重试（ADR 0051）：`last_error` 仅用于持久展示失败原因。登录按钮只在 `RTN_PROGRESS.current <= progress.min`（Idle/完全未登录）可用；`LoginFailed`（`current=2`）与 `Disconnected`（`current=1`）下登录不可用、登出可用（登出即释放 API 回到 Idle），恢复路径统一为登出→登录。后端 `can_login()` 重登能力保留给自动调度 / `--recover`，不经前端触发。
 4. 登录成功后 `last_error` 清空，前端不得保留旧失败展示；断开/重连期间展示以本帧全量覆盖为准。
 
 ---

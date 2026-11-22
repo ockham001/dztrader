@@ -12,9 +12,9 @@ namespace dztrader::webui {
 
 /// 封装 SHM 事件通道写入，提供业务语义化接口
 /// 返回值约定分两组：
-///   - bool 返回的 write_* (write_md_connect / write_md_disconnect / write_process_control /
-///     write_td_modify_config)：true = 已写入事件通道 (契约 rest §1)，调用方必须检查
-///     返回值，false 时映射 503
+///   - bool 返回的 write_* (write_md_connect / write_md_disconnect / write_td_connect /
+///     write_td_disconnect / write_process_control / write_td_modify_config)：true = 已写入
+///     事件通道 (契约 rest §1)，调用方必须检查返回值，false 时映射 503
 ///   - void 返回的 write_* (write_set_process_config / write_query_all / write_md_set_config /
 ///     write_set_auto_login / write_set_md_shm_config)：fire-and-forget，写入失败由内部
 ///     catch 记日志，真正失败由 RTN_* 异步推送纠正 (guard 前置拦截 is_ready 保证就绪性)
@@ -90,6 +90,16 @@ public:
     /// 返回 true = 已写入事件通道 (与 bool 组其余方法同约定, 调用方负责映射 503)
     /// 生效信号 = RTN_TD_CONFIG (契约 td-config §4): 成功推新值, 失败推回滚旧值
     bool write_td_modify_config(const std::string& gateway, const nlohmann::json& op_req_json);
+
+    /// 写入 TD_CONNECT 控制帧（契约 td-connection：交易账户登录）。
+    /// gateway: 目标交易网关进程名（帧头 instance_id）；account_id: 目标账户 ID（payload）。
+    /// 返回 true = 已写入事件通道（契约 rest §2.9.10：响应 ok 只表示已受理，业务结果由
+    /// 该账户的 progress / td_status 表达）
+    bool write_td_connect(const std::string& gateway, const std::string& account_id);
+
+    /// 写入 TD_DISCONNECT 控制帧（契约 td-connection：交易账户登出，任意状态可发 = 强制中断）。
+    /// 返回 true = 已写入事件通道
+    bool write_td_disconnect(const std::string& gateway, const std::string& account_id);
 
     bool is_ready() const { return event_writer_ != nullptr; }
 

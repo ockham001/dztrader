@@ -11,7 +11,7 @@ import type {
 // 判别联合编译期保障：WsDataByType 的 type→payload 映射必须与契约单源（generated）一致。
 // 若 schema/契约增改字段后未同步，或某键与 generated 类型漂移，本套断言在 type-check 阶段即失败。
 describe('WsDataByType 判别联合（契约单源一致性）', () => {
-  it('type 全集 = 契约 webui-ws §2 S2C 清单（领域消息 + 控制消息 + 5 个 ack）', () => {
+  it('type 全集 = 契约 webui-ws §2 S2C 清单（领域消息 + 控制消息 + 7 个 ack）', () => {
     // 清单真源：docs/frame_contracts/webui-ws.md §2.2 / §2.3 / §2.4
     type ContractS2CTypes =
       | 'snapshot'
@@ -43,6 +43,8 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
       | 'pong'
       | 'md_connect_ack'
       | 'md_disconnect_ack'
+      | 'td_connect_ack'
+      | 'td_disconnect_ack'
       | 'subscribe_log_ack'
       | 'unsubscribe_log_ack'
       | 'query_md_subscriptions_ack'
@@ -116,6 +118,11 @@ describe('WsDataByType 判别联合（契约单源一致性）', () => {
       .toEqualTypeOf<{ source: string; ok: boolean }>()
     expectTypeOf<WsDataByType['md_disconnect_ack']>()
       .toEqualTypeOf<{ source: string; ok: boolean }>()
+    // 契约 td-connection：交易账户会话控制 ack 携带 account_id（账户级寻址）
+    expectTypeOf<WsDataByType['td_connect_ack']>()
+      .toEqualTypeOf<{ account_id: string; ok: boolean }>()
+    expectTypeOf<WsDataByType['td_disconnect_ack']>()
+      .toEqualTypeOf<{ account_id: string; ok: boolean }>()
     expectTypeOf<WsDataByType['subscribe_log_ack']>().toEqualTypeOf<{ file: string }>()
     expectTypeOf<WsDataByType['unsubscribe_log_ack']>().toEqualTypeOf<Record<string, never>>()
     expectTypeOf<WsDataByType['query_md_subscriptions_ack']>()

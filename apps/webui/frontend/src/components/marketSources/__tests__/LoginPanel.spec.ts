@@ -6,9 +6,9 @@ import { useMarketSourcesStore, type MarketSourceView } from '@/stores/marketSou
 import LoginPanel from '../LoginPanel.vue'
 
 // LoginPanel — 登录/登出按钮可用性 + 自动登录开关。
-// 契约 md-status 前端义务③：失败态（last_error 非 null 且未登录）允许直接重试登录，
-// 不要求先登出——失败后 RTN_PROGRESS 仍为 current=2（与 Connected 同映射），
-// 不能再用 loginState === 'pending' 一刀切禁用登录按钮。
+// ADR 0051 统一两段式：登录只在完全未登录（loginState=offline）可用；连接中/登录中/断线
+// 重连中/失败态一律禁用（失败后不提供原地重试，恢复 = 先登出再登录）；登出在任意非未登录态
+// 可用（= 强制中断）。
 const stubs = {
   ProcessStartButton: { template: '<div class="psb" />' },
   SyncSwitch: { props: ['modelValue', 'pending'], emits: ['change'], template: '<button type="button" class="sync-switch" />' },
@@ -30,7 +30,7 @@ function loginButton(w: ReturnType<typeof mount>) {
   return w.findAll('button').find(b => b.text().includes('登录'))!
 }
 
-describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）', () => {
+describe('LoginPanel 登录按钮可用性（ADR 0051 统一两段式）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
   })
@@ -48,7 +48,7 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
     expect(loginButton(w).attributes('disabled')).toBeDefined()
   })
 
-  it('失败态（loginState=pending、lastLoginError 且进度处于已连接档 current=2）时允许直接重试', () => {
+  it('失败态（current=2）禁用登录：恢复走「先登出、再登录」，不提供原地重试', () => {
     const w = mount(LoginPanel, {
       props: {
         source: sourceWith({
@@ -61,12 +61,12 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
       },
       global: { stubs },
     })
-    expect(loginButton(w).attributes('disabled')).toBeUndefined()
+    expect(loginButton(w).attributes('disabled')).toBeDefined()
   })
 
-  it('断线自动重连中（current=1，last_error 按契约保留）不得启用重试', () => {
-    // 契约 md-status: last_error 在 Disconnected 期间保留；此时 md 进程拒绝重连请求，
-    // 若启用按钮会静默拒绝并让 pending 悬挂到 45s 兜底。
+  it('断线自动重连中（current=1）禁用登录', () => {
+    // 契约 md-status: Disconnected 期间 md 进程不接受新的连接请求；ADR 0051 下登录只在
+    // 完全未登录可用，重连中一律禁用（登出可用，见下方/td 侧同规则）。
     const w = mount(LoginPanel, {
       props: {
         source: sourceWith({
@@ -81,7 +81,7 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
     expect(loginButton(w).attributes('disabled')).toBeDefined()
   })
 
-  it('失败态点击登录直接下发 REQUEST_MD_CONNECT（不要求先登出）', async () => {
+  it('失败态点击登录不下发请求（按钮禁用）', async () => {
     const w = mount(LoginPanel, {
       props: {
         source: sourceWith({
@@ -95,7 +95,7 @@ describe('LoginPanel 登录按钮可用性（契约 md-status 前端义务③）
     const store = useMarketSourcesStore()
     const spy = vi.spyOn(store, 'login').mockResolvedValue()
     await loginButton(w).trigger('click')
-    expect(spy).toHaveBeenCalledWith(1)
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it('进程未运行时禁用（保持现状）', () => {

@@ -258,6 +258,37 @@ TEST_F(WebuiShmWriterTest, WriteTdModifyConfigNullWriterReturnsFalse) {
     EXPECT_FALSE(writer.write_td_modify_config("dztd_ctp", nlohmann::json{{"op", "AddAccount"}}));
 }
 
+TEST_F(WebuiShmWriterTest, WriteTdConnectWritesAccountPayload) {
+    // 契约 td-connection：定向到网关进程（instance_id = 网关名），账户身份在 payload。
+    EXPECT_TRUE(shm_writer_->write_td_connect("dztd_ctp", "acc_a"));
+    auto view = next_frame_view(DZ_FRAME_TD_CONNECT);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_STREQ(view->ext_inst_id(), "dztd_ctp");
+    EXPECT_EQ(parse_inst_payload(*view), (nlohmann::json{{"account_id", "acc_a"}}));
+}
+
+TEST_F(WebuiShmWriterTest, WriteTdDisconnectWritesAccountPayload) {
+    EXPECT_TRUE(shm_writer_->write_td_disconnect("dztd_ctp", "acc_a"));
+    auto view = next_frame_view(DZ_FRAME_TD_DISCONNECT);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_STREQ(view->ext_inst_id(), "dztd_ctp");
+    EXPECT_EQ(parse_inst_payload(*view), (nlohmann::json{{"account_id", "acc_a"}}));
+}
+
+TEST_F(WebuiShmWriterTest, WriteTdSessionEmptyArgsReturnFalseAndWriteNothing) {
+    EXPECT_FALSE(shm_writer_->write_td_connect("", "acc_a"));
+    EXPECT_FALSE(shm_writer_->write_td_connect("dztd_ctp", ""));
+    EXPECT_FALSE(shm_writer_->write_td_disconnect("", "acc_a"));
+    EXPECT_FALSE(shm_writer_->write_td_disconnect("dztd_ctp", ""));
+    EXPECT_EQ(reader_->next_frame(), nullptr);
+}
+
+TEST_F(WebuiShmWriterTest, WriteTdSessionNullWriterReturnsFalse) {
+    ShmWriter writer{std::shared_ptr<shm::MultiWriter>()};
+    EXPECT_FALSE(writer.write_td_connect("dztd_ctp", "acc_a"));
+    EXPECT_FALSE(writer.write_td_disconnect("dztd_ctp", "acc_a"));
+}
+
 TEST_F(WebuiShmWriterTest, WriteNotifiesRegisteredReaders) {
     // 通用规则 §4.1：写帧后必须唤醒等待进程；无 notify 时 wait_for 会超时
     dztrader::shm::NamedSemaphore sem(reader_name_);

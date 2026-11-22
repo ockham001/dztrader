@@ -802,7 +802,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
 
-    it('batchLogin 排除不可重试的 pending 源（Connecting/Disconnected），失败态可重试源计入', async () => {
+    it('batchLogin 只登录完全未登录（offline）的源；进行中与失败态不计入（ADR 0051）', async () => {
       await loadDb()
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
       const store = useMarketSourcesStore()
@@ -813,36 +813,50 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await store.batchLogin()
       expect(marketSourcesApi.login).not.toHaveBeenCalled()
 
-      // 登录失败态（current=2 + last_error）: 可直接重试，计入批量目标
+      // 登录失败态（current=2 + last_error）：ADR 0051 统一两段式——不提供原地重试，
+      // 恢复走「先登出、再登录」，因此也不计入批量登录目标。
       useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
         last_error: { code: 'login_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
       } })
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
       await nextTick()
+      expect(store.batchLoginTargets).toHaveLength(0)
+      await store.batchLogin()
+      expect(marketSourcesApi.login).not.toHaveBeenCalled()
+
+      // 完全未登录（offline）才计入批量目标
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 0 })
+      await nextTick()
       expect(store.batchLoginTargets.map(s => s.source_name)).toEqual(['dzmd_ctp'])
+      await store.batchLogin()
+      expect(marketSourcesApi.login).toHaveBeenCalledTimes(1)
+      // HTTP 成功不清 pending：再跑一次不得重复下发
       await store.batchLogin()
       expect(marketSourcesApi.login).toHaveBeenCalledTimes(1)
       // 等登录超时兜底清（45s，防 fake timer 挂起）
       await vi.advanceTimersByTimeAsync(45_000)
     })
 
-    it('batchLogout 只登出 online 且未 logout pending 的 source', async () => {
+    it('batchLogout 覆盖任意非未登录态且未 logout pending 的 source（ADR 0051）', async () => {
       vi.mocked(marketSourcesApi.list).mockResolvedValue([dbSource, dbSourceB])
       vi.mocked(marketSourcesApi.logout).mockResolvedValue({ ok: true })
       const store = useMarketSourcesStore()
       await store.loadSources()
-      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 4 })
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 4 })  // 就绪
+      useProgressStore().applyProgress('dzmd_xtp', { min: 0, max: 4, current: 1 })  // 重连中
       await nextTick()
       await store.batchLogout()
-      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(1)
-      expect(marketSourcesApi.logout).toHaveBeenCalledWith(1)  // 仅 online 的 ctp；xtp 为 offline
+      // 登出在任意非未登录态可用（= 取消/强制中断），两个源都计入
+      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(2)
+      expect(marketSourcesApi.logout).toHaveBeenCalledWith(1)
+      expect(marketSourcesApi.logout).toHaveBeenCalledWith(2)
       const ctp = store.sources.find(s => s.id === 1)!
       const xtp = store.sources.find(s => s.id === 2)!
       expect(ctp.logoutPending).toBe(true)
-      expect(xtp.logoutPending).toBe(false)
+      expect(xtp.logoutPending).toBe(true)
       // HTTP 成功不清 pending：logout pending 挂起时再次 batchLogout 不重复下发
       await store.batchLogout()
-      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(1)
+      expect(marketSourcesApi.logout).toHaveBeenCalledTimes(2)
       await vi.advanceTimersByTimeAsync(10_000)
     })
 

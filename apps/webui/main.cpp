@@ -260,8 +260,12 @@ int main(int argc, char* argv[]) {
     // 在 ws_ctrl 之前构造，注入 WsController 用于 C2S 下沉
     auto md_control_domain = std::make_shared<dztrader::webui::MdControlDomainService>(
         *process_mirror, event_writer.get());
+    // 出方向交易账户会话控制领域服务（契约 td-connection）：td_connect/td_disconnect，
+    // 账户级寻址经账户注册表解析网关；与 REST 端点共用 td_session_guard 的守卫口径。
+    auto td_control_domain = std::make_shared<dztrader::webui::TdControlDomainService>(
+        *td_account_registry, *process_mirror, shm_writer.get());
     auto ws_ctrl = std::make_shared<dztrader::webui::WsController>(
-        cfg, repo, event_writer, self_log, *mirror_store, *md_control_domain);
+        cfg, repo, event_writer, self_log, *mirror_store, *md_control_domain, *td_control_domain);
     drogon::app().registerController(ws_ctrl);
 
     // 注册 /api/login 控制器

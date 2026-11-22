@@ -204,26 +204,16 @@ export function mdLastErrorText(e: MdLastErrorView | null): string {
   return MD_LAST_ERROR_TEXT[e.code] || '登录失败'
 }
 
-// ===== 登录失败态可重试判定（契约 md-status 前端义务③）=====
-// last_error 在 Idle（主动登出）与 Disconnected（SDK 自动重连中）都会保留（契约 md-status），
-// 不能仅凭 last_error 启用重试：只有进度处于「已连接/登录失败」数值档（current=2，与
-// Connected 同映射）时行情进程才接受重连请求（md_api connect() 对 Disconnected 等状态拒绝，
-// 静默拒绝会让 pending 悬挂到 45s 兜底）。数值映射真相源见 md_state.cpp set_state 注释：
-// Idle=0, Connecting/Disconnected=1, Connected/LoginFailed=2, LoggingIn=3, LoggedIn=4。
-export function loginRetryable(
-  progress: { min?: unknown; max?: unknown; current?: unknown } | null | undefined,
-  lastError: MdLastErrorView | null | undefined,
-): boolean {
-  if (!lastError) return false
-  return typeof progress?.current === 'number' && progress.current === 2
-}
-
-/// 是否可发起登录请求（契约 md-status 前端义务③）：Idle（offline）正常登录，或失败态可重试。
-/// 单次登录按钮与批量登录目标共用此判定，避免两处各自编码「登录资格」。
+// ===== 登录资格判定（ADR 0051 / 契约 md-status 前端义务③ / 契约 progress 网关会话进度骨架）=====
+// 统一两段式：登录只在完全未登录（progress 端点到 min，loginState === 'offline'）可用；
+// 连接中/登录中/断线重连中/登录失败态一律不可登录，恢复路径 = 先登出、再登录。
+// 失败态不再提供原地重试（ADR 0051 决策 4）：md 后端的 can_login() 重登能力保留给自动调度，
+// 不经前端触发；last_error 仅用于持久展示失败原因。
+/// 是否可发起登录请求。单次登录按钮与批量登录目标共用此判定，避免两处各自编码「登录资格」。
 export function canRequestLogin(
-  s: Pick<MarketSourceView, 'loginState' | 'progressView' | 'lastLoginError'>,
+  s: Pick<MarketSourceView, 'loginState'>,
 ): boolean {
-  return s.loginState === 'offline' || loginRetryable(s.progressView, s.lastLoginError)
+  return s.loginState === 'offline'
 }
 
 export function parseMdStatus(raw: unknown): MdStatusView | null {

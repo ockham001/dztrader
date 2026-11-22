@@ -27,6 +27,8 @@
 #include "mirror_store.h"
 #include "process_mirror.h"
 #include "repository.h"
+#include "td_account_registry.h"
+#include "td_control_domain_service.h"
 
 namespace dztrader::webui {
 namespace {
@@ -62,6 +64,8 @@ protected:
     std::unique_ptr<MirrorStore> mirror_;
     std::unique_ptr<ProcessMirror> process_mirror_;
     std::unique_ptr<MdControlDomainService> md_control_;
+    TdAccountRegistry td_registry_;
+    std::unique_ptr<TdControlDomainService> td_control_;
     std::shared_ptr<WsController> controller_;
     WebuiConfig cfg_;
 
@@ -71,14 +75,18 @@ protected:
         mirror_ = std::make_unique<MirrorStore>();
         process_mirror_ = std::make_unique<ProcessMirror>();
         md_control_ = std::make_unique<MdControlDomainService>(*process_mirror_, nullptr);
+        // 交易账户会话控制服务（契约 td-connection）：本用例只验证 td_recent 钩子，写通道可为空
+        td_control_ =
+            std::make_unique<TdControlDomainService>(td_registry_, *process_mirror_, nullptr);
         cfg_.jwt_secret = "test_secret_for_td_recent_hook";
         cfg_.admin_password_is_default = false;
-        controller_ =
-            std::make_shared<WsController>(cfg_, repo_, nullptr, nullptr, *mirror_, *md_control_);
+        controller_ = std::make_shared<WsController>(cfg_, repo_, nullptr, nullptr, *mirror_,
+                                                     *md_control_, *td_control_);
     }
 
     void TearDown() override {
         controller_.reset();
+        td_control_.reset();
         md_control_.reset();
         process_mirror_.reset();
         mirror_.reset();

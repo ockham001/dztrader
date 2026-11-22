@@ -7,6 +7,8 @@
 #include <string>
 #include <utility>
 
+#include "td_session_guard.h"
+
 namespace dztrader::webui {
 
 namespace {
@@ -228,6 +230,80 @@ void TdAccountCtrl::remove(const drogon::HttpRequestPtr& req,
         callback(err);
         return;
     }
+    callback(json_response(drogon::k200OK, nlohmann::json{{"ok", true}}));
+}
+
+// ============================================================================
+// 账户会话控制（契约 rest §2.9.10 / 契约 td-connection）
+// ============================================================================
+
+void TdAccountCtrl::login(const drogon::HttpRequestPtr& req,
+                          std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                          const std::string& account_id) {
+    handle_session_action(req, account_id, /*is_connect=*/true, std::move(callback));
+}
+
+void TdAccountCtrl::logout(const drogon::HttpRequestPtr& req,
+                           std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                           const std::string& account_id) {
+    handle_session_action(req, account_id, /*is_connect=*/false, std::move(callback));
+}
+
+void TdAccountCtrl::handle_session_action(
+    const drogon::HttpRequestPtr& req,
+    const std::string& account_id,
+    bool is_connect,
+    std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    // 统一守卫（td_session_guard.h，REST/WS 共用）：admin → 账户已登记（解析网关）→
+    // 网关 Running → 写通道可用。顺序即契约 rest §2.9.10 预检 1–4。
+    const bool writer_ready = shm_writer_ != nullptr && shm_writer_->is_ready();
+    const auto check = evaluate_td_session_guard(is_admin(req), registry_.get(),
+                                                 process_mirror_.get(), writer_ready, account_id);
+    switch (check.result) {
+        case TdSessionGuard::NotAdmin:
+            callback(error_with_code(drogon::k403Forbidden, "admin required", "admin_required"));
+            return;
+        case TdSessionGuard::AccountInvalid:
+            SPDLOG_WARN("td session action rejected | reason=account_not_found account={}",
+                        account_id);
+            callback(
+                error_with_code(drogon::k404NotFound, "account not found", "account_not_found"));
+            return;
+        case TdSessionGuard::RegistryUnavailable:
+            // 注册表降级：无法解析归属，属"请求未被受理"的基础设施失败（不带 code）。
+            SPDLOG_WARN(
+                "td session action rejected | reason=account_registry_unavailable "
+                "account={}",
+                account_id);
+            callback(
+                error_response(drogon::k503ServiceUnavailable, "account registry unavailable"));
+            return;
+        case TdSessionGuard::GatewayNotRunning:
+            SPDLOG_WARN("td session action rejected | reason=gateway_not_running gateway={}",
+                        check.gateway);
+            callback(error_with_code(drogon::k409Conflict, "td gateway not running",
+                                     "gateway_not_running"));
+            return;
+        case TdSessionGuard::ChannelUnavailable:
+            SPDLOG_ERROR(
+                "td session action rejected | reason=writer_not_ready account={} "
+                "gateway={}",
+                account_id, check.gateway);
+            callback(error_response(drogon::k503ServiceUnavailable, "shm writer not available"));
+            return;
+        case TdSessionGuard::Ok:
+            break;
+    }
+    const bool ok = is_connect ? shm_writer_->write_td_connect(check.gateway, account_id)
+                               : shm_writer_->write_td_disconnect(check.gateway, account_id);
+    if (!ok) {
+        SPDLOG_ERROR("td session action write failed | action={} gateway={} account={}",
+                     is_connect ? "connect" : "disconnect", check.gateway, account_id);
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
+    SPDLOG_INFO("td session action dispatched | action={} gateway={} account={}",
+                is_connect ? "connect" : "disconnect", check.gateway, account_id);
     callback(json_response(drogon::k200OK, nlohmann::json{{"ok", true}}));
 }
 

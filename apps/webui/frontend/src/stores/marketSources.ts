@@ -400,12 +400,12 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
   // ===== Batch operations =====
   // #207 C3：批量操作的**目标集合**必须可在 UI 侧算出并展示（"将影响 N 个 / 分别是哪些"），
   // 因此目标推导从函数内提到 computed —— 点按钮前先确认，无目标时按钮禁用。
-  // 判据（#203 审查修复）：与单次登录按钮共用 canRequestLogin（Idle 正常登录 / 失败态可重试），
-  // 且未在登录中。Connecting/LoggingIn/Disconnected/已连接未登录不计入：md 会拒绝请求，
-  // pending 只能等 45s 兜底。
+  // 判据（ADR 0051 统一两段式）：与单次按钮同源——登录只在完全未登录（offline）计入；
+  // 登出覆盖任意非未登录态（连接中/登录中/重连中/失败/已登录），与单次登出按钮一致。
   const batchLoginTargets = computed(() =>
     sources.value.filter(s => !s.loginPending && canRequestLogin(s)))
-  const batchLogoutTargets = computed(() => sources.value.filter(s => s.loginState === 'online' && !s.logoutPending))
+  const batchLogoutTargets = computed(() =>
+    sources.value.filter(s => !s.logoutPending && s.loginState !== 'offline'))
 
   /// 自动登录批量目标（enabled 决定"哪些源需要被改"，与按钮语义绑定）
   function batchAutoLoginTargets(enabled: boolean) {

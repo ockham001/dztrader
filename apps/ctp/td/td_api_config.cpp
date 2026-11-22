@@ -59,7 +59,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
             if (session != nullptr) {
                 SPDLOG_WARN("td config change rejected | op={} account={} reason=session_active",
                             magic_enum::enum_name(req.op), account_id);
-                notify_ui_.error(std::format("账户 {} 正在连接, 请先断开再修改配置", account_id));
+                notify_ui_.error(std::format("账户 {} 正在连接, 请先登出再修改配置", account_id));
                 report_config();
                 return;
             }

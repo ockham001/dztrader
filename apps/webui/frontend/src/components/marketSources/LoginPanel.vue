@@ -29,10 +29,9 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
   <!-- ── 登录操作 ── -->
   <div class="card-actions">
     <ProcessStartButton :source="src" />
-    <!-- 契约 md-status 前端义务③：失败态（last_error 且进度处于已连接档 current=2）允许
-         直接重试登录，不要求先登出；登录中/连接中/断线自动重连中（Disconnected 也会保留
-         last_error）仍禁用，避免 md 拒绝后 pending 悬挂。已登录态禁用（重新登录需先登出，
-         否则请求被 md 拒绝、pending 只能等超时）。 -->
+    <!-- ADR 0051 / 契约 md-status 前端义务③：登录只在完全未登录（progress 端点到 min，
+         loginState=offline）可用；连接中/登录中/断线重连中/登录失败态一律禁用——失败后
+         不提供原地重试，恢复路径统一为「先登出、再登录」（登出在任意非未登录态可用）。 -->
     <button
       class="ds-btn ds-btn--sm"
       :class="src.loginState === 'offline' ? 'ds-btn--primary' : 'ds-btn--secondary'"
@@ -40,7 +39,10 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
       :disabled="src.loginPending || src.process_state !== 'Running' || !canRequestLogin(src)"
       :title="src.process_state !== 'Running'
         ? '进程未运行，请先启动进程'
-        : src.loginState === 'online' ? '已登录，如需重新登录请先登出' : undefined"
+        : src.loginPending ? '登录请求已发出，等待进程回报'
+        : src.loginState === 'online' ? '已登录，如需重新登录请先登出'
+        : src.loginState === 'pending' ? '连接/登录/重连中或上次登录失败，请先登出再登录'
+        : undefined"
       @click="store.login(src.id)"
     >
       <span v-if="src.loginPending" class="ds-btn__spinner"></span>
@@ -50,7 +52,9 @@ const autoLoginStatusClass = (s: MarketSourceView): string => {
       class="ds-btn ds-btn--sm ds-btn--danger-subtle"
       type="button"
       :disabled="src.logoutPending || src.loginState === 'offline' || src.process_state !== 'Running'"
-      :title="src.process_state !== 'Running' ? '进程未运行，请先启动进程' : undefined"
+      :title="src.process_state !== 'Running'
+        ? '进程未运行，请先启动进程'
+        : src.loginState === 'offline' ? '当前未登录' : '结束当前会话（连接中/登录中/重连中时点此可强制中断）'"
       @click="store.logout(src.id)"
     >
       <span v-if="src.logoutPending" class="ds-btn__spinner"></span>

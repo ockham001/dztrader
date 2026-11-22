@@ -50,10 +50,9 @@
 
 - **本进程暂无登录链自动重试**（缺口，见 #406）：认证失败 / 登录失败 / 结算确认失败都回滚到 `Authenticated` / `Connected` / `LoggedIn`，但从这些状态**没有任何路径重发请求**——`AccountSession::req_login()` 只在前置刚连上（`on_front_connected`）与认证刚成功（`on_rsp_authenticate`）两处被调用；`on_sched_timer` / `try_recover_login` / `connect_account_by_id` 都按 `find_session() == nullptr` 过滤，session 已存在时一律跳过。因此失败后账户停在帧侧 `LoggingIn`（`account_state_of` 把 `Authenticated`/`Connected` 都映射为 `LoggingIn`）。md 侧有 `can_login()` 重登能力（契约 md-status 失败语义），td 尚未对齐。
 - **登录失败必须让用户看得见**（#407）：正因为上一条——失败后停在正常中间态、且不自动重试——失败若不上浮，账户就会静默卡住。四条失败路径（柜台拒绝 / 交易日无效 / 当日基准装载失败 / 登录超时）统一经 `notify_login_failed()` 出口：先 `on_login_failed()` 转状态，再以 `DZ_NOTIFY_ERROR` + 弹窗推送 `NOTIFY_UI`，正文带上**具体场景**，不用状态机的通用文案「交易登录失败」——只说失败不说原因，用户拿不到可用信息。文案构造在 `login_failed_message()`（纯函数可单测）。状态机拒绝转移（非 `LoggingIn`，如前置已断线或已登出）时不推送，避免弹一条对不上界面状态的告警。
-- **失败原因仅瞬时可见，不进 `td-status`**（#407 决策）：本票只做 `NOTIFY_UI` 弹窗，**不**在 `TdStatus` 新增 `last_error`（md-status 有该字段，td-status 没有）。理由：加字段要动契约六项（general §11.3：契约 + platform 头 + 帧编号登记 + dzweb 领域服务 + 前端 + 测试），且要前端配合展示，与本票「补可观测性」的最小范围不匹配；是否值得把失败原因做成持久字段（而非弹窗一闪而过、断线后无从回看）留待独立票评估。
-- **用户当前无法自行恢复，需运维介入**（缺口，见 #409）：恢复机制本身是通的——`disconnect_account_by_id` 会 `sessions_.erase()`，之后 `connect_account_by_id` 幂等检查放行、重建会话重走登录链。但**没有 UI 入口能触发**：`DZ_FRAME_TD_CONNECT` / `DZ_FRAME_TD_DISCONNECT` 全仓只有定义与测试登记、**无生产端**（md 有 `md_connect`/`md_disconnect`），td 账户无 connect/disconnect REST 端点，WS 只处理 `md_*`，前端账户行内只有编辑/启用禁用/删除；且 `RemoveAccount`/`UpdateAccount` 在 session 活跃时被拒（提示「请先断开再修改配置」，同样是死胡同）。因此实际恢复路径只有：等自动调度的 Logout→Login 窗口（默认 08:45–15:30 / 20:45–02:30），或重启 `dztd_ctp` 进程。**也正因如此，通知正文不写「请登出后重新登录」**——那是对用户承诺一个界面上不存在的操作。
-
-- 本进程不发起登出：UI 登出即彻底释放 CTP SDK API（直接断开），回 Idle；不存在"已登出、连接保留"的稳定状态。
+- **失败原因仅瞬时可见，不进 `td-status`**（#407 决策，后续票 #427）：本票只做 `NOTIFY_UI` 弹窗，**不**在 `TdStatus` 新增 `last_error`（md-status 有该字段，td-status 没有）。是否把失败原因做成持久字段（而非弹窗一闪而过、断线后无从回看）已拆到 #427（与 md 对齐：`last_error` + 登录 pending 即时清除），不阻塞本流程。
+- **手动登录/登出入口**（#409 / ADR 0051，契约 td-connection）：恢复路径 = **先登出、再登录**（#406 拍板，登录失败不自动重试）。`TD_CONNECT` / `TD_DISCONNECT` 由 dzweb 生产：REST `POST /api/td/accounts/{account_id}/login|logout`、WS `td_connect/td_disconnect`（守卫 = admin + 账户注册表解析网关 + 网关 Running + 写通道）；前端账户行内「登录 / 登出」双按钮。**登录仅在完全未登录（progress 到 min）可用；登出在任意非未登录状态可用**（连接中/登录中/重连中/失败回滚/就绪 = 强制中断）。账户配置在有活跃会话时仍拒绝 `UpdateAccount`，提示「请先登出再修改配置」——该提示现在可执行。
+- 本进程不发起柜台登出请求：用户的「登出」（任意非未登录状态可发）即彻底释放 CTP SDK API（直接断开），回 Idle；不存在"已登出、连接保留"的稳定状态（契约 td-connection）。
 - 例外：若收到服务器主动登出的回调，状态已偏离预期，属异常情况，非本进程主动为之。此时保留前置连接，由自动调度重新登录恢复，并记录错误日志、上报告警，供排查。
 
 ### 登录日装载（重放基准）

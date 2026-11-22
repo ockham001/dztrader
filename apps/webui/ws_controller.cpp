@@ -38,13 +38,15 @@ WsController::WsController(WebuiConfig cfg,
                            std::shared_ptr<shm::MultiWriter> event_writer,
                            std::shared_ptr<dztrader::platform::LogConfig> self_log,
                            MirrorStore& mirror,
-                           MdControlDomainService& md_control)
+                           MdControlDomainService& md_control,
+                           TdControlDomainService& td_control)
     : cfg_(std::move(cfg)),
       repo_(std::move(repo)),
       event_writer_(std::move(event_writer)),
       self_log_(std::move(self_log)),
       mirror_(mirror),
-      md_control_(md_control) {
+      md_control_(md_control),
+      td_control_(td_control) {
     // webui 自身 log_config 镜像初值已移入 main 装配（mirror_store->update），
     // 保证 API-only 模式(无 SHM)下前端连接快照也能看到 webui 自身级别
     // （契约 log：dzweb 自身纳入镜像）。
@@ -228,6 +230,21 @@ void WsController::handle_control_message(const drogon::WebSocketConnectionPtr& 
             md_control_.handle_md_connect(is_admin, source, seq, reply);
         } else {
             md_control_.handle_md_disconnect(is_admin, source, seq, reply);
+        }
+    } else if (type == "td_connect" || type == "td_disconnect") {
+        // 交易账户会话控制（契约 webui-ws §3 / 契约 td-connection）：账户级寻址，
+        // 守卫（admin + 账户注册表解析 + 网关 Running + 写通道）+ 写帧 + 回执下沉到服务。
+        const auto sit = sessions_.find(conn);
+        const bool is_admin = sit != sessions_.end() && sit->second.is_admin;
+        const std::string account_id = payload.value("account_id", "");
+        const uint64_t seq = msg.value("seq", static_cast<uint64_t>(0));
+        TdControlDomainService::Reply reply = [conn](nlohmann::json frame) {
+            conn->send(frame.dump());
+        };
+        if (type == "td_connect") {
+            td_control_.handle_td_connect(is_admin, account_id, seq, reply);
+        } else {
+            td_control_.handle_td_disconnect(is_admin, account_id, seq, reply);
         }
     } else if (type == "query_md_subscriptions") {
         // P2 任务③：下沉到 MdControlDomainService（透传，dzweb 不校验互斥）

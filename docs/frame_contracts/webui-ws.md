@@ -117,6 +117,8 @@ domain 清单与挂载实例：
 |---|---|---|---|
 | `md_connect_ack` | `md_connect` | `{ source, ok }`；`ok=false` 时前端立即提示，不设 pending | 行情进程的 `progress`（登录态） |
 | `md_disconnect_ack` | `md_disconnect` | `{ source, ok }`（与 `md_connect_ack` 对称） | 同上 |
+| `td_connect_ack` | `td_connect` | `{ account_id, ok }`；`ok=false` 时前端立即提示，不设 pending | 交易账户的 `progress` / `td_rtn_status`（契约 td-connection） |
+| `td_disconnect_ack` | `td_disconnect` | `{ account_id, ok }`（与 `td_connect_ack` 对称） | 同上 |
 | `subscribe_log_ack` | `subscribe_log` | `{ file }` | `log_line` 逐行推送 |
 | `unsubscribe_log_ack` | `unsubscribe_log` | `{}` | — |
 | `query_md_subscriptions_ack` | `query_md_subscriptions` | `{ source, ok }`；`ok=false` 时前端立即提示，不设 pending | `md_rtn_subscriptions`（`error=null` 为成功数据，非 null 为查询失败） |
@@ -151,6 +153,8 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 | `ping` | — | — | 回 `pong` |
 | `md_connect` | `{ source }` | `source` 非空、事件通道可用、当前连接为 admin、目标进程在镜像中为 `Running`；否则回 `error`（message 说明原因），不写帧 | 写 `REQUEST_MD_CONNECT`（`instance_id=source`）→ 回 `md_connect_ack{source, ok:true}` |
 | `md_disconnect` | `{ source }` | 同 `md_connect`（含 admin 与镜像 `Running` 校验） | 写 `REQUEST_MD_DISCONNECT` → 回 `md_disconnect_ack{source, ok:true}` |
+| `td_connect` | `{ account_id }` | `account_id` 非空、事件通道可用、当前连接为 admin、账户在账户注册表中（解析出目标网关）、目标网关在镜像中为 `Running`；否则回 `error`（message 说明原因），不写帧 | 写 `TD_CONNECT`（`instance_id` = 网关名，payload 含 `account_id`）→ 回 `td_connect_ack{account_id, ok:true}` |
+| `td_disconnect` | `{ account_id }` | 同 `td_connect`（两动作守卫一致；登出不校验账户是否已登录） | 写 `TD_DISCONNECT` → 回 `td_disconnect_ack{account_id, ok:true}` |
 | `subscribe_log` | `{ file }` | `file` 非空；否则回 `error` | 拒绝订阅自身日志（回 `log_tail_unsubscribed{reason:self_logs_cannot_be_tailed}`，不建订阅）；建立本连接日志订阅 → 回 `subscribe_log_ack{file}` |
 | `unsubscribe_log` | — | — | 清除本连接订阅 → 回 `unsubscribe_log_ack{}` |
 | `query_md_subscriptions` | `{ source, query }` 或 `{ source, instruments }` | `source` 非空；`query` 为字符串或 `instruments` 为数组（二选一，缺一或类型错回 `error`）；dzweb 不校验 `query` 取值与互斥（由目标 md 进程校验，经 `RTN.error` 表达） | 构造 SHM payload（不含 `source`，`source` 作为 `instance_id`）写 `QUERY_MD_SUBSCRIPTIONS` → 回 `query_md_subscriptions_ack{source, ok}` |
@@ -163,8 +167,9 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 
 - WS 是**状态推送通道**（镜像增量 + 快照）；REST 是**请求入口与大数据查询**（见契约 rest）。
 - **交易记录**：REST 是唯一基线查询通路（契约 rest §2.9 直查交易库），WS 是增量推送（§2.5）；交易记录不进 `snapshot`、不落镜像。
-- 设置类请求统一走 REST：进程启停（`POST /api/market-sources/{id}/start|stop` → `REQUEST_PROCESS_CONTROL`）、行情连接（`POST /api/market-sources/{id}/login|logout` → `REQUEST_MD_CONNECT/DISCONNECT`）、行情配置（brokers CRUD → `SET_MD_CONFIG`）、自动登录（`PUT .../auto-login` → `SET_AUTO_LOGIN`）、日志配置（`POST /api/logs/level|flush` → `SET_LOG_CONFIG`/`FLUSH_LOG`）。WS 的 `md_connect`/`md_disconnect`/`query_md_subscriptions` 为等效便捷通道，两路行为一致。
+- 设置类请求统一走 REST：进程启停（`POST /api/market-sources/{id}/start|stop` → `REQUEST_PROCESS_CONTROL`）、行情连接（`POST /api/market-sources/{id}/login|logout` → `REQUEST_MD_CONNECT/DISCONNECT`）、交易账户会话控制（`POST /api/td/accounts/{id}/login|logout` → `TD_CONNECT/DISCONNECT`，契约 td-connection）、行情配置（brokers CRUD → `SET_MD_CONFIG`）、自动登录（`PUT .../auto-login` → `SET_AUTO_LOGIN`）、日志配置（`POST /api/logs/level|flush` → `SET_LOG_CONFIG`/`FLUSH_LOG`）。WS 的 `md_connect`/`md_disconnect`/`td_connect`/`td_disconnect`/`query_md_subscriptions` 为等效便捷通道，两路行为一致。
 - `md_connect`/`md_disconnect` 与 REST `POST /api/market-sources/{id}/login|logout` 核心守卫一致：admin 角色 + 目标进程镜像 `Running` 预检。镜像未就绪（dzweb 启动初期快照未完成）时预检可能保守拒绝（回 `error`，前端不设 pending）；预检放行后目标进程失效的场景由 pending 超时/progress 推送兜底。
+- `td_connect`/`td_disconnect` 与 REST `POST /api/td/accounts/{id}/login|logout` 核心守卫一致：admin + 账户在注册表（解析出目标网关）+ 目标网关镜像 `Running`（契约 td-connection）。
 - 前端在 REST 请求成功后**不得假设已生效**：以 WS 领域消息（RTN 推送）为生效信号。
 
 ---
@@ -174,7 +179,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 以下为跨进程可观察行为义务（视觉细节不属契约）：
 
 1. **pending 生命周期**：设置/控制请求发出后设 pending → 收到对应领域消息（RTN 推送）后清除；`*_ack` 的 `ok=false` 立即清除并提示；**所有请求必须有超时兜底**（建议 5s，超时视为目标进程无响应并提示），总则 §7。
-2. **pending 清除信号的唯一来源**：由各契约声明（如进程操作用 `process_status` 的 `event` 字段，日志配置用 `log_config` 推送，行情登录失败用 `md_rtn_status` 的 `last_error` 变化——契约 md-status）；`notify_ui` 是纯通知，**永不**清除 pending（契约 notify-ui）。
+2. **pending 清除信号的唯一来源**：由各契约声明（如进程操作用 `process_status` 的 `event` 字段，日志配置用 `log_config` 推送，行情登录失败用 `md_rtn_status` 的 `last_error` 变化——契约 md-status，交易账户会话控制用 `progress` 端点/回退——契约 td-connection）；`notify_ui` 是纯通知，**永不**清除 pending（契约 notify-ui）。
 3. **错误展示来源**：业务失败经 `NOTIFY_UI`（`popup=true` 必须打断展示）或领域消息的错误字段（如 `md_rtn_subscriptions.error`）表达；`error`（WS 协议错误）只表示请求未被受理。
 4. **刷新来源**：镜像数据以 WS 推送为准（不本地缓存镜像）；`data_changed` 只提示按 `scope` 重新 REST 拉取对应列表。交易数据例外：记录基线以 REST 为准（第 7 条）。
 5. **幂等覆盖**：所有领域消息按"后到覆盖先到"处理（含快照分发与增量 apply），重复消息无害；对已移除进程的后续 `process_status` 忽略（契约 process）。
