@@ -6,13 +6,25 @@
  * （与 `topbarOverflow.spec` 同一先例）。
  */
 import { describe, it, expect } from 'vitest'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseCssFile, tokenDeclarationsOf } from '@/test-utils/cssTheme'
 import {
   CORE_BAR_GAP,
-  CORE_BAR_MIN_WIDTH,
   PERCENT_TREND_GRIDLINE_YS,
   coreBarColumns,
   percentTrendGeometry,
 } from '../monitorCpu'
+
+const testDir = dirname(fileURLToPath(import.meta.url))
+/** design-tokens.css 的 token 表（:root 段）：交叉校验 JS 常量与 CSS 真实值 */
+function designTokens(): Map<string, string> {
+  return tokenDeclarationsOf(
+    parseCssFile(join(testDir, '..', '..', 'assets', 'css', 'design-tokens.css')),
+    ':root',
+    false,
+  )
+}
 
 /** 解析 `polyline points` 成 [x, y] 数组（SVG viewBox 坐标） */
 function parsePoints(points: string): Array<[number, number]> {
@@ -79,6 +91,17 @@ describe('percentTrendGeometry · 固定 0–100% 纵轴（#435 决策 2）', ()
     expect(parsePoints(geometry!.points).map(([x]) => x)).toEqual([0, 50, 100])
   })
 
+  it('firstTs / lastTs 取首个 / 末个有效点（横轴两端标签与曲线实际起止同源）', () => {
+    const geometry = percentTrendGeometry([
+      { ts: 5, value: Number.NaN },
+      { ts: 10, value: 0.2 },
+      { ts: 20, value: 0.3 },
+      { ts: 25, value: Number.POSITIVE_INFINITY },
+    ])
+    expect(geometry!.firstTs).toBe(10)
+    expect(geometry!.lastTs).toBe(20)
+  })
+
   it('lastValue 是末个有效点的原始值（供末点断言，与当前数字同源）', () => {
     const geometry = percentTrendGeometry([
       { ts: 0, value: 0.2 }, { ts: 1, value: 0.45 },
@@ -91,8 +114,8 @@ describe('percentTrendGeometry · 固定 0–100% 纵轴（#435 决策 2）', ()
     for (let index = 1; index < PERCENT_TREND_GRIDLINE_YS.length; index += 1) {
       expect(PERCENT_TREND_GRIDLINE_YS[index]).toBeLessThan(PERCENT_TREND_GRIDLINE_YS[index - 1])
     }
-    expect(PERCENT_TREND_GRIDLINE_YS[0]).toBe(32) // 0%
-    expect(PERCENT_TREND_GRIDLINE_YS[4]).toBe(2) // 100%
+    // 精确几何：100/75/50/25/0% → y=2/9.5/17/24.5/32（TREND_PAD=2、PLOT_HEIGHT=30）
+    expect([...PERCENT_TREND_GRIDLINE_YS]).toEqual([32, 24.5, 17, 9.5, 2])
   })
 })
 
@@ -125,11 +148,34 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
     expect(coreBarColumns(128, 1300)).toBe(16)
   })
 
-  it('列数受最小格宽约束：不窄于 CORE_BAR_MIN_WIDTH（加上间距后按 1/72 递减）', () => {
+  it('最小格宽 / 间距常量与 design-tokens 的真实值一致（JS 与 CSS 不得各排一份间距）', () => {
+    const tokens = designTokens()
+    // 间距：CSS 用 var(--spacer-8) 排格间距，JS 用同一个数值算列数
+    expect(tokens.get('--spacer-8')).toBe(`${CORE_BAR_GAP}px`)
+    // 最小格宽：CSS 侧仍走同一 token 名谱系（--core-bar-height 为轨道高度；格宽由 JS 计算）
+    expect(tokens.get('--core-bar-height')).toBe('72px')
+  })
+
+  it('列数受最小格宽约束：1300px 下 64 核的每格宽度不窄于 CORE_BAR_MIN_WIDTH', () => {
+    // 用字面量 56/10 断言（而不是同一常量自证）：token 改了这条必须跟着改，挡「常量漂移」
     const width = 1300
     const columns = coreBarColumns(64, width)
-    const cellWidth = (width - (columns - 1) * CORE_BAR_GAP) / columns
-    expect(cellWidth).toBeGreaterThanOrEqual(CORE_BAR_MIN_WIDTH)
+    expect(columns).toBe(16)
+    const cellWidth = (width - (columns - 1) * 10) / columns
+    expect(cellWidth).toBeGreaterThanOrEqual(56)
+  })
+
+  it('窄容器 + 大核数：48/128 仍折行；128 × 500 的末行偏短是已登记的已知边界', () => {
+    // 用户举的例子在窄屏仍能等分
+    expect(coreBarColumns(48, 350)).toBe(4) // 12 行 × 4
+    expect(coreBarColumns(48, 500)).toBe(6) // 8 行 × 6
+    // 128 核：宽容器完全等分（8 行 × 16）；750/500 只能少行优先，末行偏短
+    expect(coreBarColumns(128, 1300)).toBe(16)
+    expect(coreBarColumns(128, 750)).toBe(10) // 13 行：12 × 10 + 8
+    expect(coreBarColumns(128, 500)).toBe(7) // 19 行：18 × 7 + 2（已知边界，见 coreBarColumns 注释）
+    expect(128 - (Math.ceil(128 / 7) - 1) * 7).toBe(2)
+    // 128 × 350 的候选里 5 列 × 26 行末行 3（≥ 半行）
+    expect(coreBarColumns(128, 350)).toBe(5)
   })
 
   it('典型核数在常见宽度下：末行至少占一半（不出现「23 + 1」）', () => {

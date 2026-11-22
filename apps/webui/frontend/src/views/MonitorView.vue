@@ -161,6 +161,9 @@ onUnmounted(() => {
   // 定时器必须随组件清理：本页在三种视图间切换时不重建，但离开路由后没人再读数据龄
   if (freshnessTicker !== null) clearInterval(freshnessTicker)
   freshnessTicker = null
+  // #435：每核条形的 ResizeObserver 同理——ref→null 的 watch 在组件卸载时不一定触发，
+  // 必须在卸载钩子里断开（与 Topbar 的既有做法一致）
+  disconnectCoreBarsObserver()
 })
 
 /**
@@ -309,13 +312,28 @@ const cpuEmptyDesc = computed(() => cpuAvailable.value
   ? '暂无可用采样（首次采样未完成或计数器重置）'
   : unavailableDesc('cpu.total'))
 
-// ---- CPU 区块补全（#72）：每核 / 系统负载 / 上下文切换与中断 ----
+// ---- CPU 区块补全（#72）：每核 / 系统负载 / 每核频率 / 温度（上下文切换与中断已随 #435 移出实时页） ----
 // 只按 availability.metrics 与数据语义渲染，不按 platform.family 分支。
 const cpuCoresAvailable = computed(() => isAvailable('cpu.cores'))
 const cpuCores = computed(() => sysmon.cpuCores)
-const coresEmptyDesc = computed(() => cpuCoresAvailable.value
-  ? '当前快照未提供每核数据'
-  : unavailableDesc('cpu.cores'))
+
+/**
+ * 每核条形空态（#435 从台账 CPU 行迁入）：三档不混淆——可用但本帧无数据 / 配置关闭 /
+ * 能力不可用。`disabled_by_config` 是唯一可自助恢复的一类，不能并进「不可用」；
+ * 恢复提示指向配置页（CPU 指标组开关），与契约 sysmon §3.1.1 的 `sampling.groups.cpu` 对应。
+ */
+function coresUnavailableReason(): string | undefined {
+  return sysmon.availabilityOf('cpu.cores')?.reason
+}
+const coresEmptyTitle = computed(() => {
+  if (cpuCoresAvailable.value) return '暂无每核数据'
+  return coresUnavailableReason() === 'disabled_by_config' ? DISABLED_BY_CONFIG_TEXT : UNAVAILABLE_TEXT
+})
+const coresEmptyDesc = computed(() => {
+  if (cpuCoresAvailable.value) return '当前快照未提供每核数据'
+  if (coresUnavailableReason() === 'disabled_by_config') return '可在「配置」页重新启用 CPU 指标组'
+  return unavailableDesc('cpu.cores')
+})
 
 const loadAvailable = computed(() => isAvailable('cpu.load_average'))
 const loadAverage = computed(() => sysmon.cpuLoadAverage)
@@ -737,6 +755,8 @@ const frequencyByCoreIndex = computed(() => {
 interface CoreBar {
   index: number
   saturated: boolean
+  /** 本帧是否有该核读数：false 时轨道加斜纹，避免「缺失」与「真的 0%」在图形层同形 */
+  available: boolean
   style: Record<string, string>
   /** `核 N · 45.0%`；频率可用时追加 ` · 3200 MHz`，饱和核追加 ` · 饱和` */
   text: string
@@ -763,6 +783,7 @@ const coreBars = computed<CoreBar[]>(() => cpuCores.value.map(core => {
   return {
     index: core.index,
     saturated: core.saturated,
+    available: ratio !== null,
     style,
     text: parts.join(' · '),
   }
@@ -816,8 +837,10 @@ function trendAxisClock(timestampSec: number | undefined): string {
   if (typeof timestampSec !== 'number' || !Number.isFinite(timestampSec)) return ''
   return formatClockTime(timestampSec * 1_000, nowMs.value)
 }
-const trendStartText = computed(() => trendAxisClock(usageSeries.value[0]?.ts))
-const trendEndText = computed(() => trendAxisClock(usageSeries.value[usageSeries.value.length - 1]?.ts))
+// 用几何自己的有效首/末点，而不是原始序列首末项：折线会丢弃 ts/value 非有限的点，
+// 两端标签必须与曲线实际起止同源（否则边缘点非法时标签空着、曲线从别处开始）。
+const trendStartText = computed(() => trendAxisClock(usageGeometry.value?.firstTs))
+const trendEndText = computed(() => trendAxisClock(usageGeometry.value?.lastTs))
 
 /**
  * 趋势下方说明：只写时间窗（#435 决策 2 去掉了「纵轴 …%」——固定 0–100% 不再需要解释）。
@@ -825,13 +848,21 @@ const trendEndText = computed(() => trendAxisClock(usageSeries.value[usageSeries
  */
 const cpuTrendCaption = computed(() => sparklineWindowText(usageWindow.value))
 
-/** 趋势 title / aria：指标名 + 时间窗 + 轴口径 + 查看历史（与 SysmonSparkline 同口径） */
+/**
+ * 趋势 title / aria：指标名 + 时间窗 + 轴口径 + 查看历史（与 SysmonSparkline 同口径）。
+ *
+ * 可见界面按拍板 2 不写轴范围与刻度；但读屏用户看不到网格线，轴口径与横轴起止时刻
+ * 必须在 aria 里补上（视觉隐藏的坐标轴信息不能连无障碍一起删掉）。
+ */
 const cpuTrendTitle = computed(
   () => `${sparklineTitle(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)} · 纵轴固定 0–100%`,
 )
-const cpuTrendAriaLabel = computed(
-  () => `${sparklineAriaLabel(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)}，纵轴固定 0–100%`,
-)
+const cpuTrendAriaLabel = computed(() => {
+  const range = trendStartText.value !== '' && trendEndText.value !== ''
+    ? `，从 ${trendStartText.value} 到 ${trendEndText.value}`
+    : ''
+  return `${sparklineAriaLabel(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)}，纵轴固定 0–100%${range}`
+})
 
 
 </script>
@@ -1138,7 +1169,11 @@ const cpuTrendAriaLabel = computed(
                 :data-core-index="bar.index"
                 :data-saturated="bar.saturated ? 'true' : undefined"
               >
-                <span class="monitor-view__core-bar" aria-hidden="true">
+                <span
+                  class="monitor-view__core-bar"
+                  :class="{ 'monitor-view__core-bar--unavailable': !bar.available }"
+                  aria-hidden="true"
+                >
                   <span
                     class="monitor-view__core-bar-fill"
                     :class="{ 'monitor-view__core-bar-fill--saturated': bar.saturated }"
@@ -1153,7 +1188,7 @@ const cpuTrendAriaLabel = computed(
               </li>
             </ul>
             <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
-              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
+              <div class="ds-empty__title">{{ coresEmptyTitle }}</div>
               <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
             </div>
           </div>
@@ -1190,7 +1225,7 @@ const cpuTrendAriaLabel = computed(
         </div>
       </section>
 
-      <!-- 指标台账（#363）：四组（CPU → 内存 → 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
+      <!-- 指标台账（#363；#435 起 CPU 组移入 CPU 块，只剩三组 内存 → 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
            组件不写任何「该不该显示」的判断——行的存在、空态类别、阈值与余量、能否点跳历史
            全部由 `@/composables/monitorLedger` 决定。七列共用一条列基线（每行同一套
            `grid-template-columns`），因此任意一列可纵向读下来。 -->
@@ -1340,7 +1375,7 @@ const cpuTrendAriaLabel = computed(
                 <!-- 明细展开按钮挂在明细列内（不另占一整行）：语义上它是「这段话还有下文」，
                      不是第八列，也不该把每行的行高翻倍。时钟行的按钮在它自己的结构化明细里。 -->
                 <button
-                  v-if="(row.fields.length > 0 || row.id === 'cpu.cores') && row.id !== 'clock'"
+                  v-if="row.fields.length > 0 && row.id !== 'clock'"
                   class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__ledger-expand-btn"
                   type="button"
                   :aria-expanded="isLedgerRowOpen(row.id)"
@@ -1931,6 +1966,10 @@ const cpuTrendAriaLabel = computed(
   stroke: var(--viz-ui-chart-axis);
   stroke-width: 1;
 }
+
+/* forced-colors（Windows 高对比度）：网格线与数据折线都会被系统强制成 CanvasText，
+   只剩 1px / 1.5px 的线宽差。信息在数据折线本身，网格线只是尺度感，因此不为它单写
+   forced-colors 媒体分支（#381 的反向用例明令禁止：那会剥夺用户的高对比度配色选择）。 */
 
 .monitor-view__chart-line {
   fill: none;
@@ -2694,7 +2733,8 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* 单核：只有柱与（饱和时的）文字标记；逐核读数由 title / aria 提供（#435 决策 6 不显示文字）。
-   `align-items: start` 让同一行的柱顶对齐——饱和核多出的「饱和」文字不把其它柱往下拽。 */
+   同一行柱顶对齐由容器 `.monitor-view__cores` 的 `align-items: start` 保证——
+   饱和核多出的「饱和」文字不把其它柱往下拽。 */
 .monitor-view__core {
   display: flex;
   flex-direction: column;
@@ -2744,6 +2784,17 @@ const cpuTrendAriaLabel = computed(
 
 .monitor-view__core-bar-fill--saturated {
   background: var(--status-error-default);
+}
+
+/* 无读数的核（首次采样 / 采集失败）在轨道的**背景**上加斜纹，与高度无关：
+   逐核文字按 #435 决策 6 删除后，空轨道若与「真的 0%」同形，图形层就会用 0 冒充缺失
+   （仓库反复禁止的「缺失不是 0」）。斜纹只出现在没有读数的格上，0% 永远是干净轨道。 */
+.monitor-view__core-bar--unavailable {
+  background-image: repeating-linear-gradient(
+    135deg,
+    transparent 0 var(--spacer-4),
+    var(--bg-overlay-l1) var(--spacer-4) var(--spacer-8)
+  );
 }
 
 /* 饱和标记：文字（不是只有颜色）——灰度截屏下与正常核仍有明确差异。
@@ -2898,7 +2949,7 @@ const cpuTrendAriaLabel = computed(
     grid-column: auto;
   }
 
-  /* 窄屏：CPU 块的内层块让回单列（宽卡本身已 `grid-column: auto`）。
+  /* 窄屏：CPU 块的内层块让回单列（卡片本身已 `grid-column: auto`）。
      主机条是顶栏下方的独立一条（#430），不再是网格项，不在此处列。 */
   .monitor-view__stats,
   .monitor-view__trend {

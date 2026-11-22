@@ -36,6 +36,10 @@ export interface PercentTrendGeometry {
   points: string
   /** 末点值（与旁边的当前数字同源，供末点断言） */
   lastValue: number
+  /** 首个有效点的时刻（Unix 秒）：横轴左端标签取它，而不是原始序列的首项 */
+  firstTs: number
+  /** 末个有效点的时刻（Unix 秒）：横轴右端标签取它 */
+  lastTs: number
 }
 
 /**
@@ -75,6 +79,8 @@ export function percentTrendGeometry(
   return {
     points: coordinates.join(' '),
     lastValue: valid[valid.length - 1].value,
+    firstTs: valid[0].ts,
+    lastTs: valid[valid.length - 1].ts,
   }
 }
 
@@ -84,8 +90,11 @@ export function percentTrendGeometry(
  * 2–3 行；再窄（<lg 或手机）才继续折行。
  */
 export const CORE_BAR_MIN_WIDTH = 56
-/** 每核条形的格间距（px）：与间距 token `--spacer-8` 同值（灰阶与间距步进都走 token） */
-export const CORE_BAR_GAP = 8
+/**
+ * 每核条形的格间距（px）：与间距 token `--spacer-8` 的实际值一致（token 名是步进序号，不是像素值）。
+ * 单测会解析 `design-tokens.css` 交叉校验这个常量，防止 JS 与 CSS 各排一份间距。
+ */
+export const CORE_BAR_GAP = 10
 /** 为凑整行最多允许多出来的行数（见 {@link coreBarColumns}） */
 const MAX_EXTRA_ROWS = 2
 
@@ -98,8 +107,10 @@ const MAX_EXTRA_ROWS = 2
  * 2. 行数先取最少：`minRows = ceil(数量 / maxColumns)`。
  * 3. **尽量等分**：在「行数不超过 `minRows + 2`」的候选列数里，选**末行空格最少**的那个
  *    （空格为 0 即每行数量完全相等）；同空格数时取行数少的。允许最多多 2 行，是为了避免为了
- *    「恰好整除」把 16 核从 3 行拖成 16 行；实在无解（质数核数）才退回最少行数，
- *    由 CSS 网格把余数摊到末行——但不会出现 23 + 1 那种极端失衡（末行空格最少的候选总是被选中）。
+ *    「恰好整除」把 16 核从 3 行拖成 16 行；找不到等分才退回最少行数，由 CSS 网格把余数摊到末行。
+ *    在常见核数（8/16/32/48/64/96/128）与常见容器宽度下不会出现 23 + 1 那种极端失衡
+ *    （单测矩阵覆盖）；**已知边界**：容器极窄而核数极高时（如 128 核 × 500px），要完全等分
+ *    只能把每格压到最小格宽以下或折出 30+ 行，本实现选择「少行 + 末行偏短」，不为此牺牲可读性。
  *
  * @param count 条形总数（核数）；非正数返回 0
  * @param containerWidth 容器实测宽度（px）；未测量（0 / NaN）时返回 `count`（单行）

@@ -97,7 +97,7 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     vi.restoreAllMocks()
   })
 
-  it('5 个标量指标各有一条趋势，维度指标（温度 / 每核 / 每盘 / 每网卡）没有', async () => {
+  it('4 个趋势指标各有一条趋势（CPU 块宽图 + 3 条内联 sparkline），负载与维度指标没有', async () => {
     const wrapper = await mountView()
 
     // #435：CPU 使用率的趋势是 CPU 块内的固定 0–100% 宽图（不是内联 sparkline 组件）；
@@ -534,7 +534,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   }
 
-  it('监控页网格是单列纵向：宽卡与台账跨满整行，没有任何媒体规则为网格改列数（#363）', () => {
+  it('监控页网格是单列纵向：CPU 块与台账跨满整行，没有任何媒体规则为网格改列数（#363）', () => {
     // 基础规则即单列。必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
     const grid = ruleBody('.monitor-view__grid')
@@ -543,7 +543,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
     expect(grid).toContain('align-items: start')
 
-    // 网格里的子元素跨满整行：宽卡与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
+    // 网格里的子元素跨满整行：CPU 块与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
     // 独立一条，不是网格项——它不在网格里断言，见下一条）。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
     expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
@@ -570,12 +570,27 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 不写断点：一条规则覆盖 4–128 核（折行由列数决定，不由媒体查询决定）
     expect(source).not.toMatch(/\.monitor-view__cores[^{]*\{[^}]*repeat\(\d/)
     // 列数来源：视图用 ResizeObserver 实测容器宽度，交给纯函数 coreBarColumns
-    expect(source).toContain('new ResizeObserver')
-    expect(source).toContain('coreBarColumns(cpuCores.value.length, coreBarsWidth.value)')
-    expect(source).toContain("'--core-columns'")
+    // 列数来源与卸载清理由行为用例覆盖（MonitorView.spec：ResizeObserver 桩驱动列数 / 卸载 disconnect），
+    // 这里只锁 CSS 契约，不断言私有实现表达式（unit-test-standard §1.2）
     // 条形高度回到参考图的量级（36 → 72）：高度是图表几何量，走 token
     const tokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
     expect(tokens.get('--core-bar-height')).toBe('72px')
+  })
+
+  it('占用率主数值按 resourceLevel 的 70/90 着色，文字用 -on-surface 配对档（#435 决策 7）', () => {
+    // 实体 -default 只给点 / 条 / 图标；大字号文本也必须走 -on-surface（浅色 -default 绿 2.79:1）
+    const cases = [
+      ['normal', 'var(--status-success-on-surface)'],
+      ['warn', 'var(--status-warning-on-surface)'],
+      ['danger', 'var(--status-error-on-surface)'],
+    ] as const
+    for (const [level, token] of cases) {
+      const selector = `.monitor-view__value-btn.monitor-view__cpu-usage[data-level='${level}']`
+      expect(ruleBody(selector), selector).toContain(`color: ${token}`)
+    }
+    // 温度 / 频率 / 负载的主数值不套色（契约没有对应阈值，不编造判据）
+    expect(source).not.toMatch(/monitor-view__(metric|value-btn)[^{]*\[data-level\]/)
+    expect(ruleBody('.monitor-view__metric')).toContain('color: var(--text-default)')
   })
 
   it('长 token 在台账里按列收口：名称 / 明细 / 展开值可断行，读数列不折（#321 / #363）', () => {
@@ -931,6 +946,19 @@ describe('MonitorView CPU 固定 0–100% 趋势（#435：单曲线 + 网格线 
     expect(startText).toMatch(/^\d{2}:\d{2}:\d{2}$/)
     expect(endText).toMatch(/^\d{2}:\d{2}:\d{2}$/)
     // 夹具历史覆盖 2 分钟 + 实时点：两端必须不同（同值说明没按首末点取）
+    expect(startText).not.toBe(endText)
+  })
+
+  it('横轴两端取自曲线的有效首末点，并并入趋势按钮的读屏文案', async () => {
+    const wrapper = await mountView()
+
+    const startText = wrapper.find('[data-test="monitor-cpu-trend-start"]').text()
+    const endText = wrapper.find('[data-test="monitor-cpu-trend-end"]').text()
+    const aria = wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('aria-label') ?? ''
+    // 可见刻度列已删除（拍板 2），但时刻与轴口径必须对读屏用户可达
+    expect(aria).toContain('纵轴固定 0–100%')
+    expect(aria).toContain(`从 ${startText} 到 ${endText}`)
+    // 首末点不同（来自序列两端，不是同一时刻）
     expect(startText).not.toBe(endText)
   })
 

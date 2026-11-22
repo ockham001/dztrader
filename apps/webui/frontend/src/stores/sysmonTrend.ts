@@ -17,15 +17,18 @@ import { SYSMON_HISTORY_METRICS } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
 
 /**
- * 内联趋势（sparkline）覆盖的标量指标（#127，验收标准）。
+ * 趋势数据（历史 REST 补齐 + WS 增量推进）覆盖的标量指标。
  *
  * 只列**标量指标**：它们无需维度即可查询（契约 sysmon §6.1 的 `metric` 参数），是历史视图
- * 指标下拉的子集。维度指标（每核 / 每盘 / 每网卡 / 每传感器）第一版不做 sparkline ——
+ * 指标下拉的子集。维度指标（每核 / 每盘 / 每网卡 / 每传感器）第一版不做趋势 ——
  * 维度查询需要 `dimension` 参数，而维度选择器不在本版本范围。
+ *
+ * 消费方：#435 起 `cpu.usage_ratio` 供 CPU 块内的固定 0–100% 宽图；内存 / 交换 / 共享内存目录
+ * 仍是内联 sparkline。`cpu.load_average.one` 已从本清单移除——负载只保留数字 + 5/15 分小字，
+ * 不再有迷你趋势（#435 拍板 1），没有消费方的历史查询不留在每次进页面的请求里。
  */
 export const SYSMON_TREND_METRIC_KEYS = [
   'cpu.usage_ratio',
-  'cpu.load_average.one',
   'memory.used_ratio',
   'swap.used_ratio',
   'shm_dir.total_bytes',
@@ -96,7 +99,6 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
    */
   const readers: Record<SysmonTrendMetricKey, () => number | null> = {
     'cpu.usage_ratio': () => sysmon.cpuUsageRatio,
-    'cpu.load_average.one': () => sysmon.cpuLoadAverage?.one ?? null,
     'memory.used_ratio': () => sysmon.memoryInfo?.used_ratio ?? null,
     'swap.used_ratio': () => sysmon.swapInfo?.used_ratio ?? null,
     'shm_dir.total_bytes': () => sysmon.shmDirInfo?.total_bytes ?? null,

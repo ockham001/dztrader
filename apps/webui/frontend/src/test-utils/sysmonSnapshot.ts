@@ -248,7 +248,9 @@ const DEFAULT_DISK_IO: SysmonDiskIoInfo[] = [
 export function makeSysmonCpuCores(count = 16): SysmonCpuCore[] {
   return Array.from({ length: count }, (_, index) => ({
     index,
-    usage_ratio: 0.05 + index * 0.031,
+    // 契约 sysmon §2.3：usage_ratio ∈ [0,1]。大核数（如 32）时 0.05 + index×0.031 会越界，
+    // 夹到 1 保持夹具合法；16 核以内的既有断言值不变（0.05 … 0.515）。
+    usage_ratio: Math.min(1, 0.05 + index * 0.031),
     saturated: false,
   }))
 }

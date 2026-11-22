@@ -567,7 +567,7 @@ describe('#348 检查 1：token 对对比度', () => {
 const RUNTIME_INJECTED: Record<string, string> = {
   '--icon-url': 'components/shared/Icon.vue:11 与 Dropdown/DatePicker/TimePicker 等以 :style 注入图标 url',
   '--ds-status-fill': 'components/shared/StatusIndicator.vue:56 按进度注入填充百分比',
-  '--core-fill': 'views/MonitorView.vue 的 coreBarStyle() 按每核占用率注入柱高（#362）——值逐核不同，只能运行时定',
+  '--core-fill': 'views/MonitorView.vue 的 coreBars computed 按每核占用率注入柱高（#435；原 coreBarStyle 已并入）——值逐核不同，只能运行时定',
   '--core-columns': 'views/MonitorView.vue 的每核条形区按容器实测宽度注入列数（#435）——宽度只能运行时测（monitorCpu.ts 的 coreBarColumns 算值）',
   '--ledger-fill': 'views/MonitorView.vue 的 trackFillStyle() 按每行的量程比率注入轨道填充宽度（#363）——逐行不同，只能运行时定',
   '--ledger-gap': 'views/MonitorView.vue 的 gapStyle() 把两个展示分档常量（70 / 90）换成缺口位置（#363）——常量在 JS 里，位置只能注入',
