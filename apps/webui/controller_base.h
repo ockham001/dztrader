@@ -52,6 +52,14 @@ protected:
         return json_response(code, nlohmann::json{{"error", message}});
     }
 
+    /// Build a JSON error response carrying a machine-readable code:
+    /// {"error": message, "code": code}（契约 rest §1「需要机器判别的失败」的形状）。
+    static drogon::HttpResponsePtr error_with_code(drogon::HttpStatusCode status,
+                                                   const std::string& message,
+                                                   const std::string& code) {
+        return json_response(status, nlohmann::json{{"error", message}, {"code", code}});
+    }
+
     /// 将 UTC ISO 字符串（如 "2026-07-13T02:30:00Z"）转为服务器本地时间字符串
     /// （如 "2026-07-13 10:30:00"）。前端直接显示，不做时区转换。
     /// 解析失败时原样返回。

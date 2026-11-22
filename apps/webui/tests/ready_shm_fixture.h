@@ -92,6 +92,28 @@ struct ReadyShmFixture {
         return out;
     }
 
+    /// 排空 reader，返回第一个匹配 type 的无 instance_id（ext）帧 payload（空 payload → {}）。
+    /// 用于 `REQUEST_PROCESS_CONTROL` 这类无 instance_id 的定向到 master 的帧。
+    Captured capture_ext_frame(DzFrameType type) {
+        Captured out;
+        while (const auto* raw = reader->next_frame()) {
+            const shm::FrameView view(raw);
+            if (view.type() != type) {
+                continue;
+            }
+            const auto size = view.ext_payload_size();
+            if (size == 0) {
+                out.payload = nlohmann::json::object();
+            } else {
+                const auto* data = reinterpret_cast<const char*>(view.ext_payload());
+                out.payload = nlohmann::json::parse(data, data + size);
+            }
+            out.found = true;
+            break;
+        }
+        return out;
+    }
+
     /// 是否写入了任何帧（守卫失败路径必须一帧不写）；会排空 reader。
     bool has_any_frame() {
         while (const auto* raw = reader->next_frame()) {

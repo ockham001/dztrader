@@ -558,8 +558,6 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 5. `DELETE` 的 **guard**：该网关在账户注册表（§2.9.9）中存在任意账户（含已禁用 / 离线）→ 409 `{"error":"gateway has accounts","code":"gateway_has_accounts"}`；注册表降级（`available:false`，无法确认是否为空）→ 503 `{"error":"account registry unavailable"}`（不带 `code`），**不得在无法确认时移除接口**。
 6. 写通道不可用：503 `{"error":"shm writer not available"}` / `{"error":"shm write failed"}`（不带 `code`，同 §2.9.7）。
 
-<!-- pending-symbol: gateway_has_accounts (#436) -->
-
 **响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表已生效**；成败以 WS `process_config` / `process_status` 为准（契约 process）。
 
 **约束**：

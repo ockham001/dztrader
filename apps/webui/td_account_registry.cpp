@@ -142,6 +142,14 @@ bool TdAccountRegistry::contains(const std::string& account_id) const {
     return entries_.find(account_id) != entries_.end();
 }
 
+bool TdAccountRegistry::gateway_has_accounts(const std::string& gateway) const {
+    if (gateway.empty()) {
+        return false;
+    }
+    return std::any_of(entries_.begin(), entries_.end(),
+                       [&gateway](const auto& item) { return item.second.gateway == gateway; });
+}
+
 std::vector<TdAccountRegistryEntry> TdAccountRegistry::entries() const {
     std::vector<TdAccountRegistryEntry> result;
     result.reserve(entries_.size());
