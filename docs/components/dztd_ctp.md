@@ -63,7 +63,7 @@
 - **只装当日**：订单最新态（`order_ref` / OrderSysID → 既有 `order_id` 的匹配基准，CTP 扩展字段从 `ext` JSON 恢复）与当日成交（去重键基准）。**不装历史**——历史委托 / 成交只在交易库，内存里不留（全史预扫已在 #246 删除）。
 - **seq 播种**：`seq_counter_ = max(当日四表 MAX(seq), 无会话取号器已分配值)`。四表共享取号、跨日累积，`MAX(seq)` 不带日过滤。无会话取号器（`AccountSeqAllocator`）每次取号都吸收库内进展，避免同账户先有会话推进 seq 后旧种子撞号。
 - **失败即登录失败**：装载失败（只读连接不可用 / 查询异常）按登录失败路径处理（`on_login_failed`，状态机回滚到 `Authenticated` / `Connected`），不带着空基准进入重放——空基准会把整段重放当成新数据，重复落库与重复推帧。
-- **交易日解析失败即登录失败**：登录响应里的 `TradingDay` 解析不出有效交易日（哨兵 `INT32_MIN` / `DZ_DATE_NA` / 非正数）时同样走 `on_login_failed`，不进入 `LoggedIn`，对齐 md 的 `LoginParseError` 口径。会话交易日是本会话全部业务数据的时间锚（订单 / 成交 / 持仓 / 资金的 `date`、`ACCOUNT_STATUS` 帧的 `date`、日切判定全取它）；容忍它缺失会导致数据盖上无效日期、而状态帧 `date` 回落 0，日切强制重推（比 `date` 变化）随之误判。判定在 `trading_day_usable()`（`td_account_session_pure`，纯函数可单测）。
+- **交易日解析失败即登录失败**：登录响应里的 `TradingDay` 解析不出有效交易日（哨兵 `INT32_MIN` / `DZ_DATE_NA` / 非正数）时同样走 `on_login_failed`，不进入 `LoggedIn`，对齐 md 的 `LoginParseError` 口径。会话交易日是本会话全部业务数据的时间锚（订单 / 成交 / 持仓 / 资金的 `date`、`ACCOUNT_STATUS` 帧的 `date`、回报交易日校验全取它）；容忍它缺失会导致数据盖上无效日期、而状态帧 `date` 回落 0，日切感知（`ACCOUNT_STATUS` 的 `date` 变化）随之失真。判定在 `trading_day_usable()`（`td_account_session_pure`，纯函数可单测）。
 - **主线程同步装载**：登录频率低、当日行量级小，同步装载消除"装载 / 重放"竞态；热路径不查库（读连接归装载与只读查询方，写归 Writer 线程）。
 - **内存只保留当日**：订单最新态、成交去重键、**每单成交累计（均价）**、OrderRef 映射、当前持仓 / 资金。历史增长不影响进程内存。
 - **均价基准重建**：装载当日成交后按 `order_id` 聚合 `Σ价×量 / Σ量` 播种 `OrderTradeAvgTracker`，并用该聚合值覆盖装载委托的 `avg_price`（当日无成交的委托保留库内值），见下节「成交均价」。
@@ -100,7 +100,7 @@
 - **基准查询失败即登录失败**：重试 3 次、间隔 3 秒；仍失败则停在当前进度、不转 Ready、推 ERROR 通知，由用户处理。`is_last` 正常到达但零行 = **成功**（空账户合法，"查不到"不是失败）。
 - **成交增量**：OPEN 增今仓、均价加权；平今/平昨按标志；非 SHFE generic CLOSE 今→昨溢出，SHFE generic CLOSE 减昨；量归零时均价清零，异常负值夹到 0 + WARN。登录缓冲重放阶段（kReplay）只应用委托状态、跳过成交，避免与查询快照双重计数。
 - **冻结**：只由活动平仓挂单（含外部单）本地推导 `volume - volume_traded`，今仓优先、溢出到昨、按量夹取；拒绝/撤单/全成释放。登录种入按当前交易日过滤，CTP 冻结总量不符仅 WARN。
-- **日切**：today→yd、清挂单冻结，变化侧按上规则推帧/落库。**会话不得跨交易日**：检测到回报的 `TradingDay` 与当前交易日不一致即记 ERROR 并主动登出。
+- **日切**：today→yd、清挂单冻结，变化侧按上规则推帧/落库。**会话不得跨交易日**（ADR 0049 决策 5 / 契约 td-data-sync §3 §7）：`AccountSession::on_rtn_order` / `on_rtn_trade` 在入口（登录缓冲重放之前）校验回报自带的 `TradingDay` 能否自证等于会话交易日——空值 / 无法解析 / 不相等一律记 ERROR（`reason=empty/unparsable/mismatch`，会话未建立为 `session_unknown`）+ 推 ERROR 弹窗通知，并经 `request_cross_day_logout` 置登出请求；`TdApi::dispatch` 在本次事件处理完、用完会话后取走请求，走既有 `disconnect_account_by_id`（推 Offline + erase）主动登出，重登由自动调度在下一个 `login_time` 触发。被拒回报**丢弃**（不分配 seq / 不推帧 / 不落库）；同一会话只登出一次。判定纯逻辑在 `judge_report_trading_day`（`td_account_session_pure`，可单测）。
 - **无周期查询**（[ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md)）：持仓不再有任何定时重查，取消 60s 周期查询与其配置项、以及登录失败后的两条补查重试链。代价是**失去自愈**——增量累积误差、私有流缺口会持续到下一次登录的基准查询。相应地，正确性依赖两条前提：会话不跨交易日（期权行权/履约/到期、盘后自动组合零回调，只能由次日登录吸收）、私有流按投资者级推送（外部单与自营单同权实时进账）。
 - **外部单与自营单同权**：`OrderRef`/OrderSysID 在本地映射中找不到的回报标为外部单（策略标识 `/external`），走与自营单完全相同的持仓路径，不做 `FrontID/SessionID` 过滤；套保仓（`HedgeFlag != 投机`）全部计入，不静默丢弃。**假设失效的运行期告警**（ADR 0049 / 契约 td-data-sync §7）：登录重放里新出现的外部委托，若其柜台时间不晚于本会话最后一条**实时**回报的柜台时间——说明那一刻本会话已在收实时流、按投资者级假设该单本应已实时到达并落库（落库即命中重放过滤器被吞，走不到告警）——记 ERROR 并累计计数，通知按 5 分钟窗口限频。晚于最后实时回报的记录可能是断线窗口内别的终端下的单，不告警（只会漏报、不会误报）。判据基准存在会话对象里，**只有会话存活期间的 CTP 自动重连**才保留它；调度登出会重建 `AccountSession`，此时无从比较（保守静默）。
 - **期权**：**支持**持仓统计与普通报单（买卖开平，与期货同构）；**不支持**发起行权 / 自对冲 / 放弃行权指令。

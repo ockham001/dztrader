@@ -59,6 +59,18 @@ inline std::vector<std::string> trade_frame_instruments(
     return out;
 }
 
+/// 帧副本里的委托合约代码（`DZ_FRAME_ORDER_REPORT`，按出现顺序）。
+inline std::vector<std::string> order_frame_instruments(
+    const std::vector<std::unique_ptr<std::byte[]>>& frames) {
+    std::vector<std::string> out;
+    for (const auto& frame : frames) {
+        const shm::FrameView view{frame.get()};
+        if (view.type() != DZ_FRAME_ORDER_REPORT) continue;
+        out.emplace_back(view.payload<DzOrderReport>().instrument_id);
+    }
+    return out;
+}
+
 }  // namespace dztrader::test
 
 #endif  // DZTRADER_CTP_TESTS_SHM_FRAME_READER_H_

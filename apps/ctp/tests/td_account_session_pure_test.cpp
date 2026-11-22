@@ -438,3 +438,111 @@ TEST(PositionQueryFailedMessageTest, DoesNotPromiseOperationsTheUiLacks) {
             << "must not tell the user to do something the UI cannot do (#409): " << forbidden;
     }
 }
+
+// ============================================================================
+// judge_report_trading_day / report_trading_day_reason
+// (回报交易日校验, ADR 0049 决策 5, #423)
+// ============================================================================
+
+namespace {
+/// 会话交易日取 2026-10-09 的距纪元天数 (与真实日历解耦的固定锚).
+int32_t session_day() { return dztrader::Date{2026, 10, 9}.days_since_epoch(); }
+}  // namespace
+
+TEST(ReportTradingDayVerdictTest, MatchWhenEqual) {
+    // 唯一可接受的分支: 回报自证等于会话交易日.
+    EXPECT_EQ(judge_report_trading_day(session_day(), "20261009"), ReportTradingDayVerdict::Match);
+}
+
+TEST(ReportTradingDayVerdictTest, MismatchWhenDifferentDay) {
+    // 真跨日 (期货公司没在日切时断连): 回报交易日前进/后退都判死, 不引入方向.
+    EXPECT_EQ(judge_report_trading_day(session_day(), "20261012"),
+              ReportTradingDayVerdict::Mismatch);
+    EXPECT_EQ(judge_report_trading_day(session_day(), "20261008"),
+              ReportTradingDayVerdict::Mismatch);
+}
+
+TEST(ReportTradingDayVerdictTest, EmptyWhenReportDayMissing) {
+    // 空串 = 回报没带交易日; nullptr 防御性同判 (事件结构体正常不会为 null).
+    EXPECT_EQ(judge_report_trading_day(session_day(), ""), ReportTradingDayVerdict::Empty);
+    EXPECT_EQ(judge_report_trading_day(session_day(), nullptr), ReportTradingDayVerdict::Empty);
+}
+
+TEST(ReportTradingDayVerdictTest, UnparsableForMalformedDay) {
+    // 长度/字符/日历三类非法都必须判死 —— 拍板: 不退回会话交易日, 宁可多登出一次.
+    for (const char* bad : {"2026109", "202610091", "2026-10-09", "2026/10/09", "abcdefgh",
+                            "20261309", "20261032", "00000000"}) {
+        EXPECT_EQ(judge_report_trading_day(session_day(), bad), ReportTradingDayVerdict::Unparsable)
+            << bad;
+    }
+}
+
+TEST(ReportTradingDayVerdictTest, SessionUnknownTakesPrecedence) {
+    // 会话交易日未建立 (0 = DZ_DATE_NA, 负数 / INT32_MIN 哨兵): 无法自证, 先于报文内容判死.
+    // 即便报文本身合法/空, 结论都是 SessionUnknown (会话状态异常是更可操作的证据).
+    for (int32_t unknown : {0, -1, std::numeric_limits<int32_t>::min()}) {
+        EXPECT_EQ(judge_report_trading_day(unknown, "20261009"),
+                  ReportTradingDayVerdict::SessionUnknown);
+        EXPECT_EQ(judge_report_trading_day(unknown, ""), ReportTradingDayVerdict::SessionUnknown);
+    }
+}
+
+TEST(ReportTradingDayReasonTest, StableLowerSnakeStrings) {
+    // 字符串是日志/检索口径 (契约 §7 的 reason), 与枚举名解耦: 逐字锁定, 改名不得静默漂移.
+    EXPECT_EQ(std::string(report_trading_day_reason(ReportTradingDayVerdict::Match)), "match");
+    EXPECT_EQ(std::string(report_trading_day_reason(ReportTradingDayVerdict::SessionUnknown)),
+              "session_unknown");
+    EXPECT_EQ(std::string(report_trading_day_reason(ReportTradingDayVerdict::Empty)), "empty");
+    EXPECT_EQ(std::string(report_trading_day_reason(ReportTradingDayVerdict::Unparsable)),
+              "unparsable");
+    EXPECT_EQ(std::string(report_trading_day_reason(ReportTradingDayVerdict::Mismatch)),
+              "mismatch");
+}
+
+// ============================================================================
+// cross_day_logout_message (判死时的 UI 通知正文, #423)
+// ============================================================================
+
+TEST(CrossDayLogoutMessageTest, MismatchNamesBothDays) {
+    // 不一致场景必须给出「会话哪一天 / 回报哪一天」两个可比对的事实, 否则运维无法区分
+    // 真跨日与柜台脏数据。
+    const std::string msg =
+        cross_day_logout_message(ReportTradingDayVerdict::Mismatch, session_day(), "20261012");
+    EXPECT_NE(msg.find("20261009"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("20261012"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("不一致"), std::string::npos) << msg;
+    EXPECT_NE(msg.find("已主动登出"), std::string::npos) << msg;
+}
+
+TEST(CrossDayLogoutMessageTest, EachVerdictExplainsItsOwnCause) {
+    EXPECT_NE(cross_day_logout_message(ReportTradingDayVerdict::Empty, session_day(), "")
+                  .find("未携带交易日"),
+              std::string::npos);
+    EXPECT_NE(
+        cross_day_logout_message(ReportTradingDayVerdict::Unparsable, session_day(), "2026100X")
+            .find("2026100X"),
+        std::string::npos);
+    EXPECT_NE(cross_day_logout_message(ReportTradingDayVerdict::SessionUnknown, 0, "20261009")
+                  .find("未建立"),
+              std::string::npos);
+}
+
+TEST(CrossDayLogoutMessageTest, UnknownSessionDayIsNotRenderedAsEpoch) {
+    // 会话交易日不可用时不得把 0 渲染成 1970-01-01 这种假证据。
+    const std::string msg =
+        cross_day_logout_message(ReportTradingDayVerdict::SessionUnknown, 0, "20261009");
+    EXPECT_EQ(msg.find("19700101"), std::string::npos) << msg;
+}
+
+TEST(CrossDayLogoutMessageTest, DoesNotPromiseOperationsTheUiLacks) {
+    // 与 login_failed_message 同一口径: WebUI 没有 td 连接/断开入口 (#409),
+    // 只陈述「已主动登出 + 会等自动登录」, 不让用户去做做不到的操作。
+    for (auto verdict :
+         {ReportTradingDayVerdict::Mismatch, ReportTradingDayVerdict::Empty,
+          ReportTradingDayVerdict::Unparsable, ReportTradingDayVerdict::SessionUnknown}) {
+        const std::string msg = cross_day_logout_message(verdict, session_day(), "20261012");
+        EXPECT_EQ(msg.find("请登出"), std::string::npos) << msg;
+        EXPECT_EQ(msg.find("请重新登录"), std::string::npos) << msg;
+        EXPECT_NE(msg.find("自动登录"), std::string::npos) << msg;
+    }
+}

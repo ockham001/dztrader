@@ -74,9 +74,14 @@ TEST(ShouldPushAccountStatus, StateChangePushes) {
                                                           DZ_ACCOUNT_READY, 20697, false));
 }
 
-// ---- 契约 account-status 场景 3: 日切强制重推 (同态但交易日变化) ----
+// ---- 契约 account-status 场景 3: 日切重推 (date 变化必推) ----
+//
+// 前提已收紧 (#423): 会话不得跨交易日 (td-data-sync §3/§7) —— 会话存活期内不会出现第二个
+// 交易日, 真实的日切必然伴随重新登录 (Offline → LoggingIn → Ready), 状态翻转本身就会推送。
+// 因此这里的「同态但 date 变化」按**去重判据的防御**保留: 断言仍逐字钉住 date 比较,
+// 去掉该分支用例即红 (防止未来有人把它当成不可达分支删掉)。
 
-// 同 READY、日期不同 (会话存活跨日, 交易日前进) -> 必须推送 (突变: 去掉日期比较则此用例红)
+// 同 READY、date 前进 -> 必须推送 (突变: 去掉日期比较则此用例红)
 TEST(ShouldPushAccountStatusDaySwitch, SameReadyNewDatePushes) {
     const int32_t day0 = dztrader::Date{2026, 8, 31}.days_since_epoch();
     const int32_t day1 = dztrader::Date{2026, 9, 1}.days_since_epoch();

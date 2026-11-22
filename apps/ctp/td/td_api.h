@@ -363,7 +363,17 @@ void TdApi::dispatch(Event& event, void (AccountSession::*handler)(const T&)) {
     if (before != TdState::Ready && after == TdState::Ready) {
         session->repush_last_records();
     }
+    // ADR 0049 决策 5 / 契约 td-data-sync §3 §7: handler 判定回报不能自证属于当前会话交易日,
+    // 请求主动登出。登出会 erase session, 不能由 handler 自毁 —— 必须在 dispatch 用完 session
+    // (健康度 / 账户状态 / 重推) 之后执行; account_id 要在 rsp 释放前拷出。走既有
+    // disconnect_account_by_id 路径 (推 Offline + erase), 重登由自动调度在 login_time 触发
+    // (契约 §7「代价: 交易中断至自动登录窗口重登」)。
+    const bool cross_day_logout = session->take_cross_day_logout_request();
+    const std::string dispatch_account_id = rsp->account_id;
     delete rsp;  // NOLINT
+    if (cross_day_logout) {
+        disconnect_account_by_id(dispatch_account_id);
+    }
 }
 
 }  // namespace dztrader::ctp

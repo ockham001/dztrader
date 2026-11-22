@@ -172,6 +172,16 @@ public:
     /// 拿它断言「未知方向按查询失败处置」会恒真 (issue #367 审查 F9).
     bool position_query_ok() const noexcept { return position_query_ok_; }
 
+    /// 取走「跨交易日 → 主动登出」请求 (ADR 0049 决策 5 / 契约 td-data-sync §3 §7).
+    /// 回报处理路径判定回报不能自证属于当前会话交易日时置位; TdApi::dispatch 在本事件处理完、
+    /// 用完本会话之后取走并走既有 disconnect 路径登出 —— 登出会 erase 会话, handler 不能自毁.
+    /// 取走即清零 (单次语义: 同一会话只请求一次登出).
+    bool take_cross_day_logout_request() noexcept {
+        const bool requested = cross_day_logout_requested_;
+        cross_day_logout_requested_ = false;
+        return requested;
+    }
+
     /// 未知枚举累计计数 (按种类). TdApi 在拼状态帧 ext 时读取.
     const UnknownEnumCounts& unknown_enum_counts() const noexcept { return unknown_enum_counts_; }
 
@@ -259,6 +269,13 @@ private:
     /// 合约表未命中 (未加载) 返回 false —— 按普通合约处理, 不猜.
     bool is_spread_instrument(const std::string& instrument_id) const;
 
+    /// 回报交易日判死时的登出请求 (ADR 0049 决策 5): 首次判死置位 + 推 ERROR 通知并返回 true
+    /// (调用方据此记 ERROR 日志并丢弃该回报); 已判死过返回 false (静默丢弃, 不重复通知).
+    /// 判定本身在 judge_report_trading_day (纯函数, 可单测).
+    /// @param verdict judge_report_trading_day 的判定值 (调用方已确认 != Match)
+    /// @param report_day 回报自带的原始 TradingDay (仅用于通知文案与日志)
+    bool request_cross_day_logout(ReportTradingDayVerdict verdict, const char* report_day);
+
     /// 记录一条**实时流**回报的柜台时间 (交易日 × 86400 + HH:MM:SS 秒; 0 = 未知不记).
     /// 登录重放回报不调用. 供外部单「只在登录重放出现」告警比对 (ADR 0049 外部单假设).
     void note_live_report_time(int64_t report_epoch_s);
@@ -341,6 +358,9 @@ private:
     int64_t order_ref_ = 0;
     int32_t request_id_ = 0;
     int32_t trading_day_ = 0;  ///< 当前交易日 (DzDate, 距纪元天数)
+    /// 跨交易日登出请求 (ADR 0049 决策 5): 回报判死后置位, 由 TdApi::dispatch 在本次事件
+    /// 处理完后取走并主动登出; 单次语义 + 首次通知 (见 take_cross_day_logout_request).
+    bool cross_day_logout_requested_ = false;
 
     /// 账户级状态变更 seq 计数器 (spec §2.2: 主线程分配, 无需原子).
     /// 跨日累积单调, 同一事件 shm 帧与 DB 行带同一 seq.

@@ -97,9 +97,15 @@ protected:
     }
 
     static constexpr int32_t kDay = 20735;  ///< 20261009（下面 SetUp 用真实日期派生校验）
+    /// kDay 的 CTP 回报形态 (委托/成交回报的 TradingDay 字段是 8 位 "YYYYMMDD")。
+    /// #423 起回报必须能自证等于会话交易日, 否则会被判死并请求登出 —— 正常回报用例
+    /// 必须带对这一天, 否则断言不再是"持仓增量"而是"跨日拒绝"。
+    static constexpr const char* kTradingDayText = "20261009";
 
     void SetUp() override {
         ASSERT_EQ(kDay, day(2026, 10, 9)) << "kDay constant drifted from 2026-10-09";
+        ASSERT_EQ(dztrader::Date{kDay}.to_string("%Y%m%d"), std::string(kTradingDayText))
+            << "kTradingDayText drifted from kDay";
         dir_ = dztrader::test::unique_temp_dir("dz_td_position_lifecycle_test");
         std::filesystem::create_directories(dir_);
         db_path_ = (dir_ / "trade.db").string();
@@ -301,10 +307,35 @@ protected:
         std::strcpy(f.trade.ExchangeID, exchange_id);
         std::strcpy(f.trade.TradeID, trade_id);
         std::strcpy(f.trade.TradeTime, "10:00:00");
+        // #423: 回报必须自证属于当前会话交易日, 正常路径用例一律带会话交易日。
+        std::strcpy(f.trade.TradingDay, kTradingDayText);
         f.trade.Direction = direction;
         f.trade.OffsetFlag = THOST_FTDC_OF_Open;
         f.trade.Volume = volume;
         f.trade.Price = price;
+        f.account_id = "acc1";
+        return f;
+    }
+
+    /// 一条委托回报（缺省 = 买开限价挂单；TradingDay 可覆盖以构造跨日/空/非法场景）。
+    static OnRtnOrderField order_row(const std::string& instrument,
+                                     const char* order_ref,
+                                     const char* trading_day = kTradingDayText,
+                                     char status = THOST_FTDC_OST_NoTradeQueueing) {
+        OnRtnOrderField f{};
+        std::strcpy(f.order.BrokerID, "9999");
+        std::strcpy(f.order.InvestorID, "acc1");
+        std::strcpy(f.order.InstrumentID, instrument.c_str());
+        std::strcpy(f.order.OrderRef, order_ref);
+        std::strcpy(f.order.ExchangeID, "CFFEX");
+        std::strcpy(f.order.TradingDay, trading_day);
+        std::strcpy(f.order.InsertTime, "09:30:45");
+        f.order.Direction = THOST_FTDC_D_Buy;
+        f.order.CombOffsetFlag[0] = THOST_FTDC_OF_Open;
+        f.order.OrderPriceType = THOST_FTDC_OPT_LimitPrice;
+        f.order.OrderStatus = status;
+        f.order.LimitPrice = 3900.0;
+        f.order.VolumeTotalOriginal = 1;
         f.account_id = "acc1";
         return f;
     }
@@ -314,11 +345,13 @@ protected:
     struct FrameInstruments {
         std::vector<std::string> positions;
         std::vector<std::string> trades;
+        std::vector<std::string> orders;
     };
     FrameInstruments read_frame_instruments() {
         const auto frames = dztrader::test::read_frames(*reader_);
         return FrameInstruments{dztrader::test::position_frame_instruments(frames),
-                                dztrader::test::trade_frame_instruments(frames)};
+                                dztrader::test::trade_frame_instruments(frames),
+                                dztrader::test::order_frame_instruments(frames)};
     }
 
     static bool contains(const std::vector<std::string>& values, const std::string& needle) {
@@ -839,6 +872,93 @@ TEST_F(TdPositionLifecycleTest, NetAndSpreadRowsAreBothSkippedInTheSameQuery) {
     EXPECT_TRUE(notifications_.empty()) << "neither skip path is an unknown-enum error";
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM positions WHERE date='20261009'"), 1);
     EXPECT_EQ(scalar_text("SELECT instrument_id FROM positions WHERE date='20261009'"), "rb2510");
+}
+
+// ============================================================================
+// AC(#423): 会话不得跨交易日 —— 回报 TradingDay 不能自证即判死 + 请求主动登出
+// (ADR 0049 决策 5 / 契约 td-data-sync §3 §7)
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, SameDayTradeIsStillProcessed) {
+    // 回归基线: 回报带对会话交易日时行为与 #423 之前完全一致 (不误杀正常回报).
+    session_->on_rtn_trade(trade_row("m2501", "T300"));
+    flush_persist();
+
+    EXPECT_TRUE(notifications_.empty()) << "normal report must not raise a notification";
+    EXPECT_FALSE(session_->take_cross_day_logout_request());
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades"), 1);
+    EXPECT_TRUE(contains(read_frame_instruments().trades, "m2501"));
+}
+
+TEST_F(TdPositionLifecycleTest, CrossDayTradeIsDiscardedAndRequestsLogout) {
+    // 回报交易日与会话交易日不一致 (期货公司没在日切时断连): 记 ERROR + 弹窗通知 + 请求登出;
+    // 该条成交不落库不推帧 —— 它的 date 取自会话交易日, 落库即永久污染追加流 (次日登录的
+    // 整组替换只覆盖持仓/资金, 修不回委托/成交).
+    auto trade = trade_row("m2501", "T301");
+    std::strcpy(trade.trade.TradingDay, "20261012");
+    session_->on_rtn_trade(trade);
+    flush_persist();
+
+    ASSERT_EQ(notifications_.size(), 1u);
+    EXPECT_EQ(notifications_[0].level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_[0].popup) << "forced logout is destructive: it must pop up";
+    EXPECT_NE(notifications_[0].message.find("不一致"), std::string::npos)
+        << notifications_[0].message;
+    EXPECT_TRUE(session_->take_cross_day_logout_request());
+    EXPECT_FALSE(session_->take_cross_day_logout_request()) << "one-shot per session";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades"), 0);
+    EXPECT_TRUE(read_frame_instruments().trades.empty()) << "rejected report must not be pushed";
+}
+
+TEST_F(TdPositionLifecycleTest, CrossDayOrderIsDiscardedAndRequestsLogout) {
+    // 委托回报走同一条判据 (两个 handler 都要覆盖, 漏一个等于漏检); 与成交用例对称:
+    // 不落库 + 不推帧 (帧断言依赖 reader_ 在 SetUp 里先建、早于本用例的写动作).
+    auto order = order_row("m2501", "000000000001", /*trading_day=*/"20261012");
+    session_->on_rtn_order(order);
+    flush_persist();
+
+    ASSERT_EQ(notifications_.size(), 1u);
+    EXPECT_EQ(notifications_[0].level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(session_->take_cross_day_logout_request());
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 0);
+    EXPECT_TRUE(read_frame_instruments().orders.empty()) << "rejected report must not be pushed";
+}
+
+TEST_F(TdPositionLifecycleTest, EmptyOrMalformedReportDayIsAlsoRejected) {
+    // 拍板 ③c: 空串 / 解析失败与「不相等」同罪 (都属无法自证) —— 不退回会话交易日继续跑.
+    auto empty_day = trade_row("m2501", "T302");
+    empty_day.trade.TradingDay[0] = '\0';
+    session_->on_rtn_trade(empty_day);
+    flush_persist();
+    ASSERT_EQ(notifications_.size(), 1u);
+    EXPECT_NE(notifications_[0].message.find("未携带交易日"), std::string::npos)
+        << notifications_[0].message;
+    EXPECT_TRUE(session_->take_cross_day_logout_request());
+
+    // 换新会话覆盖解析失败分支: 8 位但含非数字 (定长字段里可能有空位/脏数据).
+    session_ = make_session();
+    session_->set_trading_day(kDay);
+    auto malformed = trade_row("m2501", "T303");
+    std::strcpy(malformed.trade.TradingDay, "2026100X");
+    session_->on_rtn_trade(malformed);
+    flush_persist();
+    ASSERT_EQ(notifications_.size(), 2u);
+    EXPECT_NE(notifications_[1].message.find("无法解析"), std::string::npos)
+        << notifications_[1].message;
+    EXPECT_TRUE(session_->take_cross_day_logout_request());
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trades"), 0);
+}
+
+TEST_F(TdPositionLifecycleTest, RepeatedCrossDayReportsNotifyOnce) {
+    // 同一会话只通知/请求一次登出: 后续回报静默丢弃 (逐条弹窗会刷爆前端通知环).
+    for (const char* trade_id : {"T304", "T305", "T306"}) {
+        auto trade = trade_row("m2501", trade_id);
+        std::strcpy(trade.trade.TradingDay, "20261012");
+        session_->on_rtn_trade(trade);
+    }
+    flush_persist();
+    EXPECT_EQ(notifications_.size(), 1u);
+    EXPECT_TRUE(session_->take_cross_day_logout_request());
 }
 
 }  // namespace

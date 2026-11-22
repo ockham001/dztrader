@@ -102,8 +102,9 @@ bool replay_external_only_alarm(bool in_replay,
 /// 登录响应的会话交易日是否可用 (纯判定便于断言).
 ///
 /// 会话交易日是本会话全部业务数据的时间锚 (GLOSSARY「会话交易日」): 订单/成交/持仓/资金
-/// 的 date、ACCOUNT_STATUS 帧的 date、日切判定都取它。它缺失时若继续登录, 数据会盖上无效
-/// 日期、日切判定误判 —— 与 md 的 LoginParseError 同口径: 判为登录失败, 不进 LoggedIn。
+/// 的 date、ACCOUNT_STATUS 帧的 date、回报交易日校验都取它。它缺失时若继续登录, 数据会盖上
+/// 无效日期、日切感知 (status 帧 date 变化) 失真 —— 与 md 的 LoginParseError 同口径:
+/// 判为登录失败, 不进 LoggedIn。
 /// @param days_since_epoch OnRspTdUserLoginField::days_since_epoch (SPI 线程解析结果)
 /// @return true = 有效交易日 (正数 DzDate); false = 解析失败或哨兵, 调用方应按登录失败处置。
 ///   注意排除的不只是 INT32_MIN 哨兵: 0 (DZ_DATE_NA, 与 "19700101" 的解析结果重合)
@@ -149,6 +150,50 @@ bool position_query_retry_allowed(int retries_done) noexcept;
 /// 去做一件界面上做不到的事 (与 login_failed_message 同一口径).
 /// @return 固定文案「持仓查询失败，账户未就绪（已重试 3 次）」(N = kPositionQueryMaxRetries)
 std::string position_query_failed_message();
+
+// ============================================================================
+// 回报交易日校验 (ADR 0049 决策 5 / 契约 td-data-sync §3 §7)
+// ============================================================================
+// 「会话不得跨交易日」是持仓/统计正确性的前提 (期权行权/履约/到期、盘后自动组合零回调,
+// 只能由次日登录的基准查询吸收; 会话内迁移 today→yd 会让这些缺口永久化). 运行期保证方式 =
+// 回报自带的 `TradingDay` 必须能自证属于当前会话交易日; 判死即主动登出, 由下一次登录
+// 重建会话与基准 (#423).
+
+/// 回报自带 `TradingDay` 与会话交易日的一致性判定.
+enum class ReportTradingDayVerdict : uint8_t {
+    Match = 0,       ///< 解析成功且等于会话交易日: 正常处理
+    SessionUnknown,  ///< 会话交易日尚未建立 (未登录 / 登录失败): 无法自证
+    Empty,           ///< 回报未携带交易日: 无法自证
+    Unparsable,      ///< 回报交易日无法解析: 无法自证
+    Mismatch,        ///< 回报交易日与会话交易日不同 (真跨日): 不能自证
+};
+
+/// 判定回报交易日是否可接受: 只有 Match 可接受, 其余一律按「不能自证」处理 (记 ERROR +
+/// 主动登出). 判定顺序 = 会话交易日未建立 → 空串 → 解析失败 → 不相等, 与日志 `reason` 一致.
+///
+/// 「无法解析」也判死而不是退回会话交易日: 日期字段变成垃圾说明数据模型已变, 此时继续用
+/// 会话交易日给记录盖日期, 比多登出一次更危险 (issue #423 拍板: 空串/非法/不相等一律登出).
+/// @param session_day 当前会话交易日 (DzDate 距纪元天数; 哨兵 / <=0 视为未建立)
+/// @param report_day CTP 回报自带的 TradingDay (8 位 "YYYYMMDD"; 允许空 / nullptr)
+ReportTradingDayVerdict judge_report_trading_day(int32_t session_day,
+                                                 const char* report_day) noexcept;
+
+/// 判定值的稳定字符串 (小写下划线; 与枚举名解耦, 便于日志检索).
+/// Match→"match", SessionUnknown→"session_unknown", Empty→"empty",
+/// Unparsable→"unparsable", Mismatch→"mismatch".
+const char* report_trading_day_reason(ReportTradingDayVerdict verdict) noexcept;
+
+/// 跨交易日主动登出的 UI 通知正文 (纯构造便于断言, #423).
+///
+/// 口径同 login_failed_message / position_query_failed_message: 只陈述事实 + 后续行为,
+/// **不承诺** UI 上不存在的操作 (WebUI 无 td 连接/断开入口, 见 #409) —— 登出后由自动调度
+/// 在下一个 `login_time` 重新登录 (契约 td-data-sync §7 的代价口径).
+/// @param verdict judge_report_trading_day 的判定值 (只接受非 Match)
+/// @param session_day 会话交易日 (DzDate 距纪元天数; <=0 时文案不引用具体日期)
+/// @param report_day 回报自带原始 TradingDay (可空)
+std::string cross_day_logout_message(ReportTradingDayVerdict verdict,
+                                     int32_t session_day,
+                                     const char* report_day);
 
 }  // namespace dztrader::ctp
 
