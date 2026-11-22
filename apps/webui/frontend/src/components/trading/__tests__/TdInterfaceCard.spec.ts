@@ -78,6 +78,8 @@ interface PrepareOptions {
   running?: boolean
   state?: ProcessState
   accounts?: string[]
+  /** 额外注册表条目（用于唯一性冲突/跨网关场景） */
+  registryAccounts?: { account_id: string; gateway: string }[]
 }
 
 /** 登记一个 dztd_* 进程 + 账户注册表，返回 store（卡片数据由 store.interfaces 派生） */
@@ -92,9 +94,12 @@ async function prepare(options: PrepareOptions = {}): Promise<TdAccountsStoreVie
   })
   vi.mocked(tdApi.listAccounts).mockResolvedValue({
     available: true,
-    accounts: (options.accounts ?? ['account_001']).map(accountId => ({
-      account_id: accountId, gateway: 'dztd_ctp', enabled: true,
-    })),
+    accounts: [
+      ...(options.accounts ?? ['account_001']).map(accountId => ({
+        account_id: accountId, gateway: 'dztd_ctp', enabled: true,
+      })),
+      ...(options.registryAccounts ?? []).map(entry => ({ enabled: true, ...entry })),
+    ],
   })
   const store = useTdAccountsStore()
   await store.init()
@@ -377,19 +382,103 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(tdApi.removeAccount).toHaveBeenCalledWith('account_001')
   })
 
-  it('会话控制双按钮（ADR 0051）：未登录仅登录可点，就绪仅登出可点', async () => {
+  it('会话控制双按钮（ADR 0051）：未登录仅登录可点，就绪仅登出可点；点击下发对应 REST', async () => {
     const store = await prepare()
     useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    vi.mocked(tdApi.loginAccount).mockResolvedValue({ ok: true })
+    vi.mocked(tdApi.logoutAccount).mockResolvedValue({ ok: true })
     const { wrapper } = mountCard(store)
 
-    expect(wrapper.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.find('[data-test="td-logout-account_001"]').attributes('disabled')).toBeDefined()
+    const login = wrapper.find('[data-test="td-login-account_001"]')
+    const logout = wrapper.find('[data-test="td-logout-account_001"]')
+    expect(login.attributes('disabled')).toBeUndefined()
+    expect(logout.attributes('disabled')).toBeDefined()
+
+    await login.trigger('click')
+    await flushPromises()
+    expect(tdApi.loginAccount).toHaveBeenCalledWith('account_001')
 
     useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 10 })
     await flushPromises()
     await wrapper.setProps({ tdInterface: store.interfaces[0] })
     expect(wrapper.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-test="td-logout-account_001"]').attributes('disabled')).toBeUndefined()
+    const readyLogout = wrapper.find('[data-test="td-logout-account_001"]')
+    expect(readyLogout.attributes('disabled')).toBeUndefined()
+
+    await readyLogout.trigger('click')
+    await flushPromises()
+    expect(tdApi.logoutAccount).toHaveBeenCalledWith('account_001')
+  })
+
+  it('表单校验拦住缺失必填项：不填 broker_id 时提交按钮禁用（本地预检）', async () => {
+    const store = await prepare({ accounts: [] })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('account_new')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="td-form-submit"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="td-form-validation"]').text()).toContain('经纪公司代码')
+  })
+
+  it('唯一性冲突 → 表单内提示归属网关且不发请求（契约 rest §2.9.7 预检 4）', async () => {
+    const store = await prepare({
+      accounts: [],
+      registryAccounts: [{ account_id: 'taken', gateway: 'dztd_xtp' }],
+    })
+    vi.mocked(tdApi.addAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('taken')
+    await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
+    await wrapper.find('input[placeholder="user_id"]').setValue('00001')
+    await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    const error = wrapper.find('[data-test="td-form-error"]')
+    expect(error.exists()).toBe(true)
+    expect(error.text()).toContain('占用')
+    expect(error.text()).toContain('dztd_xtp')
+    expect(tdApi.addAccount).not.toHaveBeenCalled()
+  })
+
+  it('编辑账户：UpdateAccount patch 不含 account_id，密码留空不提交（契约 td-config §2.1/§2.3）', async () => {
+    const store = await prepare()
+    // 配置镜像提供 ext（密码恒脱敏），编辑表单据此回填 broker/user
+    store.applyTdConfig('dztd_ctp', {
+      qry_account_interval_s: 5,
+      qry_flush_interval_ms: 1500,
+      accounts: [{
+        account_id: 'account_001',
+        enabled: true,
+        ext: { broker_id: '9999', user_id: 'u1', password: '****' },
+      }],
+      ext: {},
+    })
+    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-edit-account_001"]').trigger('click')
+    await flushPromises()
+    // 编辑态密码留空 = 不修改（占位说明），不把 **** 当密码回填
+    expect(wrapper.find('input[placeholder="留空 = 不修改密码"]').exists()).toBe(true)
+    expect((wrapper.find('input[placeholder="留空 = 不修改密码"]').element as HTMLInputElement).value).toBe('')
+
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(tdApi.updateAccount).toHaveBeenCalledTimes(1)
+    const [accountId, patch] = vi.mocked(tdApi.updateAccount).mock.calls[0]
+    expect(accountId).toBe('account_001')
+    expect(patch).not.toHaveProperty('account_id')
+    // 密码留空不得提交（避免把掩码/空串写成新密码）
+    expect(patch.ext).not.toHaveProperty('password')
   })
 
   it('非 admin：接口级按钮不渲染，账户写按钮禁用并给出原因', async () => {
