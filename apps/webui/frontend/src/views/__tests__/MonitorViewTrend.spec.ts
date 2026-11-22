@@ -771,14 +771,16 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(ruleBody('.monitor-view__host-status')).toContain('flex: none')
   })
 
-  it('#371 中性色与绿色在**解析后**确实不同：token 名匹配之外，颜色值也要分开', () => {
-    // 上一条只 grep token 名（源码文本匹配），挡不住「token 被重新定义成绿色」这种改动。
-    // 这里把三个 token 的名字解析成实际字面值，断言存活信号用的中性色与状态绿**不同值**。
-    // 解析口径复用 tokenContrast.spec.ts 的同一套（theme.css 三段结构 → 每段的 token 表），
-    // 不在本文件另写一份，否则两份会漂移（review-checklist §2.4）。
-    // 两处来源都要读：状态色（--status-*）定义在 design-tokens.css 的 :root 里，
-    // 主题色（--text-secondary）在 theme.css 的两段里。合并顺序照 src/main.ts 的导入顺序
-    // （design-tokens 在前、theme 在后，同名由主题段胜），与 tokenContrast.spec.ts 同一口径。
+  it('#432 存活点与指标点共用 success 绿：同色族不同义，语义分工由 DESIGN / GLOSSARY 承担', () => {
+    // #371 曾要求「存活信号与状态绿解析后必须不同值」。#432 起这条被反转（用户拍板「绿黄」）：
+    // 存活点用 success 绿，与台账 normal 点同族；两件事靠**语义文档**区分（DESIGN.md 的
+    // Liveness signals 一句 + GLOSSARY.md「存活信号」），不再靠颜色差异承担。
+    // 这里做两件事：① 源码级确认两处都指向同一个 token（不是各造一套绿）；
+    // ② 解析后确认 token 在两套主题下都有定义（挡「token 被删/改名」这类改动）。
+    expect(ruleBody('.monitor-view__host-dot')).toContain('background: var(--status-success-default)')
+    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
+      .toContain('background: var(--status-success-default)')
+
     const designTokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
     const themeRoot = parseCssFile(themePath())
     const scopes = {
@@ -786,19 +788,12 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       dark: new Map([...designTokens, ...tokenDeclarationsOf(themeRoot, '.dark', false)]),
     }
     for (const [theme, scope] of Object.entries(scopes)) {
-      const neutral = scope.get('--text-secondary')
-      const success = scope.get('--status-success-default')
-      expect(neutral, `${theme} 段缺 --text-secondary`).toBeDefined()
-      expect(success, `${theme} 段缺 --status-success-default`).toBeDefined()
-      // 直白但有效的断言：两者不是同一个字面值。若有人把 --text-secondary 重新定义成
-      // 状态绿（或反过来），存活信号与指标状态就又会同色，One Job Rule 当场失效。
-      expect(neutral, `${theme} 段的中性色与状态绿同值，存活信号会与指标状态撞色`)
-        .not.toBe(success)
+      expect(scope.get('--status-success-default'), `${theme} 段缺 --status-success-default`).toBeDefined()
+      expect(scope.get('--status-warning-default'), `${theme} 段缺 --status-warning-default`).toBeDefined()
     }
   })
 
-  it('#371 台账的 normal 状态点与轨道填充仍然保持绿色（绿只属于指标状态）', () => {
-    // 与上一条成对：存活信号撤出之后，绿色必须仍然在它唯一正当的位置
+  it('#432 台账的 normal 状态点与轨道填充仍用指标绿（与存活绿同族，语义靠文档区分）', () => {
     expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
       .toContain('background: var(--status-success-default)')
     expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-track-fill'))

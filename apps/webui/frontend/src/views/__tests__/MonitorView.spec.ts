@@ -2132,7 +2132,11 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     const status = wrapper.find('[data-test="monitor-host-status"]')
     expect(status.attributes('title')).toBe('采样间隔 1000 ms · 累计漏拍 0')
     const uptime = wrapper.find('[data-test="monitor-host-uptime"]')
-    expect(uptime.attributes('title')).toMatch(/^启动于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    const startTitle = uptime.attributes('title') ?? ''
+    // 夹具 boot_time_unix_sec = 2026-10-20T12:00:00Z：断言年份而不是具体时分，
+    // 避免测试机时区不同导致的日期漂移；同时挡「把秒当毫秒传」的 1970 回归
+    expect(startTitle).toMatch(/^启动于 2026-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    expect(startTitle).not.toContain('1970')
   })
 
   it('悬停补充遇缺失/非法字段不拼假值（#432）', async () => {

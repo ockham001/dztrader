@@ -1752,12 +1752,16 @@ const cpuTrendAriaLabel = computed(
   font-weight: var(--body-xs-strong-font-weight);
 }
 
-/* 脉冲点：实时快照在推进（装饰性，状态文案由状态槽承担，故 aria-hidden）。
-   #432：存活信号着色——数据在流动 = success 绿，停推 = warning 黄。#371 的「存活信号一律中性色」
-   是旧方向口径，已随 #429 重定；DESIGN.md 的 One Job Rule 原文把状态色定义为「进程与连接状态」，
-   「数据在流动」属于该事实。它与台账的**指标绿**同族不同义（存活绿 = 连接/进程，指标绿 = 读数健康），
-   语义不得互换，见 DESIGN.md「存活信号」一句与 GLOSSARY.md 词条。
-   深浅两套 token 各自适配主题；颜色只是冗余信号（停推事实由状态槽文案承担）。 */
+/* 脉冲点：发送方是否仍在推进数据（辅助信号——同一事实由状态槽文案承担，故 aria-hidden）。
+   #432（2026-11-22 用户拍板「绿黄」）：数据在流动 = success 绿，停推 = warning 黄。
+   #371 的「存活信号一律中性色」是旧方向口径，由本票的拍板记录反转（不是 #429 重定——#429 只定义了
+   布局方向）。DESIGN.md 的 One Job Rule 把状态色定义为 process state（DESIGN.md:225），
+   Status hues 段（:214）将其展开为「进程与连接状态」；「数据在流动」属于该事实。
+   它与台账的**指标绿**同族不同义（存活绿 = 数据在推，指标绿 = 读数健康），语义不得互换，
+   见 DESIGN.md「Liveness signals」一句与 GLOSSARY.md「存活信号」词条。
+   已知限制（#434）：success/warning 的 `-default` 6px 图形在浅色卡片底上只有 2.79 / 2.76:1，
+   低于 3:1——与台账 normal 点同一既存口径；两处信息都不依赖颜色，属冗余图形信号，
+   是否引入图形专用 token 由 #434 决定。 */
 .monitor-view__host-dot {
   flex-shrink: 0;
   width: 6px;
