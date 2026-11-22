@@ -7,18 +7,19 @@
  * - **密码是「缺失/空串/`****` = 保留旧值」**（契约 td-config §2.3）：编辑时留空即不修改，
  *   占位提示 `****`（回报恒脱敏），前端**从不**回填明文（镜像里的 password 恒为 `"****"`）。
  *
+ * **所属交易接口由卡片传入（`gateway` prop）**，不再有网关下拉（ADR 0053 / #439）：
+ * 账户是接口内部配置项，归属由所在卡片固定，用户没有"把账户配到别的接口"这个动作。
+ *
  * 字段按接口类型选择（契约 rest §4 前端义务）：本期只有 `ctp`，`ext` 字段集由
  * {@link CTP_FIELD_KEYS} 单一登记；未来新增接口类型时在这里按 interfaceType 分派，
  * 通用层字段（account_id/enabled/risk_control_enabled/currency_id）不动。
  *
- * 组件只负责**收集与校验**，不发起请求、不碰 store：提交由父页面调 store（单一写入点）。
+ * 组件只负责**收集与校验**，不发起请求、不碰 store：提交由父组件（交易接口卡片）调 store（单一写入点）。
  */
 import { computed, ref, watch } from 'vue'
 import Modal from '@/components/shared/Modal.vue'
-import Dropdown from '@/components/shared/Dropdown.vue'
 import Icon from '@/components/shared/Icon.vue'
 import { useFieldId } from '@/composables/useFieldId'
-import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import type { TdAccountRow } from '@/stores/tdAccounts'
 
 export interface TdAccountFormValue {
@@ -43,8 +44,8 @@ const props = defineProps<{
   open: boolean
   /** null = 添加；非 null = 编辑该行 */
   editing: TdAccountRow | null
-  /** 可选的交易网关进程名（来自 process_config 镜像的 dztd_*） */
-  gateways: { name: string; running: boolean }[]
+  /** 所属交易接口进程名（所在卡片固定；不可在表单内修改） */
+  gateway: string
   /** 提交中（按钮 spinner + 禁用） */
   submitting: boolean
   /** 提交失败文案（表单内展示，不清空用户输入） */
@@ -117,9 +118,7 @@ watch(() => [props.open, props.editing], () => {
     form.value = formFromRow(props.editing)
     return
   }
-  // 添加：默认选第一个可用网关（有 Running 的优先），无网关时留空由用户选择
-  const preferred = props.gateways.find(g => g.running)?.name ?? props.gateways[0]?.name ?? ''
-  form.value = emptyForm(preferred)
+  form.value = emptyForm(props.gateway)
 }, { immediate: true })
 
 const isEditing = computed(() => props.editing !== null)
@@ -130,12 +129,6 @@ const isCtp = computed(() => {
   const underscore = tail.indexOf('_')
   return (underscore < 0 ? tail : tail.slice(0, underscore)) === 'ctp'
 })
-
-const gatewayItems = computed<DropdownItem[]>(() => props.gateways.map(g => ({
-  value: g.name,
-  label: g.running ? g.name : `${g.name}（未运行）`,
-  dot: g.running ? 'var(--status-success-default)' : 'var(--status-warning-default)',
-})))
 
 /** account_id 长度上限：`DzAccountId` 容量 31 字节（契约 rest §2.9.7 预检 4） */
 const ACCOUNT_ID_MAX_BYTES = 31
@@ -148,7 +141,6 @@ const accountIdEmpty = computed(() => form.value.account_id.trim() === '')
 const validationText = computed<string>(() => {
   if (!isEditing.value && accountIdEmpty.value) return '账户 ID 不能为空'
   if (accountIdTooLong.value) return `账户 ID 不能超过 ${ACCOUNT_ID_MAX_BYTES} 字节（当前 ${accountIdBytes.value}）`
-  if (form.value.gateway === '') return '请选择交易网关'
   if (isCtp.value) {
     if (form.value.broker_id.trim() === '') return 'CTP 经纪公司代码（broker_id）不能为空'
     if (form.value.user_id.trim() === '') return 'CTP 用户代码（user_id）不能为空'
@@ -203,20 +195,9 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
   >
     <div class="dialog-form">
       <div class="dialog-field">
-        <label class="dialog-field__label" :for="fieldId('account-gateway')">交易网关</label>
-        <Dropdown
-          :id="fieldId('account-gateway')"
-          :items="gatewayItems"
-          v-model="form.gateway"
-          :placeholder="gateways.length === 0 ? '无已注册交易网关' : '请选择交易网关'"
-          :disabled="isEditing || gateways.length === 0"
-        />
-        <span v-if="gateways.length === 0" class="dialog-field__hint">
-          未发现已注册的交易网关进程（dztd_*），请先在行情源页添加并启动交易网关
-        </span>
-        <span v-else-if="isEditing" class="dialog-field__hint">
-          网关由账户注册表决定，不可在此修改（修改账户不会迁移归属）
-        </span>
+        <span class="dialog-field__label">所属交易接口</span>
+        <span class="td-form__gateway" data-test="td-form-gateway">{{ gateway }}</span>
+        <span class="dialog-field__hint">账户归属于所在交易接口，不可在此修改</span>
       </div>
 
       <div class="dialog-field">
@@ -445,6 +426,13 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 
 .td-form__hint--warn {
   color: var(--status-warning-default);
+}
+
+/* 所属交易接口：只读展示（不再是下拉，ADR 0053） */
+.td-form__gateway {
+  font-size: var(--body-base-font-size);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-default);
 }
 
 /* #346：原模板内联 minHeight: 'auto' 归位（压住 .ds-check 的 min-height: 40px）；
