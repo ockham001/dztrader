@@ -397,6 +397,8 @@ TEST_F(TdPlaceOrderValidationTest, UnknownOrderStatusKeepsOrderActiveAndFrozen) 
     std::strcpy(f.order.InstrumentID, "IF2506");
     std::strcpy(f.order.OrderRef, "000000000001");
     std::strcpy(f.order.ExchangeID, "CFFEX");
+    // #423: 回报必须自证属于当前会话交易日 (否则判死 + 登出), 正常路径用例要带对这一天。
+    std::strcpy(f.order.TradingDay, "20261009");
     f.order.Direction = THOST_FTDC_D_Sell;  // 卖平多
     f.order.CombOffsetFlag[0] = THOST_FTDC_OF_Close;
     f.order.OrderPriceType = THOST_FTDC_OPT_LimitPrice;

@@ -368,7 +368,8 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     // 同步 trading_day. 解析失败按登录失败处理, 不进 LoggedIn (对齐 md 的
     // LoginParseError 分支): 会话交易日是本会话全部业务数据的时间锚, 它缺失时若继续登录,
     // 订单/成交/持仓/资金会盖上一个无效日期, 而 ACCOUNT_STATUS 帧的 date 会回落 0 ——
-    // 日切判定 (should_push_account_status 比 date 变化) 随之误判. 宁可这次登录失败,
+    // 日切感知 (status 帧 date 变化) 随之失真; 跨日会话本身已由回报 TradingDay 校验判死
+    // (#423), 但那次判死同样依赖正确的会话交易日. 宁可这次登录失败,
     // 也不带着错误的会话交易日进入 Ready.
     // 注意: 回滚后本进程不会自动重发登录 (状态停在 Authenticated/Connected 直到人工断开
     // 重连或前置断线), 该缺口见 #406.
@@ -497,6 +498,22 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
 }
 
 void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
+    // ADR 0049 决策 5 / 契约 td-data-sync §3 §7: 回报必须自证属于当前会话交易日.
+    // 判定必须在 LoadingInstruments 缓冲之前 —— 否则登录重放阶段的跨日回报会被缓冲而漏检.
+    // 判死后该条回报直接丢弃 (不分配 seq / 不推帧 / 不落库): 其 date 取自会话交易日, 落库即
+    // 污染次日登录也修不回的委托/成交追加流 (整组替换只覆盖持仓/资金).
+    const auto day_verdict = judge_report_trading_day(trading_day_, f.order.TradingDay);
+    if (day_verdict != ReportTradingDayVerdict::Match) {
+        if (request_cross_day_logout(day_verdict, f.order.TradingDay)) {
+            SPDLOG_ERROR(
+                "td rtn order trading day rejected | account={} reason={} session_day={} "
+                "report_day=\"{}\" order_ref={}",
+                account_id_, report_trading_day_reason(day_verdict), trading_day_,
+                f.order.TradingDay, f.order.OrderRef);
+        }
+        return;
+    }
+
     // LoadingInstruments 期间缓冲, Ready 后重放 (设计 §5.3).
     // Task 6: 缓冲重放阶段 (replaying_) 状态仍是 LoadingInstruments, 须放行,
     // 否则重放回报会被重新入缓冲 (无限循环).
@@ -631,6 +648,20 @@ void AccountSession::on_rtn_order(const OnRtnOrderField& f) {
 }
 
 void AccountSession::on_rtn_trade(const OnRtnTradeField& f) {
+    // ADR 0049 决策 5 / 契约 td-data-sync §3 §7: 同 on_rtn_order —— 判定在缓冲之前,
+    // 判死后该条成交直接丢弃 (不分配 seq / 不推帧 / 不落库).
+    const auto day_verdict = judge_report_trading_day(trading_day_, f.trade.TradingDay);
+    if (day_verdict != ReportTradingDayVerdict::Match) {
+        if (request_cross_day_logout(day_verdict, f.trade.TradingDay)) {
+            SPDLOG_ERROR(
+                "td rtn trade trading day rejected | account={} reason={} session_day={} "
+                "report_day=\"{}\" instrument={} trade_id={}",
+                account_id_, report_trading_day_reason(day_verdict), trading_day_,
+                f.trade.TradingDay, f.trade.InstrumentID, f.trade.TradeID);
+        }
+        return;
+    }
+
     // Task 6: 重放阶段放行 (同 on_rtn_order, 防止重放回报被重新入缓冲).
     if (state_machine_.state() == TdState::LoadingInstruments && !replaying_) {
         buffer_trade_rpt(f);
@@ -899,6 +930,26 @@ void AccountSession::set_trading_day(int32_t trading_day) {
         if (ch.short_changed) push_position(h, DZ_DIRECTION_SHORT);
     }
     SPDLOG_INFO("td trading day updated | account={} trading_day={}", account_id_, trading_day);
+}
+
+bool AccountSession::request_cross_day_logout(ReportTradingDayVerdict verdict,
+                                              const char* report_day) {
+    // 单次语义: 判死后本条回报已丢弃, TdApi::dispatch 会在本次事件处理完后拆会话; 队列里
+    // 即便还有回报也只静默丢弃 —— 逐条刷 ERROR / 通知会把前端通知环打爆 (与持续性异常
+    // 限频同一口径). 返回值 = 是否本次首次判死 (调用方据此决定要不要记 ERROR 日志).
+    if (verdict == ReportTradingDayVerdict::Match) {
+        return false;  // 调用方只对非 Match 调用; 防御性返回 false (不置请求、不记日志)
+    }
+    if (cross_day_logout_requested_) {
+        return false;
+    }
+    cross_day_logout_requested_ = true;
+    if (notify_) {
+        // 主动登出是破坏性事件: ERROR + 弹窗 (登出后由自动调度在下一个 login_time 重登).
+        notify_(DZ_NOTIFY_ERROR, cross_day_logout_message(verdict, trading_day_, report_day),
+                /*popup=*/true);
+    }
+    return true;
 }
 
 void AccountSession::repush_last_records() {

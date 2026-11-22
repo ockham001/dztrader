@@ -6,7 +6,39 @@
 #include <format>
 #include <limits>
 
+#include <dztrader/date_time/date.h>
+
 namespace dztrader::ctp {
+
+namespace {
+
+/// 解析 CTP 回报自带的 8 位 "YYYYMMDD" (委托/成交回报的 TradingDay 字段).
+/// 先做长度与字符校验再交给 Date: 回报字段是定长字符数组, 空位填充 / 分隔符 / 缓冲区
+/// 没清零都会落到这里, 不能靠 Date 的异常兜底 (它只为「月日越界」抛).
+/// @return true = 解析成功 (写入 *out); false = 长度 / 字符 / 日历非法
+bool parse_report_trading_day(const char* yyyymmdd, int32_t* out) noexcept {
+    if (yyyymmdd == nullptr || out == nullptr) {
+        return false;
+    }
+    size_t len = 0;
+    while (yyyymmdd[len] != '\0') {
+        if (yyyymmdd[len] < '0' || yyyymmdd[len] > '9') {
+            return false;
+        }
+        ++len;
+    }
+    if (len != 8) {
+        return false;
+    }
+    try {
+        *out = dztrader::Date::from_string(yyyymmdd, "%Y%m%d").days_since_epoch();
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+}  // namespace
 
 std::string OrderRefMap::normalize_order_ref(const std::string& order_ref) {
     // 空字符串或非数字字符原样返回 (外部订单可能传入非数字 OrderRef)
@@ -141,6 +173,66 @@ bool trading_day_usable(int32_t days_since_epoch) noexcept {
     // (td_events.h), 由 TdSpi::OnRspUserLogin 在 parse_ctp_date 返回 DZ_DATE_NA 时保留.
     // 0 是 DZ_DATE_NA 且业务上不存在 1970 年的真实交易日, 同样视为不可用.
     return days_since_epoch != std::numeric_limits<int32_t>::min() && days_since_epoch > 0;
+}
+
+ReportTradingDayVerdict judge_report_trading_day(int32_t session_day,
+                                                 const char* report_day) noexcept {
+    // 会话交易日不可用时先判死: 它是本会话全部业务数据的时间锚, 未建立就收到回报本身即异常,
+    // 报文是否可解析不改变结论 (更不能把 0 当「1970 年」去比较).
+    if (!trading_day_usable(session_day)) {
+        return ReportTradingDayVerdict::SessionUnknown;
+    }
+    if (report_day == nullptr || report_day[0] == '\0') {
+        return ReportTradingDayVerdict::Empty;
+    }
+    int32_t parsed = 0;
+    if (!parse_report_trading_day(report_day, &parsed)) {
+        return ReportTradingDayVerdict::Unparsable;
+    }
+    return parsed == session_day ? ReportTradingDayVerdict::Match
+                                 : ReportTradingDayVerdict::Mismatch;
+}
+
+const char* report_trading_day_reason(ReportTradingDayVerdict verdict) noexcept {
+    switch (verdict) {
+        case ReportTradingDayVerdict::Match:
+            return "match";
+        case ReportTradingDayVerdict::SessionUnknown:
+            return "session_unknown";
+        case ReportTradingDayVerdict::Empty:
+            return "empty";
+        case ReportTradingDayVerdict::Unparsable:
+            return "unparsable";
+        case ReportTradingDayVerdict::Mismatch:
+            return "mismatch";
+    }
+    return "unknown";
+}
+
+std::string cross_day_logout_message(ReportTradingDayVerdict verdict,
+                                     int32_t session_day,
+                                     const char* report_day) {
+    const std::string raw = report_day != nullptr ? report_day : "";
+    // 会话交易日可读化: <=0 是 DZ_DATE_NA / 哨兵 (SessionUnknown 分支), 不引用具体日期,
+    // 免得把 0 渲染成 1970-01-01 这种假证据.
+    const std::string session_text = trading_day_usable(session_day)
+                                         ? dztrader::Date{session_day}.to_string("%Y%m%d")
+                                         : std::string("未知");
+    const std::string suffix = "，已主动登出，账户将保持离线到下次自动登录";
+    switch (verdict) {
+        case ReportTradingDayVerdict::Mismatch:
+            return std::format("回报交易日与会话交易日不一致（会话 {} / 回报 {}）{}", session_text,
+                               raw, suffix);
+        case ReportTradingDayVerdict::Empty:
+            return std::format("回报未携带交易日，无法确认属于当前会话交易日{}", suffix);
+        case ReportTradingDayVerdict::Unparsable:
+            return std::format("回报交易日无法解析（原始值 \"{}\"）{}", raw, suffix);
+        case ReportTradingDayVerdict::SessionUnknown:
+            return std::format("会话交易日未建立时收到回报{}", suffix);
+        case ReportTradingDayVerdict::Match:
+            break;  // 调用方只对非 Match 调用; 防御性返回通用文案
+    }
+    return std::format("回报交易日校验未通过{}", suffix);
 }
 
 std::string login_failed_message(const std::string& reason) {
