@@ -934,9 +934,10 @@ void AccountSession::set_trading_day(int32_t trading_day) {
 
 bool AccountSession::request_cross_day_logout(ReportTradingDayVerdict verdict,
                                               const char* report_day) {
-    // 单次语义: 判死后本条回报已丢弃, TdApi::dispatch 会在本次事件处理完后拆会话; 队列里
-    // 即便还有回报也只静默丢弃 —— 逐条刷 ERROR / 通知会把前端通知环打爆 (与持续性异常
-    // 限频同一口径). 返回值 = 是否本次首次判死 (调用方据此决定要不要记 ERROR 日志).
+    // 单次语义: 判死后本条回报已丢弃, TdApi::dispatch 会在本次事件处理完后拆会话; 之后同账户
+    // 的残留事件走 dispatch 的 unknown-account WARN 兜底, 不再记 ERROR / 推通知 —— 逐条刷
+    // ERROR / 通知会把前端通知环打爆 (与持续性异常限频同一口径). 返回值 = 是否本次首次判死
+    // (调用方据此决定要不要记 ERROR 日志).
     if (verdict == ReportTradingDayVerdict::Match) {
         return false;  // 调用方只对非 Match 调用; 防御性返回 false (不置请求、不记日志)
     }

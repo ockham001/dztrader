@@ -15,19 +15,23 @@ namespace {
 /// 解析 CTP 回报自带的 8 位 "YYYYMMDD" (委托/成交回报的 TradingDay 字段).
 /// 先做长度与字符校验再交给 Date: 回报字段是定长字符数组, 空位填充 / 分隔符 / 缓冲区
 /// 没清零都会落到这里, 不能靠 Date 的异常兜底 (它只为「月日越界」抛).
+///
+/// **不复用 `parse_ctp_date`** (td_ctp_mapping.cpp): 那个头携带 CTP 结构体头
+/// (`ThostFtdcUserApiStruct.h`), 纯逻辑模块与纯函数测试目标都不链它; 且它用 `strlen` 读
+/// 定长 `char[9]`, 字段没带 NUL 时会越界 —— 这里按 8 位上限读、再校验第 9 字节是终止符。
+/// 两处判据必须同步 (长度 / 纯数字 / 日历合法性), 改一处就要看另一处。
 /// @return true = 解析成功 (写入 *out); false = 长度 / 字符 / 日历非法
 bool parse_report_trading_day(const char* yyyymmdd, int32_t* out) noexcept {
     if (yyyymmdd == nullptr || out == nullptr) {
         return false;
     }
-    size_t len = 0;
-    while (yyyymmdd[len] != '\0') {
-        if (yyyymmdd[len] < '0' || yyyymmdd[len] > '9') {
+    constexpr size_t kDateLen = 8;
+    for (size_t i = 0; i < kDateLen; ++i) {
+        if (yyyymmdd[i] < '0' || yyyymmdd[i] > '9') {
             return false;
         }
-        ++len;
     }
-    if (len != 8) {
+    if (yyyymmdd[kDateLen] != '\0') {
         return false;
     }
     try {

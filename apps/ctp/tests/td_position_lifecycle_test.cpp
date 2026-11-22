@@ -345,11 +345,13 @@ protected:
     struct FrameInstruments {
         std::vector<std::string> positions;
         std::vector<std::string> trades;
+        std::vector<std::string> orders;
     };
     FrameInstruments read_frame_instruments() {
         const auto frames = dztrader::test::read_frames(*reader_);
         return FrameInstruments{dztrader::test::position_frame_instruments(frames),
-                                dztrader::test::trade_frame_instruments(frames)};
+                                dztrader::test::trade_frame_instruments(frames),
+                                dztrader::test::order_frame_instruments(frames)};
     }
 
     static bool contains(const std::vector<std::string>& values, const std::string& needle) {
@@ -909,7 +911,8 @@ TEST_F(TdPositionLifecycleTest, CrossDayTradeIsDiscardedAndRequestsLogout) {
 }
 
 TEST_F(TdPositionLifecycleTest, CrossDayOrderIsDiscardedAndRequestsLogout) {
-    // 委托回报走同一条判据 (两个 handler 都要覆盖, 漏一个等于漏检).
+    // 委托回报走同一条判据 (两个 handler 都要覆盖, 漏一个等于漏检); 与成交用例对称:
+    // 不落库 + 不推帧 (帧断言依赖 reader_ 在 SetUp 里先建、早于本用例的写动作).
     auto order = order_row("m2501", "000000000001", /*trading_day=*/"20261012");
     session_->on_rtn_order(order);
     flush_persist();
@@ -918,6 +921,7 @@ TEST_F(TdPositionLifecycleTest, CrossDayOrderIsDiscardedAndRequestsLogout) {
     EXPECT_EQ(notifications_[0].level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(session_->take_cross_day_logout_request());
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM orders"), 0);
+    EXPECT_TRUE(read_frame_instruments().orders.empty()) << "rejected report must not be pushed";
 }
 
 TEST_F(TdPositionLifecycleTest, EmptyOrMalformedReportDayIsAlsoRejected) {
