@@ -568,8 +568,8 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
     expect(grid).toContain('align-items: start')
 
-    // 网格里的子元素跨满整行：宽卡与台账由 CSS 声明跨列（#370 步骤 4 后主机条已移入顶栏，
-    // 不再是网格项——它的跨行由顶栏的 flex 布局承担，不在这里断言）。
+    // 网格里的子元素跨满整行：宽卡与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
+    // 独立一条，不是网格项——它不在网格里断言，见下一条）。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
     expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
     // 主机条不在网格里（#430：顶栏下方的独立一条）：它的规则不得再声明跨列
@@ -760,6 +760,9 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(value).toContain('white-space: nowrap')
     expect(value).toContain('text-overflow: ellipsis')
     expect(value).toContain('overflow: hidden')
+    // 容器允许整体换行：390 下靠这一条消化（单条内容另由 nowrap 锁住），
+    // 这是 AC3/AC4 的核心机制，删掉它必须有用例变红
+    expect(ruleBody('.monitor-view__host')).toContain('flex-wrap: wrap')
     // spacer 吃掉剩余宽度 → 状态槽恒在所在行最右（含换行后的第二行）
     expect(ruleBody('.monitor-view__host-spacer')).toContain('flex: 1 1 auto')
     expect(ruleBody('.monitor-view__host-status')).toContain('flex: none')

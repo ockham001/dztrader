@@ -1858,6 +1858,29 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
     vi.restoreAllMocks()
   })
 
+  it('历史 / 配置视图保留副标题（#430：只有实时视图的主机信息搬进主机条）', async () => {
+    // 副标题条件从 `snapshot || viewMode !== 'realtime'` 收窄为 `viewMode !== 'realtime'`：
+    // 实时视图不再有副标题，而历史 / 配置视图（含无快照分支）必须原样保留。
+    vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 9, 21, 15, 0, 2))
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    vi.mocked(sysmonApi.getConfig).mockResolvedValue(makeSysmonConfig())
+    const wrapper = await mountView()
+
+    await wrapper.find('[data-test="monitor-tab-history"]').trigger('click')
+    await flushPromises()
+    const subtitle = wrapper.find('[data-test="monitor-subtitle"]')
+    expect(subtitle.exists()).toBe(true)
+    expect(subtitle.text()).toContain('Ubuntu 24.04.1 LTS')
+    expect(subtitle.text()).toContain('更新于')
+    // 主机条只属于实时视图
+    expect(wrapper.find('[data-test="monitor-host"]').exists()).toBe(false)
+
+    await wrapper.find('[data-test="monitor-tab-config"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="monitor-subtitle"]').exists()).toBe(true)
+    vi.restoreAllMocks()
+  })
+
   it('等待快照态：主机条整条不渲染，等待语义由整页空态承担', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
     const wrapper = await mountView()

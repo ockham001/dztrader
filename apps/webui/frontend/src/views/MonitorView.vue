@@ -76,8 +76,9 @@ import { useSysmonStore } from '@/stores/sysmon'
 import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 
-// 资源监控页：主机条（主机名 / 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数）、CPU 宽卡
-//（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、指标台账（#363）。
+// 资源监控页：主机条（#430：主机 / 系统 / 内核 / 已运行 + 右端数据龄状态槽；CPU 型号 · 逻辑核数
+// 已移出，归 CPU 块）、CPU 宽卡（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、
+// 指标台账（#363；后续块按参考布局逐块替换）。
 //
 // 台账是**纯渲染层**：三组（内存 / 存储 / 网络与时钟）× 七列（状态点 · 指标名 + 契约键 ·
 // 量程轨道 · 当前值 · 明细 · 阈值 · 余量）的行数据全部来自 `@/composables/monitorLedger` 的
@@ -832,7 +833,7 @@ const cpuTrendAriaLabel = computed(
       </span>
       <span class="monitor-view__host-item">
         <span class="monitor-view__host-label">已运行</span>
-        <span class="monitor-view__host-value" data-test="monitor-host-uptime">{{ hostUptime }}</span>
+        <span class="monitor-view__host-value" data-test="monitor-host-uptime" :title="hostUptime">{{ hostUptime }}</span>
       </span>
       <span class="monitor-view__host-spacer" aria-hidden="true"></span>
       <span class="monitor-view__host-status" data-test="monitor-host-status">{{ hostStatusText }}</span>
@@ -2841,7 +2842,7 @@ const cpuTrendAriaLabel = computed(
   }
 
   /* 窄屏：CPU 宽卡的内层块让回单列（宽卡本身已 `grid-column: auto`）。
-     主机条已在顶栏（#370 步骤 4），不再是网格项，不在此处列。 */
+     主机条是顶栏下方的独立一条（#430），不再是网格项，不在此处列。 */
   .monitor-view__stats,
   .monitor-view__trend {
     grid-column: auto;
