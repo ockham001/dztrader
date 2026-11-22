@@ -83,9 +83,9 @@ JSON 示例：
 
 **前端义务**：
 
-1. `last_error.timestamp` 变化且非 `null` 表示一次登录失败已结束：清除该实例的登录 pending，不等待超时兜底。
+1. `last_error.timestamp` 变化且非 `null` 表示一次登录失败已结束：清除该实例的登录 pending，不等待超时兜底。`RTN_PROGRESS.current` 相对上次推送回退（一次登录尝试失败/中止，契约 progress 会话骨架）同样是清除信号——登录失败态数值映射与 `Connected` 相同、不会产生端点转移，没有该信号时 pending 会悬挂到超时。
 2. 卡片持久展示「上次失败：`message` + 时间」；`message` 为空时按 `code` 映射固定文案；**不得把 `code` 原文直接展示给用户**。`timestamp` 非法/缺失时不展示时间（不得渲染 1970）。
-3. 失败态不提供原地重试（ADR 0051）：`last_error` 仅用于持久展示失败原因。登录按钮只在 `RTN_PROGRESS.current <= progress.min`（Idle/完全未登录）可用；`LoginFailed`（`current=2`）与 `Disconnected`（`current=1`）下登录不可用、登出可用（登出即释放 API 回到 Idle），恢复路径统一为登出→登录。后端 `can_login()` 重登能力保留给自动调度 / `--recover`，不经前端触发。
+3. 失败态不提供原地重试（ADR 0051）：`last_error` 仅用于持久展示失败原因。登录资格只在 `RTN_PROGRESS.current <= progress.min`（Idle/完全未登录）；`LoginFailed`（`current=2`）与 `Disconnected`（`current=1`）下不可发起登录、可发起登出（登出即释放 API 回到 Idle），恢复路径统一为登出→登录（按钮形态/disabled 属前端设计，见 ADR 0051）。后端 `can_login()` 重登能力保留给自动调度 / `--recover`，不经前端触发。
 4. 登录成功后 `last_error` 清空，前端不得保留旧失败展示；断开/重连期间展示以本帧全量覆盖为准。
 
 ---

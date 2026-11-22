@@ -20,7 +20,7 @@ enum class TdSessionGuard {
     NotAdmin,             ///< 非 admin（REST 403 `admin_required`）
     AccountInvalid,       ///< account_id 为空或不在账户注册表（REST 404 `account_not_found`）
     RegistryUnavailable,  ///< 注册表降级（尚未收到配置帧且未从 platform.db 恢复条目）
-    GatewayNotRunning,    ///< 目标网关镜像非 Running（含镜像未就绪，保守拒绝）
+    GatewayNotRunning,    ///< 目标网关未注册为 dztd_* 或镜像非 Running（含未就绪，保守拒绝）
     ChannelUnavailable,   ///< 事件通道 writer 不可用（API-only 模式）
 };
 
@@ -31,10 +31,23 @@ struct TdSessionCheck {
     std::string gateway;
 };
 
+/// 目标网关是否在进程配置中且是 `dztd_*`（契约 rest §2.9.10 预检 3）。
+/// 与配置写端点的预检同义：未注册的进程名不该收到会话控制请求（总则 §7 兜底会把误操作
+/// 变成超时）。账户注册表能解析出网关只说明「曾收到过配置帧」，进程配置消失后仍可能有残留。
+inline bool td_gateway_registered(const ProcessMirror& process_mirror, const std::string& gateway) {
+    return gateway.starts_with("dztd_") && process_mirror.get_process_config(gateway).has_value();
+}
+
+/// 目标网关在进程镜像中是否为 Running。
+inline bool td_gateway_running(const ProcessMirror& process_mirror, const std::string& gateway) {
+    const auto status = process_mirror.get_status(gateway);
+    return status.has_value() && status->state == platform::ChildState::Running;
+}
+
 /// 统一守卫纯函数。
 /// @param is_admin        当前 REST 请求 / WS 连接是否为 admin
 /// @param registry        账户注册表（解析 account_id → gateway；nullptr = 未装配）
-/// @param process_mirror  进程镜像（目标网关是否 Running）
+/// @param process_mirror  进程镜像（目标网关是否已注册为 `dztd_*` 且 Running）
 /// @param writer_ready    事件通道 writer 是否可用
 /// @param account_id      目标账户 ID
 inline TdSessionCheck evaluate_td_session_guard(bool is_admin,
@@ -58,12 +71,10 @@ inline TdSessionCheck evaluate_td_session_guard(bool is_admin,
         return {.result = TdSessionGuard::AccountInvalid, .gateway = {}};
     }
     TdSessionCheck check{.result = TdSessionGuard::Ok, .gateway = entry->gateway};
-    bool running = false;
-    if (process_mirror != nullptr) {
-        const auto status = process_mirror->get_status(entry->gateway);
-        running = status.has_value() && status->state == platform::ChildState::Running;
-    }
-    if (!running) {
+    const bool gateway_ready = process_mirror != nullptr &&
+                               td_gateway_registered(*process_mirror, entry->gateway) &&
+                               td_gateway_running(*process_mirror, entry->gateway);
+    if (!gateway_ready) {
         check.result = TdSessionGuard::GatewayNotRunning;
         return check;
     }

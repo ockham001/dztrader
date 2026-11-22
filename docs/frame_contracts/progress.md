@@ -2,7 +2,7 @@
 
 本文件覆盖 `DZ_FRAME_RTN_PROGRESS` 一个帧。总则见《帧契约：通用规则》。
 
-帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` 标识来源逻辑实例（进程名；TD 账户级为账户 ID，账户 ID 全局唯一，见总则 §5）。
+帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` 标识来源逻辑实例（进程名；TD 账户级为 `网关名:账户ID`，见总则 §5 与《帧契约：td 连接控制》）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/progress.h`（`ProgressReporter`）。
 
@@ -57,16 +57,16 @@ JSON 示例：
 
 - 推荐固定值：`0` = 未登录、`1` = 连接中/重连中、`2` = 已连接；`current > 2` 的阶段（认证、登录、结算确认、初始化等）与 `max` 数值由接口类型定义（当前：行情网关 `max=4`、交易网关 `max=10`）。消费方必须按端点相对比较判定，**禁止依赖具体 `max` 或中间值数值**。
 - 会话建立期的 `current` 单调不减；失败回滚或主动中止会使 `current` 回退——供消费者判定「一次登录尝试已结束」。
-- 失败不是端点：登录失败后 `current` 处于中间值（行情网关登录失败态与已连接同为 2），失败原因由各网关状态帧的错误字段承载（契约 md-status 失败语义），不得用 `min`/`max` 表达失败。
-- 账户三态（契约 account-status）把断线重连中（`current=1`）归为 Offline，与「会话不可用」一致；但**会话控制**（是否显示/允许登录）只看本骨架的端点，不得用三态反推。
-- 前端义务：登录按钮仅在 `current <= min` 可用；登出按钮在 `current > min` 可用（连接中/登录中/重连中/失败态均可，即强制中断）；`desc` 仅展示，不得用于状态判定（ADR 0051）。
+- 失败不是端点：登录失败后 `current` 处于中间值（行情网关登录失败态与已连接同为 2）。行情网关的持久失败原因由 `RTN_MD_STATUS.last_error` 承载（契约 md-status 失败语义）；交易网关的持久失败字段待 #427 落地，落地前失败只经 `NOTIFY_UI` 瞬时提示——不得用 `min`/`max` 表达失败。
+- 账户三态（契约 account-status）把断线重连中（`current=1`）归为 Offline，与「会话不可用」一致；但**会话控制**（是否允许登录）只看本骨架的端点，不得用三态反推。
+- 前端协议义务：把端点作为会话态的唯一判据（是否允许发起登录 = `current <= min`；是否允许中止 = `current > min`）；控件形态与按钮 disabled 规则属前端设计（ADR 0051），不进本契约。`desc` 仅展示，不得用于状态判定。
 
 ---
 
 ## DZ_FRAME_RTN_PROGRESS
 
 **语义**：推送当前进度状态
-**数据流**：形态 4（总则 §4.2）——进程（帧头 `instance_id` = 来源，TD 账户级为账户 ID）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
+**数据流**：形态 4（总则 §4.2）——进程（帧头 `instance_id` = 来源，TD 账户级为 `网关名:账户ID`）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
 **Payload**：JSON（ProgressStatus）
 
 **触发场景**：

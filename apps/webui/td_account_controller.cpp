@@ -17,25 +17,16 @@ namespace {
 /// 契约 rest §2.9.7 预检 4 的「≤ 31 字节」即此容量，不用另写魔数。
 constexpr size_t kMaxAccountIdBytes = sizeof(DzAccountId) - 1;
 
-constexpr const char* kTdGatewayPrefix = "dztd_";
-
 }  // namespace
 
 bool TdAccountCtrl::is_registered_td_gateway(const std::string& gateway) const {
-    if (gateway.empty() || !gateway.starts_with(kTdGatewayPrefix)) {
-        return false;
-    }
-    // 契约 rest §2.9.7 预检 2：必须是「进程配置中的 dztd_*」——仅进程名形如 dztd_ 不够，
-    // 未注册的进程不该收到配置写请求（总则 §7 兜底会把运维的误操作变成超时）。
-    return process_mirror_ && process_mirror_->get_process_config(gateway).has_value();
+    // 契约 rest §2.9.7 预检 2 / §2.9.10 预检 3：与 td_session_guard 共用同一实现，
+    // 避免配置写端点与会话控制端点各写一份「已注册 dztd_*」判定。
+    return process_mirror_ && td_gateway_registered(*process_mirror_, gateway);
 }
 
 bool TdAccountCtrl::is_gateway_running(const std::string& gateway) const {
-    if (!process_mirror_) {
-        return false;
-    }
-    const auto status = process_mirror_->get_status(gateway);
-    return status.has_value() && status->state == platform::ChildState::Running;
+    return process_mirror_ && td_gateway_running(*process_mirror_, gateway);
 }
 
 drogon::HttpResponsePtr TdAccountCtrl::check_gateway_ready(const std::string& gateway) const {

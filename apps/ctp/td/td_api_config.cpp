@@ -51,7 +51,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
     }
 
     // 3. 状态保护: 连接参数变更 (RemoveAccount/UpdateAccount) 在 session 活跃时拒绝
-    //    (运行中的 AccountSession 不能修改连接参数, 需先 disconnect 再改)
+    //    (运行中的 AccountSession 不能修改连接参数, 需先登出再改; 提示语见下方 NOTIFY_UI)
     if (is_connection_op(req.op)) {
         auto account_id = req.params.value("account_id", "");
         if (!account_id.empty()) {

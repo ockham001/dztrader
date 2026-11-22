@@ -8,29 +8,14 @@
  */
 import type { TdState } from '@/types/api'
 import type { ProgressView } from '@/stores/progress'
+import { sessionStateOfProgress, type SessionState } from '@/composables/sessionProgress'
+
+// 端点判定与 md 共用一份实现（composables/sessionProgress.ts）；本文件只保留交易侧差异：
+// `td_status.state` 兜底与账户行推导。sessionStateOfProgress 重新导出，保持调用方稳定。
+export { sessionStateOfProgress } from '@/composables/sessionProgress'
 
 /** 会话状态：未登录 / 建立中（含重连中、失败回滚）/ 就绪 */
-export type TdSessionState = 'absent' | 'forming' | 'ready'
-
-export interface TdProgressLike {
-  min?: unknown
-  max?: unknown
-  current?: unknown
-}
-
-/** 进度端点判定；非确定进度（`max <= min`）返回 null（契约 progress：无状态含义） */
-export function sessionStateOfProgress(
-  progress: TdProgressLike | null | undefined,
-): TdSessionState | null {
-  const min = typeof progress?.min === 'number' ? progress.min : Number.NaN
-  const max = typeof progress?.max === 'number' ? progress.max : Number.NaN
-  const current = typeof progress?.current === 'number' ? progress.current : Number.NaN
-  if (Number.isNaN(min) || Number.isNaN(max) || Number.isNaN(current)) return null
-  if (!(max > min)) return null
-  if (current >= max) return 'ready'
-  if (current <= min) return 'absent'
-  return 'forming'
-}
+export type TdSessionState = SessionState
 
 /** 细状态兜底（进度镜像未到达时）：Idle = 未登录、Ready = 就绪、其余 = 建立中 */
 export function sessionStateOfTdState(

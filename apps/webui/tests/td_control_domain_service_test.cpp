@@ -9,6 +9,7 @@
 #include "td_control_domain_service.h"
 #include "mirror_store.h"
 #include "process_mirror.h"
+#include "ready_shm_fixture.h"
 #include "td_account_registry.h"
 #include "test_util.h"
 
@@ -31,83 +32,26 @@
 namespace dztrader::webui {
 namespace {
 
-/// 真 SHM 通道 fixture：捕获服务写出的定向帧（帧断言用）。
-struct SessionShmFixture {
-    std::string channel_name;
-    std::filesystem::path shm_dir;
-    std::shared_ptr<shm::ChannelMeta> meta;
-    std::shared_ptr<shm::MultiWriter> writer;
-    std::optional<shm::Reader> reader;
-    static constexpr uint64_t MB = 1024ull * 1024;
-
-    SessionShmFixture() {
-        static std::atomic<uint64_t> instance_seq{0};
-        channel_name = "dz_test_td_session_svc_" + test::unique_suffix() + "_" +
-                       std::to_string(instance_seq.fetch_add(1, std::memory_order_relaxed));
-        shm_dir = std::filesystem::temp_directory_path() / channel_name;
-        std::filesystem::remove_all(shm_dir);
-        std::filesystem::create_directories(shm_dir);
-        const shm::ChannelConfig cfg{.channel_name = channel_name,
-                                     .shm_dir = shm_dir,
-                                     .meta_file_size = 4 * MB,
-                                     .page_size = 1 * MB,
-                                     .lock_memory = false,
-                                     .prefetch_memory = false};
-        meta = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
-        writer = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "test_writer"));
-        reader = shm::Reader::create(meta, "test_reader");
-    }
-    ~SessionShmFixture() {
-        reader.reset();
-        writer.reset();
-        meta.reset();
-        dztrader::shm::test::cleanup_channel(channel_name, shm_dir);
-    }
-    SessionShmFixture(const SessionShmFixture&) = delete;
-    SessionShmFixture& operator=(const SessionShmFixture&) = delete;
-
-    struct Captured {
-        bool found = false;
-        std::string instance_id;
-        nlohmann::json payload;
-    };
-
-    Captured capture_inst_frame(DzFrameType type, const std::string& instance) {
-        Captured out;
-        while (const auto* raw = reader->next_frame()) {
-            const shm::FrameView view(raw);
-            if (view.type() != type) {
-                continue;
-            }
-            if (std::string(view.ext_inst_id()) != instance) {
-                continue;
-            }
-            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-            out.payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
-            out.instance_id = instance;
-            out.found = true;
-            break;
-        }
-        return out;
-    }
-
-    /// 是否写入了任何帧（守卫失败路径必须一帧不写）。
-    bool has_any_frame() {
-        while (const auto* raw = reader->next_frame()) {
-            (void)raw;
-            return true;
-        }
-        return false;
-    }
-};
+using test::ReadyShmFixture;  // 共享 SHM 夹具，见 ready_shm_fixture.h
 
 class TdControlDomainServiceTest : public ::testing::Test {
 protected:
     MirrorStore store_;
     ProcessMirror process_mirror_{store_};
     TdAccountRegistry registry_;
+    nlohmann::json primed_gateways_ = nlohmann::json::object();
 
-    void prime_gateway(const std::string& gateway) {
+    void prime_gateway(const std::string& gateway, bool registered = true) {
+        // 契约 rest §2.9.10 预检 3：目标网关必须是「进程配置中的 dztd_*」且 Running，
+        // 守卫两条件都查；registered=false 模拟镜像里有状态但配置已移除的残留。
+        if (registered) {
+            primed_gateways_[gateway] = nlohmann::json{
+                {"args", nlohmann::json::array()},
+                {"env", nlohmann::json::object()},
+                {"restart",
+                 nlohmann::json{{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}}};
+        }
+        process_mirror_.update_process_configs(primed_gateways_);
         dztrader::platform::ProcessStatus status;
         status.name = gateway;
         status.state = dztrader::platform::ChildState::Running;
@@ -143,7 +87,7 @@ protected:
 // ============================================================================
 
 TEST_F(TdControlDomainServiceTest, ConnectNonAdminRepliesErrorNoFrame) {
-    SessionShmFixture fx;
+    ReadyShmFixture fx;
     ShmWriter writer(fx.writer);
     TdControlDomainService svc(registry_, process_mirror_, &writer);
     const auto replies = capture_replies(svc, /*is_connect=*/true, /*is_admin=*/false, "acc_a", 42);
@@ -155,7 +99,7 @@ TEST_F(TdControlDomainServiceTest, ConnectNonAdminRepliesErrorNoFrame) {
 }
 
 TEST_F(TdControlDomainServiceTest, ConnectUnknownAccountRepliesErrorNoFrame) {
-    SessionShmFixture fx;
+    ReadyShmFixture fx;
     registry_.note_config_frame_received();  // 注册表可用（已收到过配置帧），但账户不在此
     ShmWriter writer(fx.writer);
     TdControlDomainService svc(registry_, process_mirror_, &writer);
@@ -168,7 +112,7 @@ TEST_F(TdControlDomainServiceTest, ConnectUnknownAccountRepliesErrorNoFrame) {
 
 TEST_F(TdControlDomainServiceTest, ConnectRegistryUnavailableRepliesErrorNoFrame) {
     // 注册表尚未收到任何配置帧（available=false）：无法解析归属 → 不写帧。
-    SessionShmFixture fx;
+    ReadyShmFixture fx;
     ShmWriter writer(fx.writer);
     TdControlDomainService svc(registry_, process_mirror_, &writer);
     const auto replies = capture_replies(svc, true, true, "acc_a", 2);
@@ -178,8 +122,22 @@ TEST_F(TdControlDomainServiceTest, ConnectRegistryUnavailableRepliesErrorNoFrame
 }
 
 TEST_F(TdControlDomainServiceTest, ConnectGatewayNotRunningRepliesErrorNoFrame) {
-    SessionShmFixture fx;
+    ReadyShmFixture fx;
     seed_account("dztd_ctp", "acc_a");  // 已登记但进程镜像非 Running
+    ShmWriter writer(fx.writer);
+    TdControlDomainService svc(registry_, process_mirror_, &writer);
+    const auto replies = capture_replies(svc, true, true, "acc_a", 3);
+    ASSERT_EQ(replies.size(), 1u);
+    EXPECT_EQ(replies[0]["payload"]["message"], "td gateway not running: dztd_ctp");
+    EXPECT_FALSE(fx.has_any_frame());
+}
+
+TEST_F(TdControlDomainServiceTest, ConnectUnregisteredGatewayRepliesErrorNoFrame) {
+    // 契约 rest §2.9.10 预检 3：进程镜像有 Running 状态、账户注册表也能解析出网关，
+    // 但该网关已从进程配置中消失（残留条目）→ 与「非 Running」同码拒绝，不写帧。
+    ReadyShmFixture fx;
+    prime_gateway("dztd_ctp", /*registered=*/false);
+    seed_account("dztd_ctp", "acc_a");
     ShmWriter writer(fx.writer);
     TdControlDomainService svc(registry_, process_mirror_, &writer);
     const auto replies = capture_replies(svc, true, true, "acc_a", 3);
@@ -202,7 +160,7 @@ TEST_F(TdControlDomainServiceTest, ConnectWriterUnavailableRepliesErrorNoFrame) 
 // ============================================================================
 
 TEST_F(TdControlDomainServiceTest, ConnectOkWritesConnectFrameAndAck) {
-    SessionShmFixture fx;
+    ReadyShmFixture fx;
     prime_gateway("dztd_ctp");
     seed_account("dztd_ctp", "acc_a");
     ShmWriter writer(fx.writer);
@@ -221,7 +179,7 @@ TEST_F(TdControlDomainServiceTest, ConnectOkWritesConnectFrameAndAck) {
 }
 
 TEST_F(TdControlDomainServiceTest, DisconnectOkWritesDisconnectFrameAndAck) {
-    SessionShmFixture fx;
+    ReadyShmFixture fx;
     prime_gateway("dztd_ctp");
     seed_account("dztd_ctp", "acc_a");
     ShmWriter writer(fx.writer);

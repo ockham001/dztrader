@@ -1,4 +1,5 @@
 import type { MarketSource, Schedule, BrokerEntry, ProcessState } from '@/types/api'
+import { isDeterminateSessionProgress, sessionStateOfProgress } from '@/composables/sessionProgress'
 
 // ===== 行情源聚合视图类型（P4 Task 5 抽自 marketSources store）=====
 // sources 聚合 computed 的形状 = 现状 MarketSourceView, 组件引用不变。
@@ -8,14 +9,11 @@ import type { MarketSource, Schedule, BrokerEntry, ProcessState } from '@/types/
 //   18 个 pending → usePending (source:{id}:{op}); expanded → 本地 UI 状态。
 export type LoginState = 'offline' | 'pending' | 'online'
 
-/// 确定进度判定（契约 progress）：max > min。
-/// 非数值 / max<=min（不确定进度）返回 false。登录态映射与展示钳制共用此判定，
-/// 避免「确定进度」语义在两处漂移。
+/// 确定进度判定（契约 progress）：委托共享实现，登录态映射与展示钳制共用同一判定。
 export function isDeterminateProgress(
   p: { min?: unknown; max?: unknown } | null | undefined,
 ): boolean {
-  return typeof p?.min === 'number' && typeof p?.max === 'number'
-    && !Number.isNaN(p.min) && !Number.isNaN(p.max) && p.max > p.min
+  return isDeterminateSessionProgress(p)
 }
 
 // ===== 登录态判定（RTN_PROGRESS 数值映射, 契约 progress 消费者约定）=====
@@ -28,14 +26,10 @@ export function isDeterminateProgress(
 export function progressLoginState(
   p: { min?: unknown; max?: unknown; current?: unknown } | null | undefined,
 ): LoginState | null {
-  const min = typeof p?.min === 'number' ? p.min : Number.NaN
-  const max = typeof p?.max === 'number' ? p.max : Number.NaN
-  const current = typeof p?.current === 'number' ? p.current : Number.NaN
-  if (Number.isNaN(min) || Number.isNaN(max) || Number.isNaN(current)) return null
-  if (!isDeterminateProgress(p)) return null  // 不确定进度（契约 progress）: 无状态含义
-  if (current >= max) return 'online'
-  if (current <= min) return 'offline'
-  return 'pending'
+  // 端点判定委托共享实现（与 td 一致）；本函数只做行情侧的命名映射。
+  const state = sessionStateOfProgress(p)
+  if (state === null) return null
+  return state === 'ready' ? 'online' : state === 'absent' ? 'offline' : 'pending'
 }
 
 // ===== StatusIndicator 直连数据（P3 接线）=====

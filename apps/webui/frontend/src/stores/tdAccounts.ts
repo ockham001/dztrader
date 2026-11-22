@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { tdApi } from '@/api/td'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
-import { sessionStateOfProgress } from '@/composables/tdAccountSession'
+import { sessionPendingClear, sessionStateOfProgress } from '@/composables/sessionProgress'
 import {
   TD_ACCOUNT_ERROR_TEXT,
   TD_ACCOUNT_NETWORK_ERROR_TEXT,
@@ -413,13 +413,13 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
         if (state === null) continue
         const previous = lastSessionCurrent.get(instanceId)
         lastSessionCurrent.set(instanceId, p.current)
-        if (state === 'ready') {
+        // 清除范围判定与 md 共用 sessionProgress（ready→login、absent→both、回退→login）
+        const clear = sessionPendingClear(previous, state, p.current)
+        if (clear === 'login') {
           clearSessionPending(gateway, accountId, 'login')
-        } else if (state === 'absent') {
+        } else if (clear === 'both') {
           clearSessionPending(gateway, accountId, 'login')
           clearSessionPending(gateway, accountId, 'logout')
-        } else if (previous !== undefined && p.current < previous) {
-          clearSessionPending(gateway, accountId, 'login')
         }
       }
     },
@@ -586,7 +586,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
 
   /**
    * 登出交易账户（`POST /api/td/accounts/{id}/logout`）：任意非未登录状态可发（= 强制中断）。
-   * pending 以 `progress` 到 `min`、`current` 回退或 10s 超时清除。
+   * pending 以 `progress` 到 `min` 或 10s 超时清除（登出不看 `current` 回退）。
    */
   async function logout(accountId: string): Promise<TdAccountSubmitResult> {
     const gateway = gatewayOf(accountId)

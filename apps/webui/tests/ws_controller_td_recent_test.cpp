@@ -200,5 +200,40 @@ TEST_F(WsControllerTdRecentTest, RejectsUnauthenticatedConnectionWithoutTdRecent
     EXPECT_TRUE(find_sent(*fake, "error").has_value());
 }
 
+TEST_F(WsControllerTdRecentTest, RoutesTdConnectToControlService) {
+    // 契约 webui-ws §3：td_connect 经 WsController 路由到 TdControlDomainService，
+    // 守卫失败回 error（本用例未装配账户注册表 → registry unavailable），不回 ack、不写帧。
+    auto fake = std::make_shared<FakeConnection>();
+    controller_->handleNewConnection(authenticated_request(), fake);
+    fake->sent.clear();  // 丢弃建连时的 snapshot 等
+
+    const nlohmann::json msg = {
+        {"type", "td_connect"}, {"seq", 7}, {"payload", {{"account_id", "acc_a"}}}};
+    EXPECT_NO_THROW(
+        controller_->handleNewMessage(fake, msg.dump(), drogon::WebSocketMessageType::Text));
+
+    const auto error = find_sent(*fake, "error");
+    ASSERT_TRUE(error.has_value()) << "guard failure must reply error, not ack";
+    EXPECT_EQ((*error)["seq"].get<uint64_t>(), 7U);
+    EXPECT_EQ((*error)["payload"]["message"].get<std::string>(), "account registry unavailable");
+    EXPECT_FALSE(find_sent(*fake, "td_connect_ack").has_value());
+}
+
+TEST_F(WsControllerTdRecentTest, RoutesTdDisconnectToControlService) {
+    auto fake = std::make_shared<FakeConnection>();
+    controller_->handleNewConnection(authenticated_request(), fake);
+    fake->sent.clear();
+
+    const nlohmann::json msg = {
+        {"type", "td_disconnect"}, {"seq", 8}, {"payload", {{"account_id", "acc_a"}}}};
+    EXPECT_NO_THROW(
+        controller_->handleNewMessage(fake, msg.dump(), drogon::WebSocketMessageType::Text));
+
+    const auto error = find_sent(*fake, "error");
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ((*error)["seq"].get<uint64_t>(), 8U);
+    EXPECT_FALSE(find_sent(*fake, "td_disconnect_ack").has_value());
+}
+
 }  // namespace
 }  // namespace dztrader::webui

@@ -8,7 +8,8 @@ import { PENDING_TIMEOUT } from '@/composables/usePending'
 import { marketSourcePending, clearByPrefix as clearMSPrefix } from '@/composables/marketSourcePending'
 import { createOperationRunner } from '@/composables/useOperation'
 import { useProgressStore } from '@/stores/progress'
-import { progressLoginState, parseMdStatus } from '@/composables/marketSourceView'
+import { parseMdStatus } from '@/composables/marketSourceView'
+import { sessionPendingClear, sessionStateOfProgress } from '@/composables/sessionProgress'
 
 // 设计 §5.2：MD 配置/状态领域（marketSources 的 md_rtn_config / md_rtn_status 拆出）
 // - configs:  md_rtn_config 帧镜像（source → MdConfigPayload，后到覆盖先到）
@@ -25,7 +26,7 @@ import { progressLoginState, parseMdStatus } from '@/composables/marketSourceVie
 //   会误伤 process store 的 source:{id}:start/stop/remove 与 login/logout。
 // - applyMdStatus: 写镜像 + 失败语义驱动 login pending 清理——RTN_PROGRESS 状态转移
 //   仍负责登录成功/登出（契约 progress 消费者约定: current>=max 清 login、current<=min
-//   清 logout, progressLoginState 为唯一实现, 见 composables/marketSourceView.ts;
+//   清 logout, 端点判定与清除范围共用 composables/sessionProgress.ts（与 td 同实现）;
 //   禁止依赖 desc 文案）。登录失败不产生 online/offline 转移，改由
 //   last_error.timestamp 变化清理（契约 md-status 前端义务①）。
 // - applyAutoLogin: 到达时清排程类 pending（auto_login/schedule_add/schedule_remove）
@@ -219,7 +220,7 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
 
   // ===== 登录/登出 pending 驱动 (契约 progress: RTN_PROGRESS 状态转移) =====
   // dzmd_ctp 的 MdStateMachine 在状态转移时推送 RTN_PROGRESS（md_state.cpp set_state）,
-  // 数值映射（progressLoginState, 见 composables/marketSourceView.ts）为跨进程稳定契约:
+  // 端点语义（composables/sessionProgress.ts，与 td 共用）为跨进程稳定契约:
   //   current>=max = 登录完成 (LoggedIn); current<=min = 已登出 (Idle); 其余 = 中间态
   // 禁止依赖 desc 文案判定（desc 为展示文案, 契约 progress）。
   // 进度回退（current 小于上次）按契约 progress 网关会话进度骨架 = 一次登录尝试失败/中止，
@@ -235,15 +236,17 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
         if (!instanceId.startsWith('dzmd_')) continue
         const sourceId = nameToId.value[instanceId]
         if (sourceId === undefined) continue
-        const state = progressLoginState(p)
+        const state = sessionStateOfProgress(p)
+        if (state === null) continue
         const previous = lastProgressCurrent.get(instanceId)
         lastProgressCurrent.set(instanceId, p.current)
-        if (state === 'online') {
+        // 清除范围判定与 td 共用 sessionProgress（ready→login、absent→both、回退→login），
+        // 具体清理项仍以 CLEAR_BY_RTN 为准（同一 op 的清理来源登记在表里，不散落）。
+        const clear = sessionPendingClear(previous, state, p.current)
+        if (clear === 'login') {
           clearPending(sourceId, CLEAR_BY_RTN.progress_login)
-        } else if (state === 'offline') {
+        } else if (clear === 'both') {
           clearPending(sourceId, CLEAR_BY_RTN.progress_logout)
-        } else if (state === 'pending' && previous !== undefined && p.current < previous) {
-          clearPending(sourceId, CLEAR_BY_RTN.progress_login)
         }
       }
     },

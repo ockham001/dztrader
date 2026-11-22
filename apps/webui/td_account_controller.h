@@ -29,7 +29,8 @@ namespace dztrader::webui {
 ///   = 强制中断）→ `TD_DISCONNECT`（契约 rest §2.9.10 / 契约 td-connection）。
 ///
 /// 响应 `200 {"ok":true}` **只表示已写入事件通道**，不代表业务已生效（契约 rest §1 设置类
-/// 请求语义）：生效/失败以 `RTN_TD_CONFIG` 为准（成功推新值、失败推回滚旧值）。
+/// 请求语义）：配置写（POST/PUT/DELETE）以 `RTN_TD_CONFIG` 为准（成功推新值、失败推回滚
+/// 旧值）；会话控制（login/logout）以 `progress` / `td_rtn_status` 为准（契约 td-connection）。
 ///
 /// 预检顺序（契约 rest §2.9.7）：
 /// - POST：admin(403) → 网关是已注册的 `dztd_*`(400 `invalid_gateway`) → 网关 Running

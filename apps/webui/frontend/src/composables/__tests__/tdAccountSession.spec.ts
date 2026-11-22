@@ -6,6 +6,7 @@ import {
   canLoginTd,
   canLogoutTd,
 } from '../tdAccountSession'
+import { sessionPendingClear } from '../sessionProgress'
 
 /**
  * 会话状态判定（ADR 0051 / 契约 progress「网关会话进度骨架」/ 契约 td-connection「前端义务」）。
@@ -94,5 +95,21 @@ describe('tdSessionState / canLoginTd / canLogoutTd（账户行）', () => {
 
     expect(canLoginTd(ready)).toBe(false)
     expect(canLogoutTd(ready)).toBe(true)
+  })
+})
+
+describe('sessionPendingClear（跨网关共用：一次进度变化清哪些 pending）', () => {
+  it('到 ready 清 login；到 absent 清 login + logout', () => {
+    expect(sessionPendingClear(9, 'ready', 10)).toBe('login')
+    expect(sessionPendingClear(undefined, 'ready', 10)).toBe('login')
+    expect(sessionPendingClear(2, 'absent', 0)).toBe('both')
+    expect(sessionPendingClear(undefined, 'absent', 0)).toBe('both')
+  })
+
+  it('中间态且 current 回退 = 一次尝试失败/中止 → 清 login；无回退不清', () => {
+    expect(sessionPendingClear(5, 'forming', 2)).toBe('login')
+    expect(sessionPendingClear(2, 'forming', 2)).toBe('none')
+    expect(sessionPendingClear(2, 'forming', 5)).toBe('none')
+    expect(sessionPendingClear(undefined, 'forming', 3)).toBe('none')
   })
 })

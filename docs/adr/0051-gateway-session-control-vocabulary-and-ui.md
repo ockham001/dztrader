@@ -33,7 +33,7 @@ Accepted（2026-11-22，#409）
 
 ## Consequences
 
-**正面**：md/td 共用一套会话模型与按钮规则，一套前端状态判定与 pending 规则；未来接口类型只需实现「登录/登出动作 ↔ `*_CONNECT/*_DISCONNECT` 帧」的映射并遵循进度端点骨架；td 登录失败/卡死有了唯一逃生路径（登出任意状态可用）；命名与实现不再分叉（用户看到「登录/登出」，内部是 CONNECT/DISCONNECT）。
+**正面**：md/td 共用一套会话模型与按钮规则，一套前端状态判定与 pending 规则；未来接口类型只需实现「登录/登出动作 ↔ `*_CONNECT/*_DISCONNECT` 帧」的映射并遵循进度端点骨架；td 登录失败/卡死有了唯一逃生路径（登出任意状态可用）；命名与实现不再分叉（用户看到「登录/登出」，内部是 CONNECT/DISCONNECT）。同时补齐了 td 网关在状态字段变化时推送 `RTN_TD_STATUS` / `RTN_PROGRESS` 的义务（此前只由快照与配置变更触发）——否则本 ADR 的「按进度端点判定」在 td 侧不可达。
 
 **负面 / 已知限制**：md 登录失败后的恢复从 1 次点击变 2 次（多一次 Release+重连，几秒）——失败本身是低频事件，且与 td 行为一致；「连接/断开」仍出现在进度/状态/日志里，读者需理解两层命名的分工（由 GLOSSARY 与契约固定）；td 登录失败的持久原因展示在 `td-status.last_error` 子票落地前只有 `NOTIFY_UI` 弹窗，登录 pending 的失败清除依赖「`current` 回退」判据（进度骨架声明建立期单调、失败回退）。
 
@@ -42,5 +42,5 @@ Accepted（2026-11-22，#409）
 ## References
 
 - 议题：#409（td 手动连接/断开入口）、#406（td 登录链无自动重试，恢复两段式拍板）、#407 / #408（登录失败上浮、`last_error` 另议）
-- 契约：[进度推送](../frame_contracts/progress.md)、[行情网关状态](../frame_contracts/md-status.md)、[行情连接与订阅](../frame_contracts/md-subscription.md)、[账户登录状态](../frame_contracts/account-status.md)
+- 契约：[进度推送](../frame_contracts/progress.md)、[行情网关状态](../frame_contracts/md-status.md)、[行情连接与订阅](../frame_contracts/md-subscription.md)、[账户登录状态](../frame_contracts/account-status.md)、[交易账户连接控制](../frame_contracts/td-connection.md)、[REST API](../frame_contracts/rest.md)（§2.9.10）、[WebSocket 协议](../frame_contracts/webui-ws.md)（§2.4/§3/§4/§5）
 - 实现参考：`apps/webui/frontend/src/components/marketSources/LoginPanel.vue`（md 双按钮现状）、`apps/webui/frontend/src/composables/marketSourceView.ts`（`progressLoginState` 端点判定）

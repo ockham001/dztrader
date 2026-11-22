@@ -10,6 +10,7 @@
 #include "td_account_controller.h"
 #include "fake_data_change_notifier.h"
 #include "fake_td_account_registry_store.h"
+#include "ready_shm_fixture.h"
 #include "td_account_registry.h"
 #include "test_temp_dir.h"
 #include "test_util.h"
@@ -35,68 +36,7 @@
 namespace dztrader::webui {
 namespace {
 
-/// 真 SHM 通道 fixture：捕获 dzweb 写入的定向帧（帧断言用）。
-/// 通道名按 pid+随机+实例序号唯一化（ctest -j 下不同测试进程互不干扰）。
-struct ReadyShmFixture {
-    std::string channel_name;
-    std::filesystem::path shm_dir;
-    std::shared_ptr<shm::ChannelMeta> meta;
-    std::shared_ptr<shm::MultiWriter> writer;
-    std::optional<shm::Reader> reader;
-    static constexpr uint64_t MB = 1024ull * 1024;
-
-    ReadyShmFixture() {
-        static std::atomic<uint64_t> instance_seq{0};
-        channel_name = "dz_test_tdacctctrl_" + test::unique_suffix() + "_" +
-                       std::to_string(instance_seq.fetch_add(1, std::memory_order_relaxed));
-        shm_dir = std::filesystem::temp_directory_path() / channel_name;
-        std::filesystem::remove_all(shm_dir);
-        std::filesystem::create_directories(shm_dir);
-        const shm::ChannelConfig cfg{.channel_name = channel_name,
-                                     .shm_dir = shm_dir,
-                                     .meta_file_size = 4 * MB,
-                                     .page_size = 1 * MB,
-                                     .lock_memory = false,
-                                     .prefetch_memory = false};
-        meta = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
-        writer = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "test_writer"));
-        reader = shm::Reader::create(meta, "test_reader");
-    }
-    ~ReadyShmFixture() {
-        reader.reset();
-        writer.reset();
-        meta.reset();
-        dztrader::shm::test::cleanup_channel(channel_name, shm_dir);
-    }
-    ReadyShmFixture(const ReadyShmFixture&) = delete;
-    ReadyShmFixture& operator=(const ReadyShmFixture&) = delete;
-
-    struct Captured {
-        bool found = false;
-        std::string instance_id;
-        nlohmann::json payload;
-    };
-
-    /// 排空 reader，返回第一个匹配 type + instance_id 的定向帧 payload。
-    Captured capture_inst_frame(DzFrameType type, const std::string& instance) {
-        Captured out;
-        while (const auto* raw = reader->next_frame()) {
-            const shm::FrameView view(raw);
-            if (view.type() != type) {
-                continue;
-            }
-            if (std::string(view.ext_inst_id()) != instance) {
-                continue;
-            }
-            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-            out.payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
-            out.instance_id = instance;
-            out.found = true;
-            break;
-        }
-        return out;
-    }
-};
+using test::ReadyShmFixture;  // 共享 SHM 夹具，见 ready_shm_fixture.h
 
 class TdAccountControllerTest : public ::testing::Test {
 protected:

@@ -30,7 +30,7 @@
 
 **语义**：建立指定账户的网关会话（登录）：为目标账户创建会话并重走完整登录链（连接 → 认证 → 登录 → 结算确认 → 合约加载 → 初始查询 → `Ready`）。
 
-**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标交易网关；前端入口 `POST /api/td/accounts/{account_id}/login`（契约 rest §2.9.10）与 WS `td_connect`（契约 webui-ws §3，两路等效）；无 RTN，结果经该账户的 `RTN_PROGRESS`（契约 progress，`instance_id` = `网关名:账户ID`）与 `RTN_TD_STATUS`（契约 td-status）体现（ack 仅表示已写通道）。
+**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标交易网关；前端入口 `POST /api/td/accounts/{account_id}/login`（契约 rest §2.9.10）与 WS `td_connect`（契约 webui-ws §3，两路等效）；无 RTN，结果经该账户的 `RTN_PROGRESS`（契约 progress，`instance_id` = `网关名:账户ID`）与 `RTN_TD_STATUS`（契约 td-status）体现（ack 仅表示已写通道）。目标网关在任意状态字段变化时主动推送这两帧（契约 td-status §3 触发场景 1），不是只在快照/配置变更时推送。
 
 **Payload**：JSON（AccountSessionReq）
 
@@ -44,8 +44,8 @@
 **约束**：
 
 - 定向帧，仅 `instance_id` 匹配的交易网关处理。
-- 前置条件拒绝（账户不存在 / 已禁用 / 无可用前置地址 / 当前状态不接受连接）：不建会话、**不产生 RTN**，经 `NOTIFY_UI` 错误级弹窗说明原因；自动调度 / `--recover` 路径只记日志。
-- 校验失败（`account_id` 缺失或空串）：丢弃并记 WARN（前端入口已守卫；不推 RTN、不弹通知）。
+- 前置条件拒绝（账户不存在 / 已禁用 / 无可用前置地址 / 当前状态不接受连接）：不建会话、**不产生 RTN**；用户请求路径经 `NOTIFY_UI` 错误级弹窗说明原因，自动调度 / `--recover` 补登路径只记日志（避免非用户动作弹窗，对齐行情侧）。
+- 校验失败（`account_id` 缺失或空串、JSON 解析失败）：丢弃并只记 WARN（dzweb 入口已守卫，正常不可达；不推 RTN、不弹通知）。
 - 无 RTN：不得以 ack 判定登录成败；前端 pending 清除规则见「前端义务」。
 
 ---
@@ -61,13 +61,13 @@
 **时序与触发**：
 
 - 目标账户无会话：no-op（不报错、不推送）。
-- 有会话：释放 CTP API、推送 `DZ_FRAME_ACCOUNT_STATUS` Offline（契约 account-status）、推送 `RTN_TD_STATUS`（`state=Idle`）、销毁会话。
+- 有会话：释放 CTP API、推送 `DZ_FRAME_ACCOUNT_STATUS` Offline（契约 account-status）、推送 `RTN_TD_STATUS`（`state=Idle`）与 `RTN_PROGRESS`（`current=min`）、销毁会话。
 - 结果判据：该账户 `RTN_PROGRESS` 回到 `current == progress.min`。
 
 **约束**：
 
 - 定向帧，仅 `instance_id` 匹配的交易网关处理。
-- 校验失败（`account_id` 缺失或空串）：同 `TD_CONNECT`。
+- 校验失败（`account_id` 缺失或空串）：同 `TD_CONNECT`（丢弃、只记 WARN）。
 - 不发送柜台登出请求：当前实现直接释放 API（与行情侧一致，《帧契约：行情连接与订阅》同语义）；「登出」不承诺优雅收尾。
 
 ---
@@ -89,10 +89,12 @@
 
 ## 前端义务
 
-1. **按钮规则（ADR 0051）**：登录仅在 `RTN_PROGRESS.current <= progress.min`（完全未登录）可用；登出在 `current > progress.min` 的任意状态可用（连接中/登录中/重连中/失败回滚/就绪）。`progress` 未到达时可按 `RTN_TD_STATUS.state` 兜底：`Idle` = 未登录、`Ready` = 就绪、其余 = 建立中。两按钮固定位置、始终渲染，只切换 disabled。
+> 按钮可见性/位置/disabled 的视觉规则是前端设计决策，见 ADR 0051；本节只写跨进程可观察的协议义务（契约侧只约束消息触发与判据，不约束控件形态）。
+
+1. **会话态判据**：以 `RTN_PROGRESS` 端点为唯一判据——`current <= min` = 未登录、`current >= max` = 就绪、其余 = 建立中（连接中/登录中/重连中/失败回滚）。`progress` 未到达时可按 `RTN_TD_STATUS.state` 兜底：`Idle` = 未登录、`Ready` = 就绪、其余 = 建立中。规则实现见 ADR 0051。
 2. **pending 清除**：登录 pending 的清除信号 = `RTN_PROGRESS` 到达 `current == max`、`current` 相对上次推送回退（进度骨架：失败/中止会回退）、或兜底超时（建议 45s，连接 30s + 登录 10s + 余量）；登出 pending = `current == min` 或兜底超时（建议 10s）。端点到 `min`/`max` 时清掉对应在途请求（登录中点登出 → 到 `min` 时登录与登出 pending 都清）。`NOTIFY_UI` 是纯通知，**永不清除 pending**（契约 notify-ui）。
 3. **失败展示**：`NOTIFY_UI` 错误级弹窗即时提示；`RTN_TD_STATUS` 的 `last_error` 持久化在后续票（#427）落地前不存在，前端不得依赖该字段做判定。
-4. **权限与守卫**：仅 admin 可发起；进程未 Running / 账户已禁用时按钮禁用并给出原因。dzweb 守卫权威，前端禁用只是体验优化（守卫失败经 WS `error` / REST 错误体表达，不写帧）。
+4. **权限与禁止发起的条件**：仅 admin 可发起；目标网关未 Running 时两动作都不可发起（无法写帧）。账户已禁用时**登录**不可发起（网关会拒），**登出不受启用状态影响**——禁用不强制断开已有会话，仍需可登出（契约 td-config 启用/禁用语义）。dzweb 守卫权威，前端禁用只是体验优化（守卫失败经 WS `error` / REST 错误体表达，不写帧）。
 5. **不以 ack / HTTP 200 判定结果**：两者只表示已写事件通道；成败只看 `progress` / `td_status`。
 
 ---
