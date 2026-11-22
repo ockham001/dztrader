@@ -193,7 +193,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
     :title="isEditing ? `编辑交易账户：${form.account_id}` : '添加交易账户'"
     @close="emit('close')"
   >
-    <div class="dialog-form">
+    <div class="td-form dialog-form">
       <div class="dialog-field">
         <span class="dialog-field__label">所属交易接口</span>
         <span class="td-form__gateway" data-test="td-form-gateway">{{ gateway }}</span>
@@ -384,6 +384,31 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 </template>
 
 <style scoped>
+/* 最小 layout 修复（2026-11-23 验收发现）：全局 `.dialog-field` 是为「label 80px 右对齐 +
+   输入框同行 + hint 同行」的窄单行弹窗设计的；本表单标签长（经纪公司代码/流文件目录）、
+   字段多、还有 hint，沿用同一行会把标签挤成逐字换行、把输入框挤扁。这里把字段改成纵向：
+   label 在上、输入框独占一行、hint 在下。仅作用于本弹窗（scoped），不改全局组件。 */
+.td-form .dialog-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacer-4);
+}
+
+.td-form .dialog-field__label {
+  width: auto;
+  text-align: left;
+}
+
+/* 纵向排列后不再让输入框按 flex 主轴纵向拉伸，宽度撑满字段列 */
+.td-form .dialog-field > .ds-input {
+  flex: none;
+  width: 100%;
+}
+
+.td-form .dialog-field__hint {
+  margin-top: var(--spacer-4);
+}
+
 .td-form__row {
   display: flex;
   align-items: center;
