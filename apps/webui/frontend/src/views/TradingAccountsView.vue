@@ -19,6 +19,7 @@ import Modal from '@/components/shared/Modal.vue'
 import TdAccountFormModal from '@/components/trading/TdAccountFormModal.vue'
 import type { TdAccountFormValue } from '@/components/trading/TdAccountFormModal.vue'
 import { useTdAccountsStore, tdStateText, type TdAccountRow } from '@/stores/tdAccounts'
+import { canLoginTd, canLogoutTd } from '@/composables/tdAccountSession'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { formatTdDate } from '@/composables/tdPositionView'
@@ -216,6 +217,59 @@ function statusClass(row: TdAccountRow): string {
   return 'td-accounts__state--busy'
 }
 
+// ===== 会话控制（ADR 0051 / 契约 td-connection / 契约 rest §2.9.10）=====
+// 双按钮固定位置：登录仅完全未登录可用（`current <= min`），登出在任意非未登录态可用
+// （连接中/登录中/重连中/失败回滚/就绪 = 强制中断）。判定在 composables/tdAccountSession。
+
+/** 登录按钮可点：admin + 网关 Running + 账户启用 + 会话未登录 */
+function canLoginRow(row: TdAccountRow): boolean {
+  return auth.isAdmin && row.gatewayRunning && row.enabled && canLoginTd(row)
+}
+
+/** 登出按钮可点：admin + 网关 Running + 会话非未登录（账户禁用不影响登出） */
+function canLogoutRow(row: TdAccountRow): boolean {
+  return auth.isAdmin && row.gatewayRunning && canLogoutTd(row)
+}
+
+function loginDisabledTitle(row: TdAccountRow): string {
+  if (!auth.isAdmin) return '仅管理员可登录/登出交易账户'
+  if (!row.gatewayRunning) return '交易网关未运行，请先启动网关'
+  if (!row.enabled) return '账户已禁用，不能登录'
+  if (!canLoginTd(row)) return '当前不是未登录状态；如需重新登录请先登出（失败恢复 = 先登出再登录）'
+  return '登录该交易账户（建立会话并重走完整登录链）'
+}
+
+function logoutDisabledTitle(row: TdAccountRow): string {
+  if (!auth.isAdmin) return '仅管理员可登录/登出交易账户'
+  if (!row.gatewayRunning) return '交易网关未运行，请先启动网关'
+  if (!canLogoutTd(row)) return '当前未登录'
+  return '登出该交易账户（连接中/登录中/重连中时点此可强制中断）'
+}
+
+/** 登录请求：HTTP 200 只表示已写通道，成败以 progress / td_status 为准（页面不假定结果） */
+async function loginSession(row: TdAccountRow): Promise<void> {
+  const result = await store.login(row.account_id)
+  if (result.ok) {
+    toast.success(`已下发登录请求：${row.account_id}`)
+  } else if (result.kind === 'conflict' || result.kind === 'failed') {
+    toast.error(result.message)
+  } else if (result.kind === 'timeout') {
+    toast.warning('登录请求已下发，但未在预期时间内收到进度回报，请检查网关与柜台连接')
+  }
+}
+
+/** 登出请求：任意非未登录状态可发（含强制中断在途登录） */
+async function logoutSession(row: TdAccountRow): Promise<void> {
+  const result = await store.logout(row.account_id)
+  if (result.ok) {
+    toast.success(`已下发登出请求：${row.account_id}`)
+  } else if (result.kind === 'conflict' || result.kind === 'failed') {
+    toast.error(result.message)
+  } else if (result.kind === 'timeout') {
+    toast.warning('登出请求已下发，但未在预期时间内收到进度回报，请检查网关')
+  }
+}
+
 /** 交易日：细状态的 date 是会话交易日（YYYYMMDD），空串 = 未登录（契约 td-status §2.1） */
 function tradingDayText(row: TdAccountRow): string {
   const date = row.status?.date ?? ''
@@ -330,6 +384,33 @@ const showEmpty = computed(() => !store.loading && store.isEmpty)
                 {{ statusText(row) }}
               </span>
               <div v-if="row.status?.progress_desc" class="td-accounts__account-meta">{{ row.status.progress_desc }}</div>
+              <!-- 会话控制（ADR 0051）：登录仅在完全未登录可用；登出在任意非未登录态可用（含强制中断） -->
+              <div class="td-accounts__session-actions">
+                <button
+                  class="ds-btn ds-btn--sm ds-btn--primary"
+                  type="button"
+                  :disabled="store.sessionPending(row.account_id, 'login') || !canLoginRow(row)"
+                  :title="loginDisabledTitle(row)"
+                  :aria-label="`登录账户 ${row.account_id}`"
+                  :data-test="`td-login-${row.account_id}`"
+                  @click="loginSession(row)"
+                >
+                  <span v-if="store.sessionPending(row.account_id, 'login')" class="ds-btn__spinner"></span>
+                  {{ store.sessionPending(row.account_id, 'login') ? '登录中' : '登录' }}
+                </button>
+                <button
+                  class="ds-btn ds-btn--sm ds-btn--danger-subtle"
+                  type="button"
+                  :disabled="store.sessionPending(row.account_id, 'logout') || !canLogoutRow(row)"
+                  :title="logoutDisabledTitle(row)"
+                  :aria-label="`登出账户 ${row.account_id}`"
+                  :data-test="`td-logout-${row.account_id}`"
+                  @click="logoutSession(row)"
+                >
+                  <span v-if="store.sessionPending(row.account_id, 'logout')" class="ds-btn__spinner"></span>
+                  {{ store.sessionPending(row.account_id, 'logout') ? '登出中' : '登出' }}
+                </button>
+              </div>
             </td>
             <td class="td-accounts__mono">{{ tradingDayText(row) }}</td>
             <td class="td-accounts__mono">{{ loginTimeText(row) }}</td>
@@ -549,6 +630,14 @@ const showEmpty = computed(() => !store.loading && store.isEmpty)
 
 .td-accounts__state--idle {
   color: var(--text-tertiary);
+}
+
+/* 会话控制双按钮（ADR 0051）：与状态同格展示——操作紧挨它影响的状态，不混进右侧配置操作 */
+.td-accounts__session-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacer-8);
+  margin-top: var(--spacer-8);
 }
 
 .td-accounts__mono {

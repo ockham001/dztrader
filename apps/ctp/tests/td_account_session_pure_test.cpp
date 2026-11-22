@@ -371,14 +371,16 @@ TEST(TradingDayUsableTest, RejectsEpochDayCollidingWithNa) {
 // login_failed_message (登录失败通知正文, #407)
 // ============================================================================
 
-TEST(LoginFailedMessageTest, IncludesReasonAndConsequence) {
+TEST(LoginFailedMessageTest, IncludesReasonConsequenceAndRecovery) {
     // 登录失败后状态回滚到 Authenticated/Connected (正常中间态), 前端无法与「正在登录」
-    // 区分; 且本进程不自动重发登录 (#406). 正文必须给出「发生了什么」与「会怎样」.
-    // 刻意不承诺「请登出后重新登录」—— WebUI 没有 td 连接/断开入口 (#409).
+    // 区分; 且本进程不自动重发登录 (#406). 正文必须给出「发生了什么」与「会怎样」,
+    // 以及下一步——#409 落地后 WebUI 有「先登出、再登录」入口 (ADR 0051 决策 4).
     const std::string msg = login_failed_message("交易日无效（原始值 \"00000000\"）");
-    EXPECT_EQ(msg, "交易登录失败（交易日无效（原始值 \"00000000\"）），本进程不会自动重试该账户");
-    EXPECT_EQ(msg.find("请登出后重新登录"), std::string::npos)
-        << "must not tell the user to do something the UI cannot do (#409)";
+    EXPECT_EQ(msg,
+              "交易登录失败（交易日无效（原始值 \"00000000\"）），本进程不会自动重试该账户；"
+              "请先登出再重新登录");
+    EXPECT_NE(msg.find("请先登出再重新登录"), std::string::npos)
+        << "recovery path must be actionable since #409 landed";
 }
 
 TEST(LoginFailedMessageTest, PropagatesScenarioVerbatim) {
@@ -392,7 +394,8 @@ TEST(LoginFailedMessageTest, PropagatesScenarioVerbatim) {
 
 TEST(LoginFailedMessageTest, EmptyReasonOmitsParentheses) {
     // 空原因不得产出「（）」这种残缺文案; 逐字锁定, 防止改成 ASCII () 后静默通过.
-    EXPECT_EQ(login_failed_message(""), "交易登录失败，本进程不会自动重试该账户");
+    EXPECT_EQ(login_failed_message(""),
+              "交易登录失败，本进程不会自动重试该账户；请先登出再重新登录");
 }
 
 // ============================================================================

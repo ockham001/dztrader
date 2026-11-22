@@ -1,4 +1,5 @@
 import type { MarketSource, Schedule, BrokerEntry, ProcessState } from '@/types/api'
+import { isDeterminateSessionProgress, sessionStateOfProgress } from '@/composables/sessionProgress'
 
 // ===== 行情源聚合视图类型（P4 Task 5 抽自 marketSources store）=====
 // sources 聚合 computed 的形状 = 现状 MarketSourceView, 组件引用不变。
@@ -8,14 +9,11 @@ import type { MarketSource, Schedule, BrokerEntry, ProcessState } from '@/types/
 //   18 个 pending → usePending (source:{id}:{op}); expanded → 本地 UI 状态。
 export type LoginState = 'offline' | 'pending' | 'online'
 
-/// 确定进度判定（契约 progress）：max > min。
-/// 非数值 / max<=min（不确定进度）返回 false。登录态映射与展示钳制共用此判定，
-/// 避免「确定进度」语义在两处漂移。
+/// 确定进度判定（契约 progress）：委托共享实现，登录态映射与展示钳制共用同一判定。
 export function isDeterminateProgress(
   p: { min?: unknown; max?: unknown } | null | undefined,
 ): boolean {
-  return typeof p?.min === 'number' && typeof p?.max === 'number'
-    && !Number.isNaN(p.min) && !Number.isNaN(p.max) && p.max > p.min
+  return isDeterminateSessionProgress(p)
 }
 
 // ===== 登录态判定（RTN_PROGRESS 数值映射, 契约 progress 消费者约定）=====
@@ -28,14 +26,10 @@ export function isDeterminateProgress(
 export function progressLoginState(
   p: { min?: unknown; max?: unknown; current?: unknown } | null | undefined,
 ): LoginState | null {
-  const min = typeof p?.min === 'number' ? p.min : Number.NaN
-  const max = typeof p?.max === 'number' ? p.max : Number.NaN
-  const current = typeof p?.current === 'number' ? p.current : Number.NaN
-  if (Number.isNaN(min) || Number.isNaN(max) || Number.isNaN(current)) return null
-  if (!isDeterminateProgress(p)) return null  // 不确定进度（契约 progress）: 无状态含义
-  if (current >= max) return 'online'
-  if (current <= min) return 'offline'
-  return 'pending'
+  // 端点判定委托共享实现（与 td 一致）；本函数只做行情侧的命名映射。
+  const state = sessionStateOfProgress(p)
+  if (state === null) return null
+  return state === 'ready' ? 'online' : state === 'absent' ? 'offline' : 'pending'
 }
 
 // ===== StatusIndicator 直连数据（P3 接线）=====
@@ -204,26 +198,16 @@ export function mdLastErrorText(e: MdLastErrorView | null): string {
   return MD_LAST_ERROR_TEXT[e.code] || '登录失败'
 }
 
-// ===== 登录失败态可重试判定（契约 md-status 前端义务③）=====
-// last_error 在 Idle（主动登出）与 Disconnected（SDK 自动重连中）都会保留（契约 md-status），
-// 不能仅凭 last_error 启用重试：只有进度处于「已连接/登录失败」数值档（current=2，与
-// Connected 同映射）时行情进程才接受重连请求（md_api connect() 对 Disconnected 等状态拒绝，
-// 静默拒绝会让 pending 悬挂到 45s 兜底）。数值映射真相源见 md_state.cpp set_state 注释：
-// Idle=0, Connecting/Disconnected=1, Connected/LoginFailed=2, LoggingIn=3, LoggedIn=4。
-export function loginRetryable(
-  progress: { min?: unknown; max?: unknown; current?: unknown } | null | undefined,
-  lastError: MdLastErrorView | null | undefined,
-): boolean {
-  if (!lastError) return false
-  return typeof progress?.current === 'number' && progress.current === 2
-}
-
-/// 是否可发起登录请求（契约 md-status 前端义务③）：Idle（offline）正常登录，或失败态可重试。
-/// 单次登录按钮与批量登录目标共用此判定，避免两处各自编码「登录资格」。
+// ===== 登录资格判定（ADR 0051 / 契约 md-status 前端义务③ / 契约 progress 网关会话进度骨架）=====
+// 统一两段式：登录只在完全未登录（progress 端点到 min，loginState === 'offline'）可用；
+// 连接中/登录中/断线重连中/登录失败态一律不可登录，恢复路径 = 先登出、再登录。
+// 失败态不再提供原地重试（ADR 0051 决策 4）：md 后端的 can_login() 重登能力保留给自动调度，
+// 不经前端触发；last_error 仅用于持久展示失败原因。
+/// 是否可发起登录请求。单次登录按钮与批量登录目标共用此判定，避免两处各自编码「登录资格」。
 export function canRequestLogin(
-  s: Pick<MarketSourceView, 'loginState' | 'progressView' | 'lastLoginError'>,
+  s: Pick<MarketSourceView, 'loginState'>,
 ): boolean {
-  return s.loginState === 'offline' || loginRetryable(s.progressView, s.lastLoginError)
+  return s.loginState === 'offline'
 }
 
 export function parseMdStatus(raw: unknown): MdStatusView | null {

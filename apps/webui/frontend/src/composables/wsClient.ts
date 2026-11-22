@@ -250,6 +250,21 @@ export function mdDisconnect(source: string): void {
   send({ type: 'md_disconnect', seq: seqCounter, payload: { source } })
 }
 
+/**
+ * 交易账户会话控制（契约 webui-ws §3 / 契约 td-connection，admin）：
+ * 账户级寻址（payload `account_id`），dzweb 经账户注册表解析目标网关。
+ * 前端控制入口以 REST 为主（契约 webui-ws §4），本组消息为等效便捷通道。
+ */
+export function tdConnect(accountId: string): void {
+  seqCounter++
+  send({ type: 'td_connect', seq: seqCounter, payload: { account_id: accountId } })
+}
+
+export function tdDisconnect(accountId: string): void {
+  seqCounter++
+  send({ type: 'td_disconnect', seq: seqCounter, payload: { account_id: accountId } })
+}
+
 export function subscribeLog(file: string): void {
   seqCounter++
   send({ type: 'subscribe_log', seq: seqCounter, payload: { file } })
@@ -267,6 +282,8 @@ export function useWebSocket(): {
   disconnect: typeof disconnect
   mdConnect: typeof mdConnect
   mdDisconnect: typeof mdDisconnect
+  tdConnect: typeof tdConnect
+  tdDisconnect: typeof tdDisconnect
   subscribeLog: typeof subscribeLog
   unsubscribeLog: typeof unsubscribeLog
 } {
@@ -277,6 +294,8 @@ export function useWebSocket(): {
     disconnect,
     mdConnect,
     mdDisconnect,
+    tdConnect,
+    tdDisconnect,
     subscribeLog,
     unsubscribeLog,
   }

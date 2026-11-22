@@ -285,32 +285,40 @@ describe('wsClient 连接生命周期与消息协议', () => {
     expect(unknownHandler).not.toHaveBeenCalled()
   })
 
-  it('C2S 报文形状：type/seq 递增/payload', async () => {
-    const { connect, mdConnect, mdDisconnect, subscribeLog, unsubscribeLog } = await loadClient()
+  it('C2S 报文形状：type/seq 递增/payload（含 td 会话控制两路）', async () => {
+    const { connect, mdConnect, mdDisconnect, tdConnect, tdDisconnect, subscribeLog,
+      unsubscribeLog } = await loadClient()
     connect()
     const ws = FakeWebSocket.instances[0]!
     ws.simulateOpen()
 
     mdConnect('dzmd_ctp')
     mdDisconnect('dzmd_ctp')
+    tdConnect('account_001')
+    tdDisconnect('account_001')
     subscribeLog('/logs/trade.log')
     unsubscribeLog()
 
     expect(ws.sent.map(raw => JSON.parse(raw))).toEqual([
       { type: 'md_connect', seq: 1, payload: { source: 'dzmd_ctp' } },
       { type: 'md_disconnect', seq: 2, payload: { source: 'dzmd_ctp' } },
-      { type: 'subscribe_log', seq: 3, payload: { file: '/logs/trade.log' } },
-      { type: 'unsubscribe_log', seq: 4 },
+      { type: 'td_connect', seq: 3, payload: { account_id: 'account_001' } },
+      { type: 'td_disconnect', seq: 4, payload: { account_id: 'account_001' } },
+      { type: 'subscribe_log', seq: 5, payload: { file: '/logs/trade.log' } },
+      { type: 'unsubscribe_log', seq: 6 },
     ])
   })
 
   it('非 OPEN 状态不发送 C2S 报文', async () => {
-    const { connect, mdConnect, mdDisconnect, subscribeLog, unsubscribeLog } = await loadClient()
+    const { connect, mdConnect, mdDisconnect, tdConnect, tdDisconnect, subscribeLog,
+      unsubscribeLog } = await loadClient()
     connect()
     const ws = FakeWebSocket.instances[0]!  // 仍 CONNECTING
 
     mdConnect('dzmd_ctp')
     mdDisconnect('dzmd_ctp')
+    tdConnect('account_001')
+    tdDisconnect('account_001')
     subscribeLog('/logs/trade.log')
     unsubscribeLog()
     expect(ws.sent).toHaveLength(0)

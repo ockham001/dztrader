@@ -57,6 +57,36 @@ bool ShmWriter::write_md_disconnect(const std::string& source) {
     return platform::write_ext_inst_raw(*event_writer_, DZ_FRAME_REQUEST_MD_DISCONNECT, source);
 }
 
+bool ShmWriter::write_td_connect(const std::string& gateway, const std::string& account_id) {
+    if (!event_writer_ || gateway.empty() || account_id.empty()) {
+        return false;
+    }
+    // 契约 td-connection：定向到网关进程（instance_id = 网关名），账户在 payload。
+    const bool ok = platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_TD_CONNECT, gateway,
+                                                      nlohmann::json{{"account_id", account_id}});
+    if (ok) {
+        spdlog::debug("td connect written | gateway={} account={}", gateway, account_id);
+    } else {
+        spdlog::error("write td connect failed | gateway={} account={}", gateway, account_id);
+    }
+    return ok;
+}
+
+bool ShmWriter::write_td_disconnect(const std::string& gateway, const std::string& account_id) {
+    if (!event_writer_ || gateway.empty() || account_id.empty()) {
+        return false;
+    }
+    const bool ok =
+        platform::write_ext_inst_json_obj(*event_writer_, DZ_FRAME_TD_DISCONNECT, gateway,
+                                          nlohmann::json{{"account_id", account_id}});
+    if (ok) {
+        spdlog::debug("td disconnect written | gateway={} account={}", gateway, account_id);
+    } else {
+        spdlog::error("write td disconnect failed | gateway={} account={}", gateway, account_id);
+    }
+    return ok;
+}
+
 bool ShmWriter::write_process_control(platform::ProcessAction action,
                                       const std::string& target,
                                       std::optional<nlohmann::json> config) {

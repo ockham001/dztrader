@@ -151,6 +151,15 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
       未被受理"（基础设施不可用），不是预检失败。
   - **写端点不改注册表**：删除/新增以 `RTN_TD_CONFIG` 到达为准（reconcile），否则网关拒绝时的
     回滚会让 UI 显示错误的账户集合。
+- **会话控制（登录 / 登出）**（#409，契约 td-connection / ADR 0051）：
+  `TdControlDomainService`（`apps/webui/td_control_domain_service.h`）承载 WS
+  `td_connect`/`td_disconnect`；REST `POST /api/td/accounts/{account_id}/login|logout` 由
+  `td_account_controller` 实现。两者共用 `apps/webui/td_session_guard.h` 的守卫（admin →
+  账户注册表解析网关 → 目标网关 Running → 写通道可用），写 `TD_CONNECT`/`TD_DISCONNECT`
+  （`ShmWriter::write_td_connect/write_td_disconnect`；`instance_id` = 网关名、payload
+  `{"account_id": …}`）。无 RTN：结果经 `progress`（契约 progress 网关会话进度骨架）与
+  `td_rtn_status` 体现，ack / HTTP 200 只表示已写入事件通道。登录失败不自动重试（#406），
+  前端恢复路径 = 先登出、再登录；失败原因持久化（`td-status.last_error`）见 #427。
 
 ## 监听与暴露面（#201）
 

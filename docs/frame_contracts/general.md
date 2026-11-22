@@ -227,8 +227,8 @@
 ## 10. 本轮范围与遗留
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
-- **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq/登录日装载/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）；交易网关配置与状态（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`/`DZ_FRAME_TD_RTN_CONFIG`/`DZ_FRAME_TD_RTN_STATUS`，见《帧契约：交易网关配置》《帧契约：交易网关状态》）。完整清单见 [README](README.md) 目录地图。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧的其余部分——连接控制 `DZ_FRAME_TD_CONNECT`/`DZ_FRAME_TD_DISCONNECT` 与生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`；行情/交易数据帧（`TICK`，struct payload）。
+- **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq/登录日装载/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）；交易网关配置与状态（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`/`DZ_FRAME_TD_RTN_CONFIG`/`DZ_FRAME_TD_RTN_STATUS`，见《帧契约：交易网关配置》《帧契约：交易网关状态》）；交易账户连接控制（`DZ_FRAME_TD_CONNECT`/`DZ_FRAME_TD_DISCONNECT`，见《帧契约：交易账户连接控制》）。完整清单见 [README](README.md) 目录地图。
+- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧的其余部分——生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`；行情/交易数据帧（`TICK`，struct payload）。
 - `DZ_FRAME_SYS_SCHED`：该帧与其 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理），定义行一并删除、不再占号。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---

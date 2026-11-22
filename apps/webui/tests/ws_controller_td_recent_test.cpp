@@ -27,6 +27,8 @@
 #include "mirror_store.h"
 #include "process_mirror.h"
 #include "repository.h"
+#include "td_account_registry.h"
+#include "td_control_domain_service.h"
 
 namespace dztrader::webui {
 namespace {
@@ -62,6 +64,8 @@ protected:
     std::unique_ptr<MirrorStore> mirror_;
     std::unique_ptr<ProcessMirror> process_mirror_;
     std::unique_ptr<MdControlDomainService> md_control_;
+    TdAccountRegistry td_registry_;
+    std::unique_ptr<TdControlDomainService> td_control_;
     std::shared_ptr<WsController> controller_;
     WebuiConfig cfg_;
 
@@ -71,14 +75,18 @@ protected:
         mirror_ = std::make_unique<MirrorStore>();
         process_mirror_ = std::make_unique<ProcessMirror>();
         md_control_ = std::make_unique<MdControlDomainService>(*process_mirror_, nullptr);
+        // 交易账户会话控制服务（契约 td-connection）：本用例只验证 td_recent 钩子，写通道可为空
+        td_control_ =
+            std::make_unique<TdControlDomainService>(td_registry_, *process_mirror_, nullptr);
         cfg_.jwt_secret = "test_secret_for_td_recent_hook";
         cfg_.admin_password_is_default = false;
-        controller_ =
-            std::make_shared<WsController>(cfg_, repo_, nullptr, nullptr, *mirror_, *md_control_);
+        controller_ = std::make_shared<WsController>(cfg_, repo_, nullptr, nullptr, *mirror_,
+                                                     *md_control_, *td_control_);
     }
 
     void TearDown() override {
         controller_.reset();
+        td_control_.reset();
         md_control_.reset();
         process_mirror_.reset();
         mirror_.reset();
@@ -190,6 +198,41 @@ TEST_F(WsControllerTdRecentTest, RejectsUnauthenticatedConnectionWithoutTdRecent
     EXPECT_FALSE(find_sent(*fake, "snapshot").has_value());
     EXPECT_FALSE(find_sent(*fake, "td_recent").has_value());
     EXPECT_TRUE(find_sent(*fake, "error").has_value());
+}
+
+TEST_F(WsControllerTdRecentTest, RoutesTdConnectToControlService) {
+    // 契约 webui-ws §3：td_connect 经 WsController 路由到 TdControlDomainService，
+    // 守卫失败回 error（本用例未装配账户注册表 → registry unavailable），不回 ack、不写帧。
+    auto fake = std::make_shared<FakeConnection>();
+    controller_->handleNewConnection(authenticated_request(), fake);
+    fake->sent.clear();  // 丢弃建连时的 snapshot 等
+
+    const nlohmann::json msg = {
+        {"type", "td_connect"}, {"seq", 7}, {"payload", {{"account_id", "acc_a"}}}};
+    EXPECT_NO_THROW(
+        controller_->handleNewMessage(fake, msg.dump(), drogon::WebSocketMessageType::Text));
+
+    const auto error = find_sent(*fake, "error");
+    ASSERT_TRUE(error.has_value()) << "guard failure must reply error, not ack";
+    EXPECT_EQ((*error)["seq"].get<uint64_t>(), 7U);
+    EXPECT_EQ((*error)["payload"]["message"].get<std::string>(), "account registry unavailable");
+    EXPECT_FALSE(find_sent(*fake, "td_connect_ack").has_value());
+}
+
+TEST_F(WsControllerTdRecentTest, RoutesTdDisconnectToControlService) {
+    auto fake = std::make_shared<FakeConnection>();
+    controller_->handleNewConnection(authenticated_request(), fake);
+    fake->sent.clear();
+
+    const nlohmann::json msg = {
+        {"type", "td_disconnect"}, {"seq", 8}, {"payload", {{"account_id", "acc_a"}}}};
+    EXPECT_NO_THROW(
+        controller_->handleNewMessage(fake, msg.dump(), drogon::WebSocketMessageType::Text));
+
+    const auto error = find_sent(*fake, "error");
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ((*error)["seq"].get<uint64_t>(), 8U);
+    EXPECT_FALSE(find_sent(*fake, "td_disconnect_ack").has_value());
 }
 
 }  // namespace

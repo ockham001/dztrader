@@ -31,6 +31,7 @@
 #include "td/td_day_load.h"
 #include "td/td_persist_writer.h"
 #include "td/td_state.h"
+#include "td/td_status_publish.h"
 
 namespace dztrader::ctp {
 
@@ -181,8 +182,10 @@ private:
     /// 处理 TD_DISCONNECT 帧: 解析 account_id, 调用 session->disconnect()
     void disconnect_account(const shm::FrameView& view);
     /// 按 account_id 直接连接 (TD_CONNECT 帧路径 + 自动调度 / try_recover_login 共用)。
-    /// 查 config_.accounts -> 构造 AccountSession -> open()。异常不传播 (仅记日志 + 通知 UI)。
-    void connect_account_by_id(const std::string& account_id);
+    /// 查 config_.accounts -> 构造 AccountSession -> open()。异常不传播 (仅记日志)。
+    /// @param user_initiated 用户经 dzweb 发起 (true) 时前置条件拒绝会额外 NOTIFY_UI 错误弹窗;
+    ///        自动调度 / --recover 补登 (false) 只记日志, 避免非用户动作弹窗刷屏 (对齐 md)。
+    void connect_account_by_id(const std::string& account_id, bool user_initiated = false);
     /// 按 account_id 直接断开 (TD_DISCONNECT 帧路径 + 自动调度共用)。
     /// find_session -> disconnect() -> erase。无 session 时 no-op。
     void disconnect_account_by_id(const std::string& account_id);
@@ -197,8 +200,12 @@ private:
     AccountSession* find_session(const std::string& account_id);
 
     // === 状态/健康度 ===
-    /// 推送指定账户的当前状态到 SHM (DZ_FRAME_RTN_TD_STATUS, payload 为 TdStatusRecord)
+    /// 推送指定账户的当前状态到 SHM (DZ_FRAME_RTN_TD_STATUS + RTN_PROGRESS, payload 为 TdStatus)
     void update_status(const std::string& account_id);
+    /// 主循环每轮的会话状态 sweep (契约 td-status §3 触发场景 1): 对比本账户上次推送键
+    /// (td_status_publish_key), 有变化才调 update_status。状态转移来源分散 (SPI 回调 /
+    /// 连接与登录超时定时器 / 跨日登出 / 自动调度), 统一在此收敛, 不逐个调用点补推送 (#409)。
+    void publish_changed_states();
     /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
     /// 状态与该账户上次推送相同、且帧内交易日也相同时跳过; 同态但日切 (date 变化) 重推
     /// (契约场景 3)。date 为空串或 state!=READY 时帧内 date=0。
@@ -289,6 +296,9 @@ private:
     /// 账户上次推送的三态 + 交易日 (去重缓存; 键=account_id)。
     /// 同态 READY 但交易日变化 (日切) 需重推, 故缓存含 date (契约 account-status 场景 3)。
     std::unordered_map<std::string, AccountStatusCache> account_last_state_;
+    /// 账户上次推送的 TdStatus 重推键 (状态/进度/date/login_time; 键=account_id)。
+    /// 主循环 publish_changed_states 用它保证「状态变化才推」; 会话删除时同步清。
+    std::unordered_map<std::string, TdStatusPublishKey> account_last_published_;
     /// 独立只读连接 (同一 db 文件, 不占 PersistWriter 的 db_): 登录日装载 + 无会话拒单播种.
     /// 首次需要时打开; 打开失败 (db 尚不存在) 时置空, 运行期按需重开.
     std::unique_ptr<SQLite::Database> read_db_;

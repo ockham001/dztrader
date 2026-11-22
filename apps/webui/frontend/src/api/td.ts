@@ -136,4 +136,21 @@ export const tdApi = {
    */
   removeAccount: (accountId: string) =>
     api.del<TdWriteOkResponse>(`/api/td/accounts/${encodeURIComponent(accountId)}`),
+
+  // ===== 账户会话控制（契约 rest §2.9.10 / 契约 td-connection）=====
+
+  /**
+   * 登录交易账户（admin）：→ `TD_CONNECT`（建立会话并重走完整登录链）。
+   * 200 `{ok:true}` 只表示已写入事件通道，**不代表业务已生效**——生效信号是该账户的
+   * `progress`（`current == max` 即 Ready）与 `td_rtn_status`（契约 td-connection）。
+   */
+  loginAccount: (accountId: string) =>
+    api.post<TdWriteOkResponse>(`/api/td/accounts/${encodeURIComponent(accountId)}/login`),
+
+  /**
+   * 登出交易账户（admin）：→ `TD_DISCONNECT`。任意非未登录状态可发（即强制中断）；
+   * 生效信号 = `progress` 回到 `current == min`（契约 td-connection）。
+   */
+  logoutAccount: (accountId: string) =>
+    api.post<TdWriteOkResponse>(`/api/td/accounts/${encodeURIComponent(accountId)}/logout`),
 }

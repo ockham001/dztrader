@@ -1,7 +1,8 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { tdApi } from '@/api/td'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
+import { sessionPendingClear, sessionStateOfProgress } from '@/composables/sessionProgress'
 import {
   TD_ACCOUNT_ERROR_TEXT,
   TD_ACCOUNT_NETWORK_ERROR_TEXT,
@@ -76,13 +77,38 @@ export const TD_ACCOUNT_OP_TIMEOUT_MS = 5_000
 export const TD_PENDING_PREFIX = 'td:'
 
 /**
+ * 会话控制 pending 的独立前缀（契约 td-connection）：`td_sess:{gateway}:{account}:{login|logout}`。
+ *
+ * **必须与配置写 pending 分开**：配置帧到达时按 `td:{gateway}:` 前缀整组清在途写操作；
+ * 若会话 pending 共用同一前缀，一次无关的配置回报就会把登录/登出 pending 误清。会话 pending
+ * 的唯一清除来源是进度端点（登录 → max、登出 → min）、`current` 回退（失败/中止）与兜底超时。
+ */
+export const TD_SESSION_PENDING_PREFIX = 'td_sess:'
+
+/**
  * 本领域独立 pending 实例（账户配置页无跨 store pending 交互，与 settings/sysmon 同型）。
  * 模块级单例导出供 store 与测试共享同一实例（可重置/可断言）。
  */
 export const tdAccountsPending = usePending()
 
-/** 账户配置写操作（pending key 的 op 段） */
-export type TdAccountOp = 'add' | 'update' | 'remove' | 'toggle_enabled'
+/**
+ * 账户配置写操作（pending key 的 op 段，契约 rest §2.9.7）。
+ * 会话控制（login/logout，契约 td-connection）是另一类 op——key 前缀不同、清除来源不同。
+ */
+export type TdConfigOp = 'add' | 'update' | 'remove' | 'toggle_enabled'
+
+/** 账户会话控制操作（契约 td-connection：登录/登出） */
+export type TdSessionOp = 'login' | 'logout'
+
+export type TdAccountOp = TdConfigOp | TdSessionOp
+
+/** 配置写操作全集（行级 spinner 判定只扫这一组，不扫会话 pending） */
+const CONFIG_OPS: readonly TdConfigOp[] = ['add', 'update', 'remove', 'toggle_enabled']
+
+/** 会话控制 pending 兜底超时（契约 td-connection 前端义务）：登录 45s（连接 30s + 登录 10s + 余量） */
+export const TD_SESSION_LOGIN_TIMEOUT_MS = 45_000
+/** 登出 pending 兜底超时：释放 API 属本地动作，10s 足够 */
+export const TD_SESSION_LOGOUT_TIMEOUT_MS = 10_000
 
 /** 各操作的可读超时文案（usePending opLabel，超时 toast 用「{opLabel}超时」） */
 const OP_LABELS: Record<TdAccountOp, string> = {
@@ -90,11 +116,13 @@ const OP_LABELS: Record<TdAccountOp, string> = {
   update: '修改交易账户',
   remove: '删除交易账户',
   toggle_enabled: '启停交易账户',
+  login: '登录交易账户',
+  logout: '登出交易账户',
 }
 
 /**
  * 写操作结果：
- * - `ok:true` = HTTP 已受理（pending 保持挂起，等 `td_rtn_config` 清）；
+ * - `ok:true` = HTTP 已受理（pending 保持挂起，等对应 WS 生效信号清）；
  * - `kind:'conflict'` = 唯一性预检冲突，**未发请求**（页面据此做字段级提示）；
  * - `kind:'failed'` = HTTP 失败（`message` 已按 code 映射中文，不回显英文）；
  * - `kind:'busy'` = 同 key 已有在途请求（防重入）；
@@ -330,14 +358,22 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // === pending 查询（页面用） ===
 
   function opKey(gateway: string, accountId: string, op: TdAccountOp): string {
-    return `${TD_PENDING_PREFIX}${gateway}:${accountId}:${op}`
+    const prefix = op === 'login' || op === 'logout' ? TD_SESSION_PENDING_PREFIX : TD_PENDING_PREFIX
+    return `${prefix}${gateway}:${accountId}:${op}`
   }
 
-  /** 该账户是否有任一在途操作（行级 spinner） */
+  /** 该账户是否有任一**配置写**在途操作（行级 spinner；会话控制在按钮上单独展示） */
   function accountPending(accountId: string): boolean {
     const gateway = gatewayOf(accountId)
     if (gateway === null) return false
-    return (Object.keys(OP_LABELS) as TdAccountOp[]).some(op => tdAccountsPending.pending[opKey(gateway, accountId, op)] === true)
+    return CONFIG_OPS.some(op => tdAccountsPending.pending[opKey(gateway, accountId, op)] === true)
+  }
+
+  /** 该账户的会话控制在途态（登录/登出按钮 spinner） */
+  function sessionPending(accountId: string, op: TdSessionOp): boolean {
+    const gateway = gatewayOf(accountId)
+    if (gateway === null) return false
+    return tdAccountsPending.pending[opKey(gateway, accountId, op)] === true
   }
 
   /** 账户在指定网关下是否有在途的某类操作 */
@@ -349,6 +385,46 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   const addPending = computed<boolean>(() =>
     Object.keys(tdAccountsPending.pending).some(key =>
       key.startsWith(TD_PENDING_PREFIX) && key.endsWith(':add') && tdAccountsPending.pending[key] === true))
+
+  // === 会话 pending 清除（契约 td-connection 前端义务 2 / 契约 progress 网关会话进度骨架） ===
+
+  /** instance_id（`网关名:账户ID`）→ 上一次 `current`：判定"进度回退 = 一次尝试失败/中止" */
+  const lastSessionCurrent = new Map<string, number>()
+
+  function clearSessionPending(gateway: string, accountId: string, op: TdSessionOp): void {
+    tdAccountsPending.clearByPrefix(opKey(gateway, accountId, op))
+  }
+
+  // 清除信号（唯一来源是进度端点/回退；NOTIFY_UI 是纯通知，永不清 pending，契约 notify-ui）：
+  //   - 到 max → 清登录 pending（登录完成）；
+  //   - 到 min → 清登录 + 登出 pending（登出完成；或登录在途时被登出/中止，避免挂到 45s 超时）；
+  //   - 中间态且 current 相对上次回退 → 清登录 pending（失败回滚，进度骨架声明建立期单调）；
+  //   - 兜底超时（登录 45s / 登出 10s，见 TD_SESSION_*_TIMEOUT_MS）。
+  watch(
+    () => progressStore.progress,
+    (progress) => {
+      for (const [instanceId, p] of Object.entries(progress)) {
+        const separator = instanceId.indexOf(':')
+        if (separator <= 0) continue
+        const gateway = instanceId.slice(0, separator)
+        if (!gateway.startsWith('dztd_')) continue
+        const accountId = instanceId.slice(separator + 1)
+        const state = sessionStateOfProgress(p)
+        if (state === null) continue
+        const previous = lastSessionCurrent.get(instanceId)
+        lastSessionCurrent.set(instanceId, p.current)
+        // 清除范围判定与 md 共用 sessionProgress（ready→login、absent→both、回退→login）
+        const clear = sessionPendingClear(previous, state, p.current)
+        if (clear === 'login') {
+          clearSessionPending(gateway, accountId, 'login')
+        } else if (clear === 'both') {
+          clearSessionPending(gateway, accountId, 'login')
+          clearSessionPending(gateway, accountId, 'logout')
+        }
+      }
+    },
+    { deep: true },
+  )
 
   // === 注册表读取 ===
 
@@ -382,6 +458,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     key: string,
     opLabel: string,
     request: () => Promise<unknown>,
+    timeoutMs: number = TD_ACCOUNT_OP_TIMEOUT_MS,
   ): Promise<TdAccountSubmitResult> {
     if (tdAccountsPending.pending[key] === true) return { ok: false, kind: 'busy' }
     let failure: unknown = null
@@ -394,7 +471,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
         failed = true
         throw e
       }
-    }, { timeout: TD_ACCOUNT_OP_TIMEOUT_MS, opLabel, distinguishTimeout: true })
+    }, { timeout: timeoutMs, opLabel, distinguishTimeout: true })
     if (result === PENDING_TIMEOUT) return { ok: false, kind: 'timeout' }
     if (failed) {
       // 文案三分（契约 rest §2.9.7）：
@@ -487,11 +564,49 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       tdApi.updateAccount(accountId, { enabled }))
   }
 
+  // === 会话控制（契约 rest §2.9.10 / 契约 td-connection / ADR 0051） ===
+
+  /**
+   * 登录交易账户（`POST /api/td/accounts/{id}/login`）：建立会话并重走完整登录链。
+   *
+   * 按钮可用性由页面按进度端点判定（登录仅完全未登录可发，见 `composables/tdAccountSession`）；
+   * 这里不做状态裁决——最终由 dzweb 守卫与目标网关配置校验兜底。pending 以 `progress`
+   * 到 `max`、`current` 回退或 45s 超时清除（契约 td-connection 前端义务）。
+   */
+  async function login(accountId: string): Promise<TdAccountSubmitResult> {
+    const gateway = gatewayOf(accountId)
+    if (gateway === null) {
+      const message = TD_ACCOUNT_ERROR_TEXT.account_not_found
+      error.value = message
+      return { ok: false, kind: 'failed', message }
+    }
+    return submit(opKey(gateway, accountId, 'login'), OP_LABELS.login, () =>
+      tdApi.loginAccount(accountId), TD_SESSION_LOGIN_TIMEOUT_MS)
+  }
+
+  /**
+   * 登出交易账户（`POST /api/td/accounts/{id}/logout`）：任意非未登录状态可发（= 强制中断）。
+   * pending 以 `progress` 到 `min` 或 10s 超时清除（登出不看 `current` 回退）。
+   */
+  async function logout(accountId: string): Promise<TdAccountSubmitResult> {
+    const gateway = gatewayOf(accountId)
+    if (gateway === null) {
+      const message = TD_ACCOUNT_ERROR_TEXT.account_not_found
+      error.value = message
+      return { ok: false, kind: 'failed', message }
+    }
+    return submit(opKey(gateway, accountId, 'logout'), OP_LABELS.logout, () =>
+      tdApi.logoutAccount(accountId), TD_SESSION_LOGOUT_TIMEOUT_MS)
+  }
+
   // === WS 镜像 apply（快照分发与增量共用，幂等覆盖）===
 
   /**
    * `td_rtn_config`（契约 td-config §4 / 契约 webui-ws §2.2）：该网关配置**整体覆盖**，
-   * 并清除该网关下全部 pending（key 前缀 `td:{gateway}:`）。
+   * 并清除该网关下全部**配置写** pending（key 前缀 `td:{gateway}:`）。
+   *
+   * 会话控制 pending 用独立前缀 `td_sess:`（契约 td-connection），**不受配置帧影响**——它的
+   * 清除信号只有进度端点/回退/超时（见上方 pending 清除 watcher）。
    *
    * `gateway` 取 WS 消息的 instance_id（契约 webui-ws §2.2：镜像 domain `td_config` 的 key =
    * 网关进程名）。缺失时无从定位镜像，整帧忽略（非法帧不得覆盖已有镜像，对齐 applyMdConfig）。
@@ -606,11 +721,14 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     registryEntry,
     gatewayOf,
     accountPending,
+    sessionPending,
     isOpPending,
     addAccount,
     updateAccount,
     removeAccount,
     setAccountEnabled,
+    login,
+    logout,
     applyTdConfig,
     applyTdStatus,
     loadRegistry,

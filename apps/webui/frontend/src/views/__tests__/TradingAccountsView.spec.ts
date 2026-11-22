@@ -5,6 +5,7 @@ import { useTdAccountsStore, tdAccountsPending } from '@/stores/tdAccounts'
 import { useAuthStore } from '@/stores/auth'
 import { useProcessStore } from '@/stores/process'
 import { useToastStore } from '@/stores/toast'
+import { useProgressStore } from '@/stores/progress'
 import { tdApi } from '@/api/td'
 import TradingAccountsView from '../TradingAccountsView.vue'
 
@@ -14,6 +15,8 @@ vi.mock('@/api/td', () => ({
     addAccount: vi.fn(),
     updateAccount: vi.fn(),
     removeAccount: vi.fn(),
+    loginAccount: vi.fn(),
+    logoutAccount: vi.fn(),
   },
 }))
 
@@ -312,5 +315,95 @@ describe('TradingAccountsView · 权限与写操作（契约 rest §2.9.7）', (
     const submit = w.find('[data-test="td-form-submit"]')
     expect(submit.attributes('disabled')).toBeDefined()
     expect(w.find('[data-test="td-form-validation"]').text()).toContain('经纪公司代码')
+  })
+})
+
+describe('TradingAccountsView · 会话控制（ADR 0051 / 契约 td-connection）', () => {
+  const INSTANCE = 'dztd_ctp:account_001'
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    loginAsAdmin()
+    registerGateway('dztd_ctp')
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  function progress(current: number): void {
+    useProgressStore().applyProgress(INSTANCE, { min: 0, max: 10, current })
+  }
+
+  async function mountWithOneAccount() {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [accountRow()],
+    })
+    const w = mount(TradingAccountsView, { global: { stubs } })
+    await flushPromises()
+    return w
+  }
+
+  it('未登录（progress 到 min）：登录可点、登出禁用；点登录下发 REST', async () => {
+    vi.mocked(tdApi.loginAccount).mockResolvedValue({ ok: true })
+    progress(0)
+    const w = await mountWithOneAccount()
+
+    const login = w.find('[data-test="td-login-account_001"]')
+    const logout = w.find('[data-test="td-logout-account_001"]')
+    expect(login.attributes('disabled')).toBeUndefined()
+    expect(logout.attributes('disabled')).toBeDefined()
+
+    await login.trigger('click')
+    await flushPromises()
+    expect(tdApi.loginAccount).toHaveBeenCalledWith('account_001')
+  })
+
+  it('就绪（progress 到 max）：登录禁用（先登出才可重登）、登出可点', async () => {
+    vi.mocked(tdApi.logoutAccount).mockResolvedValue({ ok: true })
+    progress(10)
+    const w = await mountWithOneAccount()
+
+    const login = w.find('[data-test="td-login-account_001"]')
+    const logout = w.find('[data-test="td-logout-account_001"]')
+    expect(login.attributes('disabled')).toBeDefined()
+    expect(logout.attributes('disabled')).toBeUndefined()
+
+    await logout.trigger('click')
+    await flushPromises()
+    expect(tdApi.logoutAccount).toHaveBeenCalledWith('account_001')
+  })
+
+  it('建立中/重连中（progress 中间）：登录禁用、登出可点（= 强制中断）', async () => {
+    progress(2)
+    const w = await mountWithOneAccount()
+
+    expect(w.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeDefined()
+    expect(w.find('[data-test="td-logout-account_001"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('非 admin：两个会话按钮都禁用并给出原因（契约 rest §2.9.10 预检 1）', async () => {
+    loginAsUser()
+    progress(0)
+    const w = await mountWithOneAccount()
+
+    const login = w.find('[data-test="td-login-account_001"]')
+    const logout = w.find('[data-test="td-logout-account_001"]')
+    expect(login.attributes('disabled')).toBeDefined()
+    expect(logout.attributes('disabled')).toBeDefined()
+    expect(login.attributes('title')).toContain('仅管理员')
+  })
+
+  it('网关未运行：两个会话按钮都禁用并提示先启动网关', async () => {
+    registerGateway('dztd_ctp', false)
+    progress(0)
+    const w = await mountWithOneAccount()
+
+    const login = w.find('[data-test="td-login-account_001"]')
+    expect(login.attributes('disabled')).toBeDefined()
+    expect(login.attributes('title')).toContain('网关未运行')
   })
 })

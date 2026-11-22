@@ -58,13 +58,16 @@ describe('CLEAR_BY_RTN 声明完整性', () => {
     }
   })
 
-  it('各清理类互不重叠（同 op 不得归属多个 RTN）——login 例外：progress 登录完成 + md_status 失败双触点', () => {
+  it('各清理类互不重叠（同 op 不得归属多个 RTN）——login 例外：progress 端点/回退 + md_status 失败三触点', () => {
     // 契约 md-status 前端义务①：登录失败态 RTN_PROGRESS 数值映射与 Connected 相同（不产生
     // online/offline 转移），因此 login pending 除 progress_login 外还由 last_error.timestamp
-    // 变化清理（CLEAR_BY_RTN.md_status_failure）——这是唯一有意登记的跨类双触点。
+    // 变化清理（md_status_failure）。
+    // ADR 0051：登出在任意非未登录态可用，登录在途时点登出会让进度到 min；若该处不清 login，
+    // 按钮会挂到 45s 兜底——因此 progress_logout 同时清 login。三处是有意登记的跨类多触点；
+    // 其余 op 仍必须唯一归属。
     for (const kind of Object.keys(CLEAR_BY_RTN) as (keyof typeof CLEAR_BY_RTN)[]) {
-      if (kind === 'progress_login' || kind === 'md_status_failure') continue
       for (const op of CLEAR_BY_RTN[kind]) {
+        if (op === 'login') continue
         const others = (Object.keys(CLEAR_BY_RTN) as (keyof typeof CLEAR_BY_RTN)[])
           .filter(k => k !== kind)
         for (const other of others) {
@@ -72,8 +75,9 @@ describe('CLEAR_BY_RTN 声明完整性', () => {
         }
       }
     }
-    // 双触点必须且仅覆盖 login
+    // login 的三处触点必须且仅覆盖 login（不能顺手把其它 op 混进这些类）
     expect(CLEAR_BY_RTN.progress_login).toEqual(['login'])
+    expect(CLEAR_BY_RTN.progress_logout).toEqual(['login', 'logout'])
     expect(CLEAR_BY_RTN.md_status_failure).toEqual(['login'])
   })
 })
@@ -394,6 +398,37 @@ describe('useMdConfigStore', () => {
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
       await nextTick()
       expect(marketSourcePending.pending['source:1:login']).toBe(true)
+    })
+
+    it('登录在途时点登出：progress 到 min 时 login 与 logout pending 都清（不挂 45s）', async () => {
+      // ADR 0051：登出在任意非未登录态可用（含强制中断在途登录）；进度到 min 时两个在途
+      // pending 都必须收起，否则登录按钮会挂到 45s 兜底。
+      vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
+      vi.mocked(marketSourcesApi.logout).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      await store.login(1, 'dzmd_ctp')
+      await store.logout(1, 'dzmd_ctp')
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+      expect(marketSourcePending.pending['source:1:logout']).toBe(true)
+
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 0 })
+      await nextTick()
+      expect(marketSourcePending.pending['source:1:login']).toBeUndefined()
+      expect(marketSourcePending.pending['source:1:logout']).toBeUndefined()
+    })
+
+    it('progress 回退（一次尝试失败/中止，进度骨架声明建立期单调）清 login pending', async () => {
+      vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
+      const store = useMdConfigStore()
+      await store.login(1, 'dzmd_ctp')
+      // 建立中 3/4：中间态且未回退 → 保持 pending
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 3 })
+      await nextTick()
+      expect(marketSourcePending.pending['source:1:login']).toBe(true)
+      // 回退到 2/4：登录失败回滚 → 清 login pending
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
+      await nextTick()
+      expect(marketSourcePending.pending['source:1:login']).toBeUndefined()
     })
 
     it('登录操作超时兜底（45s：连接 30s + 登录 10s + 余量）清 pending 并返回 PENDING_TIMEOUT', async () => {

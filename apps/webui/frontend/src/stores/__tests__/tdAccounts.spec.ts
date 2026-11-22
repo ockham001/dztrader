@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import {
   useTdAccountsStore,
@@ -6,10 +7,12 @@ import {
   tdInterfaceType,
   tdStateText,
   TD_ACCOUNT_OP_TIMEOUT_MS,
+  TD_SESSION_LOGIN_TIMEOUT_MS,
 } from '../tdAccounts'
 import { tdApi } from '@/api/td'
 import { useProgressStore } from '@/stores/progress'
 import { useProcessStore } from '@/stores/process'
+import { TD_ACCOUNT_ERROR_TEXT } from '@/composables/tdAccountErrors'
 import type {
   TdAccountsDegradedResponse,
   TdAccountsListResponse,
@@ -24,6 +27,8 @@ vi.mock('@/api/td', () => ({
     addAccount: vi.fn(),
     updateAccount: vi.fn(),
     removeAccount: vi.fn(),
+    loginAccount: vi.fn(),
+    logoutAccount: vi.fn(),
   },
 }))
 
@@ -616,5 +621,127 @@ describe('useTdAccountsStore · 写操作与失败文案（契约 rest §2.9.7�
     expect(removed.ok).toBe(false)
     expect(tdApi.updateAccount).not.toHaveBeenCalled()
     expect(tdApi.removeAccount).not.toHaveBeenCalled()
+  })
+})
+
+describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection）', () => {
+  const SESSION_KEY = (op: 'login' | 'logout') => `td_sess:dztd_ctp:account_001:${op}`
+
+  beforeEach(async () => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true, accounts: [registryEntry()],
+    } satisfies TdAccountsListResponse)
+    vi.mocked(tdApi.loginAccount).mockResolvedValue({ ok: true })
+    vi.mocked(tdApi.logoutAccount).mockResolvedValue({ ok: true })
+    registerGateway('dztd_ctp')
+    await useTdAccountsStore().init()
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+    vi.useRealTimers()
+  })
+
+  it('登录 pending 由 progress 到 max 清除', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 10 })
+    await nextTick()
+
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    expect(await pending).toEqual({ ok: true })
+    expect(tdApi.loginAccount).toHaveBeenCalledWith('account_001')
+  })
+
+  it('登录在途时点登出：progress 到 min 时登录/登出 pending 都清（不挂 45s）', async () => {
+    const store = useTdAccountsStore()
+    const login = store.login('account_001')
+    const logout = store.logout('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+    expect(isPending(SESSION_KEY('logout'))).toBe(true)
+
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    await nextTick()
+
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    expect(isPending(SESSION_KEY('logout'))).toBe(false)
+    await Promise.all([login, logout])
+  })
+
+  it('progress 回退（一次登录尝试失败/中止）清登录 pending，中间态停留不清', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+
+    // 建立中（5/10）：中间态但未回退 → 保持 pending
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 5 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 回退到 2/10：失败回滚（契约 progress 骨架：建立期 current 单调、失败回退）
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 2 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await pending
+  })
+
+  it('配置帧到达不清会话 pending（td: 与 td_sess: 前缀隔离）', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+
+    store.applyTdConfig('dztd_ctp', configPayload([
+      {
+        account_id: 'account_001', enabled: true, risk_control_enabled: false, currency_id: 'CNY',
+        ext: { broker_id: '9999', user_id: '00001', password: '****' },
+      },
+    ]))
+    // 配置帧的清除粒度只覆盖配置写 pending（td:），不得误清登录 pending（td_sess:）
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 收尾：progress 到 min 清掉，避免留下定时器
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    await nextTick()
+    await pending
+  })
+
+  it('登录 pending 45s 兜底超时清除', async () => {
+    vi.useFakeTimers()
+    const store = useTdAccountsStore()
+    // 永不 resolve：只能靠超时兜底
+    vi.mocked(tdApi.loginAccount).mockImplementation(() => new Promise(() => {}))
+    const pending = store.login('account_001')
+    expect(TD_SESSION_LOGIN_TIMEOUT_MS).toBe(45_000)
+
+    await vi.advanceTimersByTimeAsync(TD_SESSION_LOGIN_TIMEOUT_MS)
+    expect(await pending).toEqual({ ok: false, kind: 'timeout' })
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+  })
+
+  it('sessionPending：登出 pending 由 progress 到 min 清除', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.logout('account_001')
+    expect(store.sessionPending('account_001', 'logout')).toBe(true)
+    expect(store.sessionPending('account_001', 'login')).toBe(false)
+
+    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    await nextTick()
+    expect(store.sessionPending('account_001', 'logout')).toBe(false)
+    await pending
+  })
+
+  it('登录失败按 code 映射中文并清 pending（不回显英文 error）', async () => {
+    const store = useTdAccountsStore()
+    vi.mocked(tdApi.loginAccount).mockRejectedValue({
+      status: 409, body: { error: 'td gateway not running', code: 'gateway_not_running' },
+    })
+    const result = await store.login('account_001')
+    expect(result).toEqual({
+      ok: false, kind: 'failed', message: TD_ACCOUNT_ERROR_TEXT.gateway_not_running,
+    })
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
   })
 })

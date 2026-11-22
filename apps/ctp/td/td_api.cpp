@@ -223,6 +223,8 @@ void TdApi::run() {
         if (!running_) {
             break;
         }
+        // 会话状态 sweep: SPI 回调 / 定时器 / 跨日登出都可能改变状态, 每轮统一检查并按需推帧
+        publish_changed_states();
         // 阻塞等待事件: 有定时器时精确超时唤醒, 无定时器时无限等待
         // 唤醒源: SPI 线程 notify / master notify / (有定时器时) 超时 / 信号
         if (timer_queue_.empty()) {
@@ -582,19 +584,18 @@ void TdApi::connect_account(const shm::FrameView& view) {
         auto j = decode_ext_inst_json<nlohmann::json>(view);
         account_id = j.value("account_id", "");
     } catch (const std::exception& e) {
+        // 防御性路径: dzweb 入口已守卫, 不弹用户通知 (与 DISCONNECT 一致), 只留日志
         SPDLOG_WARN("td connect decode failed | error=\"{}\"", e.what());
-        notify_ui_.error(std::format("连接请求解析失败: {}", e.what()));
         return;
     }
     if (account_id.empty()) {
         SPDLOG_WARN("td connect rejected | reason=empty_account_id");
-        notify_ui_.error("连接请求缺少 account_id");
         return;
     }
-    connect_account_by_id(account_id);
+    connect_account_by_id(account_id, /*user_initiated=*/true);
 }
 
-void TdApi::connect_account_by_id(const std::string& account_id) {
+void TdApi::connect_account_by_id(const std::string& account_id, bool user_initiated) {
     // 查 config_.accounts -> 构造 AccountSession -> open()
     // 异常不传播 (仅记日志 + 通知 UI), 符合 "宁肯乱码也不能崩溃"
 
@@ -602,12 +603,16 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
     const auto* cfg = find_account_in(config_, account_id);
     if (cfg == nullptr) {
         SPDLOG_WARN("td connect rejected | reason=account_not_found account={}", account_id);
-        notify_ui_.error(std::format("账户未配置: {}", account_id));
+        if (user_initiated) {
+            notify_ui_.error(std::format("账户未配置: {}", account_id));
+        }
         return;
     }
     if (!cfg->enabled) {
         SPDLOG_WARN("td connect rejected | reason=account_disabled account={}", account_id);
-        notify_ui_.error(std::format("账户已禁用: {}", account_id));
+        if (user_initiated) {
+            notify_ui_.error(std::format("账户已禁用: {}", account_id));
+        }
         return;
     }
 
@@ -626,7 +631,9 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
     }
     if (front_addrs.empty()) {
         SPDLOG_WARN("td connect rejected | reason=no_frontends account={}", account_id);
-        notify_ui_.error(std::format("账户无前置地址: {}", account_id));
+        if (user_initiated) {
+            notify_ui_.error(std::format("账户无前置地址: {}", account_id));
+        }
         return;
     }
 
@@ -642,7 +649,9 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
     if (ec) {
         SPDLOG_ERROR("td connect flow dir create failed | account={} path={} error=\"{}\"",
                      account_id, session_flow_dir.string(), ec.message());
-        notify_ui_.error(std::format("流目录创建失败: {}", ec.message()));
+        if (user_initiated) {
+            notify_ui_.error(std::format("流目录创建失败: {}", ec.message()));
+        }
         return;
     }
 
@@ -670,12 +679,15 @@ void TdApi::connect_account_by_id(const std::string& account_id) {
             return read_db_.get();
         });
         sessions_[account_id] = std::move(session);
-        // 契约 account-status 场景 3: 新会话建立即推 LoggingIn (spec §3.1 盘中增账户语义)
-        write_account_status(account_id, DZ_ACCOUNT_LOGGING_IN, "");
+        // 契约 account-status/td-status 场景 3: 新会话建立即推 LoggingIn + 首帧 RTN_TD_STATUS/
+        // RTN_PROGRESS (update_status 同时写 2018 三态, 取代原先只推三态的 write_account_status)
+        update_status(account_id);
         SPDLOG_INFO("td account connected | account={} fronts={}", account_id, front_addrs.size());
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td connect failed | account={} error=\"{}\"", account_id, e.what());
-        notify_ui_.error(std::format("账户连接失败: {}", e.what()));
+        if (user_initiated) {
+            notify_ui_.error(std::format("账户连接失败: {}", e.what()));
+        }
     }
 }
 
@@ -710,10 +722,13 @@ void TdApi::disconnect_account_by_id(const std::string& account_id) {
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td disconnect failed | account={} error=\"{}\"", account_id, e.what());
     }
-    // 契约 account-status: 先推 Offline 帧, 后 erase 缓存与会话
-    // (write_account_status 的 Offline 恒推分支保证缓存即使已 Offline 也再推一条)
-    write_account_status(account_id, DZ_ACCOUNT_OFFLINE, "");
-    account_last_state_.erase(account_id);  // 先推 Offline 再清缓存 (ensure Offline 恒达)
+    // 契约 td-connection / progress 骨架: 登出结果必须推一次终态（RTN_TD_STATUS +
+    // RTN_PROGRESS current=min）再删会话, 否则前端只能等快照刷新才知道已登出。
+    // 用 update_status 统一出口: 它同时写 2018 三态 (Offline 恒推分支保证必达)。
+    update_status(account_id);
+    // 先推终态再清缓存: 清掉重推键与三态缓存, 避免同 account_id 重连时被当成「未变化」而漏推。
+    account_last_published_.erase(account_id);
+    account_last_state_.erase(account_id);
     sessions_.erase(account_id);
     SPDLOG_INFO("td account disconnected | account={}", account_id);
 }
@@ -857,6 +872,9 @@ void TdApi::update_status(const std::string& account_id) {
 
         // 契约 account-status: 2018 三态去重推送 (与 2104 同一异常保护, 异常路径一致)
         write_account_status(account_id, account_state_of(status.state), status.date);
+
+        // 记录本次推送键: 主循环 sweep 据此只在状态字段变化时重推 (契约 td-status §3 触发场景 1)
+        account_last_published_[account_id] = td_status_publish_key(status);
     } catch (const dztrader::Exception& e) {
         SPDLOG_ERROR("update_status failed | account={} code={} error=\"{}\"", account_id, e.code(),
                      e.what());
@@ -948,6 +966,17 @@ void TdApi::broadcast_health(const std::string& account_id, TdHealth now) {
                     magic_enum::enum_name(now));
     } catch (const std::exception& e) {
         SPDLOG_ERROR("broadcast_health failed | account={} error=\"{}\"", account_id, e.what());
+    }
+}
+
+void TdApi::publish_changed_states() {
+    std::vector<TdSessionStatusSnapshot> snapshots;
+    snapshots.reserve(sessions_.size());
+    for (const auto& [account_id, session] : sessions_) {
+        snapshots.push_back({account_id, td_status_publish_key(session->state_machine().status())});
+    }
+    for (const auto& account_id : publish_changed_accounts(snapshots, account_last_published_)) {
+        update_status(account_id);
     }
 }
 

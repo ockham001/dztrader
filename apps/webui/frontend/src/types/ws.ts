@@ -53,6 +53,10 @@ export interface WsDataByType {
   // 契约 webui-ws §2.4 控制消息 ACK（payload 键）
   md_connect_ack: { source: string; ok: boolean }
   md_disconnect_ack: { source: string; ok: boolean }
+  // 契约 webui-ws §2.4 交易账户会话控制 ACK（契约 td-connection）：ack 仅表示已写通道，
+  // 业务结果看该账户的 progress / td_rtn_status。
+  td_connect_ack: { account_id: string; ok: boolean }
+  td_disconnect_ack: { account_id: string; ok: boolean }
   subscribe_log_ack: { file: string }
   unsubscribe_log_ack: Record<string, never>
   query_md_subscriptions_ack: { source: string; ok: boolean }
@@ -77,6 +81,7 @@ export type WsServerMessage<T extends WsServerMessageType = WsServerMessageType>
 
 // 客户端 → 服务端
 export type WsClientMessageType = 'ping' | 'md_connect' | 'md_disconnect'
+  | 'td_connect' | 'td_disconnect'
   | 'subscribe_log' | 'unsubscribe_log' | 'query_md_subscriptions'
 
 export interface WsClientMessage { type: WsClientMessageType; seq?: number; payload?: Record<string, unknown> }

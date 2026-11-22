@@ -134,6 +134,8 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | POST `/api/td/accounts` | 添加交易账户配置（admin） | → `TD_REQ_MODIFY_CONFIG{AddAccount}`（契约 td-config §2.1/§3）；生效信号 = `RTN_TD_CONFIG` |
 | PUT `/api/td/accounts/{account_id}` | 修改交易账户配置（admin，字段级 merge） | → `TD_REQ_MODIFY_CONFIG{UpdateAccount}` |
 | DELETE `/api/td/accounts/{account_id}` | 删除交易账户配置（admin；不删除交易数据） | → `TD_REQ_MODIFY_CONFIG{RemoveAccount}` |
+| POST `/api/td/accounts/{account_id}/login` | 登录交易账户（admin；建立会话并重走登录链） | → `TD_CONNECT`（契约 td-connection）；生效信号 = `progress` / `td_rtn_status` |
+| POST `/api/td/accounts/{account_id}/logout` | 登出交易账户（admin；任意状态可发 = 强制中断） | → `TD_DISCONNECT`（契约 td-connection）；生效信号同上 |
 
 > WS 交易事件（契约 webui-ws §2.5）只承载增量，记录基线一律由本节端点拉取。
 
@@ -496,6 +498,31 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - `enabled` 的语义边界：注册表持久化在 `platform.db` 的只有 `account_id → gateway` 两列（契约 td-config §5），**不含** `enabled`。dzweb 重启后从 `platform.db` 恢复的条目 `enabled` 未知 → 回 `true`（不把账户误标为禁用）；随后该网关的配置帧到达即 reconcile 出真实值。这是**已知降级**（重启窗口内禁用账户会被显示为启用），比"把启用账户显示成禁用"危害小。
 - 该端点**不**触发帧、**不**读交易库，因此不受 §2.9.8 交易库降级影响。
 
+#### 2.9.10 账户会话控制（登录 / 登出）
+
+写端点，把会话控制动作转发到目标交易网关（`TD_CONNECT` / `TD_DISCONNECT`，契约 td-connection）。动作名为「登录 / 登出」（ADR 0051）；帧名 CONNECT/DISCONNECT 是传输层命令，两者一一对应。
+
+| 方法/路径 | 语义 | 帧/生效信号 |
+|---|---|---|
+| POST `/api/td/accounts/{account_id}/login` | 登录交易账户（admin）：建立该账户会话并重走完整登录链 | → `TD_CONNECT`（`instance_id` = 网关名，payload `{"account_id":…}`）；生效信号 = `progress`（契约 progress）与 `td_rtn_status`（契约 td-status） |
+| POST `/api/td/accounts/{account_id}/logout` | 登出交易账户（admin）：结束会话；任意非未登录状态可发（= 强制中断） | → `TD_DISCONNECT`；生效信号同上 |
+
+**预检**（失败时不写帧）：
+
+1. admin 角色；否则 403 `{"error":"admin required","code":"admin_required"}`。
+2. `account_id` 由账户注册表解析网关（§2.9.9）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`；注册表降级（`available:false`，无法解析归属）→ 503 `{"error":"account registry unavailable"}`（不带 `code`，前端按通用失败处理，不设 pending）。
+3. 目标网关必须是已注册的 `dztd_*` 进程且当前 Running（`process_status` 镜像，契约 process）；否则 409 `{"error":"td gateway not running","code":"gateway_not_running"}`。
+4. 写通道不可用：503 `{"error":"shm writer not available"}` / `{"error":"shm write failed"}`（不带 `code`，同 §2.9.7）。
+
+**响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表业务已生效**；成败以该账户的 `progress` / `td_rtn_status` 为准。业务拒绝（账户不在该网关配置 / 已禁用 / 无可用前置 / 当前状态不接受连接）由目标网关经 `NOTIFY_UI` 错误级弹窗表达，无 RTN（契约 td-connection）。
+
+**约束**：
+
+- 按钮可用性与 pending 清除规则由契约 td-connection「前端义务」定义（登录仅完全未登录可用；登出任意非未登录态可用；ADR 0051）。
+- 登录失败不自动重试（#406）；恢复路径 = 先登出、再登录。
+- 登出不发送柜台登出请求，直接释放 API（契约 td-connection）；登出后账户回到 `Idle`，自动登录排程可在下一个 `login_time` 重新登录。
+- 本端点不改变账户配置、不读交易库，不受 §2.9.8 降级影响。
+
 ---
 
 ## 3. 真相源声明
@@ -523,3 +550,4 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
   - 编辑/启停/删除的 pending 以 WS `td_rtn_config` 清除（契约 webui-ws §2.2）；配置帧到达后整体覆盖本地镜像（全量，后到覆盖先到），不得用返回的 200 当作已生效。
   - 账户表单字段按网关的 `interface_type`（从 `instance_id` 派生，契约 td-config §1）选择；不展示明文密码（回报中恒为 `"****"`）。
   - 细状态（登录态/交易日/登录时间/进度）以 WS `td_rtn_status` 与 `progress` 为唯一来源，不从 `td_rtn_config` 推导。
+  - **会话控制**（§2.9.10）：登录/登出的按钮规则与 pending 清除见契约 td-connection「前端义务」与 ADR 0051（登录仅 `progress.current <= progress.min` 可用；登出在任意非未登录态可用）；不以 HTTP 200 或 WS ack 判定结果，pending 由 `progress` / `td_rtn_status` 清除。

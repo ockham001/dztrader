@@ -24,9 +24,13 @@ namespace dztrader::webui {
 ///   `TD_REQ_MODIFY_CONFIG{UpdateAccount}`。
 /// - `DELETE /api/td/accounts/{account_id}`：删除账户（admin；不删交易数据，ADR 0045）→
 ///   `TD_REQ_MODIFY_CONFIG{RemoveAccount}`。
+/// - `POST /api/td/accounts/{account_id}/login`：登录交易账户（admin）→ `TD_CONNECT`；
+/// - `POST /api/td/accounts/{account_id}/logout`：登出交易账户（admin，任意非未登录状态可发
+///   = 强制中断）→ `TD_DISCONNECT`（契约 rest §2.9.10 / 契约 td-connection）。
 ///
 /// 响应 `200 {"ok":true}` **只表示已写入事件通道**，不代表业务已生效（契约 rest §1 设置类
-/// 请求语义）：生效/失败以 `RTN_TD_CONFIG` 为准（成功推新值、失败推回滚旧值）。
+/// 请求语义）：配置写（POST/PUT/DELETE）以 `RTN_TD_CONFIG` 为准（成功推新值、失败推回滚
+/// 旧值）；会话控制（login/logout）以 `progress` / `td_rtn_status` 为准（契约 td-connection）。
 ///
 /// 预检顺序（契约 rest §2.9.7）：
 /// - POST：admin(403) → 网关是已注册的 `dztd_*`(400 `invalid_gateway`) → 网关 Running
@@ -60,6 +64,8 @@ public:
     ADD_METHOD_TO(TdAccountCtrl::create, "/api/td/accounts", drogon::Post);
     ADD_METHOD_TO(TdAccountCtrl::update, "/api/td/accounts/{1}", drogon::Put);
     ADD_METHOD_TO(TdAccountCtrl::remove, "/api/td/accounts/{1}", drogon::Delete);
+    ADD_METHOD_TO(TdAccountCtrl::login, "/api/td/accounts/{1}/login", drogon::Post);
+    ADD_METHOD_TO(TdAccountCtrl::logout, "/api/td/accounts/{1}/logout", drogon::Post);
     METHOD_LIST_END
 
     /// GET `/api/td/accounts`（契约 rest §2.9.9）：任意已认证用户。
@@ -85,6 +91,19 @@ public:
                 std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                 const std::string& account_id);
 
+    /// POST `/api/td/accounts/{account_id}/login`（admin，契约 rest §2.9.10 / td-connection）：
+    /// 登录该账户（建立会话并重走完整登录链）→ `TD_CONNECT`。响应只表示已写事件通道，
+    /// 生效信号 = 该账户 `progress` / `td_rtn_status`。
+    void login(const drogon::HttpRequestPtr& req,
+               std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+               const std::string& account_id);
+
+    /// POST `/api/td/accounts/{account_id}/logout`（admin）：登出该账户（任意非未登录状态可发，
+    /// 即强制中断）→ `TD_DISCONNECT`。生效信号同上。
+    void logout(const drogon::HttpRequestPtr& req,
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                const std::string& account_id);
+
 private:
     /// 带机器码的错误体 `{"error": <human>, "code": <snake_case>}`（契约 rest §1）。
     static drogon::HttpResponsePtr error_with_code(drogon::HttpStatusCode status,
@@ -106,6 +125,14 @@ private:
     drogon::HttpResponsePtr dispatch(const std::string& gateway,
                                      const std::string& op,
                                      const nlohmann::json& params);
+
+    /// login/logout 共用：统一守卫（td_session_guard.h）+ 写 TD_CONNECT/TD_DISCONNECT + 映射
+    /// （契约 rest §2.9.10：admin 403 / 账户未登记 404 / 注册表降级 503 / 网关非 Running 409 /
+    /// 通道不可用 503）。
+    void handle_session_action(const drogon::HttpRequestPtr& req,
+                               const std::string& account_id,
+                               bool is_connect,
+                               std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
     std::shared_ptr<TdAccountRegistry> registry_;
     std::shared_ptr<ProcessMirror> process_mirror_;

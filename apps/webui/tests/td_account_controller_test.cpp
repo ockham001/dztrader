@@ -10,6 +10,7 @@
 #include "td_account_controller.h"
 #include "fake_data_change_notifier.h"
 #include "fake_td_account_registry_store.h"
+#include "ready_shm_fixture.h"
 #include "td_account_registry.h"
 #include "test_temp_dir.h"
 #include "test_util.h"
@@ -35,68 +36,7 @@
 namespace dztrader::webui {
 namespace {
 
-/// 真 SHM 通道 fixture：捕获 dzweb 写入的定向帧（帧断言用）。
-/// 通道名按 pid+随机+实例序号唯一化（ctest -j 下不同测试进程互不干扰）。
-struct ReadyShmFixture {
-    std::string channel_name;
-    std::filesystem::path shm_dir;
-    std::shared_ptr<shm::ChannelMeta> meta;
-    std::shared_ptr<shm::MultiWriter> writer;
-    std::optional<shm::Reader> reader;
-    static constexpr uint64_t MB = 1024ull * 1024;
-
-    ReadyShmFixture() {
-        static std::atomic<uint64_t> instance_seq{0};
-        channel_name = "dz_test_tdacctctrl_" + test::unique_suffix() + "_" +
-                       std::to_string(instance_seq.fetch_add(1, std::memory_order_relaxed));
-        shm_dir = std::filesystem::temp_directory_path() / channel_name;
-        std::filesystem::remove_all(shm_dir);
-        std::filesystem::create_directories(shm_dir);
-        const shm::ChannelConfig cfg{.channel_name = channel_name,
-                                     .shm_dir = shm_dir,
-                                     .meta_file_size = 4 * MB,
-                                     .page_size = 1 * MB,
-                                     .lock_memory = false,
-                                     .prefetch_memory = false};
-        meta = std::make_shared<shm::ChannelMeta>(shm::ChannelMeta::open_or_create(cfg));
-        writer = std::make_shared<shm::MultiWriter>(shm::MultiWriter::create(meta, "test_writer"));
-        reader = shm::Reader::create(meta, "test_reader");
-    }
-    ~ReadyShmFixture() {
-        reader.reset();
-        writer.reset();
-        meta.reset();
-        dztrader::shm::test::cleanup_channel(channel_name, shm_dir);
-    }
-    ReadyShmFixture(const ReadyShmFixture&) = delete;
-    ReadyShmFixture& operator=(const ReadyShmFixture&) = delete;
-
-    struct Captured {
-        bool found = false;
-        std::string instance_id;
-        nlohmann::json payload;
-    };
-
-    /// 排空 reader，返回第一个匹配 type + instance_id 的定向帧 payload。
-    Captured capture_inst_frame(DzFrameType type, const std::string& instance) {
-        Captured out;
-        while (const auto* raw = reader->next_frame()) {
-            const shm::FrameView view(raw);
-            if (view.type() != type) {
-                continue;
-            }
-            if (std::string(view.ext_inst_id()) != instance) {
-                continue;
-            }
-            const auto* data = reinterpret_cast<const char*>(view.ext_inst_payload());
-            out.payload = nlohmann::json::parse(data, data + view.ext_inst_payload_size());
-            out.instance_id = instance;
-            out.found = true;
-            break;
-        }
-        return out;
-    }
-};
+using test::ReadyShmFixture;  // 共享 SHM 夹具，见 ready_shm_fixture.h
 
 class TdAccountControllerTest : public ::testing::Test {
 protected:
@@ -574,6 +514,87 @@ TEST_F(TdAccountControllerTest, PrecheckFailureWritesNoFrame) {
 
     const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_REQ_MODIFY_CONFIG, "dztd_ctp");
     EXPECT_FALSE(cap.found) << "rejected requests must not write any frame";
+}
+
+// ============================================================================
+// POST /api/td/accounts/{account_id}/login|logout（契约 rest §2.9.10 / 契约 td-connection）
+// ============================================================================
+
+TEST_F(TdAccountControllerTest, LoginAsNonAdminReturns403) {
+    auto resp = invoke(&TdAccountCtrl::login, user_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "admin_required");
+}
+
+TEST_F(TdAccountControllerTest, LoginUnknownAccountReturns404AccountNotFound) {
+    registry_->note_config_frame_received();  // 注册表可用，但账户不在其中
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("nope"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "account_not_found");
+}
+
+TEST_F(TdAccountControllerTest, LoginRegistryUnavailableReturns503NoCode) {
+    // 注册表降级（尚未收到任何配置帧）：无法解析归属，属请求未被受理，不带 code。
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_FALSE(parse_body(resp).contains("code"));
+    EXPECT_EQ(parse_body(resp).at("error").get<std::string>(), "account registry unavailable");
+}
+
+TEST_F(TdAccountControllerTest, LoginGatewayNotRunningReturns409) {
+    seed_account("dztd_ctp", "acc_a");  // 已登记，但网关进程镜像非 Running
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k409Conflict);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "gateway_not_running");
+}
+
+TEST_F(TdAccountControllerTest, LoginWriterNotReadyReturns503NoCode) {
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_FALSE(parse_body(resp).contains("code"));
+    EXPECT_EQ(parse_body(resp).at("error").get<std::string>(), "shm writer not available");
+}
+
+TEST_F(TdAccountControllerTest, LoginPrecheckFailureWritesNoFrame) {
+    // 契约 rest §2.9.10：预检失败不写帧（失败不能变成对网关的误操作）。
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+    registry_->note_config_frame_received();
+
+    EXPECT_EQ(invoke(&TdAccountCtrl::login, admin_req(), std::string("nope"))->getStatusCode(),
+              drogon::k404NotFound);
+    EXPECT_FALSE(shm.capture_inst_frame(DZ_FRAME_TD_CONNECT, "dztd_ctp").found);
+}
+
+TEST_F(TdAccountControllerTest, LoginDispatchesConnectFrame) {
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    use_ready_shm(shm);
+
+    auto resp = invoke(&TdAccountCtrl::login, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    EXPECT_TRUE(parse_body(resp).at("ok").get<bool>());
+
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_CONNECT, "dztd_ctp");
+    ASSERT_TRUE(cap.found) << "expect TD_CONNECT frame to dztd_ctp";
+    EXPECT_EQ(cap.payload, (nlohmann::json{{"account_id", "acc_a"}}));
+}
+
+TEST_F(TdAccountControllerTest, LogoutDispatchesDisconnectFrame) {
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    use_ready_shm(shm);
+
+    auto resp = invoke(&TdAccountCtrl::logout, admin_req(), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_DISCONNECT, "dztd_ctp");
+    ASSERT_TRUE(cap.found) << "expect TD_DISCONNECT frame to dztd_ctp";
+    EXPECT_EQ(cap.payload, (nlohmann::json{{"account_id", "acc_a"}}));
 }
 
 }  // namespace
