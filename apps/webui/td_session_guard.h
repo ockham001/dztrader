@@ -4,11 +4,24 @@
 #include <dztrader/platform/process.h>
 
 #include <string>
+#include <string_view>
 
 #include "process_mirror.h"
 #include "td_account_registry.h"
 
 namespace dztrader::webui {
+
+/// 交易网关进程名前缀（契约 process 的 `dztd_*` 命名，契约 rest §2.10 预检 2）。
+inline constexpr std::string_view kTdGatewayNamePrefix = "dztd_";
+
+/// 进程名是否以交易网关前缀开头（`dztd_*`）。**交易网关前缀谓词的唯一实现**：
+/// 会话控制守卫（本头）、REST 交易接口生命周期端点（`td_gateway_controller.cpp`）共用。
+///
+/// 只判前缀，不判「前缀后是否有内容」——需要可扫描 exe stem 的调用点（如 start 预检 3
+/// 的动态注册前置）必须自行加长度约束；`dztd_` 退化名不能成为任何进程身份。
+inline bool is_td_gateway_name(std::string_view name) {
+    return name.starts_with(kTdGatewayNamePrefix);
+}
 
 /// 交易账户会话控制（登录/登出）的统一守卫（契约 td-connection「前端义务」/ rest §2.9.10）：
 /// REST 与 WS 双通道只调用这一处，避免两套平行判定。与进程级 control_guard.h 同构，
@@ -35,7 +48,7 @@ struct TdSessionCheck {
 /// 与配置写端点的预检同义：未注册的进程名不该收到会话控制请求（总则 §7 兜底会把误操作
 /// 变成超时）。账户注册表能解析出网关只说明「曾收到过配置帧」，进程配置消失后仍可能有残留。
 inline bool td_gateway_registered(const ProcessMirror& process_mirror, const std::string& gateway) {
-    return gateway.starts_with("dztd_") && process_mirror.get_process_config(gateway).has_value();
+    return is_td_gateway_name(gateway) && process_mirror.get_process_config(gateway).has_value();
 }
 
 /// 目标网关在进程镜像中是否为 Running。

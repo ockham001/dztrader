@@ -12,12 +12,11 @@
 #include <utility>
 #include <vector>
 
+#include "td_session_guard.h"
+
 namespace dztrader::webui {
 
 namespace {
-
-/// 交易接口进程名前缀（契约 process 的 `dztd_*` 命名，预检 2 的唯一判据）。
-constexpr std::string_view kTdGatewayPrefix = "dztd_";
 
 /// `GET /api/td/gateways/available` 的单行结果（排序后序列化）。
 struct AvailableGateway {
@@ -55,7 +54,9 @@ TdGatewayCtrl::TdGatewayCtrl(std::shared_ptr<Repository> repo,
       scan_root_(std::move(scan_root)) {}
 
 bool TdGatewayCtrl::is_valid_gateway_name(const std::string& name) {
-    return name.size() > kTdGatewayPrefix.size() && name.starts_with(kTdGatewayPrefix);
+    // 前缀谓词由 td_session_guard.h 单一实现；这里额外要求 `dztd_` 后非空（退化名不是
+    // 合法进程身份，且 master 动态注册依赖可扫描 exe stem，契约 process 命名）。
+    return is_td_gateway_name(name) && name.size() > kTdGatewayNamePrefix.size();
 }
 
 bool TdGatewayCtrl::is_registered(const std::string& name) const {
@@ -118,7 +119,7 @@ void TdGatewayCtrl::list_available(const drogon::HttpRequestPtr& req,
                                      {"added", gateway.added},
                                      {"running", gateway.running}});
     }
-    SPDLOG_INFO("available td gateways scanned | count={} dir={}", arr.size(), root.string());
+    SPDLOG_INFO("available td gateways scanned | count={} dir=\"{}\"", arr.size(), root.string());
     callback(json_response(drogon::k200OK, arr));
 }
 
@@ -168,19 +169,15 @@ void TdGatewayCtrl::start(const drogon::HttpRequestPtr& req,
         callback(err);
         return;
     }
-    // 与 market_source_controller 的 start 同款：display_name 非空才携带 patch，
-    // 空串 = 不下发配置（master 侧空串语义是清空，不能把「未提供」误当清空）。
-    std::optional<nlohmann::json> start_config;
-    if (!display_name.empty()) {
-        start_config = nlohmann::json{{"display_name", display_name}};
-    }
-    if (!shm_writer_->write_process_control(platform::ProcessAction::Start, name,
-                                            std::move(start_config))) {
+    // 与 market_source_controller 的 start 同一条规则（唯一实现见 controller_base.h 的
+    // process_start_config_patch）：display_name 非空才携带 patch，空串 = 未提供（不误当清空）。
+    const std::optional<nlohmann::json> start_config = process_start_config_patch(display_name);
+    if (!shm_writer_->write_process_control(platform::ProcessAction::Start, name, start_config)) {
         SPDLOG_ERROR("td gateway start write failed | name={}", name);
         callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
         return;
     }
-    SPDLOG_INFO("td gateway start dispatched | name={} display_name={}", name, display_name);
+    SPDLOG_INFO("td gateway start dispatched | name={} display_name=\"{}\"", name, display_name);
     callback(json_response(drogon::k200OK, nlohmann::json{{"ok", true}}));
 }
 

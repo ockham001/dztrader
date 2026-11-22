@@ -168,6 +168,11 @@ protected:
                          .account_id = account_id, .gateway = gateway, .enabled = enabled}});
     }
 
+    /// 超过单页（`ReadyShmFixture` page_size = 1MB）的进程名：用于构造「就绪 writer 写失败」
+    /// 分支——stop / DELETE 没有 body，只能靠帧 target 撑爆单帧（`write_process_control`
+    /// 返回 false）。名字仍合法（`dztd_*` 前缀），注册进镜像后其 Stop/Remove 帧必然超页。
+    static std::string oversized_gateway_name() { return "dztd_" + std::string(1536 * 1024, 'x'); }
+
     /// 错误体断言：状态码 + `error` 人类可读消息 + 机器码 `code`（契约 rest §1）。
     static void expect_code(const drogon::HttpResponsePtr& resp,
                             drogon::HttpStatusCode status,
@@ -365,6 +370,18 @@ TEST_F(TdGatewayControllerTest, StartWriterNotReadyReturns503WithoutCode) {
     expect_no_code(resp, drogon::k503ServiceUnavailable, "shm writer not available");
 }
 
+TEST_F(TdGatewayControllerTest, StartWriteFailsReturns503WithoutCode) {
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+    prime_gateway("dztd_ctp");
+    // writer 就绪但单帧超过 page_size(1MB)：display_name 撑爆 Start 帧 → 写失败 → 503
+    // （区别于 writer 未就绪分支；契约 rest §2.10 预检 6「shm write failed」）。
+    auto req = admin_req(R"({"display_name":")" + std::string(1536 * 1024, 'x') + R"("})");
+    auto resp = invoke(&TdGatewayCtrl::start, req, std::string("dztd_ctp"));
+    expect_no_code(resp, drogon::k503ServiceUnavailable, "shm write failed");
+    EXPECT_FALSE(shm.has_any_frame());
+}
+
 // ============================================================================
 // POST /api/td/gateways/{name}/stop（契约 rest §2.10）
 // ============================================================================
@@ -412,6 +429,16 @@ TEST_F(TdGatewayControllerTest, StopWriterNotReadyReturns503WithoutCode) {
     prime_gateway("dztd_ctp");
     auto resp = invoke(&TdGatewayCtrl::stop, admin_req(), std::string("dztd_ctp"));
     expect_no_code(resp, drogon::k503ServiceUnavailable, "shm writer not available");
+}
+
+TEST_F(TdGatewayControllerTest, StopWriteFailsReturns503WithoutCode) {
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+    const std::string name = oversized_gateway_name();
+    prime_gateway(name);  // Stop 帧 target 超页 → write_process_control 返回 false
+    auto resp = invoke(&TdGatewayCtrl::stop, admin_req(), name);
+    expect_no_code(resp, drogon::k503ServiceUnavailable, "shm write failed");
+    EXPECT_FALSE(shm.has_any_frame());
 }
 
 // ============================================================================
@@ -497,6 +524,33 @@ TEST_F(TdGatewayControllerTest, RemoveWriterNotReadyReturns503WithoutCode) {
     registry_->note_config_frame_received();
     auto resp = invoke(&TdGatewayCtrl::remove, admin_req(), std::string("dztd_ctp"));
     expect_no_code(resp, drogon::k503ServiceUnavailable, "shm writer not available");
+}
+
+TEST_F(TdGatewayControllerTest, RemoveWriteFailsReturns503WithoutCode) {
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+    const std::string name = oversized_gateway_name();
+    prime_gateway(name);  // Remove 帧 target 超页 → write_process_control 返回 false
+    registry_->note_config_frame_received();
+    auto resp = invoke(&TdGatewayCtrl::remove, admin_req(), name);
+    expect_no_code(resp, drogon::k503ServiceUnavailable, "shm write failed");
+    EXPECT_FALSE(shm.has_any_frame());
+}
+
+TEST_F(TdGatewayControllerTest, RemoveIgnoresAccountsOfOtherGateway) {
+    ReadyShmFixture shm;
+    use_ready_shm(shm);
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_xtp", "acc_x");  // 账户属于另一个交易接口，不是删除目标
+
+    auto resp = invoke(&TdGatewayCtrl::remove, admin_req(), std::string("dztd_ctp"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK)
+        << "guard must be per-gateway: another gateway's accounts must not block removal";
+
+    auto cap = shm.capture_ext_frame(DZ_FRAME_REQUEST_PROCESS_CONTROL);
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload.at("action").get<std::string>(), "Remove");
+    EXPECT_EQ(cap.payload.at("target").get<std::string>(), "dztd_ctp");
 }
 
 // ============================================================================
