@@ -45,6 +45,7 @@
 #include "td_data_controller.h"
 #include "td_account_registry.h"
 #include "td_account_controller.h"
+#include "td_gateway_controller.h"
 #include "td_config_domain_service.h"
 #include "td_status_domain_service.h"
 #include "td_orders_query.h"
@@ -444,6 +445,10 @@ int main(int argc, char* argv[]) {
         td_account_registry));
     // 账户注册表读端点 + 账户配置写端点（契约 rest §2.9.7/§2.9.9）
     drogon::app().registerController(std::make_shared<dztrader::webui::TdAccountCtrl>(
+        repo, td_account_registry, process_mirror, shm_writer));
+    // 交易接口进程生命周期端点（契约 rest §2.10 / ADR 0053）：available 扫描 + 启停/移除，
+    // 移除前置 guard 查账户注册表「该网关有无账户」。
+    drogon::app().registerController(std::make_shared<dztrader::webui::TdGatewayCtrl>(
         repo, td_account_registry, process_mirror, shm_writer));
 
     // EventMonitor 由 main 持有并直调 start/stop（WsController 不再涉及）。

@@ -118,6 +118,53 @@ TEST(TdAccountRegistryTest, EntriesAreSortedByAccountId) {
 }
 
 // ============================================================================
+// 按网关判空（契约 rest §2.10 预检 5：DELETE 的 gateway_has_accounts guard）
+// ============================================================================
+
+TEST(TdAccountRegistryTest, GatewayHasAccountsMatchesOnlyThatGateway) {
+    TdAccountRegistry registry;
+    registry.reconcile_gateway("dztd_ctp", accounts({{"acc_a", true}}));
+    registry.reconcile_gateway("dztd_ctp_2", accounts({{"acc_x", true}}));
+
+    EXPECT_TRUE(registry.gateway_has_accounts("dztd_ctp"));
+    EXPECT_TRUE(registry.gateway_has_accounts("dztd_ctp_2"));
+    EXPECT_FALSE(registry.gateway_has_accounts("dztd_xtp"))
+        << "gateway without accounts must not block removal (契约 rest §2.10 预检 5)";
+}
+
+TEST(TdAccountRegistryTest, GatewayHasAccountsCountsDisabledAccounts) {
+    TdAccountRegistry registry;
+    registry.reconcile_gateway("dztd_ctp", accounts({{"acc_a", false}}));
+
+    // 已禁用账户同样是「有账户」：配置仍持久化在接口文件里，带账户移除会复活
+    // （ADR 0053 决策 3），guard 不得区分 enabled。
+    EXPECT_TRUE(registry.gateway_has_accounts("dztd_ctp"));
+}
+
+TEST(TdAccountRegistryTest, GatewayHasAccountsEmptyAfterWholeGroupRemoval) {
+    TdAccountRegistry registry;
+    registry.reconcile_gateway("dztd_ctp", accounts({{"acc_a", true}, {"acc_b", true}}));
+    registry.reconcile_gateway("dztd_ctp", {});
+
+    EXPECT_FALSE(registry.gateway_has_accounts("dztd_ctp"));
+}
+
+TEST(TdAccountRegistryTest, GatewayHasAccountsEmptyAfterPrune) {
+    TdAccountRegistry registry;
+    registry.reconcile_gateway("dztd_ctp", accounts({{"acc_a", true}}));
+    registry.prune_gateways_not_in({});
+
+    EXPECT_FALSE(registry.gateway_has_accounts("dztd_ctp"));
+}
+
+TEST(TdAccountRegistryTest, GatewayHasAccountsEmptyGatewayIsFalse) {
+    TdAccountRegistry registry;
+    registry.reconcile_gateway("dztd_ctp", accounts({{"acc_a", true}}));
+
+    EXPECT_FALSE(registry.gateway_has_accounts(""));
+}
+
+// ============================================================================
 // 可用性判定（契约 rest §2.9.9 的 available:false / no_gateway_snapshot）
 // ============================================================================
 

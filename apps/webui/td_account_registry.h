@@ -122,6 +122,12 @@ public:
     /// 该账户是否已被任何网关占用（含已禁用/离线）。
     [[nodiscard]] bool contains(const std::string& account_id) const;
 
+    /// 该网关是否仍有账户（含已禁用/离线；契约 rest §2.10 预检 5 的删除 guard）。
+    ///
+    /// 只回答「注册表投影里有没有」，不判断注册表是否可信：调用方必须先检查
+    /// {@link available()}，降级时「查不到」不等于「确实没有」，不得据此移除接口。
+    [[nodiscard]] bool gateway_has_accounts(const std::string& gateway) const;
+
     /// 全部账户（按 account_id 升序，契约 rest §2.9.9）。
     [[nodiscard]] std::vector<TdAccountRegistryEntry> entries() const;
 

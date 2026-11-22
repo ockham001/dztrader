@@ -53,6 +53,7 @@ add_library(dzweb_obj OBJECT
     td_data_controller.cpp
     td_account_registry.cpp
     td_account_controller.cpp
+    td_gateway_controller.cpp
     sysmon_controller.cpp
     sysmon_history_service.cpp
 )

@@ -7,6 +7,7 @@
 #include <ctime>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include "repository.h"
@@ -50,6 +51,29 @@ protected:
     static drogon::HttpResponsePtr error_response(drogon::HttpStatusCode code,
                                                   const std::string& message) {
         return json_response(code, nlohmann::json{{"error", message}});
+    }
+
+    /// Build a JSON error response carrying a machine-readable code:
+    /// {"error": message, "code": code}（契约 rest §1「需要机器判别的失败」的形状）。
+    static drogon::HttpResponsePtr error_with_code(drogon::HttpStatusCode status,
+                                                   const std::string& message,
+                                                   const std::string& code) {
+        return json_response(status, nlohmann::json{{"error", message}, {"code", code}});
+    }
+
+    /// 构造 `REQUEST_PROCESS_CONTROL{Start}` 的可选配置 patch（契约 rest §2.10 / 契约 process）：
+    /// `display_name` 非空才携带 `{"display_name": ...}`；空串 = 「未提供」，**不**下发
+    /// （master 侧空串语义是清空，不能把「未提供」误当清空）。
+    ///
+    /// **这是该规则的唯一实现**：交易接口 start（`td_gateway_controller.cpp`）与行情源
+    /// start（`market_source_controller.cpp`；md 侧代码本票不改）是同一规则的两个调用点，
+    /// 规则语义以本函数与注释为准。
+    static std::optional<nlohmann::json> process_start_config_patch(
+        const std::string& display_name) {
+        if (display_name.empty()) {
+            return std::nullopt;
+        }
+        return nlohmann::json{{"display_name", display_name}};
     }
 
     /// 将 UTC ISO 字符串（如 "2026-07-13T02:30:00Z"）转为服务器本地时间字符串

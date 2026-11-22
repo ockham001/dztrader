@@ -105,13 +105,6 @@ public:
                 const std::string& account_id);
 
 private:
-    /// 带机器码的错误体 `{"error": <human>, "code": <snake_case>}`（契约 rest §1）。
-    static drogon::HttpResponsePtr error_with_code(drogon::HttpStatusCode status,
-                                                   const std::string& message,
-                                                   const std::string& code) {
-        return json_response(status, nlohmann::json{{"error", message}, {"code", code}});
-    }
-
     /// 网关是否为已注册的交易网关进程（进程配置中的 `dztd_*`，契约 rest §2.9.7 预检 2）。
     bool is_registered_td_gateway(const std::string& gateway) const;
 
