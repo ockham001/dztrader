@@ -5,6 +5,7 @@ import {
   formatBytes,
   formatClockHeadroom,
   formatClockThreshold,
+  formatClockTime,
   formatCount,
   formatCountPerSec,
   formatDecimal,
@@ -18,8 +19,10 @@ import {
   formatNumberAuto,
   formatPercent,
   formatPerSec,
+  formatPlatformName,
   formatSignedMilliseconds,
   formatTemperature,
+  formatUptime,
 } from '../format'
 
 // 输入输出表驱动（#126 AC）：格式化是纯函数，边界值是最容易写错的地方——
@@ -398,5 +401,78 @@ describe('formatDuration：时长（秒 → 可读时长；#142 从历史视图�
     expect(formatDuration(null)).toBe(UNAVAILABLE_TEXT)
     expect(formatDuration(Number.NaN)).toBe(UNAVAILABLE_TEXT)
     expect(formatDuration(-1)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+// #430：主机条的三个展示格式化。三者都是纯函数，边界（无后缀 / 跨日 / 不足 1 分钟）最先崩。
+describe('formatPlatformName：platform_description 剥掉末尾 (kernel …) / (build …)', () => {
+  it('Linux：剥后缀得到发行版名', () => {
+    expect(formatPlatformName('Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)')).toBe('Ubuntu 24.04.1 LTS')
+  })
+
+  it('Windows：剥 build 后缀（build 号由内核字段单独承担，不重复）', () => {
+    expect(formatPlatformName('Windows 10 Pro (build 19045)')).toBe('Windows 10 Pro')
+  })
+
+  it('没有括号后缀时原样返回；空白与 null 返回空串（由调用方决定占位）', () => {
+    expect(formatPlatformName('Debian GNU/Linux 12')).toBe('Debian GNU/Linux 12')
+    expect(formatPlatformName('')).toBe('')
+    expect(formatPlatformName('   ')).toBe('')
+    expect(formatPlatformName(null)).toBe('')
+    expect(formatPlatformName(undefined)).toBe('')
+  })
+
+  it('只剥末尾那一段：发行版名自带的其它括号段不动', () => {
+    expect(formatPlatformName('Fedora Linux 40 (Workstation Edition) (kernel 6.9.4)'))
+      .toBe('Fedora Linux 40 (Workstation Edition)')
+  })
+})
+
+describe('formatUptime：主机条「已运行」口径（参考图：X 天 Y 小时 / X 小时 Y 分）', () => {
+  const cases: Array<[number, string]> = [
+    [0, '0 秒'],
+    [59, '59 秒'],
+    [60, '1 分钟'],
+    [3_599, '59 分钟'],
+    [3_600, '1 小时 0 分'],
+    [3_661, '1 小时 1 分'],
+    [86_399, '23 小时 59 分'],
+    [86_400, '1 天 0 小时'],
+    [90_000, '1 天 1 小时'],
+  ]
+  for (const [seconds, expected] of cases) {
+    it(`${seconds} 秒 → ${expected}`, () => {
+      expect(formatUptime(seconds)).toBe(expected)
+    })
+  }
+
+  it('非有限值 / 负值 → 不可用（不显示负数冒充运行时长）', () => {
+    expect(formatUptime(null)).toBe(UNAVAILABLE_TEXT)
+    expect(formatUptime(Number.NaN)).toBe(UNAVAILABLE_TEXT)
+    expect(formatUptime(-1)).toBe(UNAVAILABLE_TEXT)
+  })
+})
+
+describe('formatClockTime：状态槽的更新时刻（当日 HH:MM:SS / 跨日 MM-DD HH:MM:SS）', () => {
+  // 用本地时间构造，避免用例随 CI 时区漂移（格式化按浏览器本地时区渲染）
+  const at = (year: number, month: number, day: number, hour: number, minute: number, second: number): number =>
+    new Date(year, month - 1, day, hour, minute, second).getTime()
+
+  it('同一日：只给时分秒', () => {
+    expect(formatClockTime(at(2026, 10, 21, 15, 0, 0), at(2026, 10, 21, 15, 0, 2))).toBe('15:00:00')
+  })
+
+  it('跨日：补 MM-DD（页面常开跨夜时不能让人误读成今天）', () => {
+    expect(formatClockTime(at(2026, 10, 20, 23, 59, 0), at(2026, 10, 21, 0, 0, 5))).toBe('10-20 23:59:00')
+  })
+
+  it('跨年同样按日期判：只给 MM-DD，不给年份（状态槽是「多久以前的更新」不是日期控件）', () => {
+    expect(formatClockTime(at(2025, 12, 31, 23, 59, 0), at(2026, 1, 1, 0, 0, 5))).toBe('12-31 23:59:00')
+  })
+
+  it('非有限值 / 非法时间戳 → 不可用', () => {
+    expect(formatClockTime(null, at(2026, 10, 21, 15, 0, 2))).toBe(UNAVAILABLE_TEXT)
+    expect(formatClockTime(at(2026, 10, 21, 15, 0, 0), Number.NaN)).toBe(UNAVAILABLE_TEXT)
+    expect(formatClockTime(Number.NaN, at(2026, 10, 21, 15, 0, 2))).toBe(UNAVAILABLE_TEXT)
   })
 })

@@ -26,11 +26,14 @@ import {
 import {
   UNAVAILABLE_TEXT,
   formatAge,
+  formatClockTime,
   formatDecimal,
   formatFrequency,
   formatMilliseconds,
   formatPercent,
+  formatPlatformName,
   formatTemperature,
+  formatUptime,
 } from '@/composables/format'
 import {
   groupTemperatures,
@@ -258,13 +261,8 @@ const pushIntervalSec = computed(() => resolvePushIntervalSec(sysmon.config?.rea
 const snapshotAge = computed(() => receivedAgeMs(sysmon.lastReceivedAtMs, nowMs.value))
 /** 停推：距上次收到新快照已超阈值（无接收记录时为 false —— 不知道就不说） */
 const snapshotStale = computed(() => isSnapshotStale(snapshotAge.value, pushIntervalSec.value))
-/** 降级文案「快照已停 N 秒」；未停推为 null（此时显示「实时快照」） */
+/** 降级文案「快照已停 N 秒」；未停推为 null（此时状态槽显示「更新于 …」） */
 const snapshotStaleText = computed(() => staleSnapshotText(snapshotAge.value, pushIntervalSec.value))
-/** 快照状态行的三段文案（#371）：无快照 / 有快照且新鲜 / 有快照但停推 */
-const snapshotStateText = computed(() => {
-  if (!snapshot.value) return '等待快照'
-  return snapshotStaleText.value ?? '实时快照'
-})
 
 // ---- 格式化（#126：唯一实现收敛到 @/composables/format，本文件不得再写 toFixed）----
 // 「不可用」占位直接用共享模块导出的 UNAVAILABLE_TEXT（不在本文件另起别名，
@@ -288,17 +286,6 @@ function formatDateTime(unixMs: number): string {
   const pad = (n: number): string => String(n).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
     + `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
-
-function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return UNAVAILABLE_TEXT
-  const total = Math.floor(seconds)
-  const days = Math.floor(total / 86_400)
-  const hours = Math.floor((total % 86_400) / 3_600)
-  const minutes = Math.floor((total % 3_600) / 60)
-  const secs = total % 60
-  const hms = [hours, minutes, secs].map(n => String(n).padStart(2, '0')).join(':')
-  return days > 0 ? `${days} 天 ${hms}` : hms
 }
 
 // ---- 可用性映射（契约 sysmon §2.5：按数据渲染，不按 OS 名硬编码分支）----
@@ -653,8 +640,8 @@ const temperatureDetailSummary = computed(
   () => `${temperatureReadings.value.length} 个传感器 · ${temperatureGroups.value.length} 个芯片`,
 )
 
-// ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
-// 字段全部来自既有快照的 `system` / `platform_description`，不新增接口、不读 store 之外的东西。
+// ---- 主机条（#430）：一条通栏主机信息条（主机 / 系统 / 内核 / 已运行 + 右端状态槽） ----
+// 字段全部来自既有快照的 `system` / `platform_description` / `platform.kernel`，不新增接口。
 // 无可显示值的字段统一 `—`（不是空白、不是 0）：空串与 null 都算「没有这个值」。
 function displayOrDash(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return '—'
@@ -663,18 +650,27 @@ function displayOrDash(value: string | number | null | undefined): string {
 }
 
 const hostName = computed(() => displayOrDash(system.value?.hostname))
+/**
+ * 系统（发行版名）：`platform_description` 已含 `(kernel …)` / `(build …)`，主机条把内核单列，
+ * 所以这里剥掉末尾括号段——纯展示层派生，规则与边界见 `formatPlatformName`（#430 决策 3）。
+ */
+const hostSystem = computed(() => displayOrDash(formatPlatformName(platformDescription.value)))
 const hostKernel = computed(() => displayOrDash(snapshot.value?.platform?.kernel))
 const hostUptime = computed(() => (system.value ? formatUptime(system.value.uptime_sec) : '—'))
-/** 逻辑核数文案（主机条与四数字的小字上下文共用这一份口径：
- * 优先 `system.logical_cores`，缺失按每核数组长度；0 核视同「没有这个值」显示 `—`） */
+/**
+ * 右端状态槽：快照新鲜时说「更新于 …」，停推时同一位置改说停推事实（数据龄并入，不再单起一行）；
+ * 两者都不可得时给 `—`（不显示「实时」这种无法被推翻的话）。
+ */
+const hostStatusText = computed(() => {
+  if (snapshotStaleText.value !== null) return snapshotStaleText.value
+  const timestamp = snapshot.value?.timestamp
+  if (typeof timestamp !== 'number') return '—'
+  return `更新于 ${formatClockTime(timestamp, nowMs.value)}`
+})
+
+/** 逻辑核数文案（CPU 四数字的小字上下文用；主机条不再显示 CPU 型号 · 核数，#430 决策 6） */
 const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
 const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
-
-/** CPU 型号 · 逻辑核数（型号为空串时只显示核数；两者都缺才整段 `—`） */
-const hostCpuLine = computed(() => {
-  const model = system.value?.cpu_model?.trim() ?? ''
-  return model === '' ? logicalCoreText.value : `${model} · ${logicalCoreText.value}`
-})
 
 // ---- CPU 宽卡（#362）：四数字 + 单序列自适应趋势 + 每核条形 ----
 
@@ -764,52 +760,18 @@ const cpuTrendAriaLabel = computed(
       <header class="monitor-view__header">
         <div class="monitor-view__heading">
           <h1 class="monitor-view__title">资源监控</h1>
-          <!-- 实时视图的「等待快照」由下面状态行承担（#325），副标题不再重复同一件事；
-               历史 / 配置视图没有状态行，保留这句说明。 -->
+          <!-- 副标题只留给历史 / 配置视图：实时视图的主机信息由下方主机条承载（#430），
+               副标题与主机条同时出现就是同一事实说两遍（原 #373 的 kernel 重复即由此而来）。 -->
           <p
-            v-if="snapshot || viewMode !== 'realtime'"
+            v-if="viewMode !== 'realtime'"
             class="monitor-view__subtitle"
             data-test="monitor-subtitle"
           >
             <template v-if="snapshot">{{ platformDescription }}<template v-if="updatedAt"> · 更新于 {{ updatedAt }}</template></template>
             <template v-else>系统监控数据尚未到达</template>
           </p>
-          <!-- 实时快照状态（#325）：原为 `ds-tag` 药丸，在 390 宽与三个视图切换按钮同排、同属药丸族，
-               看起来像第 4 个 Tab。降级为「状态点 + 小字」并移入标题组，与 Tab 行分离。
-               #371：三段——等待快照 / 实时快照 / 快照已停 N 秒。存活信号一律中性色，
-               绿色只留给指标状态（DESIGN.md One Job Rule）；停推的「警示」由文案承担，
-               不靠状态色（它们是进程状态，不是数据龄）。 -->
-          <p
-            v-if="viewMode === 'realtime'"
-            class="monitor-view__snapshot-state"
-            :class="{
-              'monitor-view__snapshot-state--waiting': !snapshot,
-              'monitor-view__snapshot-state--stale': snapshotStale,
-            }"
-          >
-            <span class="monitor-view__snapshot-dot" aria-hidden="true"></span>
-            {{ snapshotStateText }}
-          </p>
         </div>
       </header>
-      <!-- 主机条（#362）：原在下方网格内，#370 步骤 4 并入顶栏——与页头同处一条带，省掉
-            两者之间整块的高度。字段一个未删（删哪个重复字段是 #373 的决定，本票不做）。
-            只在实时视图且快照到达时渲染，与原先在网格内的时机一致。 -->
-      <section
-        v-if="viewMode === 'realtime' && snapshot"
-        class="monitor-view__host"
-        :class="{ 'monitor-view__host--stale': snapshotStale }"
-        data-test="monitor-host"
-        aria-label="主机"
-      >
-        <span class="monitor-view__host-dot" aria-hidden="true"></span>
-        <span class="monitor-view__host-name">{{ hostName }}</span>
-        <span class="monitor-view__host-field">{{ platformDescription || '—' }}</span>
-        <span class="monitor-view__host-field">内核 {{ hostKernel }}</span>
-        <span class="monitor-view__host-field">运行 {{ hostUptime }}</span>
-        <span class="monitor-view__host-field">{{ hostCpuLine }}</span>
-        <span v-if="!snapshotStale" class="monitor-view__host-live">实时</span>
-      </section>
       <!-- 视图切换是分段按钮组，不是 ARIA tabs（#323）：先前声明了 role=tablist/tab 却没有
            tabpanel、aria-controls、方向键与 roving tabindex——读屏按 tabs 报语义、键盘却按按钮走，
            比不做更糟。这里退回普通按钮组，与 LogsView / SettingsView / TradingDataView 一致：
@@ -844,6 +806,38 @@ const cpuTrendAriaLabel = computed(
       </div>
     </div>
 
+    <!-- 主机条（#430）：页头下方的一条通栏信息条，取代原先浮在标题行中间的主机卡。
+         行为照抄主机面板（`@local/dsh-host-panel` 的 HostStrip）：整条可换行、单条内容不换行
+         （超长省略号 + title）、标签次级色 / 值主色、spacer 把剩余宽度吃掉使状态槽恒在所在行最右。
+         只在实时视图且快照到达时渲染；无可显示值一律 —（不是空白）。 -->
+    <section
+      v-if="viewMode === 'realtime' && snapshot"
+      class="monitor-view__host"
+      :class="{ 'monitor-view__host--stale': snapshotStale }"
+      data-test="monitor-host"
+      aria-label="主机"
+    >
+      <span class="monitor-view__host-dot" aria-hidden="true"></span>
+      <span class="monitor-view__host-item">
+        <span class="monitor-view__host-label">主机</span>
+        <span class="monitor-view__host-value" data-test="monitor-host-name" :title="hostName">{{ hostName }}</span>
+      </span>
+      <span class="monitor-view__host-item">
+        <span class="monitor-view__host-label">系统</span>
+        <span class="monitor-view__host-value" data-test="monitor-host-system" :title="hostSystem">{{ hostSystem }}</span>
+      </span>
+      <span class="monitor-view__host-item">
+        <span class="monitor-view__host-label">内核</span>
+        <span class="monitor-view__host-value" data-test="monitor-host-kernel" :title="hostKernel">{{ hostKernel }}</span>
+      </span>
+      <span class="monitor-view__host-item">
+        <span class="monitor-view__host-label">已运行</span>
+        <span class="monitor-view__host-value" data-test="monitor-host-uptime">{{ hostUptime }}</span>
+      </span>
+      <span class="monitor-view__host-spacer" aria-hidden="true"></span>
+      <span class="monitor-view__host-status" data-test="monitor-host-status">{{ hostStatusText }}</span>
+    </section>
+
     <!-- 历史视图（#79）：独立渲染，不卸载实时 store（WS 连接与实时数据不受影响）。
          历史 tab **保持 v-if**：它的 onMounted 会发一次 history REST 查询，store 无缓存无去重，
          常驻会改变加载时机（#322 有意保留这一处不对称）。 -->
@@ -866,7 +860,7 @@ const cpuTrendAriaLabel = computed(
     </div>
 
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
-      <!-- 主机条已并入上方顶栏（#370 步骤 4），网格里不再重复渲染。
+      <!-- 主机条是顶栏下方的独立一条（#430），网格里不再重复渲染。
 
        CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
            每核使用率条形常驻（一眼看形态）；每核频率与每传感器读数收进各自的可展开区——
@@ -1561,7 +1555,7 @@ const cpuTrendAriaLabel = computed(
   justify-content: space-between;
   flex-wrap: nowrap;
   gap: var(--spacer-16);
-  margin-bottom: var(--spacer-24);
+  margin-bottom: var(--spacer-12);
 }
 
 /* 标题组可收缩（#328）：中等宽度下让副标题走省略号，而不是把 Tab 顶到下一行。 */
@@ -1582,52 +1576,6 @@ const cpuTrendAriaLabel = computed(
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   color: var(--text-tertiary);
-}
-
-/* 实时快照状态（#325）：状态点 + 小字（原 `ds-tag` 药丸在 390 宽与三个视图切换按钮同排、
-   同属药丸族，看起来像第 4 个 Tab）。放在标题组内，与 Tab 行分离。
-   #371：这是**存活信息**（数据到没到、有多旧），一律中性色——绿色属于指标状态（台账 normal
-   的轨道与状态点），同一个绿在这里会同时意味着「快照到了」「机器正常」「主机条在推进」三件事，
-   违反 DESIGN.md 的 One Job Rule（DESIGN.md:225）。
-   文字用 secondary 而不是 tertiary：本行 11px 且承载信息（「快照已停 18 秒」），tertiary 在
-   深/浅两套下只有 3.19 / 4.35，够不到 11px 正文的 4.5:1（#363 C5 的同一笔账）。
-   数字加 `tabular-nums`：停推时秒数每秒变化，等宽数字让文案不左右跳（DESIGN.md 表格数字规则）。 */
-.monitor-view__snapshot-state {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacer-6);
-  margin: var(--spacer-4) 0 0;
-  color: var(--text-secondary);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-  font-variant-numeric: tabular-nums;
-}
-
-/* 状态点：存在的意义是「这一行说的是数据」而不是「一切正常」。
-   secondary（浅 9.51 / 深 5.86 对各自底色）而不是 tertiary：6px 的图形要求 ≥3:1，
-   tertiary 在深色主机条底（#262626）只有 3.19，太贴近下限。 */
-.monitor-view__snapshot-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: var(--text-secondary);
-}
-
-/* 无快照 ≠ 数据停了：用**形状**（空心环）而不是色相区分「还没有数据」与「数据在更新」。
-   状态色与整页空态已在别处表达「等待」，这里不再多涂一种颜色。
-   用 border 而不是 box-shadow：forced-colors（Windows 高对比度）下 box-shadow 被强制为 none，
-   border 会保留并取 CanvasText，空心环在两种模式下都读得出来。 */
-.monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot {
-  background: transparent;
-  border: 1px solid var(--text-secondary);
-}
-
-/* 停推（数据龄 > 3 × 推送间隔）：**不加色相、不加背景块、不加脉冲**——「快照已停 18 秒」
-   这句话本身已经说清事实；加重只给字重（DESIGN.md Paired-Step Rule：色族只给状态，
-   这里给的是「数据有多旧」，不是进程状态）。 */
-.monitor-view__snapshot-state--stale {
-  font-weight: var(--body-xs-strong-font-weight);
 }
 
 /* 离开确认对话框正文（#322）：与其它对话框正文同档字号，不引入新范式 */
@@ -1703,18 +1651,18 @@ const cpuTrendAriaLabel = computed(
   white-space: nowrap;
 }
 
-/* ---- 主机条（#362）：一条紧凑的行取代原「系统信息」整张卡 ----
-   #370 步骤 4：从下方网格挪进顶栏，与页头同处一条带——原先它是网格里的独立行，
-   页头与它之间有整块间距；合并后顶栏一行装下「标题组 / 主机条 / 视图切换」，
-   省掉两者之间的整块高度。字段一个未删（删哪个重复字段是 #373 的决定，本票不做）。
-   脉冲点 + 主机名 + 发行版 / 内核 / 运行时长 / CPU 型号 · 逻辑核数 + 右端「实时」。
-   窄屏换行而不是横向滚动：字段都允许收缩，型号过长先折行。 */
+/* ---- 主机条（#430）：页头下方的一条通栏信息条（主机 / 系统 / 内核 / 已运行 + 右端状态槽）----
+   行为照抄主机面板插件（`@local/dsh-host-panel` 的 HostStrip）：容器允许**整体换行**，但每条
+   内容**不换行**（值 overflow + ellipsis + title），标签与值分色，spacer 吃掉剩余宽度使状态槽
+   恒在**所在那一行**的最右（换到第二行也贴右缘）。字段数量与顺序固定，窄屏不隐藏字段。
+   与页头同属页面 chrome：上间距 12、下间距 24，让「标题行 + 主机条」读成一组。 */
 .monitor-view__host {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--spacer-4) var(--spacer-12);
   min-width: 0;
+  margin-bottom: var(--spacer-24);
   padding: var(--spacer-8) var(--spacer-12);
   border: 1px solid var(--border-neutral-l1);
   border-radius: var(--radius-8);
@@ -1723,7 +1671,51 @@ const cpuTrendAriaLabel = computed(
   line-height: var(--body-xs-line-height);
 }
 
-/* 脉冲点：实时快照在推进（纯装饰，状态文字由快照状态行承担，故 aria-hidden）。
+/* 单条字段：**标签 + 值**成一个不可拆的整体（基线对齐），宽度不足时整条换行而不是把字拆开。
+   min-width: 0 允许这条作为 flex item 收缩，值的省略号才会真的出现。 */
+.monitor-view__host-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--spacer-4);
+  min-width: 0;
+}
+
+/* 标签次级色、值主色：名字与值在灰度 / 色觉障碍下也能分开（主机面板同一做法）。
+   label 用 secondary 而不是 tertiary：11px 且承载信息，tertiary 在两套主题下都够不到 4.5:1。 */
+.monitor-view__host-label {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.monitor-view__host-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-default);
+  font-weight: var(--body-xs-strong-font-weight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* spacer 吃掉剩余宽度：状态槽因此永远贴在它所在那一行的右缘（换行后同样成立） */
+.monitor-view__host-spacer {
+  flex: 1 1 auto;
+}
+
+/* 右端状态槽：正常「更新于 HH:MM:SS」，停推「快照已停 N 秒」（数据龄并入，不再单起一行）。
+   与脉冲点同源的中性色（#371）；tabular-nums 让停推时每秒变化的秒数不左右跳。 */
+.monitor-view__host-status {
+  flex: none;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 停推：状态槽只加一档字重，不加色相 / 背景（Paired-Step Rule：色族只给状态，
+   这里给的是「数据有多旧」，不是进程状态）。 */
+.monitor-view__host--stale .monitor-view__host-status {
+  font-weight: var(--body-xs-strong-font-weight);
+}
+
+/* 脉冲点：实时快照在推进（纯装饰，状态文字由状态槽承担，故 aria-hidden）。
    #371：存活信号走中性色。脉冲动画本身仍在——「条在推进」是**动作**而不是**状态**，
    动作可以保留动效；颜色则归指标状态用。
    深浅两套都对各自底色 ≥ 5.86:1（secondary：浅 #404040 对 #F5F5F5、深 #a1a1a1 对 #262626）。 */
@@ -1742,7 +1734,7 @@ const cpuTrendAriaLabel = computed(
 }
 
 /* 停推时脉冲点停止脉动：它代表「在推进」，数据不再推进时继续跳就是在撒谎。
-   颜色不变（仍是中性灰），信息由状态行那句话承担——两处同时说同一件事，且不靠色相。 */
+   颜色不变（仍是中性灰），信息由状态槽那句话承担——两处同时说同一件事，且不靠色相。 */
 .monitor-view__host--stale .monitor-view__host-dot {
   animation: none;
 }
@@ -1752,25 +1744,6 @@ const cpuTrendAriaLabel = computed(
   .monitor-view__host-dot {
     animation: none;
   }
-}
-
-.monitor-view__host-name {
-  color: var(--text-default);
-  font-weight: var(--body-sm-strong-font-weight);
-}
-
-.monitor-view__host-field {
-  min-width: 0;
-  color: var(--text-tertiary);
-  overflow-wrap: anywhere;
-}
-
-/* 右端「实时」：与脉冲点同源的存活信号，同样中性色（#371）。停推时整句由 v-if 撤掉，
-   不留一句「实时」与「快照已停 18 秒」并排自相矛盾。 */
-.monitor-view__host-live {
-  margin-left: auto;
-  flex-shrink: 0;
-  color: var(--text-secondary);
 }
 
 /* ---- CPU 四数字（#362）：占用率 / 系统负载 / 当前频率 / 最高温度横排 ----

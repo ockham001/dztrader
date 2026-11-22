@@ -572,8 +572,9 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 不再是网格项——它的跨行由顶栏的 flex 布局承担，不在这里断言）。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
     expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
-    // 主机条已不在网格里：它的规则不得再声明跨列（否则是死规则，会误导下一个人以为它在网格内）
-    expect(ruleBody('.monitor-view__host'), '主机条移入顶栏后不得残留网格跨列规则').not.toContain('grid-column')
+    // 主机条不在网格里（#430：顶栏下方的独立一条）：它的规则不得再声明跨列
+    // （否则是死规则，会误导下一个人以为它在网格内）
+    expect(ruleBody('.monitor-view__host'), '主机条不在网格内，不得残留网格跨列规则').not.toContain('grid-column')
 
     // 不存在为 `.monitor-view__grid` 单独改列数的媒体规则（列数不是版面变量了）。
     // 媒体块按「行首 `}` 收尾」切分，与上面的 mediaRuleBody 同一假设。
@@ -737,26 +738,31 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   })
 
   it('#371 存活信号走中性色，绿色只留给指标状态（One Job Rule）', () => {
-    // 四处存活信号（快照状态点 / 快照状态行 / 主机条脉冲点 / 右端「实时」）
+    // #430：存活信号只剩主机条上的两处（脉冲点 / 右端状态槽）与信息标签；
     // 一律中性色：绿色在页面上只意味着「指标正常」，不能再兼作「快照到了」「条在推进」。
-    for (const selector of ['.monitor-view__snapshot-state', '.monitor-view__snapshot-dot',
-      '.monitor-view__host-dot', '.monitor-view__host-live']) {
+    for (const selector of ['.monitor-view__host-dot', '.monitor-view__host-status',
+      '.monitor-view__host-label']) {
       const body = ruleBody(selector)
       expect(body, `${selector} 不得再占用状态色`).not.toContain('--status-success-default')
       expect(body, `${selector} 不得借用警示色`).not.toContain('--status-warning-default')
       // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到 6px 图形的 3:1 下限）
       expect(body, `${selector} 应用 --text-secondary`).toContain('var(--text-secondary)')
     }
-    // 等待态不靠色相区分（空心环 = 形状差异），因此不再有状态色规则
-    expect(ruleBody('.monitor-view__snapshot-state--waiting .monitor-view__snapshot-dot'))
-      .toContain('background: transparent')
     // 停推只加字重，不加色块 / 背景 / 动画
-    const stale = ruleBody('.monitor-view__snapshot-state--stale')
+    const stale = ruleBody('.monitor-view__host--stale .monitor-view__host-status')
     expect(stale).toContain('font-weight: var(--body-xs-strong-font-weight)')
     expect(stale).not.toContain('background')
     expect(stale).not.toContain('animation')
     // 停推时脉冲点停跳：它说的是「在推进」，数据不推进时继续动就是撒谎
     expect(ruleBody('.monitor-view__host--stale .monitor-view__host-dot')).toContain('animation: none')
+    // 主机条单条内容不换行（换行只发生在条与条之间，#430）：值 nowrap + 省略号
+    const value = ruleBody('.monitor-view__host-value')
+    expect(value).toContain('white-space: nowrap')
+    expect(value).toContain('text-overflow: ellipsis')
+    expect(value).toContain('overflow: hidden')
+    // spacer 吃掉剩余宽度 → 状态槽恒在所在行最右（含换行后的第二行）
+    expect(ruleBody('.monitor-view__host-spacer')).toContain('flex: 1 1 auto')
+    expect(ruleBody('.monitor-view__host-status')).toContain('flex: none')
   })
 
   it('#371 中性色与绿色在**解析后**确实不同：token 名匹配之外，颜色值也要分开', () => {

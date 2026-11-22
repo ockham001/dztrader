@@ -364,3 +364,58 @@ export function formatNumberAuto(value: number | null | undefined): string {
   if (!isFiniteNumber(value)) return UNAVAILABLE_TEXT
   return Number.isInteger(value) ? String(value) : value.toFixed(2)
 }
+
+/**
+ * 平台描述 → 发行版名：剥掉末尾的 `(kernel …)` / `(build …)` 括号段（#430）。
+ *
+ * 为什么需要派生：契约 §2.5 的 `platform_description` 在 Linux 上形如
+ * `Ubuntu 24.04.1 LTS (kernel 6.8.0-45-generic)`、Windows 上形如 `Windows 10 Pro (build 19045)`，
+ * 而主机条把「内核」单列（`platform.kernel`），若系统字段直接用原值，同一事实会在一行里出现两次
+ * （#373 的重复根因）。派生只发生在展示层：不改契约、不改发送方，原始值仍在 title 与
+ * 历史/配置视图的副标题里可见。
+ *
+ * 规则：只剥**末尾**的 `(kernel …)` / `(build …)`（两段之间可以有空格），剥完为空则返回空串，
+ * 由调用方决定占位（视图侧统一显示 `—`）。其它括号段（如发行版名自带的代号）不动。
+ */
+export function formatPlatformName(description: string | null | undefined): string {
+  if (typeof description !== 'string') return ''
+  const trimmed = description.trim()
+  if (trimmed === '') return ''
+  return trimmed.replace(/\s*\((?:kernel|build)\s[^)]*\)\s*$/i, '').trim()
+}
+
+/**
+ * 运行时长（秒 → 参考图口径的「已运行」文案，#430）：`1 天 23 小时` / `22 小时 1 分` / `3 分钟`。
+ *
+ * 与 {@link formatDuration} 刻意不同：那个是「覆盖时长」（天/小时保留 1 位小数，用于
+ * 「最近 15 分钟」这类口径），这里是**人类读的机器运行时长**——不保留小数、不显示秒
+ * （秒级跳动对「这台机器跑了多久」没有信息量，反而让主机条每秒都在变）。向下取整。
+ */
+export function formatUptime(seconds: number | null | undefined): string {
+  if (!isFiniteNumber(seconds) || seconds < 0) return UNAVAILABLE_TEXT
+  const total = Math.floor(seconds)
+  if (total >= 86_400) return `${Math.floor(total / 86_400)} 天 ${Math.floor((total % 86_400) / 3_600)} 小时`
+  if (total >= 3_600) return `${Math.floor(total / 3_600)} 小时 ${Math.floor((total % 3_600) / 60)} 分`
+  if (total >= 60) return `${Math.floor(total / 60)} 分钟`
+  return `${total} 秒`
+}
+
+/**
+ * 墙钟时刻（Unix 毫秒 → `HH:MM:SS`；与参考时刻不是同一天时带 `MM-DD`，#430）。
+ *
+ * 主机条的状态槽是「更新于 …」：日常盯盘只关心今天几点几分几秒，日期是噪声；而页面跨夜常开时
+ * 只给时分秒会让人误读成今天——所以只在跨日时补 `MM-DD`。参考时刻由调用方给（组件里是每秒
+ * 推进的 `nowMs`），本函数不读系统时钟，便于单测固定时间点。
+ */
+export function formatClockTime(unixMs: number | null | undefined, referenceNowMs: number): string {
+  if (!isFiniteNumber(unixMs) || !isFiniteNumber(referenceNowMs)) return UNAVAILABLE_TEXT
+  const date = new Date(unixMs)
+  if (Number.isNaN(date.getTime())) return UNAVAILABLE_TEXT
+  const now = new Date(referenceNowMs)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  return sameDay ? clock : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`
+}
