@@ -2125,6 +2125,28 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     expect(wrapper.find('[data-test="monitor-host"]').text()).toContain('trade-01')
   })
 
+  it('悬停补充：更新于给采样/漏拍、已运行给启动时刻（#432）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountView()
+
+    const status = wrapper.find('[data-test="monitor-host-status"]')
+    expect(status.attributes('title')).toBe('采样间隔 1000 ms · 累计漏拍 0')
+    const uptime = wrapper.find('[data-test="monitor-host-uptime"]')
+    expect(uptime.attributes('title')).toMatch(/^启动于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  })
+
+  it('悬停补充遇缺失/非法字段不拼假值（#432）', async () => {
+    const snapshot = makeSysmonSnapshot()
+    snapshot.sampling.measure_interval_ms = 0   // 非法：不拼「采样间隔 0 ms」
+    snapshot.sampling.missed_ticks = Number.NaN  // 非有限：不拼漏拍
+    snapshot.system.boot_time_unix_sec = 0      // 无启动时刻：不给 title
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-host-status"]').attributes('title')).toBeUndefined()
+    expect(wrapper.find('[data-test="monitor-host-uptime"]').attributes('title')).toBeUndefined()
+  })
+
   it('主机条是顶栏之后的独立一条，不再挤在标题行里（#430）', async () => {
     const wrapper = await mountView()
     const host = wrapper.find('[data-test="monitor-host"]')

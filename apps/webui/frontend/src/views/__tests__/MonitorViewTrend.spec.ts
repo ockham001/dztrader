@@ -737,24 +737,27 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       .toContain('background: var(--status-error-default)')
   })
 
-  it('#371 存活信号走中性色，绿色只留给指标状态（One Job Rule）', () => {
-    // #430：存活信号只剩主机条上的两处（脉冲点 / 右端状态槽）与信息标签；
-    // 一律中性色：绿色在页面上只意味着「指标正常」，不能再兼作「快照到了」「条在推进」。
-    for (const selector of ['.monitor-view__host-dot', '.monitor-view__host-status',
-      '.monitor-view__host-label']) {
+  it('#432 存活信号着色：在流动=success 绿、停推=warning 黄；文字与标签仍中性（与指标绿分工见 DESIGN.md）', () => {
+    // 脉冲点是**连接/进程事实**（数据在推），#432 起着色；#371 的「中性色」是旧方向口径。
+    const dot = ruleBody('.monitor-view__host-dot')
+    expect(dot).toContain('background: var(--status-success-default)')
+    expect(dot).toContain('animation: monitor-view-host-pulse')
+    // 状态槽文字与标签保持中性色：颜色只是冗余信号，停推事实由文案承担（不靠色相才可读）
+    for (const selector of ['.monitor-view__host-status', '.monitor-view__host-label']) {
       const body = ruleBody(selector)
-      expect(body, `${selector} 不得再占用状态色`).not.toContain('--status-success-default')
+      expect(body, `${selector} 不得占用存活/状态色`).not.toContain('--status-success-default')
       expect(body, `${selector} 不得借用警示色`).not.toContain('--status-warning-default')
-      // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到 6px 图形的 3:1 下限）
+      // 中性色只允许两档（tertiary 在深色主机条底上只有 3.19，够不到正文 4.5:1）
       expect(body, `${selector} 应用 --text-secondary`).toContain('var(--text-secondary)')
     }
-    // 停推只加字重，不加色块 / 背景 / 动画
+    // 停推：脉冲点转 warning 黄并停跳；状态槽只加字重，不加背景 / 彩色 / 动画
+    const staleDot = ruleBody('.monitor-view__host--stale .monitor-view__host-dot')
+    expect(staleDot).toContain('background: var(--status-warning-default)')
+    expect(staleDot).toContain('animation: none')
     const stale = ruleBody('.monitor-view__host--stale .monitor-view__host-status')
     expect(stale).toContain('font-weight: var(--body-xs-strong-font-weight)')
     expect(stale).not.toContain('background')
     expect(stale).not.toContain('animation')
-    // 停推时脉冲点停跳：它说的是「在推进」，数据不推进时继续动就是撒谎
-    expect(ruleBody('.monitor-view__host--stale .monitor-view__host-dot')).toContain('animation: none')
     // 主机条单条内容不换行（换行只发生在条与条之间，#430）：值 nowrap + 省略号
     const value = ruleBody('.monitor-view__host-value')
     expect(value).toContain('white-space: nowrap')
