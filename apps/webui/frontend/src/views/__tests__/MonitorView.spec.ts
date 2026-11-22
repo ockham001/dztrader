@@ -22,24 +22,18 @@ const stubs = {
 // onUnmounted 一起清。
 enableAutoUnmount(afterEach)
 
-/** CPU 卡内仍可展开的明细（#363：卷 / 盘 / 网卡的明细已平铺进台账，不再有卡片级折叠） */
-const DETAIL_TOGGLES = [
-  'monitor-cpu-detail-toggle',
-  'monitor-temperature-detail-toggle',
-]
+/** CPU 块里仍可展开的明细（#435：每核频率明细入口已删除，只剩温度传感器明细） */
+const DETAIL_TOGGLES = ['monitor-temperature-detail-toggle']
 
 async function mountView() {
   const wrapper = mount(MonitorView, { global: { stubs } })
   await flushPromises()
-  // #363 起维度行（卷 / 盘 / 网卡）平铺进台账，不需要先展开就能断言数据；每核频率与温度明细
-  // 仍是 CPU 卡里的可展开区，故这里只展开那两个（折叠默认态与切换由 MonitorViewTrend.spec.ts 覆盖）。
+  // #363 起维度行（卷 / 盘 / 网卡）平铺进台账，不需要先展开就能断言数据；温度传感器明细
+  // 是 CPU 块里的可展开区，挂载后自动展开以便断言逐传感器读数（默认收起态由 Trend spec 覆盖）。
   for (const toggleTest of DETAIL_TOGGLES) {
     const toggle = wrapper.find(`[data-test="${toggleTest}"]`)
     if (toggle.exists()) await toggle.trigger('click')
   }
-  // #370：每核条形从 CPU 宽卡移入台账 cpu.cores 行的展开区，挂载后自动展开以便断言逐核读数
-  const coresToggle = wrapper.find('[data-test="ledger-expand-cpu.cores"]')
-  if (coresToggle.exists()) await coresToggle.trigger('click')
   await wrapper.vm.$nextTick()
   return wrapper
 }
@@ -159,12 +153,14 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     // CPU 卡片整行宽（总量 + 每核 + 负载 + 速率）
     expect(wrapper.find('[data-test="monitor-cpu"]').classes()).toContain('monitor-view__card--wide')
 
+    // #435：每核条形不再显示逐核文字，读数在 title / aria（`核 N · X%`，频率可用时再带 MHz）
     const cores = wrapper.findAll('[data-test="monitor-core"]')
     expect(cores).toHaveLength(16)
     expect(cores[0].attributes('data-core-index')).toBe('0')
     expect(cores[15].attributes('data-core-index')).toBe('15')
-    expect(cores[0].text()).toContain('核 0')
-    expect(cores[0].text()).toContain('5.0%')
+    expect(cores[0].attributes('title')).toContain('核 0')
+    expect(cores[0].attributes('title')).toContain('5.0%')
+    expect(cores[0].attributes('aria-label')).toBe(cores[0].attributes('title'))
 
     expect(wrapper.find('[data-test="monitor-load-one"]').text()).toBe('0.42')
     expect(wrapper.find('[data-test="monitor-load-five"]').text()).toBe('0.51')
@@ -172,10 +168,8 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     // 无提示时不得凭空造提示（#207 B2 的映射只在发送方真的携带 key 时生效）
     expect(wrapper.find('[data-test="monitor-load-hint"]').exists()).toBe(false)
 
-    // #370：上下文切换 / 中断移入台账的 cpu.rates 行（不再是 CPU 卡内的一行小字）
-    const ratesRow = wrapper.find('[data-row-id="cpu.rates"]')
-    expect(ratesRow.exists()).toBe(true)
-    expect(ratesRow.find('[data-test="ledger-value"]').text()).toBe('1234/s · 567/s')
+    // #435：上下文切换 / 中断从实时页移除（历史视图两项都可查），台账也不再产出 CPU 组
+    expect(wrapper.find('[data-row-id="cpu.rates"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-cpu-rates"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('不可用')
   })
@@ -193,8 +187,10 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
       .filter(core => core.find('[data-test="monitor-core-saturated"]').exists())
       .map(core => core.attributes('data-core-index'))
     expect(saturatedIndices).toEqual(['2', '5'])
-    expect(coreItems[2].classes()).toContain('monitor-view__core--saturated')
-    expect(coreItems[0].classes()).not.toContain('monitor-view__core--saturated')
+    // #435：饱和核用 error 色填充 + 「饱和」文字（颜色之外还有文字这一层差异）
+    expect(coreItems[2].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(true)
+    expect(coreItems[0].find('.monitor-view__core-bar-fill--saturated').exists()).toBe(false)
+    expect(coreItems[2].attributes('title')).toContain('饱和')
   })
 
   it('部分不可用：单核 null 显示不可用、负载空态、速率 null 显示不可用', async () => {
@@ -210,18 +206,19 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
 
     const coreItems = wrapper.findAll('[data-test="monitor-core"]')
     expect(coreItems).toHaveLength(4)
-    expect(coreItems[1].text()).toContain('不可用')
-    expect(coreItems[0].text()).not.toContain('不可用')
+    // #435：读数在 title / aria（不再有逐核文字）；缺失值显示「不可用」而不是 0
+    expect(coreItems[1].attributes('title')).toContain('不可用')
+    expect(coreItems[0].attributes('title')).not.toContain('不可用')
+    expect(coreItems[1].find('.monitor-view__core-bar-fill').attributes('style') ?? '')
+      .not.toContain('--core-fill')
 
     const loadEmpty = wrapper.find('[data-test="monitor-load-unavailable"]')
     expect(loadEmpty.exists()).toBe(true)
     expect(loadEmpty.text()).toContain('unsupported')
     expect(wrapper.find('[data-test="monitor-load-hint"]').exists()).toBe(false)
 
-    // #370：速率读数移入台账 cpu.rates 行；两值皆缺走 empty 空态（值槽写 —，不是 0）
-    const ratesRow = wrapper.find('[data-row-id="cpu.rates"]')
-    expect(ratesRow.attributes('data-state')).toBe('empty')
-    expect(ratesRow.find('.monitor-view__ledger-value').text()).toBe('—')
+    // #435：速率读数已移出实时页（历史视图可查），台账也不再产出 CPU 行
+    expect(wrapper.find('[data-row-id="cpu.rates"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-context-switches"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-interrupts"]').exists()).toBe(false)
   })
@@ -300,10 +297,8 @@ describe('MonitorView CPU 区块完整化（#72）', () => {
     expect(empty.text()).toContain('暂无可用采样（首次采样未完成或计数器重置）')
 
     expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-    // #370：速率移入台账 cpu.rates 行（空态口径，见「部分不可用」用例）
-    const ratesRow = wrapper.find('[data-row-id="cpu.rates"]')
-    expect(ratesRow.attributes('data-state')).toBe('empty')
-    expect(ratesRow.find('.monitor-view__ledger-value').text()).toBe('—')
+    // #435：速率已移出实时页 → 台账中不再有 cpu.rates 行（不是「—」空态行）
+    expect(wrapper.find('[data-row-id="cpu.rates"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-context-switches"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-interrupts"]').exists()).toBe(false)
   })
@@ -344,14 +339,13 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     expect(sensors[0].attributes('title')).toBe('coretemp#hwmon3:Core 0')
     expect(sensors[1].attributes('title')).toBe('coretemp#hwmon3:Package id 0')
 
-    // 每核频率面板位于 CPU 卡片内（宽面板，复用每核样式）
+    // #435：主值是全部有读数核的平均（3600 + index×100 → 平均 4350 MHz），逐核读数在条形 tooltip
     expect(wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-frequency"]').exists()).toBe(true)
-    const frequencies = wrapper.findAll('[data-test="monitor-frequency-core"]')
-    expect(frequencies).toHaveLength(16)
-    expect(frequencies[0].attributes('data-core-index')).toBe('0')
-    expect(frequencies[0].text()).toContain('核 0')
-    expect(frequencies[0].text()).toContain('3600 MHz')
-    expect(frequencies[15].text()).toContain('5100 MHz')
+    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4350 MHz')
+    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 —')
+    const coreBars = wrapper.findAll('[data-test="monitor-core"]')
+    expect(coreBars[0].attributes('title')).toContain('3600 MHz')
+    expect(coreBars[15].attributes('title')).toContain('5100 MHz')
     expect(wrapper.find('[data-test="monitor-cpu"]').text()).not.toContain('不可用')
   })
 
@@ -421,7 +415,6 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="monitor-temperature-empty"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-frequency"]').exists()).toBe(false)
-    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="monitor-frequency-empty"]').exists()).toBe(false)
     // 不可用不是 0：不出现温度 / 频率数字
     expect(wrapper.text()).not.toContain('°C')
@@ -475,7 +468,6 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     const frequencyEmpty = wrapper.find('[data-test="monitor-frequency-empty"]')
     expect(frequencyEmpty.exists()).toBe(true)
     expect(frequencyEmpty.text()).toContain('暂无数据')
-    expect(wrapper.findAll('[data-test="monitor-frequency-core"]')).toHaveLength(0)
     expect(frequencyEmpty.text()).not.toContain('0 MHz')
 
     // 空数组同样走空态（温度允许空数组；消费方不得据此隐藏区块）
@@ -511,10 +503,11 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
     expect(sensors[0].attributes('title')).toBe('coretemp:Valid')
     expect(sensors[0].text()).toContain('45.5 °C')
 
-    const frequencies = wrapper.findAll('[data-test="monitor-frequency-core"]')
-    expect(frequencies).toHaveLength(1)
-    expect(frequencies[0].attributes('data-core-index')).toBe('3')
-    expect(frequencies[0].text()).toContain('3600 MHz')
+    // 非法频率条目不参与平均；唯一有效读数（核 3 · 3600 MHz）出现在该核条形的 title 里
+    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('3600 MHz')
+    const coreBars = wrapper.findAll('[data-test="monitor-core"]')
+    expect(coreBars[3].attributes('title')).toContain('3600 MHz')
+    expect(coreBars[0].attributes('title')).not.toContain('MHz')
   })
 
   it('组合可用性：仅温度可用时只渲染温度卡，仅频率可用时只渲染频率面板', async () => {
@@ -2174,8 +2167,9 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     expect(wrapper.find('[data-test="monitor-load-context"]').text()).toBe('5 分 0.51 · 15 分 0.63（16 逻辑核量程）')
 
     // 型号字符串里没有 GHz 标注时退回「—」，不拿当前频率冒充型号标注
-    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 — · 16 核同步')
-    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('5100 MHz')
+    expect(wrapper.find('[data-test="monitor-frequency-context"]').text()).toBe('型号标注 —')
+    // #435：主值 = 全核平均（3600 + index×100 的 16 个读数 → 4350 MHz），不再取最高核
+    expect(wrapper.find('[data-test="monitor-frequency-value"]').text()).toBe('4350 MHz')
 
     // 温度卡不再是独立卡片：它的主数值与明细都收进 CPU 宽卡内的那一格
     const temperature = wrapper.find('[data-test="monitor-cpu"] [data-test="monitor-temperature"]')
@@ -2238,7 +2232,7 @@ describe('MonitorView 主机条与 CPU 宽卡（#362）', () => {
     // 无读数的核：变量缺席，样式里的 `var(--core-fill, 0%)` 取兜底 0%（空轨道）；
     // 与「真的 0%」的区别由读数文字承担（不可用，不画数字）
     expect(items[1].find('.monitor-view__core-bar-fill').attributes('style') ?? '').not.toContain('--core-fill')
-    expect(items[1].text()).toContain('不可用')
+    expect(items[1].attributes('title')).toContain('不可用')
     // 真的 0% 仍会注入 `0.0%`：缺席与 0 在内联样式层面可区分
     cores[2].usage_ratio = 0
     useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuCores: cores }))
@@ -2273,6 +2267,94 @@ function coreFillPercent(core: DOMWrapper<Element>): string | null {
   const match = /--core-fill:\s*([^;]+)/.exec(style)
   return match ? match[1].trim() : null
 }
+
+describe('MonitorView CPU 块（#435：型号 / 等级着色 / 自适应列数 / 无负载迷你趋势）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('标题行右侧显示 system.cpu_model（原样 + title）；型号为空时整行不渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    const model = wrapper.find('[data-test="monitor-cpu-model"]')
+    expect(model.text()).toBe('AMD Ryzen 9 7950X 16-Core Processor')
+    expect(model.attributes('title')).toBe('AMD Ryzen 9 7950X 16-Core Processor')
+    // 型号在标题行里、标题 h2 之外（标题只写 CPU）
+    expect(wrapper.find('[data-test="monitor-cpu"] .monitor-view__cpu-head').exists()).toBe(true)
+
+    // 同一用例里第二次挂载要换一个 pinia：store 的 init 只拉一次快照，复用旧 store 会看到上一份数据
+    wrapper.unmount()
+    setActivePinia(createPinia())
+    const snapshot = makeSysmonSnapshot({ resourceData: true })
+    snapshot.system.cpu_model = ''
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const emptyModel = await mountView()
+    expect(emptyModel.find('[data-test="monitor-cpu-model"]').exists()).toBe(false)
+  })
+
+  it('占用率主数值按 resourceLevel 着色（70 / 90 两档，与顶栏同判据）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.187 }))
+    let wrapper = await mountView()
+    expect(wrapper.find('[data-test="monitor-cpu-value"]').attributes('data-level')).toBe('normal')
+
+    // 每次换一份快照都换一个 pinia：store 的 init 只拉一次快照（旧 store 会继续给上一份数据）
+    for (const [ratio, level] of [[0.75, 'warn'], [0.95, 'danger']] as const) {
+      wrapper.unmount()
+      setActivePinia(createPinia())
+      vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: ratio }))
+      wrapper = await mountView()
+      expect(wrapper.find('[data-test="monitor-cpu-value"]').attributes('data-level')).toBe(level)
+    }
+    wrapper.unmount()
+    setActivePinia(createPinia())
+
+    // 未知值不套色：整格走「不可用」空态（没有 data-level 可言）
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: null }))
+    wrapper = await mountView()
+    expect(wrapper.find('[data-test="monitor-cpu-value"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').exists()).toBe(true)
+  })
+
+  it('每核条形列数由 ResizeObserver 实测宽度注入：32 核 / 1300px → 16 列（两行等分）', async () => {
+    // jsdom 无布局：可手动触发的桩 + 假 clientWidth 驱动「宽度 → 列数」这条链路
+    // （用对象持有回调：直接 let + 类构造函数赋值时 TS 的控制流分析会把变量窄成 never）
+    const resize: { callback: (() => void) | null } = { callback: null }
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { resize.callback = callback }
+      observe(): void {}
+      disconnect(): void {}
+    })
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(
+      makeSysmonSnapshot({ cpuCores: makeSysmonCpuCores(32) }),
+    )
+    const wrapper = await mountView()
+    const container = wrapper.find('[data-test="monitor-cpu-cores"]').element as HTMLElement
+    // 尚未测量（jsdom clientWidth = 0）时退回单行，不误折行
+    expect(wrapper.find('.monitor-view__cores').attributes('style')).toContain('--core-columns: 32')
+
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 1300 })
+    resize.callback?.()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.monitor-view__cores').attributes('style')).toContain('--core-columns: 16')
+    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(32)
+  })
+
+  it('负载只有数字与 5/15 分小字：不再渲染迷你趋势（#435 决策 1）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-test="monitor-load"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-sparkline-load"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-load"] .sysmon-sparkline').exists()).toBe(false)
+  })
+})
 
 describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在有阈值的行）', () => {
   const GIB = 1024 ** 3

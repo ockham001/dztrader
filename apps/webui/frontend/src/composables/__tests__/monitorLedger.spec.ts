@@ -5,8 +5,6 @@ import {
   LEDGER_DEFAULT_VOLUME_FREE_PCT,
   NO_THRESHOLD_TEXT,
   UNRATED_LEVEL_TEXT,
-  adaptiveAxisTicks,
-  adaptiveTrendGeometry,
   buildMemoryComposition,
   buildMonitorLedger,
   ledgerLevelText,
@@ -90,9 +88,6 @@ function ledgerInput(
     network: snapshot.network ?? [],
     shmDir: snapshot.shm_dir,
     clock: snapshot.clock,
-    cpuCores: snapshot.cpu?.cores ?? [],
-    cpuContextSwitchesPerSec: snapshot.cpu?.context_switches_per_sec ?? null,
-    cpuInterruptsPerSec: snapshot.cpu?.interrupts_per_sec ?? null,
     thresholds: cfg.thresholds,
     clockConfig: cfg.clock,
     availability: metric => snapshot.availability.metrics[metric],
@@ -125,10 +120,10 @@ function allAvailable(): Record<string, SysmonAvailabilityEntry> {
 }
 
 describe('buildMonitorLedger · 分组与行序（固定顺序，不按使用率重排）', () => {
-  it('四组恒按 CPU → 内存 → 存储 → 网络与时钟 排列', () => {
+  it('三组恒按 内存 → 存储 → 网络与时钟 排列（CPU 组已随 #435 移入 CPU 块）', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
-    expect(groups.map(group => group.id)).toEqual(['cpu', 'memory', 'storage', 'network_clock'])
-    expect(groups.map(group => group.title)).toEqual(['CPU', '内存', '存储', '网络与时钟'])
+    expect(groups.map(group => group.id)).toEqual(['memory', 'storage', 'network_clock'])
+    expect(groups.map(group => group.title)).toEqual(['内存', '存储', '网络与时钟'])
   })
 
   it('内存组恒两行：内存已用 → 交换已用', () => {
@@ -189,96 +184,6 @@ describe('buildMonitorLedger · 分组与行序（固定顺序，不按使用率
     const ids = rowsOf(groups, 'network_clock').map(row => row.id)
     expect(ids).toEqual(['network', 'clock'])
     expect(rowById(groups, 'network').state).toBe('empty')
-  })
-})
-
-describe('buildMonitorLedger · CPU 组（#370：上下文切换 / 中断移出 CPU 宽卡）', () => {
-  it('CPU 组恒在最前，含 cpu.cores → cpu.rates 两行（行序稳定）', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    expect(groups[0].id).toBe('cpu')
-    expect(rowsOf(groups, 'cpu').map(row => row.id)).toEqual(['cpu.cores', 'cpu.rates'])
-  })
-
-  it('cpu.cores 行值给最高核占用率与核数摘要，明细给饱和核数，阈值/余量为 —，无量程', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    const row = rowById(groups, 'cpu.cores')
-    expect(row.state).toBe('ok')
-    expect(row.value).toContain('16 核')
-    expect(row.value).toMatch(/最高 \d+(\.\d+)?% · 16 核/)
-    expect(row.detail).toBe('0 核饱和 / 16 核')
-    expect(row.thresholdText).toBe(NO_THRESHOLD_TEXT)
-    expect(row.headroomText).toBe(NO_THRESHOLD_TEXT)
-    expect(row.ratio).toBeNull()
-    expect(row.level).toBeNull()
-    expect(row.levelText).toBe(UNRATED_LEVEL_TEXT)
-    expect(row.historyKey).toBeNull()
-  })
-
-  it('cpu.cores 的饱和核计入明细，行值仍是最高占用率（饱和不改变主列口径）', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable(), saturatedCores: [2, 5] })
-    const row = rowById(groups, 'cpu.cores')
-    expect(row.detail).toBe('2 核饱和 / 16 核')
-    expect(row.state).toBe('ok')
-  })
-
-  it('cpu.cores 能力不可用时是 unavailable 空态；可用但无读数时是 empty 空态', () => {
-    const unavailable = ledgerFrom({
-      metrics: { 'cpu.cores': { available: false, reason: 'no_permission' } },
-    })
-    expect(rowById(unavailable.groups, 'cpu.cores').state).toBe('unavailable')
-
-    const empty = ledgerFrom({ metrics: allAvailable(), cpuCores: [] })
-    const row = rowById(empty.groups, 'cpu.cores')
-    expect(row.state).toBe('empty')
-    expect(row.value).toBe('')
-  })
-
-  it('cpu.rates 行值是「上下文切换 · 中断」两段速率，明细列写明这个顺序', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    const row = rowById(groups, 'cpu.rates')
-    expect(row.state).toBe('ok')
-    expect(row.value).toBe('1234/s · 567/s')
-    expect(row.detail).toBe('上下文切换 · 中断')
-  })
-
-  it('cpu.rates 没有契约阈值：阈值与余量写 —，等级无阈值，ratio 为 null，无历史入口', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    const row = rowById(groups, 'cpu.rates')
-    expect(row.thresholdText).toBe(NO_THRESHOLD_TEXT)
-    expect(row.headroomText).toBe(NO_THRESHOLD_TEXT)
-    expect(row.level).toBeNull()
-    expect(row.ratio).toBeNull()
-    expect(row.levelText).toBe(UNRATED_LEVEL_TEXT)
-    expect(row.historyKey).toBeNull()
-  })
-
-  it('能力不可用时是 unavailable 空态，不产出读数', () => {
-    const { groups } = ledgerFrom({
-      metrics: { 'cpu.context_switches': { available: false, reason: 'no_permission' } },
-    })
-    const row = rowById(groups, 'cpu.rates')
-    expect(row.state).toBe('unavailable')
-    expect(row.value).toBe('')
-    expect(row.ratio).toBeNull()
-    expect(row.stateText).toContain('权限不足，无法读取该指标')
-  })
-
-  it('能力可用但本帧两值皆缺时是 empty 空态（不产出数字，也不冒充 0）', () => {
-    const { groups } = ledgerFrom({
-      metrics: allAvailable(),
-      contextSwitchesPerSec: null,
-      interruptsPerSec: null,
-    })
-    const row = rowById(groups, 'cpu.rates')
-    expect(row.state).toBe('empty')
-    expect(row.value).toBe('')
-  })
-
-  it('只有一项缺值时该段显示「不可用」而不是 0（另一段照常给速率）', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable(), interruptsPerSec: null })
-    const row = rowById(groups, 'cpu.rates')
-    expect(row.state).toBe('ok')
-    expect(row.value).toBe('1234/s · 不可用')
   })
 })
 
@@ -724,123 +629,6 @@ describe('ledgerLevelText', () => {
       // 它 != 空态标签：读数在，只是没有判定基准
       expect(row.stateLabel, rowId).toBe('')
     }
-  })
-})
-
-describe('adaptiveAxisTicks · CPU 趋势的自适应纵轴', () => {
-  it('普通序列按 min/max 外扩 10% 并给三档标签', () => {
-    const axis = adaptiveAxisTicks([
-      { ts: 0, value: 0.19 }, { ts: 1, value: 0.21 }, { ts: 2, value: 0.20 },
-    ])
-    expect(axis).not.toBeNull()
-    expect(axis!.lo).toBeCloseTo(0.188, 4)
-    expect(axis!.hi).toBeCloseTo(0.212, 4)
-    expect(axis!.labels).toHaveLength(3)
-    expect(axis!.labels[0].text).toBe('19%')
-    expect(axis!.labels[2].text).toBe('21%')
-  })
-
-  it('等值序列不塌成一条线（退到最小外扩）', () => {
-    const axis = adaptiveAxisTicks([
-      { ts: 0, value: 0.19 }, { ts: 1, value: 0.19 }, { ts: 2, value: 0.19 },
-    ])
-    expect(axis).not.toBeNull()
-    expect(axis!.hi - axis!.lo).toBeGreaterThan(0)
-  })
-
-  /**
-   * 三档刻度必须互相可区分：轴越窄，整数标签越容易撞成同一个数。只断言 `hi - lo > 0`
-   * 放过了「轴有宽度但三档都写 19%」——那时读者面对的是三条无信息量的刻度。
-   */
-  it('等值 19% 序列的三档标签互不相同（窄轴改用 1 位小数）', () => {
-    const axis = adaptiveAxisTicks([
-      { ts: 0, value: 0.19 }, { ts: 1, value: 0.19 }, { ts: 2, value: 0.19 },
-    ])
-    const texts = axis!.labels.map(label => label.text)
-    expect(texts).toHaveLength(3)
-    expect(new Set(texts).size).toBe(3)
-    // 轴宽 0.2 个百分点（最小外扩上下各 0.1），整数标签必然撞号：这里是 18.9 / 19.0 / 19.1
-    expect(texts).toEqual(['18.9%', '19.0%', '19.1%'])
-  })
-
-  it('19.0%→19.2% 的窄轴三档标签也互不相同', () => {
-    const axis = adaptiveAxisTicks([
-      { ts: 0, value: 0.19 }, { ts: 1, value: 0.191 }, { ts: 2, value: 0.192 },
-    ])
-    const texts = axis!.labels.map(label => label.text)
-    // 轴 18.9–19.3（外扩 10% of 0.2 个百分点）：整数化会把三档全写成 19%
-    expect(new Set(texts).size).toBe(3)
-    expect(texts).toEqual(['18.9%', '19.1%', '19.3%'])
-  })
-
-  it('12.5% 恒定序列不被整成重复值（窄轴判据不依赖具体数值）', () => {
-    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.125 }, { ts: 1, value: 0.125 }])
-    const texts = axis!.labels.map(label => label.text)
-    expect(new Set(texts).size).toBe(3)
-  })
-
-  it('宽轴仍用整数百分比（精度只随跨度放宽，不全局改）', () => {
-    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.19 }, { ts: 1, value: 0.21 }])
-    expect(axis!.labels.map(label => label.text)).toEqual(['19%', '20%', '21%'])
-  })
-
-  it('下界不被压到负数、上界不超过 1', () => {
-    const axis = adaptiveAxisTicks([{ ts: 0, value: 0 }, { ts: 1, value: 1 }])
-    expect(axis!.lo).toBeGreaterThanOrEqual(0)
-    expect(axis!.hi).toBeLessThanOrEqual(1)
-  })
-
-  it('空序列 / 全非法值返回 null（不抛错）', () => {
-    expect(adaptiveAxisTicks([])).toBeNull()
-    expect(adaptiveAxisTicks([{ ts: 0, value: Number.NaN }])).toBeNull()
-  })
-
-  it('单点序列仍给可渲染的轴', () => {
-    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.5 }])
-    expect(axis).not.toBeNull()
-    expect(axis!.hi).toBeGreaterThan(axis!.lo)
-  })
-  it('y 按传入的轴范围投影（不是按序列自身 min/max）：轴内的平段落在中线附近', () => {
-    // 轴 18%–22%（外扩自 19/21），序列两端贴轴边界：20% 落在 0–34 的绘图区中线
-    const axis = adaptiveAxisTicks([{ ts: 0, value: 0.19 }, { ts: 2, value: 0.21 }])
-    const geometry = adaptiveTrendGeometry(
-      [{ ts: 0, value: axis!.lo }, { ts: 1, value: (axis!.lo + axis!.hi) / 2 }, { ts: 2, value: axis!.hi }],
-      axis,
-    )
-    expect(geometry).not.toBeNull()
-    const ys = geometry!.points.split(' ').map(pair => Number(pair.split(',')[1]))
-    // SVG 的 y 向下增大：下界 → 底部留白（32），中点 → 中线（17），上界 → 顶部留白（2）
-    expect(ys[0]).toBeCloseTo(32, 1)
-    expect(ys[1]).toBeCloseTo(17, 1)
-    expect(ys[2]).toBeCloseTo(2, 1)
-    expect(geometry!.lastValue).toBe(axis!.hi)
-  })
-
-  it('轴外的值被钳制在绘图区内（不画出容器）', () => {
-    const axis = { lo: 0.2, hi: 0.3, labels: [] }
-    const geometry = adaptiveTrendGeometry(
-      [{ ts: 0, value: 0.05 }, { ts: 1, value: 0.9 }],
-      axis,
-    )
-    const ys = geometry!.points.split(' ').map(pair => Number(pair.split(',')[1]))
-    expect(Math.min(...ys)).toBeGreaterThanOrEqual(2)
-    expect(Math.max(...ys)).toBeLessThanOrEqual(32)
-  })
-
-  it('x 按时间比例（桶距不均如实反映），时间跨度为 0 时退回序号等距', () => {
-    const axis = { lo: 0, hi: 1, labels: [] }
-    const spaced = adaptiveTrendGeometry([{ ts: 0, value: 0.5 }, { ts: 90, value: 0.5 }], axis)
-    expect(spaced!.points.split(' ')[1].split(',')[0]).toBe('100')
-
-    const sameTs = adaptiveTrendGeometry([{ ts: 5, value: 0.1 }, { ts: 5, value: 0.2 }, { ts: 5, value: 0.3 }], axis)
-    expect(sameTs!.points.split(' ').map(pair => pair.split(',')[0])).toEqual(['0', '50', '100'])
-  })
-
-  it('有效点少于 2 个或轴为 null 时返回 null（调用方据此不渲染）', () => {
-    const axis = { lo: 0, hi: 1, labels: [] }
-    expect(adaptiveTrendGeometry([], axis)).toBeNull()
-    expect(adaptiveTrendGeometry([{ ts: 0, value: 0.5 }], axis)).toBeNull()
-    expect(adaptiveTrendGeometry([{ ts: 0, value: 0.1 }, { ts: 1, value: 0.2 }], null)).toBeNull()
   })
 })
 

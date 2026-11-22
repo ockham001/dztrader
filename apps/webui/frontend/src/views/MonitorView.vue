@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, getCurrentInstance, onMounted, onUnmounted, ref } from 'vue'
+import { computed, getCurrentInstance, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, type NavigationGuardNext, type Router } from 'vue-router'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
@@ -10,8 +10,6 @@ import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import {
   NO_THRESHOLD_TEXT,
-  adaptiveAxisTicks,
-  adaptiveTrendGeometry,
   buildMemoryComposition,
   buildMonitorLedger,
   unavailableReasonText,
@@ -20,8 +18,14 @@ import {
   type MemoryCompositionSegment,
 } from '@/composables/monitorLedger'
 import {
+  PERCENT_TREND_GRIDLINE_YS,
+  coreBarColumns,
+  percentTrendGeometry,
+} from '@/composables/monitorCpu'
+import {
   RESOURCE_DANGER_RATIO,
   RESOURCE_WARN_RATIO,
+  resourceLevel,
 } from '@/composables/useResourceLevel'
 import {
   UNAVAILABLE_TEXT,
@@ -78,8 +82,8 @@ import { trendMetricLabel, useSysmonTrendStore } from '@/stores/sysmonTrend'
 import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：主机条（#430：主机 / 系统 / 内核 / 已运行 + 右端数据龄状态槽；CPU 型号 · 逻辑核数
-// 已移出，归 CPU 块）、CPU 宽卡（总量 / 每核 / 系统负载 / 上下文切换与中断 / 每核频率 / 最高温度）、
-// 指标台账（#363；后续块按参考布局逐块替换）。
+// 已移出，归 CPU 块）、CPU 块（#435：标题 + 右上型号 / 四数字 / 固定 0–100% 单曲线 / 自适应每核
+// 条形）、指标台账（#363；三组：内存 / 存储 / 网络与时钟，后续块按参考布局逐块替换）。
 //
 // 台账是**纯渲染层**：三组（内存 / 存储 / 网络与时钟）× 七列（状态点 · 指标名 + 契约键 ·
 // 量程轨道 · 当前值 · 明细 · 阈值 · 余量）的行数据全部来自 `@/composables/monitorLedger` 的
@@ -103,16 +107,20 @@ import { useToastStore } from '@/stores/toast'
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 配置视图（#81）：展示生效配置镜像（WS sysmon_config，首次挂载经 GET /api/sysmon/config 补拉）；
 // admin 可编辑并只下发与原镜像的差异，非 admin 只读（编辑仅 admin，与系统设置页一致）。
-// 内联趋势（#127）：标量指标（CPU 使用率 / 负载 / 内存 / 交换 / 共享内存目录）旁有最近 15 分钟
-// sparkline（历史 REST 补齐 + WS 增量推进，末点即旁边的当前值）；历史不可用时静默不渲染。
+// 内联趋势（#127）：内存 / 交换 / 共享内存目录等标量指标旁有最近 15 分钟 sparkline（历史 REST
+// 补齐 + WS 增量推进，末点即旁边的当前值）；历史不可用时静默不渲染。CPU 使用率是 CPU 块内的固定
+// 0–100% 宽图（#435），负载从 #435 起不再有迷你趋势（用户拍板：只保留数字与 5/15 分小字）。
 // 时间窗按实际覆盖标注（#142）：只有覆盖满 15 分钟才写「最近 15 分钟」，历史范围内无桶 /
 // 被 max_points 截断时标注真实覆盖时长，截断与历史视图同口径；补拉降级保留上一轮曲线并标未刷新。
 // 点击 sparkline 或数值切到历史视图并预选该指标（契约 sysmon §6.1，不新增接口）。
 // 明细展开（#363）：每个台账行可展开完整明细（卷 / 盘 / 网卡 / 时钟各一套），折叠状态不持久化。
-// CPU 卡内的每核频率与每传感器明细仍是卡片级折叠（#127 的既有语义，未变）。
-// 卡片折叠（#127）：每核频率明细 / 每传感器明细默认收起、展开显示全部；
+// CPU 块（#435）：主图只画 CPU 总使用率**一条**曲线，纵轴固定 0–100%（不再随序列自适应，#361 的
+// 自适应纵轴对 CPU 图作废）；每核使用率直接排在曲线下方（按容器宽度自适应换行、多行尽量等分），
+// 逐核频率进条形 tooltip；上下文切换 / 中断从实时页移除（历史视图两项都可查）。
+// 温度传感器明细仍是卡片级折叠（#127 的既有语义）。
+// 卡片折叠（#127）：每传感器明细默认收起、展开显示全部；
 // 折叠状态不持久化；可用性空态不进折叠。实时视图为「页头 + 通栏主机条（#430）+ 单列网格」：
-// 网格内 CPU 宽卡 / 指标台账跨满整行，列数不再是版面变量；图表用容器自适应重排（沿用既有断点，
+// 网格内 CPU 块 / 指标台账跨满整行，列数不再是版面变量；图表用容器自适应重排（沿用既有断点，
 // 不使用容器查询）。
 // 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
 // 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向说明（#326：正 = 本地快于
@@ -351,7 +359,7 @@ const ledgerNowUnixMs = computed(() => {
   return typeof ts === 'number' ? ts : Date.now()
 })
 
-/** 台账三组（内存 / 存储 / 网络与时钟），行数由数据决定 */
+/** 台账三组（内存 / 存储 / 网络与时钟），行数由数据决定；CPU 组已随 #435 移入 CPU 块 */
 const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   memory: sysmon.memoryInfo,
   swap: sysmon.swapInfo,
@@ -361,9 +369,6 @@ const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   network: sysmon.network,
   shmDir: sysmon.shmDirInfo,
   clock: sysmon.clock,
-  cpuCores: sysmon.cpuCores,
-  cpuContextSwitchesPerSec: sysmon.cpuContextSwitchesPerSec,
-  cpuInterruptsPerSec: sysmon.cpuInterruptsPerSec,
   thresholds: sysmon.config?.thresholds ?? null,
   clockConfig: sysmon.config?.clock ?? null,
   // 可用性映射直接传 store 的查询函数：台账按它区分「不可用」「配置关闭」「暂无数据」
@@ -585,28 +590,9 @@ async function onProbeClock(): Promise<void> {
 // ---- 卡片折叠（#127）：维度明细默认收起，展开后显示全部 ----
 // 折叠状态只存组件本地 ref：**不持久化**，刷新（组件重新挂载）回到产品认为重要的默认视图
 //（验收标准）。不可用 / 空数据的空态不进折叠——可用性事实不藏在展开按钮后面。
-const cpuDetailOpen = ref(false)
+// #435 起 CPU 块只剩「温度传感器明细」一个折叠：每核频率明细的入口已删除（频率进了条形 tooltip），
+// 逐传感器读数没有别处可展示，保留。
 const temperatureDetailOpen = ref(false)
-
-/** 一组可能缺失的数值中的最大值；全缺失时 null（缺失不是 0，不参与比较） */
-function peakOf(values: (number | null)[]): number | null {
-  let peak: number | null = null
-  for (const value of values) {
-    if (value === null) continue
-    if (peak === null || value > peak) peak = value
-  }
-  return peak
-}
-
-/** 每核明细摘要：核数 + 最高使用率；没有数据就是没有，不伪造 0 */
-const cpuDetailSummary = computed(() => {
-  const parts: string[] = []
-  if (cpuCores.value.length > 0) parts.push(`${cpuCores.value.length} 核`)
-  const peak = peakOf(cpuCores.value.map(core => core.usage_ratio))
-  if (peak !== null) parts.push(`最高 ${formatPercent(peak)}`)
-  else if (coreFrequencies.value.length > 0) parts.push(`${coreFrequencies.value.length} 核频率`)
-  return parts.join(' · ')
-})
 
 /** 温度读数摊平：分组只用于展开后的展示，摘要取全局最高温与数量 */
 const temperatureReadings = computed(() => temperatureGroups.value.flatMap(group => group.readings))
@@ -690,7 +676,10 @@ const hostStartTimeTitle = computed(() => {
 const logicalCoreCount = computed(() => system.value?.logical_cores ?? cpuCores.value.length)
 const logicalCoreText = computed(() => (logicalCoreCount.value > 0 ? `${logicalCoreCount.value} 逻辑核` : '—'))
 
-// ---- CPU 宽卡（#362）：四数字 + 单序列自适应趋势 + 每核条形 ----
+// ---- CPU 块（#435）：型号 · 四数字 · 固定 0–100% 单曲线 · 自适应每核条形 ----
+
+/** 标题行右侧的 CPU 型号（原样展示，过长由 CSS 省略号 + title 兜底；#429 决策 6 从主机条移入） */
+const cpuModel = computed(() => system.value?.cpu_model?.trim() ?? '')
 
 /** 饱和核数（快照的 `saturated` 标记就是唯一判据，不在视图里另算阈值） */
 const saturatedCoreCount = computed(() => cpuCores.value.filter(core => core.saturated).length)
@@ -703,6 +692,13 @@ const coresContextText = computed(() => {
 })
 
 /**
+ * 占用率主数值的展示等级（#435 决策 7）：与顶栏 CPU 徽章共用 `useResourceLevel` 的 70 / 90
+ * 两个展示分档（ADR 0034：色标是展示规则，不是越限判定）。颜色只是冗余信号——数字本身
+ * 始终可读；未知值不套色。
+ */
+const cpuUsageLevel = computed(() => (cpuRatio.value === null ? null : resourceLevel(cpuRatio.value)))
+
+/**
  * CPU 型号里标注的基准频率：**型号字符串的一部分**（如 `... @ 3.40GHz`），不是实测读数。
  * 取不到时退回「—」——不拿当前频率冒充型号标注（那是两件事）。
  */
@@ -712,61 +708,131 @@ const cpuModelFrequency = computed(() => {
   return match ? `${match[1]} GHz` : '—'
 })
 
-/** 当前频率（主数值）：多核频率取最高值——「当前频率」问的是 CPU 跑在哪一档，
- * 取最高比取均值更接近「最快的那颗核在跑多少」；无读数时 null（不伪造 0 MHz）。 */
-const frequencyPeak = computed(() => peakOf(coreFrequencies.value.map(core => core.mhz)))
-const frequencyPeakCount = computed(() => coreFrequencies.value.length)
+/**
+ * 当前频率（主数值）：全部有读数核的**平均**（#435 决策 3）。
+ *
+ * 不用最高核：单核瞬时 boost 会主导读数，让数字在 800 MHz ↔ 3.4 GHz 之间跳；平均值代表
+ * 「整颗 CPU 现在跑在哪一档」，单核的最高值仍可在每核条形的 tooltip 里看到。
+ * 无读数时 null（不伪造 0 MHz）。
+ */
+const frequencyAverage = computed(() => {
+  let sum = 0
+  let count = 0
+  for (const frequency of coreFrequencies.value) {
+    if (!Number.isFinite(frequency.mhz) || frequency.mhz <= 0) continue
+    sum += frequency.mhz
+    count += 1
+  }
+  return count === 0 ? null : Math.round(sum / count)
+})
+
+/** 每核频率按 OS CPU 编号查表（tooltip 用；`cpu.core_frequencies[].index` 与 `cpu.cores[].index` 同源） */
+const frequencyByCoreIndex = computed(() => {
+  const map = new Map<number, number>()
+  for (const frequency of coreFrequencies.value) map.set(frequency.index, frequency.mhz)
+  return map
+})
+
+/** 一条每核条形：数值、填充比例与 title / 读屏共用的文案（视图只负责摆，不再判断） */
+interface CoreBar {
+  index: number
+  saturated: boolean
+  style: Record<string, string>
+  /** `核 N · 45.0%`；频率可用时追加 ` · 3200 MHz`，饱和核追加 ` · 饱和` */
+  text: string
+}
+
+/**
+ * 每核条形数据（#435）：填充的是「占用率」而不是固定满格；轨道中性底色给出 100% 的参照。
+ *
+ * `null`（首次采样未就绪）不注入 `--core-fill` → 样式里的 `height: var(--core-fill, 0%)` 取
+ * 兜底 0%，视觉上是一条空轨道，与「真的 0%」同形；区别由 tooltip 文字承担
+ * （`formatPercent(null)` 显示「不可用」），本格不画任何数字，也不编造 0。
+ */
+const coreBars = computed<CoreBar[]>(() => cpuCores.value.map(core => {
+  const ratio = typeof core.usage_ratio === 'number' && Number.isFinite(core.usage_ratio)
+    ? Math.min(1, Math.max(0, core.usage_ratio))
+    : null
+  const frequency = frequencyByCoreIndex.value.get(core.index)
+  const parts = [`核 ${core.index}`, formatPercent(ratio)]
+  if (typeof frequency === 'number' && Number.isFinite(frequency) && frequency > 0) {
+    parts.push(formatFrequency(frequency))
+  }
+  if (core.saturated) parts.push('饱和')
+  const style: Record<string, string> = ratio === null ? {} : { '--core-fill': formatPercent(ratio) }
+  return {
+    index: core.index,
+    saturated: core.saturated,
+    style,
+    text: parts.join(' · '),
+  }
+}))
+
+/**
+ * 每核条形容器（#435 决策 6）：用 ResizeObserver 实测容器宽度，交给纯函数
+ * `coreBarColumns` 算列数——多行时每行数量尽量相等（23 + 1 这种失衡不允许出现）。
+ * 与顶栏资源组同一测量模式（`Topbar.vue`）；jsdom 无布局，组件测试用可手动触发的桩。
+ */
+const coreBarsRef = ref<HTMLElement | null>(null)
+const coreBarsWidth = ref(0)
+let coreBarsObserver: ResizeObserver | null = null
+
+function disconnectCoreBarsObserver(): void {
+  coreBarsObserver?.disconnect()
+  coreBarsObserver = null
+}
+
+watch(coreBarsRef, element => {
+  disconnectCoreBarsObserver()
+  if (element === null) {
+    coreBarsWidth.value = 0
+    return
+  }
+  coreBarsWidth.value = element.clientWidth
+  if (typeof ResizeObserver !== 'function') return
+  coreBarsObserver = new ResizeObserver(() => {
+    coreBarsWidth.value = element.clientWidth
+  })
+  coreBarsObserver.observe(element)
+})
+
+/** 列数（宽度未测量时为单行；纯函数见 `composables/monitorCpu.ts`，均衡规则单测覆盖） */
+const coreBarColumnCount = computed(() => coreBarColumns(cpuCores.value.length, coreBarsWidth.value))
 
 /** 趋势序列：既有 `cpu.usage_ratio` 窗口（15 分钟 / 60 点 / 15 秒桶），不新增窗口、不改 store */
 const usageSeries = computed(() => trend.seriesOf('cpu.usage_ratio'))
 /** 时间窗的如实口径（#142）：满 15 分钟才写「最近 15 分钟」，否则写实际跨度 */
 const usageWindow = computed(() => trend.windowOf('cpu.usage_ratio'))
-/** 趋势纵轴（#361 的 `adaptiveAxisTicks`）：轴范围随序列变化，等值序列也不会被压成一条线 */
-const usageAxis = computed(() => adaptiveAxisTicks(usageSeries.value))
-/** 三档刻度按上→下渲染（SVG 的 y=0 在顶部）：labels 本身是 下界/中点/上界 升序 */
-const usageAxisLabels = computed(() => (usageAxis.value ? [...usageAxis.value.labels].reverse() : []))
-/** 折线几何：按轴范围投影（不是按序列自身 min/max），否则轴标签与曲线对不上 */
-const usageGeometry = computed(() => adaptiveTrendGeometry(usageSeries.value, usageAxis.value))
-
-/**
- * 每核条形填充的是「占用率」而不是固定满格：柱高 = 该核使用率（自底向上），
- * 轨道中性底色给出 100% 的参照。值经 CSS 变量传给样式，避免在模板里写静态样式。
- *
- * `null`（首次采样未就绪）返回空对象：变量不注入，样式里的 `height: var(--core-fill, 0%)`
- * 于是取兜底值 0% —— 视觉上是一条空轨道，与「真的 0%」同形。两者的区别不在柱子上，只由
- * 旁边的读数文字承担（`formatPercent(null)` 显示「不可用」）：本格不画任何数字，也不编造 0。
- *
- * 百分比字符串走共享格式化器（#126：本文件不得再写 toFixed），与旁边的读数文字同源同精度。
- */
-function coreBarStyle(ratio: number | null): Record<string, string> {
-  if (ratio === null || !Number.isFinite(ratio)) return {}
-  const clamped = Math.min(1, Math.max(0, ratio))
-  return { '--core-fill': formatPercent(clamped) }
-}
+/** 折线几何（#435 决策 2）：纵轴固定 0–100%，不随序列 min/max 自适应 */
+const usageGeometry = computed(() => percentTrendGeometry(usageSeries.value))
 /** 是否覆盖满整个时间窗（data 属性供测试断言，与 SysmonSparkline 同口径） */
 const usageWindowComplete = computed(() => sparklineWindowComplete(usageWindow.value))
 
-/** 轴范围说明：显式写「自适应，不是 0–100」——刻度不是从 0 起的轴，读者必须先知道这件事。
- * 上下界直接取三档刻度的**首末标签**（同一份精度）：窄轴上 `Math.round(lo*100)` 会写出
- * 「纵轴 19–19%」这种与刻度列自相矛盾的范围。 */
-const usageAxisText = computed(() => {
-  const labels = usageAxis.value?.labels
-  if (!labels || labels.length < 2) return ''
-  const low = labels[0].text.replace('%', '')
-  const high = labels[labels.length - 1].text.replace('%', '')
-  return `纵轴 ${low}–${high}%（自适应，不是 0–100）`
-})
+/**
+ * 横轴两端时刻（#435）：与趋势序列同源（首点 / 末点），以快照时间轴换算成墙钟；跨日由
+ * `formatClockTime` 带上日期。没有点时不写半截（返回空串，模板据此不渲染该端）。
+ */
+function trendAxisClock(timestampSec: number | undefined): string {
+  if (typeof timestampSec !== 'number' || !Number.isFinite(timestampSec)) return ''
+  return formatClockTime(timestampSec * 1_000, nowMs.value)
+}
+const trendStartText = computed(() => trendAxisClock(usageSeries.value[0]?.ts))
+const trendEndText = computed(() => trendAxisClock(usageSeries.value[usageSeries.value.length - 1]?.ts))
 
-/** 趋势下方说明：时间窗 + 轴范围（两件事都必须如实写在图上，不能只靠刻度暗示） */
-const cpuTrendCaption = computed(() => `${sparklineWindowText(usageWindow.value)} · ${usageAxisText.value}`)
+/**
+ * 趋势下方说明：只写时间窗（#435 决策 2 去掉了「纵轴 …%」——固定 0–100% 不再需要解释）。
+ * 满 15 分钟才写「最近 15 分钟」，否则写实际覆盖（#142 语义不变）。
+ */
+const cpuTrendCaption = computed(() => sparklineWindowText(usageWindow.value))
 
-/** 趋势 title / aria：指标名 + 时间窗 + 限定说明 + 轴范围 + 查看历史（与 SysmonSparkline 同口径） */
+/** 趋势 title / aria：指标名 + 时间窗 + 轴口径 + 查看历史（与 SysmonSparkline 同口径） */
 const cpuTrendTitle = computed(
-  () => `${sparklineTitle(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)} · ${usageAxisText.value}`,
+  () => `${sparklineTitle(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)} · 纵轴固定 0–100%`,
 )
 const cpuTrendAriaLabel = computed(
-  () => `${sparklineAriaLabel(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)}，${cpuTrendCaption.value}`,
+  () => `${sparklineAriaLabel(trendMetricLabel('cpu.usage_ratio'), usageWindow.value)}，纵轴固定 0–100%`,
 )
+
 
 </script>
 
@@ -891,23 +957,33 @@ const cpuTrendAriaLabel = computed(
     <div v-else-if="viewMode === 'realtime'" class="monitor-view__grid">
       <!-- 主机条是顶栏下方的独立一条（#430），网格里不再重复渲染。
 
-       CPU 宽卡（#362）：四数字 / 单序列自适应趋势 / 每核条形，三块内容在同一块面内读完。
-           每核使用率条形常驻（一眼看形态）；每核频率与每传感器读数收进各自的可展开区——
-           「不可用就不渲染」「可用但本帧无数据要空态」的既有语义不变。 -->
+       CPU 块（#435）：标题 + 右上型号 → 四数字（占用率 / 系统负载 / 当前频率 / 最高温度）→
+           固定 0–100% 单曲线（横轴两端真实时刻）→ 每核条形（按容器宽度自适应换行、多行尽量等分）。
+           曲线不叠内存 / 负载第二条线；曲线下方不设标题行；上下文切换 / 中断已移出实时页
+           （历史视图两项都可查），避免同一事实两处实现。 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-cpu">
-        <h2 class="ds-card__title monitor-view__card-title">
-          <span class="monitor-view__card-icon"><Icon name="CPU" :size="14" /></span>CPU
-        </h2>
+        <div class="monitor-view__cpu-head">
+          <h2 class="ds-card__title monitor-view__card-title">
+            <span class="monitor-view__card-icon"><Icon name="CPU" :size="14" /></span>CPU
+          </h2>
+          <p
+            v-if="cpuModel"
+            class="monitor-view__cpu-model"
+            data-test="monitor-cpu-model"
+            :title="cpuModel"
+          >{{ cpuModel }}</p>
+        </div>
         <div class="monitor-view__cpu">
           <div class="monitor-view__stats">
-            <!-- 占用率 -->
+            <!-- 占用率：主数值可点跳历史（#127）；颜色是按等级的冗余信号（#435 决策 7），
+                 数字本身始终可读，未知值不套色。 -->
             <div class="monitor-view__stat">
               <p class="monitor-view__stat-label">占用率</p>
               <template v-if="cpuRatio !== null">
-                <!-- 数值可点：跳转历史视图并预选该指标（#127）；上面的趋势末点即本数值 -->
                 <button
                   type="button"
-                  class="monitor-view__metric monitor-view__value-btn"
+                  class="monitor-view__metric monitor-view__value-btn monitor-view__cpu-usage"
+                  :data-level="cpuUsageLevel"
                   data-test="monitor-cpu-value"
                   :title="historyTitle('cpu.usage_ratio')"
                   :aria-label="historyAriaLabel('cpu.usage_ratio', cpuPercent)"
@@ -921,7 +997,8 @@ const cpuTrendAriaLabel = computed(
               </div>
             </div>
 
-            <!-- 系统负载：语义由 semantic 字段 + semantic_hints 承载，不与另一口径同轴比较 -->
+            <!-- 系统负载：语义由 semantic 字段 + semantic_hints 承载，不与另一口径同轴比较。
+                 #435 起不再带迷你趋势（用户拍板：负载只保留文字）。 -->
             <div class="monitor-view__stat" data-test="monitor-load">
               <p class="monitor-view__stat-label">系统负载</p>
               <template v-if="loadAverage">
@@ -950,16 +1027,6 @@ const cpuTrendAriaLabel = computed(
                   <template v-if="loadIsProcessorQueue">处理器队列长度 · {{ logicalCoreText }}</template>
                   <template v-else>5 分 <span data-test="monitor-load-five">{{ formatDecimal(loadAverage.five) }}</span> · 15 分 <span data-test="monitor-load-fifteen">{{ formatDecimal(loadAverage.fifteen) }}</span>（{{ logicalCoreText }}量程）</template>
                 </p>
-                <!-- 系统负载趋势（#127）：取历史库的 1 分钟列（Windows 上同一列是处理器队列代理量） -->
-                <SysmonSparkline
-                  v-if="loadAverage.one !== null"
-                  :points="trend.seriesOf('cpu.load_average.one')"
-                  :label="trendMetricLabel('cpu.load_average.one')"
-                  :window="trend.windowOf('cpu.load_average.one')"
-                  class="monitor-view__sparkline monitor-view__sparkline--stat"
-                  data-test="monitor-sparkline-load"
-                  @open="openHistory('cpu.load_average.one')"
-                />
                 <p v-if="loadHint" class="monitor-view__hint" data-test="monitor-load-hint" :title="loadHint.raw">语义提示：{{ loadHint.text }}</p>
               </template>
               <div v-else class="ds-empty monitor-view__empty" data-test="monitor-load-unavailable">
@@ -968,23 +1035,13 @@ const cpuTrendAriaLabel = computed(
               </div>
             </div>
 
-            <!-- 当前频率（#73）：cpu.frequency 不可用时整块不渲染（不是显示 0）；
-                 每核频率明细收在本格的可展开区里 -->
+            <!-- 当前频率（#73 / #435 决策 3）：主值 = 全部有读数核的平均；
+                 cpu.frequency 不可用时整格不渲染（不是显示 0）。 -->
             <div v-if="frequencyAvailable" class="monitor-view__stat" data-test="monitor-frequency">
               <p class="monitor-view__stat-label">当前频率</p>
               <template v-if="coreFrequencies.length > 0">
-                <div class="monitor-view__metric" data-test="monitor-frequency-value">{{ formatFrequency(frequencyPeak) }}</div>
-                <p class="monitor-view__stat-context" data-test="monitor-frequency-context">
-                  型号标注 {{ cpuModelFrequency }} · {{ frequencyPeakCount }} 核同步
-                </p>
-                <!-- 明细在下方以整卡宽展开（128 核的列表塞进 1/4 格会挤成一列窄条） -->
-                <button
-                  class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__detail-toggle"
-                  type="button"
-                  :aria-expanded="cpuDetailOpen"
-                  data-test="monitor-cpu-detail-toggle"
-                  @click="cpuDetailOpen = !cpuDetailOpen"
-                >{{ cpuDetailOpen ? '收起每核频率' : '展开每核频率' }}</button>
+                <div class="monitor-view__metric" data-test="monitor-frequency-value">{{ formatFrequency(frequencyAverage) }}</div>
+                <p class="monitor-view__stat-context" data-test="monitor-frequency-context">型号标注 {{ cpuModelFrequency }}</p>
               </template>
               <div v-else class="ds-empty monitor-view__empty" data-test="monitor-frequency-empty">
                 <div class="ds-empty__title">暂无数据</div>
@@ -992,8 +1049,8 @@ const cpuTrendAriaLabel = computed(
               </div>
             </div>
 
-            <!-- 最高温度（#73）：temperature 不可用时整块不渲染（不是显示 0）；
-                 按芯片分组的每传感器读数收在本格的可展开区里 -->
+            <!-- 最高温度（#73）：temperature 不可用时整格不渲染（不是显示 0）；
+                 归属摘要跟着主数值走，逐传感器读数收在本格的小入口后面（#127 折叠语义不变）。 -->
             <div v-if="temperatureAvailable" class="monitor-view__stat" data-test="monitor-temperature">
               <p class="monitor-view__stat-label">最高温度</p>
               <template v-if="temperatureGroups.length > 0">
@@ -1002,9 +1059,8 @@ const cpuTrendAriaLabel = computed(
                 </div>
                 <!-- 归属（芯片友好名 + 通道标签）跟着主数值走：只说「最高 45.5 °C」不知道是哪颗芯片 -->
                 <p class="monitor-view__stat-context" data-test="monitor-temperature-summary">
-                  最高温度 · {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
+                  {{ temperaturePeak?.groupName }} · {{ temperaturePeak?.label }} · {{ temperatureDetailSummary }}
                 </p>
-                <!-- 明细在下方以整卡宽展开（分组逐传感器读数，塞进 1/4 格会挤成窄条） -->
                 <button
                   class="ds-btn ds-btn--tertiary ds-btn--sm monitor-view__detail-toggle"
                   type="button"
@@ -1020,68 +1076,91 @@ const cpuTrendAriaLabel = computed(
             </div>
           </div>
 
-          <!-- 单序列趋势（#362）：数据源仍是 #127 的 `cpu.usage_ratio` 序列（历史补齐 + WS 推进），
-               不新增窗口、不改 store。纵轴取 #361 的 `adaptiveAxisTicks`——固定 0–100% 会把
-               10–25% 的日常波动压成一条直线，等于删掉「趋势」本身。左侧刻度列独立成列（三档标签），
-               下方如实标注覆盖时长（满 15 分钟才写「最近 15 分钟」）。 -->
-          <div v-if="cpuRatio !== null && usageAxis && usageGeometry" class="monitor-view__trend" data-test="monitor-cpu-trend">
-            <div class="monitor-view__chart">
-              <div class="monitor-view__chart-axis" aria-hidden="true">
-                <span
-                  v-for="tick in usageAxisLabels"
-                  :key="tick.value"
-                  class="monitor-view__chart-tick"
-                >{{ tick.text }}</span>
-              </div>
-              <button
-                type="button"
-                class="monitor-view__chart-plot monitor-view__value-btn"
-                :title="cpuTrendTitle"
-                :aria-label="cpuTrendAriaLabel"
-                :data-last-value="usageGeometry.lastValue"
-                :data-window-complete="usageWindowComplete"
-                :data-window-truncated="usageWindow.truncated"
-                :data-window-stale="usageWindow.stale"
-                data-test="monitor-sparkline-cpu"
-                @click="openHistory('cpu.usage_ratio')"
+          <!-- 固定 0–100% 单曲线（#435 决策 2）：无左侧刻度标签、无「纵轴…%」说明——网格线承担
+               尺度感，横轴两端给真实时刻，下方只写时间窗。整块是按钮：点击跳历史并预选指标。 -->
+          <div v-if="cpuRatio !== null && usageGeometry" class="monitor-view__trend" data-test="monitor-cpu-trend">
+            <button
+              type="button"
+              class="monitor-view__chart monitor-view__value-btn"
+              :title="cpuTrendTitle"
+              :aria-label="cpuTrendAriaLabel"
+              :data-last-value="usageGeometry.lastValue"
+              :data-window-complete="usageWindowComplete"
+              :data-window-truncated="usageWindow.truncated"
+              :data-window-stale="usageWindow.stale"
+              data-test="monitor-sparkline-cpu"
+              @click="openHistory('cpu.usage_ratio')"
+            >
+              <svg
+                class="monitor-view__chart-svg"
+                viewBox="0 0 100 34"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
               >
-                <svg
-                  class="monitor-view__chart-svg"
-                  viewBox="0 0 100 34"
-                  preserveAspectRatio="none"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <polyline class="monitor-view__chart-line" :points="usageGeometry.points" vector-effect="non-scaling-stroke" />
-                </svg>
-              </button>
+                <line
+                  v-for="y in PERCENT_TREND_GRIDLINE_YS"
+                  :key="y"
+                  class="monitor-view__chart-gridline"
+                  x1="0"
+                  x2="100"
+                  :y1="y"
+                  :y2="y"
+                  vector-effect="non-scaling-stroke"
+                />
+                <polyline class="monitor-view__chart-line" :points="usageGeometry.points" vector-effect="non-scaling-stroke" />
+              </svg>
+            </button>
+            <div class="monitor-view__chart-axis-row" aria-hidden="true">
+              <span class="monitor-view__chart-axis-end" data-test="monitor-cpu-trend-start">{{ trendStartText }}</span>
+              <span class="monitor-view__chart-axis-end" data-test="monitor-cpu-trend-end">{{ trendEndText }}</span>
             </div>
             <p class="monitor-view__meta monitor-view__chart-caption" data-test="monitor-cpu-trend-caption">
               {{ cpuTrendCaption }}
             </p>
           </div>
 
-          <!-- 每核频率明细（#73 / #362）：由「当前频率」那格的开关展开，但以**整卡宽**渲染——
-               128 核的列表塞进 1/4 格会挤成一列窄条。不可用（cpu.frequency 不可用）时整块不渲染。 -->
-          <div v-if="frequencyAvailable && coreFrequencies.length > 0 && cpuDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide" data-test="monitor-frequency-detail">
-            <h3 class="monitor-view__panel-title">每核频率</h3>
-            <ul class="monitor-view__cores monitor-view__cores--detail">
+          <!-- 每核条形（#435 决策 6）：曲线下方直接渲染、无标题行；列数由容器宽度实测后交给纯函数
+               计算（多行时每行尽量等分）。title / 读屏文案：`核 N · X% · Y MHz`（频率不可用省略）。 -->
+          <div ref="coreBarsRef" class="monitor-view__core-bars" data-test="monitor-cpu-cores">
+            <ul
+              v-if="coreBars.length > 0"
+              class="monitor-view__cores"
+              :style="{ '--core-columns': String(coreBarColumnCount) }"
+            >
               <li
-                v-for="frequency in coreFrequencies"
-                :key="frequency.index"
-                class="monitor-view__core monitor-view__core--detail"
-                data-test="monitor-frequency-core"
-                :data-core-index="frequency.index"
+                v-for="bar in coreBars"
+                :key="bar.index"
+                class="monitor-view__core"
+                :title="bar.text"
+                :aria-label="bar.text"
+                data-test="monitor-core"
+                :data-core-index="bar.index"
+                :data-saturated="bar.saturated ? 'true' : undefined"
               >
-                <span class="monitor-view__core-index">核 {{ frequency.index }}</span>
-                <span class="monitor-view__core-value">{{ formatFrequency(frequency.mhz) }}</span>
+                <span class="monitor-view__core-bar" aria-hidden="true">
+                  <span
+                    class="monitor-view__core-bar-fill"
+                    :class="{ 'monitor-view__core-bar-fill--saturated': bar.saturated }"
+                    :style="bar.style"
+                  ></span>
+                </span>
+                <span
+                  v-if="bar.saturated"
+                  class="monitor-view__core-tag"
+                  data-test="monitor-core-saturated"
+                >饱和</span>
               </li>
             </ul>
+            <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
+              <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
+              <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
+            </div>
           </div>
 
-          <!-- 温度明细（#126 / #362）：由「最高温度」那格的开关展开，同样以整卡宽渲染；
-               按芯片分组（CPU / GPU / 无线网卡 / 主板 ACPI 等友好名），组内逐通道显示，
-               原始 sensor 标识降级到 title（tooltip）；不过滤任何传感器。 -->
+          <!-- 温度明细（#126）：由「最高温度」那格的小入口展开，以整卡宽渲染；按芯片分组
+               （CPU / GPU / 无线网卡 / 主板 ACPI 等友好名），组内逐通道显示，原始 sensor 标识
+               降级到 title（tooltip）；不过滤任何传感器。 -->
           <div v-if="temperatureAvailable && temperatureGroups.length > 0 && temperatureDetailOpen" class="monitor-view__cpu-panel monitor-view__cpu-panel--wide monitor-view__temp-groups" data-test="monitor-temperature-detail">
             <div
               v-for="group in temperatureGroups"
@@ -1347,53 +1426,6 @@ const cpuTrendAriaLabel = computed(
                 </div>
               </dl>
 
-              <!-- 每核使用率（#370）：逐核条形从 CPU 宽卡移入本行的展开区（行值只给
-                   「最高核占用率 · N 核」摘要）。网格规则沿用 #362 的一条 `auto-fit`
-                   （一条规则覆盖 4–128 核，不写断点、不用 JS 测量），只挪位置不改规则。
-                   饱和核用 error 色 + 「饱和」文字——颜色之外还有文字这一层差异。
-                   逐核读数与顺序仍取 `cpuCores`（快照 `cpu.cores` 数组是唯一事实源，
-                   契约 sysmon §2.3 保证可用时长度等于 `system.logical_cores`，
-                   两者不一致时以数组为准）。 -->
-              <div
-                v-if="row.id === 'cpu.cores' && isLedgerRowOpen(row.id)"
-                :id="`ledger-fields-${row.id}`"
-                class="monitor-view__ledger-cores"
-                data-test="monitor-cpu-cores"
-              >
-                <p v-if="cpuCores.length > 0" class="monitor-view__meta" data-test="monitor-cpu-detail-summary">{{ cpuDetailSummary }}</p>
-                <ul v-if="cpuCores.length > 0" class="monitor-view__cores">
-                  <li
-                    v-for="core in cpuCores"
-                    :key="core.index"
-                    class="monitor-view__core"
-                    :class="{ 'monitor-view__core--saturated': core.saturated }"
-                    data-test="monitor-core"
-                    :data-core-index="core.index"
-                  >
-                    <span class="monitor-view__core-bar" aria-hidden="true">
-                      <span
-                        class="monitor-view__core-bar-fill"
-                        :class="{ 'monitor-view__core-bar-fill--saturated': core.saturated }"
-                        :style="coreBarStyle(core.usage_ratio)"
-                      ></span>
-                    </span>
-                    <span class="monitor-view__core-label">
-                      <span class="monitor-view__core-index">核 {{ core.index }}</span>
-                      <span class="monitor-view__core-value">{{ formatPercent(core.usage_ratio) }}</span>
-                    </span>
-                    <span
-                      v-if="core.saturated"
-                      class="monitor-view__core-tag"
-                      data-test="monitor-core-saturated"
-                    >饱和</span>
-                  </li>
-                </ul>
-                <div v-else class="ds-empty monitor-view__empty" data-test="monitor-cores-empty">
-                  <div class="ds-empty__title">{{ cpuCoresAvailable ? '暂无每核数据' : UNAVAILABLE_TEXT }}</div>
-                  <div class="ds-empty__desc">{{ coresEmptyDesc }}</div>
-                </div>
-              </div>
-
               <!-- 时钟行的辅助信息（#302）：方向说明 / 测量质量提示 / 同步服务检测。
                    偏差着色与质量提示是两个独立判定对象（契约 §2.8）：质量提示不改变着色。 -->
               <div
@@ -1645,7 +1677,7 @@ const cpuTrendAriaLabel = computed(
   }
 }
 
-/* 实时视图的网格是单列纵向（#363）：CPU 宽卡 / 指标台账跨满整行（主机条在网格之外，
+/* 实时视图的网格是单列纵向（#363）：CPU 块 / 指标台账跨满整行（主机条在网格之外，
    是页头下方的通栏一条，#430）。列数不再是版面变量——台账自身的七列（≥1024）/ 三行堆叠
    （<1024）才是分段的那一层。
    沿用既有断点体系（xl=1280，#127 明确不使用容器查询），图表用容器自适应重排。
@@ -1790,8 +1822,35 @@ const cpuTrendAriaLabel = computed(
   }
 }
 
-/* ---- CPU 四数字（#362）：占用率 / 系统负载 / 当前频率 / 最高温度横排 ----
-   容器自适应（auto-fit）而不是固定 4 列：窄屏两列、宽屏四列，一条规则覆盖，不写断点。 */
+/* ---- CPU 标题行（#435）：标题左、型号右（型号过长省略号 + title，不换行撑破标题行） ---- */
+.monitor-view__cpu-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacer-8) var(--spacer-16);
+  min-width: 0;
+}
+
+/* 卡片标题是行内 flex，作为 flex item 不参与收缩；型号吃掉剩余宽度 */
+.monitor-view__cpu-head .monitor-view__card-title {
+  flex: none;
+}
+
+/* 型号来自 system.cpu_model：取不到时整行不渲染（v-if），不显示「未知型号」占位 */
+.monitor-view__cpu-model {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- CPU 四数字（#435）：占用率 / 系统负载 / 当前频率 / 最高温度横排 ----
+   容器自适应（auto-fit）而不是固定 4 列：窄屏两列、宽屏四列，一条规则覆盖，不写断点。
+   Windows 上频率 / 温度整格不渲染，同一规则自然收成两列。 */
 .monitor-view__stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(var(--stat-cell-min-width), 1fr));
@@ -1821,49 +1880,36 @@ const cpuTrendAriaLabel = computed(
   line-height: var(--body-xs-line-height);
 }
 
+/* 占用率主数值按等级着色（#435 决策 7）：与顶栏 CPU 徽章同一展示分档（70 / 90，定义只在
+   `useResourceLevel`）。文字必须走 `-on-surface` 文本档：`-default` 图形档在浅色主题的卡片底上
+   只有 2.79:1，大字号文本也不够 3:1（Paired-Step Rule）。数字本身始终可读，颜色是冗余信号。 */
+.monitor-view__value-btn.monitor-view__cpu-usage[data-level='normal'] {
+  color: var(--status-success-on-surface);
+}
+
+.monitor-view__value-btn.monitor-view__cpu-usage[data-level='warn'] {
+  color: var(--status-warning-on-surface);
+}
+
+.monitor-view__value-btn.monitor-view__cpu-usage[data-level='danger'] {
+  color: var(--status-error-on-surface);
+}
+
 /* 四数字里的明细开关：不设上边距（上下文小字已提供间隔），紧跟小字 */
 .monitor-view__detail-toggle {
   align-self: flex-start;
   margin-top: var(--spacer-4);
 }
 
-/* ---- 趋势（#362）：左侧独立刻度列 + 右侧折线，下方一行说明 ----
-   刻度列宽与绘图区高度是图表几何量（不是间距），走 `--chart-*` token。 */
+/* ---- 趋势（#435）：固定 0–100% 的单序列折线，整块是按钮 ----
+   纵轴固定后不再有左侧刻度列（#435 决策 2）：绘图区占满卡片宽度，网格线（0/25/50/75/100）
+   承担尺度感，横轴两端给真实时刻，下方说明只写时间窗。高度是图表几何量，走 `--chart-height-trend`。 */
 .monitor-view__trend {
   grid-column: 1 / -1;
   min-width: 0;
 }
 
 .monitor-view__chart {
-  display: grid;
-  grid-template-columns: var(--chart-axis-col-width) minmax(0, 1fr);
-  gap: var(--spacer-8);
-  align-items: stretch;
-}
-
-/* 三档标签均分绘图区高度：列两端对齐（上界贴顶、下界贴底），中点落在中线 */
-.monitor-view__chart-axis {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  height: var(--chart-height-trend);
-  color: var(--text-tertiary);
-  font-family: var(--font-family-metric);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  /* 刻度列是固定宽度的窄栏：标签在极端轴上会变长（`100.00%` 7 字符 ≈ 45px > 34px）。
-     不换行，宁可溢出到绘图区一侧（绘图区是透明的，覆盖不掉曲线）——换行会把三档的
-     vertical rhythm 打乱，比横向溢出更难读。 */
-  white-space: nowrap;
-}
-
-.monitor-view__chart-tick {
-  display: block;
-}
-
-.monitor-view__chart-plot {
   display: block;
   width: 100%;
   height: var(--chart-height-trend);
@@ -1880,6 +1926,12 @@ const cpuTrendAriaLabel = computed(
   overflow: visible;
 }
 
+/* 网格线：颜色走图表轴 token；`vector-effect` 在非等比拉伸下保持 1px 线宽 */
+.monitor-view__chart-gridline {
+  stroke: var(--viz-ui-chart-axis);
+  stroke-width: 1;
+}
+
 .monitor-view__chart-line {
   fill: none;
   stroke: var(--status-primary-default);
@@ -1888,8 +1940,21 @@ const cpuTrendAriaLabel = computed(
   stroke-linejoin: round;
 }
 
+/* 横轴两端时刻：与绘图区左右缘对齐；tabular-nums 让推进中的秒数不左右跳 */
+.monitor-view__chart-axis-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+  margin-top: var(--spacer-4);
+  color: var(--text-tertiary);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
 .monitor-view__chart-caption {
-  margin: var(--spacer-4) 0 0;
+  margin: var(--spacer-2) 0 0;
 }
 
 /* 可点击数值（#127：点击跳转历史视图并预选指标）：只重置按钮外观，字号/颜色沿用所在行的样式，
@@ -1929,15 +1994,6 @@ const cpuTrendAriaLabel = computed(
   flex: 1;
   min-width: 48px;
   max-width: 160px;
-}
-
-/* 负载 sparkline 跟在四数字的小字之后（#362）：格内是纵向 flex，故 `flex: none`
-   （基础规则是 `flex: 1`，在纵向容器里会把 24px 的辅助线在主轴上拉伸），独占一行且不撑满整格 */
-.monitor-view__sparkline--stat {
-  flex: none;
-  width: 100%;
-  max-width: 200px;
-  margin-top: var(--spacer-4);
 }
 
 /* 台账值列内的 sparkline（#363）：值列是纵向 flex，基础规则的 `flex: 1` 会把 24px 辅助线
@@ -2582,9 +2638,8 @@ const cpuTrendAriaLabel = computed(
   margin-top: var(--spacer-4);
 }
 
-/* ---- CPU 宽卡（#362）：四数字 / 单序列趋势 / 每核条形三块内容纵向排布 ---- */
-/* 一块面里读完：三块都跨满整卡（`grid-column: 1 / -1`），因此这里只需单列——
-   不再有「面板数 vs 列数一致」的问题（#321 的前提已随面板网格一并消失）。 */
+/* ---- CPU 块（#435）：四数字 / 固定 0–100% 单曲线 / 每核条形 三块纵向排布 ---- */
+/* 三块都跨满整卡（`grid-column: 1 / -1`），因此这里只需单列。 */
 .monitor-view__cpu {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2619,36 +2674,36 @@ const cpuTrendAriaLabel = computed(
   font-weight: var(--body-sm-strong-font-weight);
 }
 
-/* 每核条形（#362）：容器自适应网格——**一条规则覆盖 4–128 核**，不写断点、不用 JS 测量。
-   格宽下限走 `--core-cell-min-width` token；auto-fit 让格子随容器宽度增减，
-   2560 宽的一行放得下更多核，390 宽自动折成多行（无横向滚动）。 */
+/* 每核条形（#435 决策 6）：曲线下方直接渲染、无标题行。
+   列数由视图实测容器宽度后按纯函数 `coreBarColumns` 算好、经 `--core-columns` 注入——
+   **不用 auto-fit**：auto-fit 会把余数甩给最后一行（16 核在窄屏可能折成 11 + 5），
+   而本块要求多行时每行数量尽量相等（整除优先；找不到整除时各行最多差 1 个）。
+   `minmax(0, 1fr)` 让格宽平均分配且允许收缩，条形永不横向溢出。 */
+.monitor-view__core-bars {
+  min-width: 0;
+}
+
 .monitor-view__cores {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(var(--core-cell-min-width), 1fr));
-  gap: var(--spacer-6) var(--spacer-4);
+  grid-template-columns: repeat(var(--core-columns, 1), minmax(0, 1fr));
+  gap: var(--spacer-8);
+  align-items: start;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* 单核：柱在上、号与读数在下（同一格内纵向堆叠），不靠 flex 行内排布 */
+/* 单核：只有柱与（饱和时的）文字标记；逐核读数由 title / aria 提供（#435 决策 6 不显示文字）。
+   `align-items: start` 让同一行的柱顶对齐——饱和核多出的「饱和」文字不把其它柱往下拽。 */
 .monitor-view__core {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: var(--spacer-2);
   min-width: 0;
-  padding: var(--spacer-2) 0;
-  text-align: center;
 }
 
-/* 饱和核的格底加重（除颜色外仍靠下方的「饱和」文字区分，灰度截屏可辨） */
-.monitor-view__core--saturated {
-  border-radius: var(--radius-4);
-  background: var(--status-error-surface-l1);
-}
-
-/* 柱：竖向轨道，自底向上按占用率填充——长度差异一眼可读，核号在下方。
+/* 柱：竖向轨道，自底向上按占用率填充——高度差异一眼可读。
    轨道高度走 `--core-bar-height` token（不是间距，不进 spacer 步进）。
    flex + `justify-content: flex-end` 是填充贴底的必要条件：块级容器里 `margin-top: auto`
    会解析成 0，填充会挂在轨道顶部（实测踩过）。 */
@@ -2662,7 +2717,7 @@ const cpuTrendAriaLabel = computed(
   background: var(--bg-overlay-l2);
   overflow: hidden;
   /* 轨道外框（#381）：forced-colors 下轨道底与填充都被统一成 Canvas，柱的**满格高度**消失，
-     只有填充被描边时读者无法区分「柱高 = 36px 轨道」与「柱高 = 当前占用」。
+     只有填充被描边时读者无法区分「柱高 = 轨道高度」与「柱高 = 当前占用」。
      透明描边在正常主题下不画像素，forced-colors 下取 `CanvasText`。
      用 `outline` 而非 `border`：轨道高度是 token 定值，`border` 会缩掉 2px 的画布。 */
   outline: var(--border-width-default) solid transparent;
@@ -2674,10 +2729,9 @@ const cpuTrendAriaLabel = computed(
    `outline-offset` 负值把它压进填充块内部，四边都随轨道 `overflow: hidden` 收口。
 
    **已知边界（实测，不粉饰）**：填充高度 < 3px 时（本机 8 核里 4 个核 < 3%），
-   0.36–0.72px 的高度装不下带负 offset 的描边，forced-colors 下**一个像素都不画** ——
-   读者看到的仍是空轨道，与改前一致。这一档下每核的百分比文字在柱下方，信息没丢。
-   这不是回归（改前也是空轨道），是「这条修法在低占用档不生效」，写在这里防止下一个人
-   把它当 bug 重报。真正的解法是给柱底加一条基线（不随高度变化），属于另一票的版面改动。 */
+   负 offset 的描边装不进这一档高度，forced-colors 下**一个像素都不画** ——
+   读者看到的仍是空轨道。这一档下逐核读数在 title / aria（「核 N · X%」）里，信息没丢。
+   这不是回归（改前同样不生效），写在这里防止下一个人把它当 bug 重报。 */
 .monitor-view__core-bar-fill {
   display: block;
   width: 100%;
@@ -2692,54 +2746,14 @@ const cpuTrendAriaLabel = computed(
   background: var(--status-error-default);
 }
 
-/* 核号与读数同一行但允许折行：格宽约 40–60px 时自动落成两行，宽格时并排 —— 同样不靠 JS 测量 */
-.monitor-view__core-label {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0 var(--spacer-4);
-  min-width: 0;
-}
-
-.monitor-view__core-index {
-  color: var(--text-tertiary);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-  white-space: nowrap;
-}
-
-.monitor-view__core-value {
-  color: var(--text-default);
-  font-family: var(--font-family-metric);
-  font-size: var(--body-xs-font-size);
-  line-height: var(--body-xs-line-height);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* 饱和标记：文字（不是只有颜色）——灰度截屏下与正常核仍有明确差异 */
+/* 饱和标记：文字（不是只有颜色）——灰度截屏下与正常核仍有明确差异。
+   只有饱和核渲染这一行，其它格不占位。 */
 .monitor-view__core-tag {
   color: var(--status-error-default);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
   font-weight: var(--body-xs-strong-font-weight);
   white-space: nowrap;
-}
-
-/* 每核频率明细（#362：收进「当前频率」格的可展开区）：单列列表，不参与条形网格 */
-.monitor-view__cores--detail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacer-2);
-  margin-top: var(--spacer-8);
-}
-
-.monitor-view__core--detail {
-  flex-direction: row;
-  justify-content: space-between;
-  gap: var(--spacer-8);
-  padding: 0;
-  text-align: left;
 }
 
 .monitor-view__hint {
@@ -2884,7 +2898,7 @@ const cpuTrendAriaLabel = computed(
     grid-column: auto;
   }
 
-  /* 窄屏：CPU 宽卡的内层块让回单列（宽卡本身已 `grid-column: auto`）。
+  /* 窄屏：CPU 块的内层块让回单列（宽卡本身已 `grid-column: auto`）。
      主机条是顶栏下方的独立一条（#430），不再是网格项，不在此处列。 */
   .monitor-view__stats,
   .monitor-view__trend {
