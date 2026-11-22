@@ -176,7 +176,7 @@ async function confirmAdd(): Promise<void> {
     <!-- 降级提示（契约 rest §2.9.9：不得把降级当空列表） -->
     <div v-if="!store.available" class="ds-alert ds-alert--warning td-page__banner" role="status" data-test="td-accounts-degraded">
       <span class="ds-alert__icon"><Icon name="Tips" :size="16" /></span>
-      <span>{{ store.degradedText }}（当前展示的是各网关最近一次上报的配置账户）</span>
+      <span>{{ store.degradedText }}（当前展示的是各交易接口最近一次上报的配置账户）</span>
     </div>
     <!-- 非 admin 只读提示 -->
     <div v-if="!canWrite" class="ds-alert ds-alert--info td-page__banner" role="status" data-test="td-accounts-readonly">

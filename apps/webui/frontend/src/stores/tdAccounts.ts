@@ -153,7 +153,7 @@ export type TdAccountSubmitResult =
 
 /** 冲突提示文案（注册表条目可展示归属网关，帮用户定位是哪个网关占用了 ID） */
 export function accountConflictText(conflict: TdConfigAccountList): string {
-  return `账户 ID「${conflict.account_id}」已被交易网关 ${conflict.gateway} 占用（含已禁用/离线账户），请换一个账户 ID`
+  return `账户 ID「${conflict.account_id}」已被交易接口 ${conflict.gateway} 占用（含已禁用/离线账户），请换一个账户 ID`
 }
 
 /**
@@ -192,7 +192,7 @@ export function tdStateText(state: TdState | string | null | undefined): string 
 
 /** 降级原因文案（契约 rest §2.9.9 只有 no_gateway_snapshot 一种原因） */
 export const TD_ACCOUNTS_DEGRADED_TEXT =
-  '账户注册表暂不可用（尚未收到任何交易网关配置），列表可能不完整，正在自动重试'
+  '账户注册表暂不可用（尚未收到任何交易接口配置），列表可能不完整，正在自动重试'
 
 /** 交易账户行（页面渲染单元 = 注册表条目 ∪ 配置镜像 ∪ 状态镜像 ∪ 进度镜像） */
 export interface TdAccountRow {

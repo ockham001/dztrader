@@ -152,11 +152,11 @@ async function submitForm(value: TdAccountFormValue): Promise<void> {
       })
       if (!result.ok) {
         if (result.kind === 'conflict' || result.kind === 'failed') formError.value = result.message
-        if (result.kind === 'timeout') formError.value = '提交超时：交易网关未在预期时间内回报配置，请稍后刷新确认'
+        if (result.kind === 'timeout') formError.value = '提交超时：交易接口未在预期时间内回报配置，请稍后刷新确认'
         return
       }
       formOpen.value = false
-      toast.success('已提交添加请求，等待交易网关回报配置')
+      toast.success('已提交添加请求，等待交易接口回报配置')
       return
     }
 
@@ -164,11 +164,11 @@ async function submitForm(value: TdAccountFormValue): Promise<void> {
     const result = await store.updateAccount(editingRow.value.account_id, patch)
     if (!result.ok) {
       if (result.kind === 'conflict' || result.kind === 'failed') formError.value = result.message
-      if (result.kind === 'timeout') formError.value = '提交超时：交易网关未在预期时间内回报配置，请稍后刷新确认'
+      if (result.kind === 'timeout') formError.value = '提交超时：交易接口未在预期时间内回报配置，请稍后刷新确认'
       return
     }
     formOpen.value = false
-    toast.success('已提交修改请求，等待交易网关回报配置')
+    toast.success('已提交修改请求，等待交易接口回报配置')
   } finally {
     formSubmitting.value = false
   }
@@ -208,9 +208,9 @@ async function toggleEnabled(row: TdAccountRow): Promise<void> {
   if (!result.ok && (result.kind === 'conflict' || result.kind === 'failed')) {
     toast.error(result.message)
   } else if (!result.ok && result.kind === 'timeout') {
-    toast.warning('启停请求已下发，但交易网关未在预期时间内回报配置')
+    toast.warning('启停请求已下发，但交易接口未在预期时间内回报配置')
   } else if (result.ok) {
-    toast.success(`已提交${row.enabled ? '禁用' : '启用'}请求，等待交易网关回报配置`)
+    toast.success(`已提交${row.enabled ? '禁用' : '启用'}请求，等待交易接口回报配置`)
   }
 }
 
@@ -243,7 +243,7 @@ async function confirmRemove(): Promise<void> {
       toast.error(result.message)
       removingRow.value = null
     } else if (result.kind === 'timeout') {
-      toast.warning('删除请求已下发，但交易网关未在预期时间内回报配置')
+      toast.warning('删除请求已下发，但交易接口未在预期时间内回报配置')
       removingRow.value = null
     }
   } finally {

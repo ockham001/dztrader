@@ -323,7 +323,6 @@ describe('TdInterfaceCard · 删除交易接口（ADR 0053 决策 3 / 契约 res
     // 失败已清 pending（usePending 失败路径），用户可修正后重试
     expect(store.gatewayRemovePending('dztd_ctp')).toBe(false)
   })
-})
 
   it('移除请求在途：启动/添加/编辑/启停/删除账户全部禁用并提示原因（堵同页竞态）', async () => {
     const store = await prepare({ running: false, accounts: [] })
@@ -352,6 +351,7 @@ describe('TdInterfaceCard · 删除交易接口（ADR 0053 决策 3 / 契约 res
     // 删除接口按钮本身也处于 pending 禁用态
     expect(wrapper.find('[data-test="td-interface-remove"]').attributes('disabled')).toBeDefined()
   })
+})
 
 describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0051）', () => {
   beforeEach(() => {
@@ -452,7 +452,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     expect(tdApi.updateAccount).toHaveBeenCalledWith('account_001', { enabled: false })
     expect(successSpy).toHaveBeenCalledWith(
-      expect.stringContaining('等待交易网关回报配置') as unknown as string)
+      expect.stringContaining('等待交易接口回报配置') as unknown as string)
   })
 
   it('progress 中间态（current < max）登出可点 = 强制中断，登录禁用（ADR 0051）', async () => {
