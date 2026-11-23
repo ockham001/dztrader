@@ -79,7 +79,7 @@ Supersedes（精确到句；未列出的决策与句子全部保留）：
 
 ## References
 
-- 查询流控事实：[CTP 6.7.13 知识库 ch19](../../.agents/skills/ctp-6713-api/chapters/ch19-business-rules.md)、[ch08](../../.agents/skills/ctp-6713-api/chapters/ch08-query-requests.md)
+- 查询流控事实：CTP 6.7.13 API 接口说明——第 19 章「其他业务规则」（五层流控：前置 `QryFreq` / API 内置在途 1 笔 / `-2` / `-3`）、第 8 章「查询接口」（47 个 `ReqQry*` 的返回码与分页收口）。本机知识库副本位于 `.agents/skills/ctp-6713-api/`（不入版本控制，故不提供链接）。
 - 被修订的决策：[ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 6、[ADR 0049](0049-position-pure-incremental-no-periodic-query.md) Consequences
 - 旧版参考实现：`shared/DzTrader3改用共享内存之前实盘版本20230813`（`mainGateWay::timerReqQryLater`，不在本仓版本控制内）
 - spec 与实现票：[#455](https://github.com/ockham001/dztrader/issues/455)
