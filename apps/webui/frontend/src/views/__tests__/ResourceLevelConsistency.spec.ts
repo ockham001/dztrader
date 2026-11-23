@@ -14,9 +14,10 @@ vi.mock('@/composables/wsClient', () => ({
   useWebSocket: () => ({ connectionState: { value: 'connected' } }),
 }))
 
-// #452 / ADR 0054：顶栏资源区只剩 CPU / 内存两枚徽章（卷徽章已随本票删除），它们与监控页
-// CPU / 内存数值共用 `useResourceLevel` 的同一套阈值与等级词表。本 spec 挂同一 pinia 的两侧，
-// 逐档比较 data-level：若将来一侧单独改阈值或映射，这里会失败（同源由共享模块保证）。
+// #452 / ADR 0054：顶栏资源区是 CPU / 内存 / 时钟偏差三枚「图标 + 数值」常驻徽章（卷徽章已随
+// 本票删除），其中 CPU / 内存与监控页同名数值共用 `useResourceLevel` 的同一套阈值与等级词表。
+// 本 spec 挂同一 pinia 的两侧，逐档比较 data-level：若将来一侧单独改阈值或映射，这里会失败
+// （同源由共享模块保证）。
 //
 // 历史：#127 / ADR 0048 的顶栏卷徽章一致性用例随卷徽章删除而废止（#452），改为比较仍存在的
 // CPU / 内存两处消费方。
@@ -52,7 +53,7 @@ async function mountBoth() {
 }
 
 // #371：MonitorView 挂了 1 秒 ticker，用例必须卸载 —— 不卸载时未清理的定时器会在
-// 后续用例的 flush 里插入无主更新，实测会让无关用例偶发假红（顶栏墙钟同样有 interval）。
+// 后续用例的 flush 里插入无主更新，实测会让无关用例偶发假红。
 enableAutoUnmount(afterEach)
 
 beforeEach(() => {

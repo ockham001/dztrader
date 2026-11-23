@@ -9,7 +9,7 @@
  *
  * 明确的例外（不是遗漏）：
  * - Topbar 徽章的整数百分比是刻意的窄条紧凑显示（见该组件注释），不走 `formatPercent`；
- *   同理顶栏墙钟的偏差括号用 {@link formatCompactSignedMilliseconds}（整数毫秒），不带空格。
+ *   同理顶栏时钟偏差徽章的数值用 {@link formatCompactSignedMilliseconds}（整数毫秒），不带空格。
  *
  * 时长（秒 → 可读时长）于 #142 迁入本模块：sparkline 的「实际覆盖时长」与历史视图的
  * 「实际覆盖最近 X」是同一个换算，两处各写一份必然在改口径时漂移。
@@ -137,12 +137,12 @@ export function formatSignedMilliseconds(milliseconds: number | null | undefined
 }
 
 /**
- * **紧凑**带符号毫秒量（顶栏墙钟的偏差括号，ADR 0054）：取整 + 无空格单位
+ * **紧凑**带符号毫秒量（顶栏时钟偏差徽章的数值，ADR 0054）：取整 + 无空格单位
  * （`+12ms` / `-3ms` / `0ms`）。
  *
  * 与 {@link formatSignedMilliseconds} 的取舍**刻意不同**：顶栏是 32px 常驻窄条，`+12.3 ms`
  * 比 CPU 徽章宽一倍多，而偏差判据是 100ms / 1000ms 档（整数分辨率足够）；1 位小数的精确值
- * 仍在墙钟的悬停 title 里（那里用 `formatSignedMilliseconds`，不丢精度）。这与「顶栏整数百分比」
+ * 仍在徽章的悬停 title 里（那里用 `formatSignedMilliseconds`，不丢精度）。这与「顶栏整数百分比」
  * 是同一类取舍（见本文件头「明确的例外」与组件文档）。取整用 `Math.round`，四舍五入到最近整毫秒。
  */
 export function formatCompactSignedMilliseconds(milliseconds: number | null | undefined): string {
@@ -160,7 +160,7 @@ export function formatCompactSignedMilliseconds(milliseconds: number | null | un
  *
  * 向下取整的整档口径，**不给小数**：它回答的是「大致多久之前」，不是精确时长；四舍五入会
  * 把 14 分 59 秒说成「15 分钟」（与 {@link formatDuration} 的分钟向下取整同一理由）。
- * 由监控页（页文件年龄）与顶栏墙钟（时钟上次探测时间）共用，**不得**在视图里各写一份。
+ * 由监控页（页文件年龄）与顶栏时钟偏差徽章（上次探测时间）共用，**不得**在视图里各写一份。
  */
 export function formatAge(seconds: number | null | undefined): string {
   if (!isFiniteNumber(seconds) || seconds < 0) return UNAVAILABLE_TEXT

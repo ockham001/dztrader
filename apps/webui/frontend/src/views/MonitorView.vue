@@ -136,7 +136,7 @@ import { useToastStore } from '@/stores/toast'
 // 每台服务器表 + 同步服务一行；偏差按配置阈值着色（与资源类共用 `useResourceLevel` 的定档实现
 // 与同一套等级词表），误差界越界另给「测量质量」提示且**不改变**偏差着色；三种空态（配置关闭 /
 // 尚未探测 / 全部失败）都渲染块且都不显示 0；「立即查询」置灰时长取 `manual_min_interval_sec`，
-// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。顶栏另有一枚右上墙钟，偏差以括号呈现（ADR 0054）。
+// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。顶栏另有一枚时钟偏差图标徽章（ADR 0054）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 /** 历史视图 store（#79）：与实时 store 完全独立，切换视图不影响 WS 与实时快照 */

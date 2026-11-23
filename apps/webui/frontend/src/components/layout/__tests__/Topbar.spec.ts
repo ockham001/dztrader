@@ -26,14 +26,15 @@ vi.mock('@/composables/wsClient', () => ({
   useWebSocket: () => ({ connectionState: { value: 'connected' } }),
 }))
 
-// #452 / ADR 0054 顶栏重做：资源区只剩 CPU / 内存两枚常驻徽章（任何宽度可见），
-// 右上角是墙钟 + 偏差括号；卷徽章、独立 NTP 徽章、按宽度自适应折叠与 `<lg` 单状态图标
-// 全部删除。本 spec 锁三组事实：
-//   1. 资源区只渲染 CPU / 内存（含 warn / danger 状态色与既有 title 细节）；
-//   2. 已删除的形态没有回归（DOM 与 layout.css 两侧都断言：只删一处会被这里抓住）；
-//   3. 墙钟的四档 DOM 片段 / 偏差配色 / 空态 / tooltip / tick / visibility / 卸载清理。
-// 四档格式的**可见性**是纯 CSS 断点（jsdom 不做布局），因此用 layout.css 源码断言补位
-// （与 MonitorViewTrend.spec 的响应式断言同一写法）。
+// #452 / ADR 0054 顶栏重做（最终形态）：资源区三枚「图标 + 数值」常驻徽章 —— CPU → 内存 →
+// 时钟偏差（均无文字标签），右上只有连接状态 + 主题；没有卷徽章、没有独立文字 `NTP` 徽章、
+// 没有墙钟/日期时间、没有自适应折叠 / `▾ N` 浮层 / `<lg` 单状态图标。
+// 本 spec 锁三组事实：
+//   1. 三枚徽章的图标 / 数值 / 等级色 / title / aria-label（图标不自承担语义）；
+//   2. 已删除形态没有回归（DOM 与 layout.css / 源码两侧都断言）；
+//   3. 宽窄行为一致（纯 CSS，无媒体规则隐藏徽章；窄屏只收紧间距）——390 的真实像素验收
+//      另有浏览器实测（jsdom 无布局，这里只能锁样式不变量）。
+// 四档墙钟 / 每秒 tick / visibility 用例已随墙钟删除（#452 最终拍板：顶栏不显示日期时间）。
 
 const LAYOUT_CSS = join(
   dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'assets', 'css', 'layout.css',
@@ -41,15 +42,11 @@ const LAYOUT_CSS = join(
 const LAYOUT_CSS_SOURCE = readFileSync(LAYOUT_CSS, 'utf8')
 const TOPBAR_SOURCE = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'Topbar.vue'), 'utf8')
 
-/** 固定时钟时刻：2026-01-01（周四）13:25:36 本地时间 */
-const FIXED_NOW = new Date(2026, 0, 1, 13, 25, 36)
-
 const stubs = {
-  Icon: { template: '<span class="icon" />' },
   ThemeDropdown: { template: '<div class="theme-dropdown-stub" />' },
 }
 
-/** 已挂载的 wrapper：用例结束统一卸载（墙钟有 interval，不卸载会跨用例泄漏） */
+/** 已挂载的 wrapper：用例结束统一卸载（全局顶栏有 WS store 订阅，避免跨用例泄漏） */
 const mountedWrappers: VueWrapper[] = []
 
 async function mountTopbar(): Promise<VueWrapper> {
@@ -59,13 +56,6 @@ async function mountTopbar(): Promise<VueWrapper> {
   return wrapper
 }
 
-/** 手动卸载（从统一卸载表里摘掉，避免重复 unmount） */
-function unmountManually(wrapper: VueWrapper): void {
-  const index = mountedWrappers.indexOf(wrapper)
-  if (index >= 0) mountedWrappers.splice(index, 1)
-  wrapper.unmount()
-}
-
 beforeEach(() => {
   setActivePinia(createPinia())
   vi.clearAllMocks()
@@ -73,7 +63,6 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const wrapper of mountedWrappers.splice(0)) wrapper.unmount()
-  vi.useRealTimers()
   vi.unstubAllGlobals()
 })
 
@@ -87,43 +76,29 @@ function memBadge(wrapper: VueWrapper) {
   return wrapper.find('#resMem')
 }
 
-function clockEl(wrapper: VueWrapper) {
-  return wrapper.find('[data-test="topbar-clock"]')
+function ntpBadge(wrapper: VueWrapper) {
+  return wrapper.find('#resNtp')
 }
 
-function clockTimeText(wrapper: VueWrapper): string {
-  return wrapper.find('[data-test="topbar-clock-time"]').text()
+function valueOf(wrapper: VueWrapper, id: 'resCpu' | 'resMem' | 'resNtp'): string {
+  return wrapper.find(`#${id} .res-value`).text()
 }
 
-function clockOffset(wrapper: VueWrapper) {
-  return wrapper.find('[data-test="topbar-clock-offset"]')
+/** 徽章图标的内联 `--icon-url`（Icon 组件按 name 拼 `/icons/builtin/<name>.svg`） */
+function iconUrlOf(wrapper: VueWrapper, id: 'resCpu' | 'resMem' | 'resNtp'): string {
+  return wrapper.find(`#${id} [data-icon]`).attributes('style') ?? ''
 }
 
-/** 资源徽章（不含 MD / TD / STG 服务徽章） */
-function resourceBadges(wrapper: VueWrapper) {
-  return wrapper.findAll('.topbar__resource:not(.topbar__resource--svc)')
+/** 资源区直接子元素（顺序 = MD/TD/STG → 分隔线 → CPU/MEM/时钟偏差） */
+function resourceChildren(wrapper: VueWrapper) {
+  return wrapper.findAll('#topbarResources > *')
 }
 
 // ===== layout.css 断言助手（响应式不可见性只能从样式表断言）=====
 
 const CSS_ROOT = postcss.parse(LAYOUT_CSS_SOURCE)
 
-/** 某选择器在（可选）媒体块里的规则体文本；`media === null` 取基础规则 */
-function cssDecls(selector: string, media: string | null): string[] {
-  const bodies: string[] = []
-  CSS_ROOT.walkRules((rule) => {
-    if (!rule.selectors.some(part => part.trim() === selector)) return
-    const parent = rule.parent
-    const atRule = parent && parent.type === 'atrule' ? parent as postcss.AtRule : null
-    if (media === null && atRule !== null) return
-    const params = media === null ? null : media.replace(/^@media\s+/, '')
-    if (params !== null && (!atRule || atRule.params !== params)) return
-    bodies.push(rule.toString())
-  })
-  return bodies
-}
-
-/** 选择器在**任何**位置被 `display: none` 隐藏过吗（媒体块或基础规则） */
+/** 选择器在**任何**位置被 `display: none` 隐藏过吗（基础规则或媒体块） */
 function isHiddenAnywhere(selector: string): boolean {
   let hidden = false
   CSS_ROOT.walkRules((rule) => {
@@ -135,17 +110,258 @@ function isHiddenAnywhere(selector: string): boolean {
   return hidden
 }
 
-describe('Topbar 资源徽章（CPU / 内存常驻；#452 / ADR 0054）', () => {
-  it('只渲染 CPU / 内存两枚资源徽章：卷徽章 / NTP 徽章 / overflow / gauge / 测量行全部消失', async () => {
+/** 某选择器在指定媒体块内的规则体（同一档位可能有多个块，取包含该选择器的那个） */
+function ruleInMedia(mediaParams: string, selector: string): string {
+  let found = ''
+  CSS_ROOT.walkAtRules('media', (atRule) => {
+    if (found !== '' || atRule.params !== mediaParams) return
+    let body = ''
+    atRule.walkRules((rule) => {
+      if (rule.selectors.some(part => part.trim() === selector)) body += `${rule.toString()}\n`
+    })
+    found = body
+  })
+  return found
+}
+
+describe('Topbar 资源区三枚图标徽章（#452 / ADR 0054）', () => {
+  beforeEach(() => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+  })
+
+  it('只渲染 CPU / 内存 / 时钟偏差三枚指标徽章，顺序在服务徽章与分隔线之后', async () => {
+    const wrapper = await mountTopbar()
+
+    const children = resourceChildren(wrapper)
+    // 3 枚服务徽章 + 1 条分隔线 + 3 枚指标徽章
+    expect(children).toHaveLength(7)
+    expect(children.slice(0, 3).map(child => child.attributes('id'))).toEqual(['resMd', 'resTd', 'resStg'])
+    expect(children[3].classes()).toContain('topbar__resource-divider')
+    expect(children.slice(4).map(child => child.attributes('id'))).toEqual(['resCpu', 'resMem', 'resNtp'])
+    for (const badge of children.slice(4)) {
+      expect(badge.classes()).toContain('topbar__metric')
+    }
+  })
+
+  it('三枚徽章都是「14px 图标 + 数值」：图标名正确且与内置资源同名，图标 aria-hidden', async () => {
+    const wrapper = await mountTopbar()
+
+    expect(iconUrlOf(wrapper, 'resCpu')).toContain('/icons/builtin/CPU.svg')
+    expect(iconUrlOf(wrapper, 'resMem')).toContain('/icons/builtin/memory-module.svg')
+    expect(iconUrlOf(wrapper, 'resNtp')).toContain('/icons/builtin/clock_sync.svg')
+
+    for (const id of ['resCpu', 'resMem', 'resNtp'] as const) {
+      const icon = wrapper.find(`#${id} [data-icon]`)
+      // 图标单独进可访问性树会让读屏只听到「图片」；语义全部由徽章的 aria-label 承担
+      expect(icon.attributes('aria-hidden')).toBe('true')
+      expect(icon.attributes('style')).toContain('width: 14px')
+      // 没有文字标签：徽章里只有图标 + 数值两个元素
+      expect(wrapper.find(`#${id}`).findAll('.res-label')).toHaveLength(0)
+    }
+  })
+
+  it('数值带单位 + tabular-nums 由 layout.css 保证（固定宽度不随推送跳位）', () => {
+    const valueRule = CSS_ROOT.toString().match(/\.topbar__metric \.res-value \{([^}]*)\}/)?.[1] ?? ''
+    expect(valueRule).toContain('font-variant-numeric: tabular-nums')
+    expect(valueRule).toContain('font-size: var(--body-xs-font-size)')
+  })
+
+  it('CPU 徽章绑定实时快照百分比；读屏名与 title 都是完整名称 + 读数', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.234 }))
+    const wrapper = await mountTopbar()
+
+    expect(valueOf(wrapper, 'resCpu')).toBe('23%')
+    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--normal')
+    expect(cpuBadge(wrapper).attributes('data-level')).toBe('normal')
+    expect(cpuBadge(wrapper).attributes('role')).toBe('img')
+    expect(cpuBadge(wrapper).attributes('aria-label')).toBe('CPU 使用率 23%')
+    expect(cpuBadge(wrapper).attributes('title')).toBe('CPU 使用率 23%')
+  })
+
+  it('CPU 徽章按 70% / 90% 阈值映射 warn / danger（顶栏保留的资源告警）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.75 }))
+    const wrapper = await mountTopbar()
+    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--warn')
+    expect(cpuBadge(wrapper).attributes('data-level')).toBe('warn')
+    expect(cpuBadge(wrapper).attributes('title')).toBe('CPU 使用率 75%')
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.95 }))
+    await wrapper.vm.$nextTick()
+    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--danger')
+  })
+
+  it('内存徽章绑定实时快照使用率，按 95% 阈值映射 danger', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      memory: {
+        total_bytes: 100 * 1024 ** 3,
+        available_bytes: 5 * 1024 ** 3,
+        used_bytes: 95 * 1024 ** 3,
+        used_ratio: 0.95,
+        cached_bytes: null,
+        buffers_bytes: null,
+      },
+    }))
+    const wrapper = await mountTopbar()
+
+    expect(valueOf(wrapper, 'resMem')).toBe('95%')
+    expect(memBadge(wrapper).classes()).toContain('topbar__resource--danger')
+    expect(memBadge(wrapper).attributes('aria-label')).toBe('内存使用率 95%')
+    expect(memBadge(wrapper).attributes('title')).toBe('内存使用率 95%')
+  })
+
+  it('CPU / 内存不可用：数值显示「不可用」+ 中性色，title / aria 给原因（不得用 0 冒充）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: {
+        'cpu.total': { available: false, reason: 'collect_failed' },
+        memory: { available: false, reason: 'collect_failed' },
+      },
+    }))
+    const wrapper = await mountTopbar()
+
+    for (const [id, name] of [['resCpu', 'CPU'], ['resMem', '内存']] as const) {
+      expect(valueOf(wrapper, id)).toBe('不可用')
+      expect(wrapper.find(`#${id}`).classes()).toContain('topbar__resource--unavailable')
+      expect(wrapper.find(`#${id}`).attributes('aria-label')).toContain('不可用')
+      expect(wrapper.find(`#${id}`).attributes('title')).toContain('collect_failed')
+      expect(wrapper.find(`#${id}`).attributes('title')).toContain(name)
+    }
+  })
+
+  it('快照尚未到达：CPU / 内存显示等待态 `—`（不得显示假数字），时钟偏差显示 `—`', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountTopbar()
+
+    expect(valueOf(wrapper, 'resCpu')).toBe('—')
+    expect(valueOf(wrapper, 'resMem')).toBe('—')
+    expect(valueOf(wrapper, 'resNtp')).toBe('—')
+    expect(cpuBadge(wrapper).attributes('aria-label')).toContain('等待快照')
+    expect(ntpBadge(wrapper).attributes('aria-label')).toContain('等待快照')
+    for (const fake of ['+12ms', '76%', '93%', '45%']) {
+      expect(wrapper.text()).not.toContain(fake)
+    }
+  })
+
+  it('WS 推送更新时三枚徽章随之刷新（不重新 REST 拉取）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
+    const wrapper = await mountTopbar()
+    expect(valueOf(wrapper, 'resCpu')).toBe('—')
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      cpuUsageRatio: 0.5,
+      clock: SYSMON_CLOCK_LIVE,
+    }))
+    await wrapper.vm.$nextTick()
+    expect(valueOf(wrapper, 'resCpu')).toBe('50%')
+    expect(valueOf(wrapper, 'resMem')).toBe('50%')
+    expect(valueOf(wrapper, 'resNtp')).toBe('+13ms')
+    expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Topbar 时钟偏差徽章（NTP 图标 + 毫秒数值）', () => {
+  it('正常态：紧凑带符号毫秒 + normal；title 含误差界 / 来源 / stratum / 上次探测', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
     const wrapper = await mountTopbar()
 
-    expect(resourceBadges(wrapper)).toHaveLength(2)
+    expect(valueOf(wrapper, 'resNtp')).toBe('+13ms')
+    expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--normal')
+    expect(ntpBadge(wrapper).attributes('aria-label')).toBe('时钟偏差 +13ms，正常')
+    const title = ntpBadge(wrapper).attributes('title') ?? ''
+    expect(title).toContain('时钟偏差 +12.5 ms')
+    expect(title).toContain('误差界 18.3 ms')
+    expect(title).toContain('来源 ntp.aliyun.com（stratum 2）')
+    expect(title).toContain('上次探测 30 秒前')
+  })
+
+  it('偏差按配置阈值定档：恰好 100ms → warn、恰好 1000ms → danger（只有数值文本变黄 / 变红）', async () => {
+    const cases = [
+      { offsetMs: 99, expected: 'topbar__resource--normal' },
+      { offsetMs: 100, expected: 'topbar__resource--warn' },
+      { offsetMs: -350.4, expected: 'topbar__resource--warn' },
+      { offsetMs: 1000, expected: 'topbar__resource--danger' },
+    ] as const
+    for (const { offsetMs, expected } of cases) {
+      // 每轮重建 pinia：store 有 `loaded` 短路，复用实例会让后续轮次看不到新快照
+      setActivePinia(createPinia())
+      vi.clearAllMocks()
+      vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+        clock: { ...SYSMON_CLOCK_LIVE, offset_ms: offsetMs },
+      }))
+      const wrapper = await mountTopbar()
+      expect(ntpBadge(wrapper).classes()).toContain(expected)
+      if (offsetMs < 0) expect(valueOf(wrapper, 'resNtp')).toBe('-350ms')
+      wrapper.unmount()
+      const index = mountedWrappers.indexOf(wrapper)
+      if (index >= 0) mountedWrappers.splice(index, 1)
+    }
+  })
+
+  it('阈值取生效配置（不是写死的 100 / 1000）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+    const wrapper = await mountTopbar()
+    // 配置镜像未到达时按契约默认值 100 / 1000：12.5ms 落在 normal
+    expect(ntpBadge(wrapper).classes()).not.toContain('topbar__resource--warn')
+
+    // 放宽到 warn=200 后同一读数仍是 normal，收紧到 warn=10 后变 warn
+    useSysmonStore().applyConfig(makeSysmonConfig({ clock: { offset_warn_ms: 10 } }))
+    await wrapper.vm.$nextTick()
+    expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--warn')
+  })
+
+  it('误差界越界只进 title 的「测量质量」提示，不改变偏差着色（契约 §2.8）', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: 20, bound_ms: 400 },
+    }))
+    const wrapper = await mountTopbar()
+
+    expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--normal')
+    expect(ntpBadge(wrapper).attributes('title')).toContain('测量质量')
+  })
+
+  it('尚未探测 / 本轮全部失败：数值 `—`（中性），不得用 0 冒充', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_UNPROBED }))
+    const wrapper = await mountTopbar()
+    expect(valueOf(wrapper, 'resNtp')).toBe('—')
+    expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
+    expect(ntpBadge(wrapper).attributes('aria-label')).toBe('时钟偏差尚未探测')
+
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }))
+    await wrapper.vm.$nextTick()
+    expect(valueOf(wrapper, 'resNtp')).toBe('—')
+    expect(ntpBadge(wrapper).attributes('aria-label')).toBe('时钟偏差不可用')
+    expect(ntpBadge(wrapper).attributes('title')).toContain('超时未响应')
+    expect(ntpBadge(wrapper).attributes('title')).toContain('上次探测 30 秒前')
+  })
+
+  it('配置关闭（clock = null）：整枚徽章不渲染', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: null }))
+    const wrapper = await mountTopbar()
+
+    expect(ntpBadge(wrapper).exists()).toBe(false)
+    // 另外两枚不受影响
     expect(cpuBadge(wrapper).exists()).toBe(true)
     expect(memBadge(wrapper).exists()).toBe(true)
+  })
+})
 
+describe('Topbar 已删除形态不回归（墙钟 / 日期 / 文字 NTP / 卷 / 折叠）', () => {
+  beforeEach(() => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
+  })
+
+  it('没有墙钟 / 日期时间 / 每秒定时器：DOM 里没有 <time>、没有时钟组件', async () => {
+    const wrapper = await mountTopbar()
+    expect(wrapper.findAll('time')).toHaveLength(0)
+    expect(wrapper.find('[data-test="topbar-clock"]').exists()).toBe(false)
+    // 源码层同样不得再引用墙钟实现（否则「又加回来了」不会体现在 DOM 断言里）
+    for (const token of ['TopbarClock', 'topbarClock', 'setInterval', 'visibilitychange']) {
+      expect(TOPBAR_SOURCE, `Topbar.vue 不应再引用 ${token}`).not.toContain(token)
+    }
+  })
+
+  it('没有卷徽章 / 文字 NTP 徽章 / overflow / gauge / 测量行', async () => {
+    const wrapper = await mountTopbar()
     for (const selector of [
-      '#resNtp',
       '[data-test="topbar-disk-badge"]',
       '[data-test="topbar-overflow-trigger"]',
       '[data-test="topbar-overflow-panel"]',
@@ -154,24 +370,17 @@ describe('Topbar 资源徽章（CPU / 内存常驻；#452 / ADR 0054）', () => 
     ]) {
       expect(wrapper.find(selector).exists(), `已删除的形态不应回归: ${selector}`).toBe(false)
     }
-    // 卷徽章的 DOM 锚点（挂载点）也已不存在
     expect(wrapper.find('[data-mount]').exists()).toBe(false)
-  })
-
-  it('删除的形态在源码 / 样式层也清理干净（不留死规则与死导出引用）', () => {
-    for (const token of [
-      'topbar-disk-badge',
-      'resNtp',
-      'topbar-overflow',
-      'topbar-resource-gauge',
-      'topbar-resource-measure',
-      'topbarOverflow',
-      'visibleItemCount',
-      'clockBadge',
-      'useBreakpoint',
-    ]) {
+    // 资源区没有 `.res-label`（服务徽章的标签除外：它们不是资源指标徽章）
+    expect(wrapper.find('.topbar__metric .res-label').exists()).toBe(false)
+    for (const token of ['topbar-disk-badge', 'topbar-overflow', 'topbar-resource-gauge', 'topbar-resource-measure']) {
       expect(TOPBAR_SOURCE, `Topbar.vue 不应再引用 ${token}`).not.toContain(token)
     }
+  })
+
+  it('layout.css 里墙钟 / 折叠 / 浮层 / 卷状态点规则全部清理干净', () => {
+    expect(LAYOUT_CSS_SOURCE).not.toContain('topbar-clock')
+    expect(LAYOUT_CSS_SOURCE).not.toContain('@keyframes ntp-warn')
     for (const selector of [
       '.topbar__resource--disk',
       '.topbar__resource-measure',
@@ -182,327 +391,66 @@ describe('Topbar 资源徽章（CPU / 内存常驻；#452 / ADR 0054）', () => 
       '.topbar__ntp',
       '.topbar__datetime',
     ]) {
-      expect(cssDecls(selector, null).length, `layout.css 不应残留 ${selector} 规则`).toBe(0)
+      // 选择器可能出现在注释里（说明已删除），这里只查是否还有真实规则
+      let hasRule = false
+      CSS_ROOT.walkRules((rule) => {
+        if (rule.selectors.some(part => part.trim() === selector)) hasRule = true
+      })
+      expect(hasRule, `layout.css 不应残留 ${selector} 规则`).toBe(false)
     }
-    // `.res-dot`（卷徽章的状态点）也不再有任何规则
     expect(LAYOUT_CSS_SOURCE).not.toContain('.res-dot')
-  })
-
-  it('任何宽度都常驻：390 / 768 / 1024 / 1440 下 CPU / 内存都在，且没有任何断点隐藏它们', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    // 组件不读视口宽度（无 JS 行为分支）：stub 只是把「不同视口」表达出来，DOM 恒同。
-    vi.stubGlobal('matchMedia', (query: string) => ({
-      media: query,
-      matches: false,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    }))
-    for (const width of [390, 768, 1024, 1440]) {
-      const wrapper = await mountTopbar()
-      expect(cpuBadge(wrapper).exists(), `${width} 宽下 CPU 徽章必须常驻`).toBe(true)
-      expect(memBadge(wrapper).exists(), `${width} 宽下 MEM 徽章必须常驻`).toBe(true)
-      unmountManually(wrapper)
-    }
-    // 样式表侧：`.topbar__resource--cpu/--mem` 不得被任何断点规则隐藏（否则上面 DOM 断言
-    // 只是「渲染了但看不见」，390 验收到不了）。
-    expect(isHiddenAnywhere('.topbar__resource--cpu')).toBe(false)
-    expect(isHiddenAnywhere('.topbar__resource--mem')).toBe(false)
-  })
-
-  it('快照尚未到达：CPU / 内存显示等待态 `—`，不得显示假数字', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
-    const wrapper = await mountTopbar()
-
-    expect(cpuBadge(wrapper).find('.res-value').text()).toBe('—')
-    expect(memBadge(wrapper).find('.res-value').text()).toBe('—')
-    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
-    expect(memBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
-    for (const fake of ['+12ms', '76%', '93%', '45%']) {
-      expect(wrapper.text()).not.toContain(fake)
-    }
-  })
-
-  it('CPU 徽章绑定实时快照百分比（整数百分比是顶部窄条的刻意取舍）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.234 }))
-    const wrapper = await mountTopbar()
-
-    expect(cpuBadge(wrapper).find('.res-value').text()).toBe('23%')
-    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--normal')
-    expect(cpuBadge(wrapper).attributes('title')).toBe('CPU 使用率 23%')
-  })
-
-  it('CPU 徽章按 70% / 90% 阈值映射 warn / danger（顶栏保留的资源告警）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ cpuUsageRatio: 0.75 }))
-    const wrapper = await mountTopbar()
-
-    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--warn')
-    expect(cpuBadge(wrapper).attributes('data-level')).toBe('warn')
-    expect(cpuBadge(wrapper).attributes('title')).toBe('CPU 使用率 75%')
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.95 }))
-    await wrapper.vm.$nextTick()
-    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--danger')
-  })
-
-  it('CPU 不可用（可用性映射 false）时显示「不可用」+ 原因', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      metrics: { 'cpu.total': { available: false, reason: 'collect_failed' } },
-    }))
-    const wrapper = await mountTopbar()
-
-    expect(cpuBadge(wrapper).find('.res-value').text()).toBe('不可用')
-    expect(cpuBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
-    expect(cpuBadge(wrapper).attributes('title')).toContain('collect_failed')
-  })
-
-  it('内存徽章绑定实时快照使用率，按 95% 阈值映射 danger', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
-    const wrapper = await mountTopbar()
-
-    expect(memBadge(wrapper).find('.res-value').text()).toBe('50%')
-    expect(memBadge(wrapper).classes()).toContain('topbar__resource--normal')
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot({
-      memory: {
-        total_bytes: 100 * 1024 ** 3,
-        available_bytes: 5 * 1024 ** 3,
-        used_bytes: 95 * 1024 ** 3,
-        used_ratio: 0.95,
-        cached_bytes: null,
-        buffers_bytes: null,
-      },
-    }))
-    await wrapper.vm.$nextTick()
-    expect(memBadge(wrapper).find('.res-value').text()).toBe('95%')
-    expect(memBadge(wrapper).classes()).toContain('topbar__resource--danger')
-    expect(memBadge(wrapper).attributes('title')).toBe('内存使用率 95%')
-  })
-
-  it('内存不可用（可用性映射 false / payload null）时显示「不可用」，不得退回 0', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      metrics: { memory: { available: false, reason: 'collect_failed' } },
-    }))
-    const wrapper = await mountTopbar()
-    expect(memBadge(wrapper).find('.res-value').text()).toBe('不可用')
-    expect(memBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
-    expect(memBadge(wrapper).attributes('title')).toContain('collect_failed')
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot({ memory: null }))
-    await wrapper.vm.$nextTick()
-    expect(memBadge(wrapper).find('.res-value').text()).toBe('不可用')
-    expect(memBadge(wrapper).classes()).toContain('topbar__resource--unavailable')
-  })
-
-  it('WS 推送更新时顶栏随之刷新（不重新 REST 拉取）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
-    const wrapper = await mountTopbar()
-    expect(cpuBadge(wrapper).find('.res-value').text()).toBe('—')
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.5 }))
-    await wrapper.vm.$nextTick()
-    expect(cpuBadge(wrapper).find('.res-value').text()).toBe('50%')
-    expect(memBadge(wrapper).find('.res-value').text()).toBe('50%')
-    expect(sysmonApi.getSnapshot).toHaveBeenCalledTimes(1)
   })
 })
 
-describe('Topbar 墙钟（#452：本机墙钟 + 偏差括号）', () => {
-  beforeEach(() => {
-    // 只伪造 Date / setInterval：flushPromises 用的 setTimeout 保持真实，mount 才不会挂起
-    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
-    vi.setSystemTime(FIXED_NOW)
-  })
-
-  it('四档文本片段全部渲染在 <time> 里（可见性由 CSS 断点决定，秒永远保留）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    const wrapper = await mountTopbar()
-
-    const clock = clockEl(wrapper)
-    expect(clock.exists()).toBe(true)
-    expect(clock.element.tagName).toBe('TIME')
-    expect(clock.attributes('datetime')).toBe('2026-01-01T13:25:36')
-    expect(wrapper.find('[data-test="topbar-clock-date"]').text()).toBe('2026-01-01')
-    expect(wrapper.find('[data-test="topbar-clock-date-short"]').text()).toBe('01-01')
-    expect(wrapper.find('[data-test="topbar-clock-weekday"]').text()).toBe('周四')
-    expect(clockTimeText(wrapper)).toBe('13:25:36')
-    expect(clockOffset(wrapper).text()).toBe('(+13ms)')
-  })
-
-  it('四档格式的 CSS：<768 只留时间；768+ 周几；1024+ 月日；1280+ 完整日期（秒不被任何断点隐藏）', () => {
-    // 默认（base，<768）：日期 / 短日期 / 周几都藏起来，时间常驻
-    for (const selector of ['.topbar-clock__date', '.topbar-clock__date-short', '.topbar-clock__weekday']) {
-      expect(cssDecls(selector, null).join('\n'), `${selector} 基础规则应为 display: none`).toContain('display: none')
+describe('Topbar 宽窄行为（纯 CSS：三枚徽章任何宽度都常驻，不溢出）', () => {
+  it('没有任何媒体规则隐藏三枚指标徽章或服务徽章（390 也可见）', () => {
+    for (const selector of [
+      '.topbar__metric--cpu',
+      '.topbar__metric--mem',
+      '.topbar__metric--ntp',
+      '.topbar__resource--svc',
+    ]) {
+      expect(isHiddenAnywhere(selector), `${selector} 不得被任何断点隐藏`).toBe(false)
     }
-    expect(isHiddenAnywhere('.topbar-clock__time')).toBe(false)
-    expect(isHiddenAnywhere('.topbar-clock__offset')).toBe(false)
-
-    expect(cssDecls('.topbar-clock__weekday', '@media (min-width: 768px)').join('\n')).toContain('display: inline')
-    expect(cssDecls('.topbar-clock__date-short', '@media (min-width: 768px)')).toEqual([])
-    expect(cssDecls('.topbar-clock__date-short', '@media (min-width: 1024px)').join('\n')).toContain('display: inline')
-    expect(cssDecls('.topbar-clock__date', '@media (min-width: 1024px)')).toEqual([])
-    expect(cssDecls('.topbar-clock__date', '@media (min-width: 1280px)').join('\n')).toContain('display: inline')
-    expect(cssDecls('.topbar-clock__date-short', '@media (min-width: 1280px)').join('\n')).toContain('display: none')
-
-    // 四档只用了既有断点 768 / 1024 / 1280（没有新野断点，也不含容器查询）
+    // 不引入容器查询（会造成同一份信息按容器宽度出现 / 消失）
     expect(LAYOUT_CSS_SOURCE).not.toContain('@container')
-    for (const breakpoint of [768, 1024, 1280]) {
-      expect(LAYOUT_CSS_SOURCE).toContain(`@media (min-width: ${breakpoint}px)`)
-    }
   })
 
-  it('偏差 normal：括号中性（不套 warn / danger 类），整块时钟保持中性', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    const wrapper = await mountTopbar()
-
-    expect(clockOffset(wrapper).classes()).not.toContain('topbar-clock__offset--warn')
-    expect(clockOffset(wrapper).classes()).not.toContain('topbar-clock__offset--danger')
-    expect(clockEl(wrapper).classes()).not.toContain('topbar__resource--warn')
-    expect(clockEl(wrapper).classes()).not.toContain('topbar__resource--danger')
+  it('窄屏只收紧间距 / 内边距：<768 收 topbar padding、<640 再收资源区 gap', () => {
+    expect(ruleInMedia('(max-width: 767.98px)', '.topbar')).toContain('padding: 0 var(--spacer-10)')
+    expect(ruleInMedia('(max-width: 639.98px)', '.topbar__resources')).toContain('gap: var(--spacer-6)')
+    // 徽章自身不缩、不换行、不截断（否则窄屏会先丢 MEM / 时钟）
+    const baseRule = CSS_ROOT.nodes.find(
+      node => node.type === 'rule' && node.selectors.some(part => part.trim() === '.topbar__metric'),
+    )
+    // postcss 节点类型收窄：直接取规则文本断言，避免把媒体块里的同名节点当成基础规则
+    const baseText = baseRule?.toString() ?? ''
+    expect(baseText).toContain('flex-shrink: 0')
+    expect(baseText).toContain('white-space: nowrap')
   })
 
-  it('偏差 warn（恰好 100ms）：只有括号内文本变黄，时钟其余部分不变色', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: 100 },
-    }))
-    const wrapper = await mountTopbar()
-
-    expect(clockOffset(wrapper).text()).toBe('(+100ms)')
-    expect(clockOffset(wrapper).classes()).toContain('topbar-clock__offset--warn')
-    expect(clockOffset(wrapper).classes()).not.toContain('topbar-clock__offset--danger')
-    // 「只有括号内文本」：时钟容器 / 时间片段都没有状态类
-    expect(clockEl(wrapper).classes()).not.toContain('topbar-clock__offset--warn')
-    expect(wrapper.find('[data-test="topbar-clock-time"]').classes()).not.toContain('topbar-clock__offset--warn')
+  it('资源区自身允许收缩（overflow:hidden 兜底），不把顶栏撑出横向滚动', () => {
+    const resources = CSS_ROOT.nodes.find(
+      node => node.type === 'rule' && node.selectors.some(part => part.trim() === '.topbar__resources'),
+    )
+    const text = resources?.toString() ?? ''
+    expect(text).toContain('min-width: 0')
+    expect(text).toContain('overflow: hidden')
+    expect(text).toContain('flex: 1 1 auto')
   })
 
-  it('偏差 danger（恰好 1000ms）：只有括号内文本变红', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: -1000 },
-    }))
-    const wrapper = await mountTopbar()
-
-    expect(clockOffset(wrapper).text()).toBe('(-1000ms)')
-    expect(clockOffset(wrapper).classes()).toContain('topbar-clock__offset--danger')
-    expect(clockEl(wrapper).classes()).not.toContain('topbar-clock__offset--danger')
-  })
-
-  it('阈值取生效配置（不是写死的 100 / 1000）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    const wrapper = await mountTopbar()
-    // 配置镜像未到达时按契约默认值 100 / 1000：12.5ms 落在 normal
-    expect(clockOffset(wrapper).classes()).not.toContain('topbar-clock__offset--warn')
-
-    useSysmonStore().applyConfig(makeSysmonConfig({ clock: { offset_warn_ms: 10 } }))
-    await wrapper.vm.$nextTick()
-    expect(clockOffset(wrapper).classes()).toContain('topbar-clock__offset--warn')
-  })
-
-  it('尚未探测 / 本轮全部失败：括号显示 `(—)`（中性），不得用 0 冒充', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_UNPROBED }))
-    const wrapper = await mountTopbar()
-    expect(clockOffset(wrapper).text()).toBe('(—)')
-    expect(clockOffset(wrapper).classes()).not.toContain('topbar-clock__offset--warn')
-
-    useSysmonStore().applySnapshot(makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }))
-    await wrapper.vm.$nextTick()
-    expect(clockOffset(wrapper).text()).toBe('(—)')
-    expect(clockEl(wrapper).text()).not.toContain('0ms')
-  })
-
-  it('配置关闭（clock = null）：括号不渲染，title 说明监控已关闭', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: null }))
-    const wrapper = await mountTopbar()
-
-    expect(clockOffset(wrapper).exists()).toBe(false)
-    expect(clockEl(wrapper).attributes('title')).toContain('关闭')
-    expect(clockEl(wrapper).attributes('aria-label')).toContain('关闭')
-  })
-
-  it('快照未到达：括号显示 `(—)` 等待态（此时还不知道配置是否关闭）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
-    const wrapper = await mountTopbar()
-
-    expect(clockOffset(wrapper).text()).toBe('(—)')
-    expect(clockEl(wrapper).attributes('title')).toContain('等待')
-  })
-
-  it('tooltip 含时区 / 偏差（1 位小数带符号）/ 误差界 / 来源 / stratum / 上次探测相对时间', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    const wrapper = await mountTopbar()
-
-    const title = clockEl(wrapper).attributes('title') ?? ''
-    expect(title).toContain('时区')
-    expect(title).toContain('偏差 +12.5 ms')
-    expect(title).toContain('误差界 18.3 ms')
-    expect(title).toContain('来源 ntp.aliyun.com')
-    expect(title).toContain('stratum 2')
-    expect(title).toContain('上次探测 30 秒前')
-    // 读屏可读：完整日期星期时间 + 偏差状态
-    const aria = clockEl(wrapper).attributes('aria-label') ?? ''
-    expect(aria).toContain('2026-01-01 周四 13:25:36')
-    expect(aria).toContain('时钟偏差')
-    expect(aria).toContain('正常')
-  })
-
-  it('偏差不可用时 title 给出原因（失败原因汇总）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }))
-    const wrapper = await mountTopbar()
-
-    const title = clockEl(wrapper).attributes('title') ?? ''
-    expect(title).toContain('超时未响应')
-    expect(title).toContain('上次探测 30 秒前')
-  })
-
-  it('每秒 tick：时钟文本随本机时刻前进（fake timers）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    const wrapper = await mountTopbar()
-    expect(clockTimeText(wrapper)).toBe('13:25:36')
-
-    await vi.advanceTimersByTimeAsync(1_000)
-    await wrapper.vm.$nextTick()
-    expect(clockTimeText(wrapper)).toBe('13:25:37')
-
-    await vi.advanceTimersByTimeAsync(1_000)
-    await wrapper.vm.$nextTick()
-    expect(clockTimeText(wrapper)).toBe('13:25:38')
-  })
-
-  it('页面隐藏时暂停（不回放秒），恢复后立即对齐当前时刻再继续', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    let hidden = false
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden })
-    const wrapper = await mountTopbar()
-    expect(vi.getTimerCount()).toBe(1)
-
-    hidden = true
-    document.dispatchEvent(new Event('visibilitychange'))
-    expect(vi.getTimerCount()).toBe(0)
-    // 隐藏 5 秒：定时器已停，时钟停在隐藏时刻（不补播隐藏期间的秒）
-    await vi.advanceTimersByTimeAsync(5_000)
-    await wrapper.vm.$nextTick()
-    expect(clockTimeText(wrapper)).toBe('13:25:36')
-
-    // 恢复：先对齐当前时刻（13:25:41），再重启每秒 tick——不是从 13:25:36 逐秒追
-    hidden = false
-    document.dispatchEvent(new Event('visibilitychange'))
-    await wrapper.vm.$nextTick()
-    expect(clockTimeText(wrapper)).toBe('13:25:41')
-    expect(vi.getTimerCount()).toBe(1)
-
-    await vi.advanceTimersByTimeAsync(1_000)
-    await wrapper.vm.$nextTick()
-    expect(clockTimeText(wrapper)).toBe('13:25:42')
-  })
-
-  it('卸载时清 interval 与 visibility 监听（不留定时器）', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-    const wrapper = await mountTopbar()
-    expect(vi.getTimerCount()).toBe(1)
-    const removeSpy = vi.spyOn(document, 'removeEventListener')
-
-    unmountManually(wrapper)
-    expect(vi.getTimerCount()).toBe(0)
-    expect(removeSpy).toHaveBeenCalledWith('visibilitychange', expect.any(Function))
-    removeSpy.mockRestore()
+  it('图标永远中性色且不随告警闪烁；时钟偏差 normal 用中性色（状态只在数值上）', () => {
+    const iconRule = CSS_ROOT.toString().match(/\.topbar__metric \.res-icon \{([^}]*)\}/)?.[1] ?? ''
+    expect(iconRule).toContain('color: var(--icon-default)')
+    expect(iconRule).not.toContain('animation')
+    const warnIconRule = CSS_ROOT.toString().match(
+      /\.topbar__metric\.topbar__resource--warn \.res-icon,[\s\S]*?\{([^}]*)\}/,
+    )?.[1] ?? ''
+    expect(warnIconRule).toContain('animation: none')
+    const ntpNormalRule = CSS_ROOT.toString().match(
+      /\.topbar__metric--ntp\.topbar__resource--normal \.res-value \{([^}]*)\}/,
+    )?.[1] ?? ''
+    expect(ntpNormalRule).toContain('color: var(--text-secondary)')
   })
 })
 
@@ -674,7 +622,6 @@ describe('Topbar 服务状态徽章（#199：聚合 process_status 镜像，永�
   })
 
   it('服务徽章只有一份（没有折叠测量行 / 浮层里的副本），且 MD / TD / STG 三个锚点都在', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountTopbar()
 
     for (const id of SERVICE_ANCHORS) {

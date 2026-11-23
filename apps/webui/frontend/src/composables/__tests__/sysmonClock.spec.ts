@@ -192,8 +192,8 @@ describe('clockProbeAgeSec：上次探测距今的秒数', () => {
   })
 
   it('本模块只算秒数：「多久以前」的文案复用共享模块 formatAge（不复制第二份实现）', () => {
-    // 这里锁住「只算秒」，文案口径由 `composables/format.formatAge` 承担（顶栏墙钟 tooltip 与
-    // 监控页时间卡片共用同一份实现）。
+    // 这里锁住「只算秒」，文案口径由 `composables/format.formatAge` 承担（顶栏时钟偏差徽章
+    // 的 title 与监控页时间卡片共用同一份实现）。
     expect(clockProbeAgeSec(nowMs - 31_000, nowMs)).toBe(31)
     expect(clockProbeAgeSec(nowMs - 60_000, nowMs)).toBe(60)
     expect(clockProbeAgeSec(nowMs - 90_000, nowMs)).toBe(90)

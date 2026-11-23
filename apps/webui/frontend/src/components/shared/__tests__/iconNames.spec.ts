@@ -57,6 +57,7 @@ const DYNAMIC_ICON_NAME_SOURCES: Record<string, string> = {
   'components/layout/ThemeDropdown.vue': 'buttonIcon（当前主题 → Sun / Moon / Switch）',
   'views/LoginView.vue': 'passwordIcon（密码可见性 → Eye / EyeInvisible）',
   'views/PlaceholderView.vue': 'route.meta.icon（缺省回退 tool）',
+  'components/layout/TopbarMetricBadge.vue': 'props.icon（由 Topbar 的 RESOURCE_ICONS 传入）',
 }
 
 interface IconUsage {
@@ -124,6 +125,9 @@ const DYNAMIC_ICON_EXTRACTORS: Record<string, { marker: string; pattern: RegExp;
   },
   'views/PlaceholderView.vue': {
     marker: 'const iconName', pattern: /:\s*'([^']+)'/g, min: 1,
+  },
+  'components/layout/Topbar.vue': {
+    marker: 'const RESOURCE_ICONS', pattern: /:\s*'([^']+)'/g, min: 3,
   },
 }
 
