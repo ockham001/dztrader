@@ -58,7 +58,7 @@ onMounted(() => { void sysmon.init() })
 const RESOURCE_ICONS: Record<'cpu' | 'mem' | 'ntp', string> = {
   cpu: 'CPU',
   mem: 'memory-module',
-  ntp: 'clock_sync',
+  ntp: 'clock_time',
 }
 
 /** 单枚指标徽章的展示模型（CPU / 内存同构：读数 + 状态等级 + 悬停说明 + 读屏名） */
@@ -241,7 +241,7 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
            （CPU → 内存 → 时钟偏差）。任何宽度都不折叠、不收起：宽度紧时只由 layout.css 的
            断点规则收紧间距，组件不读视口宽度（无 JS 行为分支、不用容器查询）。 -->
       <!-- 图标名与 `public/icons/builtin/<name>.svg` 精确同名（iconNames.spec 校验）：
-           CPU / memory-module 是既有资源图标，clock_sync 是 #452 新增（表盘 + 环形箭头，
+           CPU / memory-module / clock_time 都是既有资源图标；时钟偏差用最简表盘（用户 2026-11-23 拍板「就一个时钟」），
            表达「时钟同步/偏差」而不是当前时间）。 -->
       <div class="topbar__resources" id="topbarResources">
         <!-- 服务状态徽章（#199 / ADR 0048）：**永不折叠**。状态由 process_status 镜像按进程类别聚合，

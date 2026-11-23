@@ -367,13 +367,13 @@ body {
   color: var(--text-secondary);
   animation: none;
 }
-/* 指标数值 normal 与服务徽章文字同色（--text-secondary）：顶栏常态不出现大块绿色读数，
-   只有 warn / danger 才用 -on-surface 配对档点出异常（用户 2026-11-23 拍板「颜色统一、只留黄色警告」）。 */
-.topbar__metric.topbar__resource--normal .res-value { color: var(--text-secondary); }
+/* 指标数值 normal 用成功绿（用户 2026-11-23 拍板：19% / 50% / +23ms 正常要绿色，高了警告），
+   warn / danger 用 -on-surface 配对档；图标保持 --text-secondary 中性，不抢读数。 */
+.topbar__metric.topbar__resource--normal .res-value { color: var(--status-success-on-surface); }
 .topbar__metric.topbar__resource--warn .res-value { color: var(--status-warning-on-surface); }
 .topbar__metric.topbar__resource--danger .res-value { color: var(--status-error-on-surface); }
-/* 时钟偏差正常态同为中性色；上面通用 normal 规则已覆盖，这条保留特指以免未来改通用规则时漂移。 */
-.topbar__metric--ntp.topbar__resource--normal .res-value { color: var(--text-secondary); }
+/* 时钟偏差正常态同样是成功绿（与 CPU / 内存一致）；偏大 / 过大只让数值变黄 / 红。 */
+.topbar__metric--ntp.topbar__resource--normal .res-value { color: var(--status-success-on-surface); }
 /* Divider between service status and system resources */
 /* #349：原先画在 `var(--border-default, var(--bg-base-secondary))` 上 —— `--border-default`
    从未定义（悬空引用，见 tokenContrast 的 KNOWN_DANGLING），实际一直落到**背景** token，

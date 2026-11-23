@@ -14,7 +14,7 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 
 1. **顶栏不需要日期时间**。32px 常驻条上「现在几点」不是盯盘要看的信号（交易时间由行情 / 持仓表达），而显示墙钟就要每秒重渲染一次顶栏子树——成本真实、收益为零。日期 / 星期 / 时区 / 四档降级全都是为墙钟服务的复杂度，随墙钟一起删除。
 2. **顶栏不需要 `NTP` 这个文字标签**。`NTP` 是协议名而不是用户概念；用户看到的应是「本机时钟偏了多少」，而不是「NTP 那家伙怎么样」。时钟偏差本身仍是值得扫读的信号（本机墙钟系统性偏移会影响所有时间的判读），只是不再以文字徽章 + 墙钟两处呈现。
-3. **32px 状态条上，文字标签是稀缺宽度**。CPU / 内存两枚文字徽章（`CPU` / `MEM` + 数值）已经在窄屏占掉可观宽度，再放一枚 `NTP` 文字徽章与右侧控件就会互相挤；而 CPU / 内存 / 时钟偏差三者的**图标**在既有内置图标集里都有语义明确、风格一致的现成资源（CPU、memory-module；时钟偏差新画一枚 clock_sync）。
+3. **32px 状态条上，文字标签是稀缺宽度**。CPU / 内存两枚文字徽章（`CPU` / `MEM` + 数值）已经在窄屏占掉可观宽度，再放一枚 `NTP` 文字徽章与右侧控件就会互相挤；而 CPU / 内存 / 时钟偏差三者的**图标**在既有内置图标集里都有语义明确、风格一致的现成资源（CPU、memory-module；时钟偏差用既有 clock_time 简单表盘）。
 4. **卷徽章是误报噪音的最大来源**。卷数量随机器变化（3 卷 → 6 卷），顶栏会被卷占满；卷警告与交易 / 策略 / 行情告警并列在同一常驻条里，扫读时无法一眼区分「哪一类问题」。用户明确否决「只在异常时才出现的卷 chip」——条件出现的元素本身会变成需要解读的信号，且每次推送都在出现 / 消失之间抖动。
 5. **自适应折叠与 `<lg` 单状态图标让同一份信息按宽度出现 / 消失**。这套机制是为「卷数量不定」服务的；卷徽章删除后资源项固定为三枚，折叠机制失去存在理由。
 
@@ -24,8 +24,8 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 
 **2. 三枚徽章的形态与语义**：
 
-- **CPU**：内置 `CPU` 图标（12px）+ 整数百分比（`19%`）；**内存**：内置 `memory-module` 图标 + 整数百分比（`50%`）。两者保留既有 70% / 90% 定档的 warn 黄 / danger 红；normal 与服务徽章文字同色（中性灰，不出现大块绿字，沿用既有 `useResourceLevel` 定档），不可用时数值显示「不可用」+ 中性色（title 给原因，不得用 0 冒充）。
-- **时钟偏差**：新画 `clock_sync` 图标（16×16、`currentColor` 填充风格，表盘 + 环形箭头——表达「时钟同步 / 偏差」而不是当前时间）+ 紧凑带符号整数毫秒（`+23ms`）。偏差正常时数值中性色，`|offset|` 超 `clock.offset_warn_ms` 只让**数值文本**变黄、超 `offset_error_ms` 只变红；快照未到达 / 尚未探测 / 本轮全部失败显示 `—`（不得用 0 冒充）；`clock = null`（配置关闭）整枚徽章不渲染。
+- **CPU**：内置 `CPU` 图标（12px）+ 整数百分比（`19%`）；**内存**：内置 `memory-module` 图标 + 整数百分比（`50%`）。两者沿用既有 70% / 90% 定档：normal 成功绿 / warn 黄 / danger 红（用户 2026-11-23 拍板「19% / 50% / +23ms 正常要绿色、高了警告」），不可用时数值显示「不可用」+ 中性色（title 给原因，不得用 0 冒充）。
+- **时钟偏差**：使用既有 `clock_time` 简单表盘图标（用户拍板「就一个时钟」；12px 下不引入环形箭头等复杂细节）+ 紧凑带符号整数毫秒（`+23ms`）。偏差正常时数值成功绿，`|offset|` 超 `clock.offset_warn_ms` 只让**数值文本**变黄、超 `offset_error_ms` 只变红；快照未到达 / 尚未探测 / 本轮全部失败显示 `—`（不得用 0 冒充）；`clock = null`（配置关闭）整枚徽章不渲染。
 - **图标永远中性色且 `aria-hidden`**（Icon 组件自带），状态只由数值文本的颜色表达；三枚徽章的数值都带单位、`tabular-nums`，推送刷新时不左右跳位。
 
 **3. 每枚徽章都有完整可访问名与悬停说明。** 整枚徽章是 `role="img"` + `aria-label`（如「CPU 使用率 19%」「时钟偏差 +23ms，正常」），图标与数值文本都不单独承担语义；`title` 给完整名称 + 读数 + 含义（时钟偏差另含误差界、来源、stratum、上次探测相对时间与「测量质量」提示；不可用时给原因）。偏差档位词（正常 / 偏大 / 过大）同时进 `aria-label`，颜色只是冗余信号（WCAG 1.4.1）。
@@ -59,12 +59,12 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 - **契约无 payload 变更**：§2.4 / §2.9 只改「顶栏如何展示」的措辞；快照 / 配置 / REST / WS / `generated.ts` 全部不动，dzweb 领域服务不需要动。
 - **文档同步**：README「资源监控」段、`docs/components/dzsysmon.md`、本 ADR；ADR 0048 顶部加 Superseded-in-part 引用（不改其 Decision 正文）。
 - **测试口径**：`Topbar.spec.ts` 重写（三枚图标徽章渲染 / 图标名 / 数值与档位 / `—` / 配置关闭不渲染 / title 与 aria / 无墙钟与秒级定时器 / 无媒体规则隐藏徽章 / 390 样式不变量）；新增 `topbarNtp.spec.ts` 纯函数单测；卷色标一致性用例此前已改为 CPU / 内存一致性（`ResourceLevelConsistency.spec.ts`）。四档墙钟 / 每秒 tick / visibility 用例随墙钟删除。
-- **风险**：12px 图标加 11px 数值的视觉密度需要真实浏览器验收（已用静态夹具在 390 / 768 / 1024 / 1440 实测不溢出）；图标名大小写敏感（`iconNames.spec` 机器校验 `CPU` / `memory-module` / `clock_sync` 三个文件都存在）。
+- **风险**：12px 图标加 11px 数值的视觉密度需要真实浏览器验收（已用静态夹具在 390 / 768 / 1024 / 1440 实测不溢出）；图标名大小写敏感（`iconNames.spec` 机器校验 `CPU` / `memory-module` / `clock_time` 三个文件都存在）。
 
 ## References
 
 - 议题：#452（顶栏资源区重做：CPU / 内存 / 时钟偏差图标徽章）；关联 #318 / ADR 0048（被本 ADR 部分取代）、#429 / #450（监控页五块与时钟块）
 - 契约：[系统监控](../frame_contracts/sysmon.md)（§2.4 顶栏取景、§2.9 时钟域与顶栏徽章口径）
 - 设计：[DESIGN.md](../../DESIGN.md)（The One Job Rule；11–17px 与 tabular-nums；状态色 `-on-surface` 配对）
-- 图标：`apps/webui/frontend/public/icons/builtin/`（`CPU.svg`、`memory-module.svg`、新增 `clock_sync.svg`）
+- 图标：`apps/webui/frontend/public/icons/builtin/`（`CPU.svg`、`memory-module.svg`、`clock_time.svg`）
 - 相关 ADR：[0047](0047-sysmon-clock-self-probe.md)（时钟自测，只读不校时；本 ADR 不改变其结论）、[0034](0034-sysmon-resource-thresholds-log-only.md)（资源类只写日志与色标）、[0035](0035-sysmon-no-volume-disk-mapping.md)（不做卷/盘映射）

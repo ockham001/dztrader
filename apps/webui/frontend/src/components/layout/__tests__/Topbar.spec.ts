@@ -169,7 +169,7 @@ describe('Topbar 资源区三枚图标徽章（#452 / ADR 0054）', () => {
 
     expect(iconUrlOf(wrapper, 'resCpu')).toContain('/icons/builtin/CPU.svg')
     expect(iconUrlOf(wrapper, 'resMem')).toContain('/icons/builtin/memory-module.svg')
-    expect(iconUrlOf(wrapper, 'resNtp')).toContain('/icons/builtin/clock_sync.svg')
+    expect(iconUrlOf(wrapper, 'resNtp')).toContain('/icons/builtin/clock_time.svg')
 
     for (const id of ['resCpu', 'resMem', 'resNtp'] as const) {
       const icon = wrapper.find(`#${id} [data-icon]`)
@@ -478,7 +478,7 @@ describe('Topbar 宽窄行为（纯 CSS：三枚徽章任何宽度都常驻，�
     expect(text).toContain('flex: 1 1 auto')
   })
 
-  it('图标永远中性色且不随告警闪烁；时钟偏差 normal 用中性色（状态只在数值上）', () => {
+  it('图标永远中性色且不随告警闪烁；三枚指标 normal 数值用成功绿（状态只在数值上）', () => {
     const iconRule = CSS_ROOT.toString().match(/\.topbar__metric \.res-icon \{([^}]*)\}/)?.[1] ?? ''
     expect(iconRule).toContain('color: var(--text-secondary)')
     expect(iconRule).not.toContain('animation')
@@ -489,7 +489,7 @@ describe('Topbar 宽窄行为（纯 CSS：三枚徽章任何宽度都常驻，�
     const ntpNormalRule = CSS_ROOT.toString().match(
       /\.topbar__metric--ntp\.topbar__resource--normal \.res-value \{([^}]*)\}/,
     )?.[1] ?? ''
-    expect(ntpNormalRule).toContain('color: var(--text-secondary)')
+    expect(ntpNormalRule).toContain('color: var(--status-success-on-surface)')
   })
 })
 
