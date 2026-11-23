@@ -91,7 +91,8 @@ const cpuItem = computed<ResourceBadgeModel>(() => {
     }
   }
   // 顶栏徽章是横向窄条，刻意用整数百分比（监控页用共享模块的 1 位小数）：同一数值在两处
-  // 精度不同是**有意的取舍**，不是格式化漂移。状态色仍与监控页共用 resourceLevel，结论不会不一致（#126）。
+  // 精度不同是**有意的取舍**，不是格式化漂移。定档仍与监控页共用 resourceLevel，但顶栏只在
+  // warn / danger 着色（normal 与服务徽章文字同色，#452 用户拍板「颜色统一」）。
   const percent = Math.round(ratio * 100)
   // 状态色与监控页共用 resourceLevel（含边界），不在此处各自比较阈值
   return {

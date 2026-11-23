@@ -164,7 +164,7 @@ describe('Topbar 资源区三枚图标徽章（#452 / ADR 0054）', () => {
     }
   })
 
-  it('三枚徽章都是「14px 图标 + 数值」：图标名正确且与内置资源同名，图标 aria-hidden', async () => {
+  it('三枚徽章都是「12px 图标 + 数值」：图标名正确且与内置资源同名，图标 aria-hidden', async () => {
     const wrapper = await mountTopbar()
 
     expect(iconUrlOf(wrapper, 'resCpu')).toContain('/icons/builtin/CPU.svg')
@@ -175,7 +175,7 @@ describe('Topbar 资源区三枚图标徽章（#452 / ADR 0054）', () => {
       const icon = wrapper.find(`#${id} [data-icon]`)
       // 图标单独进可访问性树会让读屏只听到「图片」；语义全部由徽章的 aria-label 承担
       expect(icon.attributes('aria-hidden')).toBe('true')
-      expect(icon.attributes('style')).toContain('width: 14px')
+      expect(icon.attributes('style')).toContain('width: 12px')
       // 没有文字标签：徽章里只有图标 + 数值两个元素
       expect(wrapper.find(`#${id}`).findAll('.res-label')).toHaveLength(0)
     }
@@ -480,7 +480,7 @@ describe('Topbar 宽窄行为（纯 CSS：三枚徽章任何宽度都常驻，�
 
   it('图标永远中性色且不随告警闪烁；时钟偏差 normal 用中性色（状态只在数值上）', () => {
     const iconRule = CSS_ROOT.toString().match(/\.topbar__metric \.res-icon \{([^}]*)\}/)?.[1] ?? ''
-    expect(iconRule).toContain('color: var(--icon-default)')
+    expect(iconRule).toContain('color: var(--text-secondary)')
     expect(iconRule).not.toContain('animation')
     const warnIconRule = CSS_ROOT.toString().match(
       /\.topbar__metric\.topbar__resource--warn \.res-icon,[\s\S]*?\{([^}]*)\}/,

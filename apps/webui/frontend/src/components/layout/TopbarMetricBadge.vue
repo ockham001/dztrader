@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 顶栏单枚资源指标徽章（#452 / ADR 0054）：14px 图标 + 数值。
+ * 顶栏单枚资源指标徽章（#452 / ADR 0054）：12px 图标 + 数值。
  *
  * 三枚常驻徽章（CPU / 内存 / 时钟偏差）形态完全同构，抽成一个组件后顶栏模板只差数据；
  * 「等级 → class」映射也收在一处（`resourceLevelClass` 是唯一实现）。
@@ -43,7 +43,7 @@ defineProps<{
     role="img"
     :aria-label="accessibleName"
   >
-    <Icon class="res-icon" :name="icon" :size="14" />
+    <Icon class="res-icon" :name="icon" :size="12" />
     <span class="res-value">{{ value }}</span>
   </span>
 </template>

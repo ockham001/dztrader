@@ -24,7 +24,7 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 
 **2. 三枚徽章的形态与语义**：
 
-- **CPU**：内置 `CPU` 图标（14px）+ 整数百分比（`19%`）；**内存**：内置 `memory-module` 图标 + 整数百分比（`50%`）。两者保留既有 70% / 90% 定档的 normal 绿 / warn 黄 / danger 红（沿用既有 `useResourceLevel` 实现），不可用时数值显示「不可用」+ 中性色（title 给原因，不得用 0 冒充）。
+- **CPU**：内置 `CPU` 图标（12px）+ 整数百分比（`19%`）；**内存**：内置 `memory-module` 图标 + 整数百分比（`50%`）。两者保留既有 70% / 90% 定档的 warn 黄 / danger 红；normal 与服务徽章文字同色（中性灰，不出现大块绿字，沿用既有 `useResourceLevel` 定档），不可用时数值显示「不可用」+ 中性色（title 给原因，不得用 0 冒充）。
 - **时钟偏差**：新画 `clock_sync` 图标（16×16、`currentColor` 填充风格，表盘 + 环形箭头——表达「时钟同步 / 偏差」而不是当前时间）+ 紧凑带符号整数毫秒（`+23ms`）。偏差正常时数值中性色，`|offset|` 超 `clock.offset_warn_ms` 只让**数值文本**变黄、超 `offset_error_ms` 只变红；快照未到达 / 尚未探测 / 本轮全部失败显示 `—`（不得用 0 冒充）；`clock = null`（配置关闭）整枚徽章不渲染。
 - **图标永远中性色且 `aria-hidden`**（Icon 组件自带），状态只由数值文本的颜色表达；三枚徽章的数值都带单位、`tabular-nums`，推送刷新时不左右跳位。
 
@@ -59,7 +59,7 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 - **契约无 payload 变更**：§2.4 / §2.9 只改「顶栏如何展示」的措辞；快照 / 配置 / REST / WS / `generated.ts` 全部不动，dzweb 领域服务不需要动。
 - **文档同步**：README「资源监控」段、`docs/components/dzsysmon.md`、本 ADR；ADR 0048 顶部加 Superseded-in-part 引用（不改其 Decision 正文）。
 - **测试口径**：`Topbar.spec.ts` 重写（三枚图标徽章渲染 / 图标名 / 数值与档位 / `—` / 配置关闭不渲染 / title 与 aria / 无墙钟与秒级定时器 / 无媒体规则隐藏徽章 / 390 样式不变量）；新增 `topbarNtp.spec.ts` 纯函数单测；卷色标一致性用例此前已改为 CPU / 内存一致性（`ResourceLevelConsistency.spec.ts`）。四档墙钟 / 每秒 tick / visibility 用例随墙钟删除。
-- **风险**：14px 图标加 11px 数值的视觉密度需要真实浏览器验收（已用静态夹具在 390 / 768 / 1024 / 1440 实测不溢出）；图标名大小写敏感（`iconNames.spec` 机器校验 `CPU` / `memory-module` / `clock_sync` 三个文件都存在）。
+- **风险**：12px 图标加 11px 数值的视觉密度需要真实浏览器验收（已用静态夹具在 390 / 768 / 1024 / 1440 实测不溢出）；图标名大小写敏感（`iconNames.spec` 机器校验 `CPU` / `memory-module` / `clock_sync` 三个文件都存在）。
 
 ## References
 

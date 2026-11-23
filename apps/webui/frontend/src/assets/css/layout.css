@@ -324,7 +324,7 @@ body {
   color: var(--text-secondary);
   line-height: 1.2;
 }
-/* 资源指标徽章（#452 / ADR 0054）：14px 图标 + 数值（`19%` / `+23ms` / `—`）。
+/* 资源指标徽章（#452 / ADR 0054）：12px 图标 + 数值（`19%` / `+23ms` / `—`）。
    数值用 tabular-nums：推送刷新时保持固定宽度，不左右跳位；图标与数值同一行、垂直居中。
    `color` 只是中性默认，实际状态色由下方统一等级类覆盖（normal 绿 / warn 黄 / danger 红）。 */
 .topbar__metric {
@@ -359,21 +359,20 @@ body {
 .topbar__resource--unavailable .res-icon {
   color: var(--text-tertiary);
 }
-/* 指标徽章的图标永远中性色：图标回答「这是什么指标」，状态只由数值文本的颜色表达。
-   warn / danger 的图标闪烁规则在后面，这里用更高特异性压住（数值文本的闪烁保持既有行为）。 */
-.topbar__metric .res-icon { color: var(--icon-default); }
+/* 指标徽章的图标永远中性色，且与左侧服务徽章文字同色（--text-secondary）：
+   图标回答「这是什么指标」，不参与状态表达；12px 与 MD/TD/STG 的 9px 微标签视觉重量对齐。 */
+.topbar__metric .res-icon { color: var(--text-secondary); }
 .topbar__metric.topbar__resource--warn .res-icon,
 .topbar__metric.topbar__resource--danger .res-icon {
-  color: var(--icon-default);
+  color: var(--text-secondary);
   animation: none;
 }
-/* 指标数值用 -on-surface 配对档（DESIGN Paired-Step：文字不吃点/条/图标的 -default 浅色档；
-   服务徽章保持既有 -default 图标色）。 */
-.topbar__metric.topbar__resource--normal .res-value { color: var(--status-success-on-surface); }
+/* 指标数值 normal 与服务徽章文字同色（--text-secondary）：顶栏常态不出现大块绿色读数，
+   只有 warn / danger 才用 -on-surface 配对档点出异常（用户 2026-11-23 拍板「颜色统一、只留黄色警告」）。 */
+.topbar__metric.topbar__resource--normal .res-value { color: var(--text-secondary); }
 .topbar__metric.topbar__resource--warn .res-value { color: var(--status-warning-on-surface); }
 .topbar__metric.topbar__resource--danger .res-value { color: var(--status-error-on-surface); }
-/* 时钟偏差正常态用中性色：时钟不是「越绿越好」，只有偏大 / 过大才着色（#452 拍板）。
-   特异性高于通用 `--normal` 规则，不依赖声明顺序。 */
+/* 时钟偏差正常态同为中性色；上面通用 normal 规则已覆盖，这条保留特指以免未来改通用规则时漂移。 */
 .topbar__metric--ntp.topbar__resource--normal .res-value { color: var(--text-secondary); }
 /* Divider between service status and system resources */
 /* #349：原先画在 `var(--border-default, var(--bg-base-secondary))` 上 —— `--border-default`
