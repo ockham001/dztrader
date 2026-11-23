@@ -180,6 +180,12 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("stop");
     g_event_sem = nullptr;  // 防止信号处理器在析构后访问悬垂指针
+    // 必须先析构 TdApi 再关全局 logger：~TdApi -> PersistWriter::stop() 在"已经停止"
+    // 的确认路径上会打 info 日志（td_persist_writer.cpp），而 spdlog::shutdown() 之后
+    // default logger 为 null，SPDLOG_INFO 解引用空指针 → 进程 SIGSEGV 退出（exit=11）。
+    // 后果（#440 E2E 实测）：正常关停被 master 上报成 Crashed 并弹「child crashed」
+    // 错误通知。md 侧无该关停日志路径，保持原状。
+    api.reset();
     spdlog::shutdown();
     return 0;
 }
