@@ -152,8 +152,8 @@ describe('#381 forced-colors：靠背景色表达的图形必须有 border / out
       expect(body, level).toContain('background: var(--status-')
       expect(hasOutline(body), `${level} 不应各自重复定义 outline`).toBe(false)
     }
-    // 容量是数据型图形（#450 拍板 4）：normal 中性，只有可用低于阈值才换 warn / danger
-    expect(ruleBody('.monitor-view__volume-fill')).toContain('background: var(--text-tertiary)')
+    // normal 用成功绿（与 CPU / 内存 / 磁盘忙碌条同族），越线才换 warn / danger
+    expect(ruleBody('.monitor-view__volume-fill')).toContain('background: var(--status-success-default)')
   })
 
   it('A3. 磁盘忙碌条的轨道与填充块各一圈描边', () => {

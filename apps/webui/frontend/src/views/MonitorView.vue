@@ -1656,7 +1656,7 @@ const cpuTrendAriaLabel = computed(() => {
               <span class="monitor-view__volume-track" aria-hidden="true">
                 <span
                   class="monitor-view__volume-fill"
-                   :data-level="row.level ?? undefined"
+                  :data-level="row.level ?? undefined"
                   :style="volumeFillStyle(row)"
                 ></span>
               </span>
@@ -2576,9 +2576,9 @@ const cpuTrendAriaLabel = computed(() => {
   width: var(--volume-fill, 0%);
   height: 100%;
   border-radius: var(--radius-2);
-  /* 容量是**数据型**图形（#450 拍板 4）：日常中性；只有「可用 <30% / <契约阈值」才换状态色，
-     与「空间不足」chip 同一判据源。填充的是「已用」，条只做量感，读数在右侧文字。 */
-  background: var(--text-tertiary);
+  /* 容量条 normal 用成功绿（与 CPU / 内存 / 磁盘忙碌条同族；用户 2026-11-23 明确要绿色），
+     只有按 70 / 90 展示分档越线才换 warn / danger。填充的是「已用」，读数在右侧文字。 */
+  background: var(--status-success-default);
   outline: var(--border-width-default) solid transparent;
   outline-offset: calc(-1 * var(--border-width-default));
 }
