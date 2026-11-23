@@ -184,7 +184,8 @@ function buildUpdatePatch(value: TdAccountFormValue): TdUpdateAccountBody {
   const patch: TdUpdateAccountBody = {
     enabled: value.enabled,
     risk_control_enabled: value.risk_control_enabled,
-    currency_id: value.currency_id,
+    // currency_id 不下发：缺失=保留旧值（契约 td-config §2.1）。币种不做人工配置，
+    // 后续由柜台回报推导（#446）；避免注册表骨架行编辑时把非 CNY 账户静默重置为 CNY。
     ext: {
       broker_id: value.broker_id,
       user_id: value.user_id,

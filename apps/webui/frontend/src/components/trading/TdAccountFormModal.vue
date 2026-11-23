@@ -389,8 +389,11 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
   text-align: left;
 }
 
-/* 纵向排列后不再让输入框按 flex 主轴纵向拉伸，宽度撑满字段列 */
-.td-form .dialog-field > .ds-input {
+/* 纵向排列后不再让输入框按 flex 主轴纵向拉伸，宽度撑满字段列；
+   select/textarea 与 input 同规则（当前表单未用，保持与全局 .dialog-field 子项对称）。 */
+.td-form .dialog-field > .ds-input,
+.td-form .dialog-field > .ds-select-wrap,
+.td-form .dialog-field > .ds-textarea {
   flex: none;
   width: 100%;
 }
