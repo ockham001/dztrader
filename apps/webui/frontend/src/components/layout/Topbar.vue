@@ -200,7 +200,7 @@ function serviceStateClass(level: ProcessLevel): string {
 function aggregateService(def: ServiceDefinition): ServiceBadge {
   const statuses = Object.values(processStore.statuses)
   const matched = statuses.filter(status => processCategory(status.name) === def.category)
-  // 多进程聚合取「最差等级」：与资源徽章共用 worstResourceLevel 唯一实现；
+  // 多进程聚合取「最差等级」：与 worstResourceLevel 唯一实现同源；
   // unknown 不是进程状态等级，转 null 不参与取最差（全部不可判读时保持中性未知）
   const worst = worstResourceLevel(matched.map(status => {
     const level = processStateLevel(status.state)
@@ -224,7 +224,7 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
   <header class="topbar" aria-label="全局状态栏">
     <!-- #380：壳层顶栏是全站唯一的 banner 地标，必须是有名字的那一个：
          读屏的「跳到 banner」若不命名，只会报一个无名的 banner，用户不知道落在哪里。
-         `aria-label` 而非 `aria-labelledby`：顶栏里没有能当标题的元素（全是状态徽章与时钟）。
+         `aria-label` 而非 `aria-labelledby`：顶栏里没有能当标题的元素（全是状态徽章与资源指标徽章）。
          注：注释必须写在根元素**内部** —— 写在 <template> 顶层会让组件变成多根（注释也占一个
          根节点），$el 退化成包裹用的 div，app-shell 里那层 header 语义就丢了。 -->
     <div class="topbar__left">

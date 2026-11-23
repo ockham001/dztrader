@@ -324,12 +324,6 @@ body {
   color: var(--text-secondary);
   line-height: 1.2;
 }
-.topbar__resource .res-value {
-  font-size: var(--font-size-9);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-}
 /* 资源指标徽章（#452 / ADR 0054）：14px 图标 + 数值（`19%` / `+23ms` / `—`）。
    数值用 tabular-nums：推送刷新时保持固定宽度，不左右跳位；图标与数值同一行、垂直居中。
    `color` 只是中性默认，实际状态色由下方统一等级类覆盖（normal 绿 / warn 黄 / danger 红）。 */
@@ -373,6 +367,11 @@ body {
   color: var(--icon-default);
   animation: none;
 }
+/* 指标数值用 -on-surface 配对档（DESIGN Paired-Step：文字不吃点/条/图标的 -default 浅色档；
+   服务徽章保持既有 -default 图标色）。 */
+.topbar__metric.topbar__resource--normal .res-value { color: var(--status-success-on-surface); }
+.topbar__metric.topbar__resource--warn .res-value { color: var(--status-warning-on-surface); }
+.topbar__metric.topbar__resource--danger .res-value { color: var(--status-error-on-surface); }
 /* 时钟偏差正常态用中性色：时钟不是「越绿越好」，只有偏大 / 过大才着色（#452 拍板）。
    特异性高于通用 `--normal` 规则，不依赖声明顺序。 */
 .topbar__metric--ntp.topbar__resource--normal .res-value { color: var(--text-secondary); }
@@ -415,6 +414,9 @@ body {
 .topbar__resource--warn .res-icon { animation: blink-warn 1.5s ease-in-out infinite; }
 .topbar__resource--danger .res-value,
 .topbar__resource--danger .res-icon { animation: blink-danger 0.8s ease-in-out infinite; }
+/* 指标数值不闪烁：颜色已足够表达 warn / danger，常驻条长期闪动是干扰（#452 / ADR 0054；
+   旧 NTP 徽章的闪烁不复用）。图标本来就 animation:none，这里把数值也压住。 */
+.topbar__metric .res-value { animation: none; }
 
 /* Theme button */
 .topbar__theme {

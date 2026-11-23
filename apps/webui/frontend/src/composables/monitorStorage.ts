@@ -81,7 +81,7 @@ export interface VolumeRow {
   fill: string
   /**
    * 容量条的展示等级：**日常中性**（normal 也不上色），按 `useResourceLevel` 的 70 / 90
-   * 展示分档取 warn / danger——与顶栏卷徽章共用同一套色标（#369 一致性）。
+   * 展示分档取 warn / danger——与顶栏 CPU / 内存徽章共用同一套色标（#369 一致性）。
    * null = 不可读、不套色；与契约阈值的「空间不足」chip 是两套数字，不得互相推导。
    */
   level: ResourceLevel | null
@@ -103,7 +103,7 @@ export function buildVolumeRow(volume: SysmonVolumeInfo, freeThresholdPct: numbe
   const used = volume.used_bytes
   const free = total === null || used === null ? null : total - used
   const freePercent = volumeFreePercent(volume)
-  // 容量条色标与顶栏卷徽章同源（70 / 90 展示分档）；「空间不足」chip 仍按契约阈值判。
+  // 容量条色标与顶栏 CPU / 内存徽章同源（70 / 90 展示分档）；「空间不足」chip 仍按契约阈值判。
   const level: ResourceLevel | null = volume.used_ratio === null ? null : resourceLevel(volume.used_ratio)
   return {
     mount: volume.mount,

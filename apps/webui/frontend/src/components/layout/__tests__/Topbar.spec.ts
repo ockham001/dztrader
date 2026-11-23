@@ -99,12 +99,24 @@ function resourceChildren(wrapper: VueWrapper) {
 const CSS_ROOT = postcss.parse(LAYOUT_CSS_SOURCE)
 
 /** 选择器在**任何**位置被 `display: none` 隐藏过吗（基础规则或媒体块） */
-function isHiddenAnywhere(selector: string): boolean {
+/**
+ * 任意断点是否用**片段**隐藏了某类 DOM（含后代选择器 / 媒体块）。
+ *
+ * 不能只匹配「选择器完全等于类名」：旧实现删掉的正是 `.topbar__resources--gauge
+ * .topbar__resource--cpu { display: none }` 这类后代选择器，精确匹配会漏掉同类回归。
+ * 除 display 外也认 visibility / content-visibility / width:0 这些隐藏形态。
+ */
+function isHiddenAnywhere(selectorFragment: string): boolean {
   let hidden = false
   CSS_ROOT.walkRules((rule) => {
-    if (!rule.selectors.some(part => part.trim() === selector)) return
-    rule.walkDecls('display', (decl) => {
-      if (decl.value.trim() === 'none') hidden = true
+    if (!rule.selectors.some(part => part.includes(selectorFragment))) return
+    rule.walkDecls((decl) => {
+      const prop = decl.prop.trim()
+      const value = decl.value.trim()
+      if (prop === 'display' && value === 'none') hidden = true
+      if (prop === 'visibility' && value === 'hidden') hidden = true
+      if (prop === 'content-visibility' && value === 'hidden') hidden = true
+      if ((prop === 'width' || prop === 'max-width') && value === '0') hidden = true
     })
   })
   return hidden
@@ -227,6 +239,20 @@ describe('Topbar 资源区三枚图标徽章（#452 / ADR 0054）', () => {
     }
   })
 
+  it('CPU 首采 ratio=null / 内存 payload 非法：显示「不可用」而不是 0%', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      cpuUsageRatio: null,
+      memory: null,
+    }))
+    const wrapper = await mountTopbar()
+
+    for (const id of ['resCpu', 'resMem'] as const) {
+      expect(valueOf(wrapper, id)).toBe('不可用')
+      expect(wrapper.find(`#${id}`).classes()).toContain('topbar__resource--unavailable')
+    }
+    expect(wrapper.text()).not.toContain('0%')
+  })
+
   it('快照尚未到达：CPU / 内存显示等待态 `—`（不得显示假数字），时钟偏差显示 `—`', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockRejectedValue(new Error('HTTP 503'))
     const wrapper = await mountTopbar()
@@ -302,7 +328,7 @@ describe('Topbar 时钟偏差徽章（NTP 图标 + 毫秒数值）', () => {
     // 配置镜像未到达时按契约默认值 100 / 1000：12.5ms 落在 normal
     expect(ntpBadge(wrapper).classes()).not.toContain('topbar__resource--warn')
 
-    // 放宽到 warn=200 后同一读数仍是 normal，收紧到 warn=10 后变 warn
+    // 收紧到 warn=10 后同一读数变 warn（配置镜像到达后以生效阈值为准）
     useSysmonStore().applyConfig(makeSysmonConfig({ clock: { offset_warn_ms: 10 } }))
     await wrapper.vm.$nextTick()
     expect(ntpBadge(wrapper).classes()).toContain('topbar__resource--warn')
@@ -404,13 +430,8 @@ describe('Topbar 已删除形态不回归（墙钟 / 日期 / 文字 NTP / 卷 /
 
 describe('Topbar 宽窄行为（纯 CSS：三枚徽章任何宽度都常驻，不溢出）', () => {
   it('没有任何媒体规则隐藏三枚指标徽章或服务徽章（390 也可见）', () => {
-    for (const selector of [
-      '.topbar__metric--cpu',
-      '.topbar__metric--mem',
-      '.topbar__metric--ntp',
-      '.topbar__resource--svc',
-    ]) {
-      expect(isHiddenAnywhere(selector), `${selector} 不得被任何断点隐藏`).toBe(false)
+    for (const fragment of ['topbar__metric', 'topbar__resource--svc']) {
+      expect(isHiddenAnywhere(fragment), `${fragment} 不得被任何断点隐藏`).toBe(false)
     }
     // 不引入容器查询（会造成同一份信息按容器宽度出现 / 消失）
     expect(LAYOUT_CSS_SOURCE).not.toContain('@container')

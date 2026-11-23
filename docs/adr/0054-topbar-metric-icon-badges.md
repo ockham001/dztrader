@@ -51,10 +51,10 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 
 ## Consequences
 
-- **顶栏行为在任意宽度一致**：三枚常驻图标徽章 + 服务徽章 + 右侧连接状态 / 主题；没有折叠、没有浮层、没有 JS 宽窄行为分支，也没有定时器。390 宽最坏情况（CPU/MEM 三位数百分比、偏差 `(-1000ms)`）实测不溢出、三枚徽章整枚可见（窄屏只由 CSS 收紧 topbar 内边距与资源区间距）。
+- **顶栏行为在任意宽度一致**：三枚常驻图标徽章 + 服务徽章 + 右侧连接状态 / 主题；没有折叠、没有浮层、没有 JS 宽窄行为分支，也没有定时器。390 宽最坏情况（CPU/MEM 三位数百分比、偏差 `-1000ms`）实测不溢出、三枚徽章整枚可见（窄屏只由 CSS 收紧 topbar 内边距与资源区间距）。
 - **资源误报噪音下降**：卷警告从顶栏彻底移除（有意取舍，不是能力缺失）；CPU / 内存的黄 / 红仍是顶栏保留的资源告警；时钟偏差过大时只有数值变黄 / 变红。
 - **语言中立**：`CPU` / `MEM` / `NTP` 三个英文缩写文字标签全部消失，图标 + 数值不依赖语言；`NTP` 这个协议名不再出现在界面上。
-- **删除面**：`components/layout/TopbarClock.vue`；`composables/topbarClock.ts`（墙钟四档文本 / 时区 / title 拼装）被 `composables/topbarNtp.ts`（偏差徽章模型）取代；`TopbarResourceBadge.vue` 被 `TopbarMetricBadge.vue`（图标 + 数值）取代；`layout.css` 移除 `.topbar-clock*` 与墙钟四档媒体规则、移除 `.res-dot` / gauge / overflow / measure / 旧 datetime / `.topbar__ntp` 规则。
+- **删除面**：`components/layout/TopbarClock.vue` 与 `composables/topbarClock.ts`（墙钟四档文本 / 时区 / title 拼装，**只在本票中间形态出现过，最终未保留**）；偏差徽章模型由 `composables/topbarNtp.ts` 承担；`TopbarResourceBadge.vue` 被 `TopbarMetricBadge.vue`（图标 + 数值）取代；`layout.css` 移除 `.topbar-clock*` 与墙钟四档媒体规则、移除 `.res-dot` / gauge / overflow / measure / 旧 datetime / `.topbar__ntp` 规则。
 - **保留面**：`sysmonClock.clockOffsetLevel` / `clockDomainState` / `clockFailureSummary` / `clockProbeAgeSec` / `resolveClockThresholds` 等继续供监控页时钟块与顶栏徽章共用；`formatCompactSignedMilliseconds` 继续服务顶栏偏差数值（整数毫秒）。
 - **契约无 payload 变更**：§2.4 / §2.9 只改「顶栏如何展示」的措辞；快照 / 配置 / REST / WS / `generated.ts` 全部不动，dzweb 领域服务不需要动。
 - **文档同步**：README「资源监控」段、`docs/components/dzsysmon.md`、本 ADR；ADR 0048 顶部加 Superseded-in-part 引用（不改其 Decision 正文）。

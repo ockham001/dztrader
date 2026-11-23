@@ -21,6 +21,7 @@ import {
   CLOCK_UNPROBED_DESC,
   CLOCK_UNPROBED_TITLE,
   clockBoundAlarm,
+  clockDomainState,
   clockFailureSummary,
   clockOffsetLevel,
   type ClockThresholds,
@@ -94,17 +95,18 @@ export function ntpBadgeModel(
     }
   }
   if (clock === null) return null
-
+  // 域状态分类的唯一实现是 sysmonClock.clockDomainState（本模块不重推同一判定）
+  const domain = clockDomainState(clock)
   const ageSuffix = probeAgeText === null ? '' : `；上次探测 ${probeAgeText}前`
-  if (clock.last_probe_unix_ms === 0) {
+  if (domain === 'unprobed') {
     return {
       value: NTP_OFFSET_UNAVAILABLE_TEXT,
       level: null,
       ariaLabel: '时钟偏差尚未探测',
-      title: `时钟偏差：${CLOCK_UNPROBED_TITLE}：${CLOCK_UNPROBED_DESC}`,
+      title: `时钟偏差（${CLOCK_UNPROBED_TITLE}）：${CLOCK_UNPROBED_DESC}`,
     }
   }
-  if (clock.offset_ms === null) {
+  if (domain === 'unavailable' || clock.offset_ms === null) {
     // store 已保证偏移与误差界同生共死；这里按「无偏差读数」处理，不用 0 冒充
     const reason = clockFailureSummary(clock.servers)
     return {
