@@ -148,14 +148,14 @@ describe('#381 forced-colors：靠背景色表达的图形必须有 border / out
   })
 
   it('B. 组成带整条有外框：段间缝只管内部，首末段的外缘只有 border 撑不起来', () => {
-    const band = ruleBody('.monitor-view__ledger-band')
+    const band = ruleBody('.monitor-view__memory-band')
     expect(band, '组成带必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
     // 仍是 10px 高的细带子：border 会挤掉内容，必须用不占盒模型的 outline
     expect(hasRealBorder(band)).toBe(false)
   })
 
   it('C. 「已用」段同时有两种描边：box-shadow 管正常主题，outline 管 forced-colors', () => {
-    const used = ruleBody('.monitor-view__ledger-band-seg--used')
+    const used = ruleBody('.monitor-view__memory-band-seg--used')
     // 正常主题的内描边保持原样（#363 C7 的视觉口径，本票不动）
     expect(used).toContain('box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1)')
     // forced-colors 下 box-shadow 被强制 none，必须另有 outline 顶上
@@ -163,6 +163,17 @@ describe('#381 forced-colors：靠背景色表达的图形必须有 border / out
     expect(used).toMatch(/outline-offset:\s*calc\(-1\s*\*\s*var\(--border-width-default\)\)/)
     // 段宽由 flex-basis 注入比例，border 会改变各段占比
     expect(hasRealBorder(used)).toBe(false)
+  })
+
+  it('E. 数字格细条（#445 交换使用率）：轨道与填充各一圈描边，填充比例才分得开', () => {
+    const track = ruleBody('.monitor-view__stat-meter')
+    expect(track, '细条轨道必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    // 4px 高的细条不能被 border 挤掉画布
+    expect(hasRealBorder(track)).toBe(false)
+    const fill = ruleBody('.monitor-view__stat-meter-fill')
+    expect(fill, '细条填充必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    expect(fill).toMatch(/outline-offset:\s*calc\(-1\s*\*\s*var\(--border-width-default\)\)/)
+    expect(hasRealBorder(fill)).toBe(false)
   })
 
   it('D. 每核条形：轨道与填充各一圈描边，柱高与填充高才分得开', () => {

@@ -14,6 +14,7 @@ import {
   PERCENT_TREND_GRIDLINE_YS,
   coreBarColumns,
   percentTrendGeometry,
+  percentTrendY,
 } from '../monitorCpu'
 
 const testDir = dirname(fileURLToPath(import.meta.url))
@@ -34,6 +35,14 @@ function parsePoints(points: string): Array<[number, number]> {
   })
 }
 
+describe('趋势图几何 token（#445 第四轮：72→88 + 面积填充）', () => {
+  it('绘图区高度与组成带高度在 design-tokens.css 里是 88px / 12px', () => {
+    const tokens = designTokens()
+    expect(tokens.get('--chart-height-trend')).toBe('88px')
+    expect(tokens.get('--memory-band-height')).toBe('12px')
+  })
+})
+
 describe('percentTrendGeometry · 固定 0–100% 纵轴（#435 决策 2）', () => {
   it('空序列 / 只有一个点 / 全为非法值时不渲染（画不出趋势）', () => {
     expect(percentTrendGeometry([])).toBeNull()
@@ -42,6 +51,27 @@ describe('percentTrendGeometry · 固定 0–100% 纵轴（#435 决策 2）', ()
       { ts: 0, value: Number.NaN },
       { ts: 1, value: 0.2 },
     ])).toBeNull()
+  })
+
+  it('面积多边形从 0% 基线闭合（#445 第四轮）：首尾都落在 y=32，中间是折线本身', () => {
+    const geometry = percentTrendGeometry([
+      { ts: 0, value: 0.2 }, { ts: 1, value: 0.5 }, { ts: 2, value: 0.9 },
+    ])
+    expect(geometry).not.toBeNull()
+    const area = parsePoints(geometry!.areaPoints)
+    // 起点 (0, 32) → 折线三点 → 终点 (100, 32)
+    expect(area[0]).toEqual([0, 32])
+    expect(area[area.length - 1]).toEqual([100, 32])
+    expect(area.slice(1, -1)).toEqual(parsePoints(geometry!.points))
+  })
+
+  it('阈值参考线 y 与折线共用同一映射：0%→32、100%→2、90%→5，越界夹取', () => {
+    expect(percentTrendY(0)).toBe(32)
+    expect(percentTrendY(1)).toBe(2)
+    expect(percentTrendY(0.9)).toBe(5)
+    expect(percentTrendY(0.5)).toBe(17)
+    expect(percentTrendY(-1)).toBe(32)
+    expect(percentTrendY(2)).toBe(2)
   })
 
   it('y 按 0–100% 映射到整幅高度，不随序列 min/max 拉伸', () => {
@@ -161,8 +191,8 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
     const tokens = designTokens()
     // 间距：CSS 用 var(--spacer-3) 排格间距，JS 用同一个数值算列数
     expect(tokens.get('--spacer-3')).toBe(`${CORE_BAR_GAP}px`)
-    // 条形轨道高度对齐主机面板（54px）
-    expect(tokens.get('--core-bar-height')).toBe('54px')
+    // 条形轨道高度（#445 密度压缩：54→46px，仍能看清单核高低）
+    expect(tokens.get('--core-bar-height')).toBe('46px')
   })
 
   it('列数受最小格宽约束：1300px 下 64 核的每格宽度不窄于 CORE_BAR_MIN_WIDTH', () => {

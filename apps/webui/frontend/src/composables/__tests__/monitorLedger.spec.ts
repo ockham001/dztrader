@@ -1,11 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  LEDGER_DEFAULT_MEMORY_USED_PCT,
-  LEDGER_DEFAULT_SWAP_USED_PCT,
   LEDGER_DEFAULT_VOLUME_FREE_PCT,
   NO_THRESHOLD_TEXT,
   UNRATED_LEVEL_TEXT,
-  buildMemoryComposition,
   buildMonitorLedger,
   ledgerLevelText,
   unavailableReasonText,
@@ -78,10 +75,8 @@ function ledgerInput(
   const cfg = makeSysmonConfig(config)
   const volumes = fixtureSortedVolumes(snapshot.volumes ?? [])
   return {
-    // 夹具 payload 与 store 净化口径自洽（内存 used = total − available、卷 used_ratio 由
-    // used/total 派出），因此直接透传；派生逻辑本身由 store 的单测锁定。
-    memory: snapshot.memory,
-    swap: snapshot.swap,
+    // 夹具 payload 与 store 净化口径自洽（卷 used_ratio 由 used/total 派出），因此直接透传；
+    // 派生逻辑本身由 store 的单测锁定。内存 / 交换归内存卡（#445），不再进台账输入。
     readableVolumes: volumes.filter(volume => volume.used_ratio !== null),
     zeroCapacityVolumes: volumes.filter(volume => volume.used_ratio === null),
     diskIo: snapshot.disk_io ?? [],
@@ -96,7 +91,7 @@ function ledgerInput(
   }
 }
 
-/** 构造输入并产出三组台账（与视图的构造入口一致） */
+/** 构造输入并产出两组台账（与视图的构造入口一致） */
 function ledgerFrom(options: LedgerFixtureOptions = {}, config: LedgerConfig = {}) {
   const input = ledgerInput(options, config)
   return { groups: buildMonitorLedger(input), input }
@@ -120,15 +115,10 @@ function allAvailable(): Record<string, SysmonAvailabilityEntry> {
 }
 
 describe('buildMonitorLedger · 分组与行序（固定顺序，不按使用率重排）', () => {
-  it('三组恒按 内存 → 存储 → 网络与时钟 排列（CPU 组已随 #435 移入 CPU 块）', () => {
+  it('两组恒按 存储 → 网络与时钟 排列（CPU 组 #435、内存组 #445 已移入各自块卡）', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
-    expect(groups.map(group => group.id)).toEqual(['memory', 'storage', 'network_clock'])
-    expect(groups.map(group => group.title)).toEqual(['内存', '存储', '网络与时钟'])
-  })
-
-  it('内存组恒两行：内存已用 → 交换已用', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    expect(rowsOf(groups, 'memory').map(row => row.id)).toEqual(['memory', 'swap'])
+    expect(groups.map(group => group.id)).toEqual(['storage', 'network_clock'])
+    expect(groups.map(group => group.title)).toEqual(['存储', '网络与时钟'])
   })
 
   it('存储组：卷（保持 store 的 ADR 0048 顺序）→ 盘（device 升序）→ 共享内存目录', () => {
@@ -188,20 +178,20 @@ describe('buildMonitorLedger · 分组与行序（固定顺序，不按使用率
 })
 
 describe('buildMonitorLedger · 阈值列只写契约里真实存在的阈值', () => {
-  it('内存 90% / 交换 50% / 卷 10% 空闲，取自生效配置', () => {
+  it('台账只剩卷空闲一个资源类阈值：10% 空闲，取自生效配置', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
-    expect(rowById(groups, 'memory').thresholdText).toBe('90%')
-    expect(rowById(groups, 'swap').thresholdText).toBe('50%')
     expect(rowById(groups, 'volume:/').thresholdText).toBe('10% 空闲')
+    // 内存 / 交换行已不存在（#445 移入内存卡）
+    const ids = groups.flatMap(group => group.rows.map(row => row.id))
+    expect(ids).not.toContain('memory')
+    expect(ids).not.toContain('swap')
   })
 
-  it('配置镜像改了阈值后阈值列跟着变（前端不另定一套）', () => {
+  it('配置镜像改了卷阈值后阈值列跟着变（前端不另定一套）', () => {
     const { groups } = ledgerFrom(
       { metrics: allAvailable() },
-      { thresholds: { memory_used_pct: 80, swap_used_pct: 40, volume_free_pct: 20 } },
+      { thresholds: { volume_free_pct: 20 } },
     )
-    expect(rowById(groups, 'memory').thresholdText).toBe('80%')
-    expect(rowById(groups, 'swap').thresholdText).toBe('40%')
     expect(rowById(groups, 'volume:/').thresholdText).toBe('20% 空闲')
   })
 
@@ -226,32 +216,18 @@ describe('buildMonitorLedger · 阈值列只写契约里真实存在的阈值', 
     expect(rowById(groups, 'clock').thresholdText).toBe('±50 / ±500 ms')
   })
 
-  it('配置镜像未到达时回退契约默认值 90 / 50 / 10 / 100 / 1000（不跳变）', () => {
+  it('配置镜像未到达时回退契约默认值 10 / 100 / 1000（不跳变）', () => {
     const groups = buildMonitorLedger({
       ...ledgerInput({ metrics: allAvailable(), clock: SYSMON_CLOCK_LIVE }),
       thresholds: null,
       clockConfig: null,
     })
-    expect(rowById(groups, 'memory').thresholdText).toBe(`${LEDGER_DEFAULT_MEMORY_USED_PCT}%`)
-    expect(rowById(groups, 'swap').thresholdText).toBe(`${LEDGER_DEFAULT_SWAP_USED_PCT}%`)
     expect(rowById(groups, 'volume:/').thresholdText).toBe(`${LEDGER_DEFAULT_VOLUME_FREE_PCT}% 空闲`)
     expect(rowById(groups, 'clock').thresholdText).toBe('±100 / ±1000 ms')
   })
 })
 
 describe('buildMonitorLedger · 余量按契约阈值算（不是 70/90 展示分档）', () => {
-  it('内存余量 = 总量 × 阈值% − 已用（字节）', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    // 默认夹具：32 GiB 总量 / 16 GiB 已用 / 阈值 90% → 28.8 − 16 = 12.8 GiB
-    expect(rowById(groups, 'memory').headroomText).toBe('12.8 GiB')
-  })
-
-  it('交换余量 = 总量 × 阈值% − 已用（字节）', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    // 默认夹具：8 GiB 总量 / 2 GiB 已用 / 阈值 50% → 4 − 2 = 2.0 GiB
-    expect(rowById(groups, 'swap').headroomText).toBe('2.0 GiB')
-  })
-
   it('卷余量 = 空闲百分点 − 10（百分点），不是已用百分比相减', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
     // `/` 40% 已用 → 60% 空闲 → 60 − 10 = 50.0 点
@@ -289,31 +265,8 @@ describe('buildMonitorLedger · 余量按契约阈值算（不是 70/90 展示�
     // SYSMON_CLOCK_LIVE: offset 12.5 ms，error 1000 → 1000 − 12.5 = 987.5
     expect(rowById(groups, 'clock').headroomText).toBe('987.5 ms')
   })
-
-  it('字节余量按展示精度判符号：阈值上恰好卡线不得显示「已超 0 B」（finding 2 复现）', () => {
-    // 8 GiB × 90% = 7730941132.8，用 7730941133 让差值略负（−0.19999980926513672）。
-    // 按原始浮点判符号会把「刚好到阈值」报成越线，一个精度噪声伪装成结论。
-    const totalBytes = 8 * 1024 ** 3
-    const { groups } = ledgerFrom({
-      metrics: allAvailable(),
-      memory: {
-        total_bytes: totalBytes,
-        available_bytes: totalBytes - 7730941133,
-        used_bytes: 7730941133,
-        used_ratio: 7730941133 / totalBytes,
-        cached_bytes: null,
-        buffers_bytes: null,
-      },
-    })
-    expect(rowById(groups, 'memory').headroomText).toBe('0 B')
-    expect(rowById(groups, 'memory').headroomText).not.toBe('已超 0 B')
-  })
 })
 
-// #382：阈值/余量两列是定宽（两列都 88px、全档同宽），而契约
-// 允许 `offset_warn_ms ∈ [1, 60000]`、`offset_error_ms ∈ (warn, 600000]`。台账必须在**契约全空间**
-// 内都不撑破列。渲染宽度由人眼 + 实测负责（本仓单测不挂浏览器），本组锁的是「文本形态收敛」：
-// ① 默认配置逐字符不变；② 每个合法档位产出的是短形态而不是 6 位毫秒；③ 两档永不塌成同一个数。
 describe('buildMonitorLedger · 阈值/余量列在契约全空间内收敛（#382）', () => {
   const clockAt = (offsetWarnMs: number, offsetErrorMs: number, offsetMs = 12.5) =>
     rowById(
@@ -368,26 +321,6 @@ describe('buildMonitorLedger · 阈值/余量列在契约全空间内收敛（#3
     expect(clockAt(60_000, 600_000).headroomText).toBe('600 s')
     // 越线（offset 超过 error）时负号留给调用方口径：时钟行直接给带符号值
     expect(clockAt(100, 1000, 1200).headroomText).toBe('-200.0 ms')
-  })
-
-  it('字节余量：真实大内存（≥123 GiB 余量）的文本是「已超 X」形态且不含 6 位以上数字', () => {
-    const totalBytes = 512 * 1024 ** 3
-    const { groups } = ledgerFrom({
-      metrics: allAvailable(),
-      memory: {
-        total_bytes: totalBytes,
-        // 已用远超 90% 阈值：余量 = 512 × 90% − 已用 = 460.8 − 512 × 0.99 → 负值走「已超」
-        available_bytes: totalBytes * 0.01,
-        used_bytes: totalBytes * 0.99,
-        used_ratio: 0.99,
-        cached_bytes: null,
-        buffers_bytes: null,
-      },
-    })
-    const text = rowById(groups, 'memory').headroomText
-    // 512 × 0.9 = 460.8 GiB 阈值；已用 506.88 GiB → 已超 46.08 GiB → 1 位小数 46.1 GiB
-    expect(text).toBe('已超 46.1 GiB')
-    expect(text.length).toBeLessThanOrEqual(13)
   })
 })
 
@@ -448,63 +381,13 @@ describe('buildMonitorLedger · 定档边界与「无法定档」', () => {
 })
 
 describe('buildMonitorLedger · 四类空态互不混淆且都不产出数字', () => {
-  it('不可用（unsupported）：state=unavailable，带原因文案，value 为空串', () => {
-    const { groups } = ledgerFrom({
-      metrics: { ...allAvailable(), memory: { available: false, reason: 'unsupported' } },
-    })
-    const row = rowById(groups, 'memory')
-    expect(row.state).toBe('unavailable')
-    expect(row.stateText).toContain('不可用')
-    expect(row.stateText).toContain('unsupported')
-    expect(row.value).toBe('')
-    expect(row.ratio).toBeNull()
-  })
-
-  it('配置关闭：state=disabled（可自助恢复的一类单独成档）', () => {
-    const { groups } = ledgerFrom({
-      metrics: { ...allAvailable(), memory: { available: false, reason: 'disabled_by_config' } },
-    })
-    const row = rowById(groups, 'memory')
-    expect(row.state).toBe('disabled')
-    expect(row.stateText).toContain('已在配置中关闭')
-  })
-
-  it('能力可用但本帧无数据：state=empty（不是 unavailable）', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable(), memory: null })
-    const row = rowById(groups, 'memory')
-    expect(row.state).toBe('empty')
-    expect(row.stateText).toContain('暂无数据')
-    expect(row.value).toBe('')
-  })
-
-  it('无交换分区（total_bytes = 0）：state=none，显示明确事实而不是 0%', () => {
-    const { groups } = ledgerFrom({
-      metrics: allAvailable(),
-      swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
-    })
-    const row = rowById(groups, 'swap')
-    expect(row.state).toBe('none')
-    expect(row.stateText).toBe('无交换分区')
-    expect(row.value).toBe('')
-    expect(row.ratio).toBeNull()
-  })
-
-  it('swap 能力 unsupported（平台无交换）：state=none 且文案是平台事实', () => {
-    const { groups } = ledgerFrom({
-      metrics: { ...allAvailable(), swap: { available: false, reason: 'unsupported' } },
-    })
-    const row = rowById(groups, 'swap')
-    expect(row.state).toBe('none')
-    expect(row.stateText).toContain('无交换分区')
-  })
-
   it('任何空态的 value 都不是「0」或「0.0%」', () => {
     const { groups } = ledgerFrom({
       metrics: {
         ...allAvailable(),
-        memory: { available: false, reason: 'unsupported' },
-        swap: { available: false, reason: 'disabled_by_config' },
+        volumes: { available: false, reason: 'unsupported' },
         disk_io: { available: false, reason: 'no_permission' },
+        network: { available: false, reason: 'collect_failed' },
       },
     })
     for (const row of groups.flatMap(group => group.rows)) {
@@ -535,10 +418,8 @@ describe('buildMonitorLedger · 四类空态互不混淆且都不产出数字', 
 })
 
 describe('buildMonitorLedger · historyKey 只在标量行上有值', () => {
-  it('内存 / 交换 / 共享内存目录有 historyKey，卷 / 盘 / 网卡 / 时钟为 null', () => {
+  it('台账里只剩共享内存目录是标量历史入口，卷 / 盘 / 网卡 / 时钟为 null', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable(), clock: SYSMON_CLOCK_LIVE })
-    expect(rowById(groups, 'memory').historyKey).toBe('memory.used_ratio')
-    expect(rowById(groups, 'swap').historyKey).toBe('swap.used_ratio')
     expect(rowById(groups, 'volume:/').historyKey).toBeNull()
     expect(rowById(groups, 'disk:sda').historyKey).toBeNull()
     expect(rowById(groups, 'clock').historyKey).toBeNull()
@@ -574,15 +455,6 @@ describe('buildMonitorLedger · 时钟三空态', () => {
 })
 
 describe('buildMonitorLedger · 明细与展开字段', () => {
-  it('内存行的明细是「已用 / 总量」，展开字段含缓存与缓冲', () => {
-    const { groups } = ledgerFrom({ metrics: allAvailable() })
-    const row = rowById(groups, 'memory')
-    expect(row.detail).toBe('16.0 GiB / 32.0 GiB')
-    expect(row.fields.map(field => field.label)).toEqual([
-      '总量', '已用（总量 − 可用）', '可用', '缓存（可回收）', '缓冲（内核元数据）',
-    ])
-  })
-
   it('盘行展开给七项指标', () => {
     const { groups } = ledgerFrom({ metrics: allAvailable() })
     expect(rowById(groups, 'disk:sda').fields).toHaveLength(7)
@@ -636,154 +508,28 @@ describe('ledgerLevelText', () => {
 // #363：内存组成带（两个口径不合并）、空态短标签、网卡明细分段
 // ---------------------------------------------------------------------------
 
-describe('buildMemoryComposition · 组成带（已用 / 缓存 / 缓冲 / 空闲）', () => {
-  const GIB = 1024 ** 3
-
-  /** 四段齐全的组成带：段序固定 used → cached → buffers → free，宽度按各段占总量比例 */
-  it('四段齐全：free 由前三段派生，四段之和等于总量', () => {
-    const composition = buildMemoryComposition({
-      total_bytes: 32 * GIB,
-      available_bytes: 16 * GIB,
-      used_bytes: 16 * GIB,
-      used_ratio: 0.5,
-      cached_bytes: 8 * GIB,
-      buffers_bytes: 1 * GIB,
-    })!
-
-    expect(composition.degraded).toBe(false)
-    expect(composition.segments.map(segment => segment.id)).toEqual(['used', 'cached', 'buffers', 'free'])
-    expect(composition.segments.map(segment => segment.bytes)).toEqual([
-      // 「已用」= total − free − cached − buffers = 32 − 7 − 8 − 1 = 16 GiB
-      16 * GIB,
-      8 * GIB,
-      1 * GIB,
-      // free 不是快照字段：32 − 16 − 8 − 1 = 7 GiB
-      7 * GIB,
-    ])
-    const sum = composition.segments.reduce((total, segment) => total + (segment.bytes ?? 0), 0)
-    expect(sum).toBe(32 * GIB)
-    // 比例合计 1（截断误差在浮点范围内）
-    expect(composition.segments.reduce((total, segment) => total + (segment.ratio ?? 0), 0)).toBeCloseTo(1, 6)
-  })
-
-  it('组成带的「已用」按 total − free − cached − buffers 派生，与主数值的 available 口径各自独立', () => {
-    // 夹具：总计 32 GiB、已用 12 GiB、缓存 5 GiB、缓冲 1 GiB → 派生空闲 = 32 − 12 − 5 − 1 = 14 GiB。
-    // `available` 取 18 GiB 而非 20 GiB：真实 Linux 上 available 含可回收的缓存/缓冲，
-    // 因此 available 必大于「总量 − 已用」。这样两个口径**本帧不相等**，夹具才具备鉴别力。
-    const composition = buildMemoryComposition({
-      total_bytes: 32 * GIB,
-      available_bytes: 18 * GIB,
-      used_bytes: 12 * GIB,
-      used_ratio: 12 / 32,
-      cached_bytes: 5 * GIB,
-      buffers_bytes: 1 * GIB,
-    })!
-    const used = composition.segments.find(segment => segment.id === 'used')!
-    // 组成带口径：已用 = total − free − cached − buffers = 32 − 14 − 5 − 1 = 12 GiB
-    expect(used.bytes).toBe(12 * GIB)
-    expect(composition.segments.find(segment => segment.id === 'free')!.bytes).toBe(14 * GIB)
-    // 主数值口径是 total − available = 14 GiB，与上面的 12 GiB 是两个量。
-    // 两条断言一起看：谁也不许被「合并」成另一个——把 used 段改写成 total − available 会让
-    // 第一条变红，把主数值改写成派生口径会让第二条变红。
-    expect(32 * GIB - 18 * GIB).toBe(14 * GIB)
-    expect(used.bytes).not.toBe(32 * GIB - 18 * GIB)
-  })
-
-  it('缓存 / 缓冲为 null：退化为两段并标注，不补 0', () => {
-    const composition = buildMemoryComposition({
-      total_bytes: 32 * GIB,
-      available_bytes: 16 * GIB,
-      used_bytes: 16 * GIB,
-      used_ratio: 0.5,
-      cached_bytes: null,
-      buffers_bytes: null,
-    })!
-
-    expect(composition.degraded).toBe(true)
-    expect(composition.segments.map(segment => segment.id)).toEqual(['used', 'free'])
-    // 退化态的两段之和仍是总量（已用 = total − available）
-    expect(composition.segments.reduce((total, segment) => total + (segment.bytes ?? 0), 0)).toBe(32 * GIB)
-    // 标注说明为什么只有两段——不静默丢段
-    expect(composition.degradedText).toContain('缓存与缓冲不可得')
-  })
-
-  it('缓存可得以缓冲为 null：同样退化两段，不把缓冲当 0 画一段', () => {
-    const composition = buildMemoryComposition({
-      total_bytes: 32 * GIB,
-      available_bytes: 16 * GIB,
-      used_bytes: 16 * GIB,
-      used_ratio: 0.5,
-      cached_bytes: 8 * GIB,
-      buffers_bytes: null,
-    })!
-    expect(composition.degraded).toBe(true)
-    expect(composition.segments.map(segment => segment.id)).toEqual(['used', 'free'])
-    // 缓存 8 GiB 不可丢：退化态把它并入「可用（含缓存/缓冲）」段而不是静默消失
-    expect(composition.segments.some(segment => segment.id === 'cached')).toBe(false)
-    expect(composition.segments.find(segment => segment.id === 'free')!.bytes).toBe(16 * GIB)
-  })
-
-  it('内存对象缺失或总量非正：返回 null（调用方据此不渲染组成带）', () => {
-    expect(buildMemoryComposition(null)).toBeNull()
-    expect(buildMemoryComposition({
-      total_bytes: 0,
-      available_bytes: 0,
-      used_bytes: 0,
-      used_ratio: null,
-      cached_bytes: 0,
-      buffers_bytes: 0,
-    })).toBeNull()
-  })
-
-  it('脏数据（可用 > 总量）：段宽不为负，已用段钳到 0', () => {
-    const composition = buildMemoryComposition({
-      total_bytes: 16 * GIB,
-      available_bytes: 32 * GIB,
-      used_bytes: 0,
-      used_ratio: 0,
-      cached_bytes: 32 * GIB,
-      buffers_bytes: 32 * GIB,
-    })!
-    // 派生空闲 = max(0, 16 − 0 − 32 − 32) = 0，已用段 = max(0, 16 − 0 − 32 − 32) = 0：
-    // 钳位把两个负值都折到 0（不是「随便一个非负数」），比 >= 0 更能锁住 `Math.max(0, …)`
-    const byId = new Map(composition.segments.map(segment => [segment.id, segment]))
-    expect(byId.get('used')!.bytes).toBe(0)
-    expect(byId.get('free')!.bytes).toBe(0)
-    expect(byId.get('used')!.ratio).toBe(0)
-    expect(byId.get('free')!.ratio).toBe(0)
-    // 缓存 / 缓冲是快照原值，段宽不被截断：超量部分的 ratio 由 `Math.min(1, …)` 钳到 1
-    expect(byId.get('cached')!.bytes).toBe(32 * GIB)
-    expect(byId.get('buffers')!.bytes).toBe(32 * GIB)
-    expect(byId.get('cached')!.ratio).toBe(1)
-    expect(byId.get('buffers')!.ratio).toBe(1)
-  })
-})
-
 describe('LedgerRow.stateLabel · 四类空态各给短标签（状态不得只靠颜色）', () => {
   it('ok 行的标签为空（等级文字在 levelText 里）；空态行的标签非空且各不相同', () => {
     const groups = buildMonitorLedger(ledgerInput({ metrics: allAvailable() }))
-    const memoryRow = rowById(groups, 'memory')
-    expect(memoryRow.state).toBe('ok')
-    expect(memoryRow.stateLabel).toBe('')
-    expect(memoryRow.levelText).toBe('正常')
+    const volumeRow = rowById(groups, 'volume:/')
+    expect(volumeRow.state).toBe('ok')
+    expect(volumeRow.stateLabel).toBe('')
+    expect(volumeRow.levelText).toBe('正常')
 
-    // 四类空态：unavailable / empty / disabled / none 的标签互不相同
+    // 四类空态：unavailable / empty / disabled / none 的短标签互不相同（用台账里仍有的行验证）
+    const empty = buildMonitorLedger(ledgerInput({ shmDir: null }))
+    expect(rowById(empty, 'shm_dir').stateLabel).toBe('暂无数据')
+
     const unavailable = buildMonitorLedger(ledgerInput({
-      metrics: { ...allAvailable(), memory: { available: false, reason: 'collect_failed' } },
+      metrics: { ...allAvailable(), disk_io: { available: false, reason: 'collect_failed' } },
     }))
-    expect(rowById(unavailable, 'memory').stateLabel).toBe('不可用')
+    expect(rowsOf(unavailable, 'storage').find(row => row.contractKey === 'disk_io')!.stateLabel).toBe('不可用')
 
-    const empty = buildMonitorLedger(ledgerInput({ memory: null }))
-    expect(rowById(empty, 'memory').stateLabel).toBe('暂无数据')
+    const disabled = buildMonitorLedger(ledgerInput({ clock: null }))
+    expect(rowById(disabled, 'clock').stateLabel).toBe('已关闭')
 
-    const disabled = buildMonitorLedger(ledgerInput({
-      metrics: { ...allAvailable(), memory: { available: false, reason: 'disabled_by_config' } },
-    }))
-    expect(rowById(disabled, 'memory').stateLabel).toBe('已关闭')
-
-    const none = buildMonitorLedger(ledgerInput({ swap: { total_bytes: 0, used_bytes: 0, used_ratio: null } }))
-    // 「无交换」不是「无此维度」：交换这一类事实各有各的词
-    expect(rowById(none, 'swap').stateLabel).toBe('无交换')
+    const none = buildMonitorLedger(ledgerInput({ clock: SYSMON_CLOCK_UNPROBED }))
+    expect(rowById(none, 'clock').stateLabel).toBe('尚未探测')
   })
 
   it('时钟「尚未探测」的短标签就是「尚未探测」，不混进任何空态类别词', () => {

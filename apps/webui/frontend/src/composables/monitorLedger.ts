@@ -8,9 +8,10 @@
  *
  * 五条不可动摇的约定：
  *
- * 1. **阈值列只写契约里真实存在的阈值。** `thresholds` 段只有内存 / 交换 / 卷空闲三个资源类阈值
- *    （CPU 持续饱和那两个判的是核，不是台账行），时钟的两个在 `clock` 段。磁盘 I/O 的忙碌占比、
- *    网卡、共享内存目录**没有**契约阈值，一律写 `—`。不得为了让表格整齐而编造阈值。
+ * 1. **阈值列只写契约里真实存在的阈值。** `thresholds` 段剩下的资源类阈值只有卷空闲
+ *    （内存 / 交换已随 #445 移入内存卡；CPU 持续饱和判的是核，不是台账行），时钟的两个在
+ *    `clock` 段。磁盘 I/O 的忙碌占比、网卡、共享内存目录**没有**契约阈值，一律写 `—`。
+ *    不得为了让表格整齐而编造阈值。
  *
  * 2. **余量按契约阈值算，不按 70/90 算。** `RESOURCE_WARN_RATIO` / `RESOURCE_DANGER_RATIO` 是
  *    前端展示分档（ADR 0034 明文：色标是独立展示规则，不是越限判定），只决定 `level` 与轨道
@@ -22,7 +23,7 @@
  *    同一块盘在行与行之间来回换位，扫读位置不稳定。
  *
  * 4. **四类空态互不混淆，任何一类都不产出数字。** 不可用（能力缺失，带 reason）/ 暂无数据
- *    （能力可用但本帧无值）/ 配置关闭（`disabled_by_config`）/ 无此维度（如本机无交换分区）。
+ *    （能力可用但本帧无值）/ 配置关闭（`disabled_by_config`）/ 无此维度（如时钟「尚未探测」）。
  *    用 0 冒充任何一种都是撒谎（契约 §2 的「不得用 0 冒充」贯穿全篇）。
  *
  * 5. **`level` 为 null 表示「无法定档」，不得冒充 `normal`。** 没有比率分母的行（网卡 / 共享
@@ -55,10 +56,8 @@ import type {
   SysmonClockConfigPayload,
   SysmonClockInfo,
   SysmonDiskIoInfo,
-  SysmonMemoryInfo,
   SysmonNetworkInfo,
   SysmonShmDirInfo,
-  SysmonSwapInfo,
   SysmonThresholdsConfigPayload,
   SysmonVolumeInfo,
 } from '@/types/generated'
@@ -67,17 +66,16 @@ import type {
 // 发送方是唯一真相源：`dzsysmon` 未收到配置帧时按这些默认值工作，前端在「配置镜像尚未到达」
 // 的窗口内必须给出同一结论，否则台账会先按一套阈值显示余量、配置到达后跳变。与
 // `sysmonClock.ts` 的 `CLOCK_DEFAULT_*` 同一先例（那里也只复制阈值、不复制数组型配置）。
-export const LEDGER_DEFAULT_MEMORY_USED_PCT = 90
-export const LEDGER_DEFAULT_SWAP_USED_PCT = 50
 export const LEDGER_DEFAULT_VOLUME_FREE_PCT = 10
 
 /**
- * 台账分组标识（三组，顺序固定：内存 → 存储 → 网络与时钟）。
+ * 台账分组标识（两组，顺序固定：存储 → 网络与时钟）。
  *
  * CPU 组曾在这里（#370），#435 起整组移入 CPU 块：每核条形归 CPU 卡，上下文切换 / 中断
- * 从实时页移除（历史视图两项都可查），台账不再有 CPU 组——同一区域只留一套实现。
+ * 从实时页移除（历史视图两项都可查）。内存组曾在这里（#361），#445 起整组移入内存卡
+ * （已用率 / 组成带 / 交换子条）——台账不再有 CPU / 内存组，同一区域只留一套实现。
  */
-export type LedgerGroupId = 'memory' | 'storage' | 'network_clock'
+export type LedgerGroupId = 'storage' | 'network_clock'
 
 /**
  * 行状态。`ok` 之外的四类是**四种不同的事实**，文案与着色都不同：
@@ -109,7 +107,7 @@ export interface LedgerDetailPart {
 
 /** 台账的一行：行内容即七列的取值，视图只负责摆放 */
 export interface LedgerRow {
-  /** 稳定标识（`v-for` 的 `:key` 与测试断言用），形如 `memory` / `volume:/data` / `nic:eno1:rx` */
+  /** 稳定标识（`v-for` 的 `:key` 与测试断言用），形如 `volume:/data` / `nic:eno1:rx` / `clock` */
   id: string
   group: LedgerGroupId
   /** 行的中文名（指标名 / 挂载点 / 设备名 / 网卡名） */
@@ -175,8 +173,6 @@ export interface LedgerGroup {
  * （不在这里调 `Date.now()`——隐藏的时间输入会让「时钟上次探测多久以前」无法在测试里锁定）。
  */
 export interface MonitorLedgerInput {
-  memory: SysmonMemoryInfo | null
-  swap: SysmonSwapInfo | null
   /** store 的 `readableVolumes`：已按 ADR 0048 排好序，本模块保持其顺序 */
   readableVolumes: readonly SysmonVolumeInfo[]
   /** 只用于组注里的计数（不进主列，与既往「无容量挂载」折叠口径一致） */
@@ -275,17 +271,6 @@ function pointsHeadroomText(value: number): string {
   return headroomText(rounded, n => `${n.toFixed(1)} 点`)
 }
 
-/**
- * 字节余量：与 `formatBytes` 同精度取整后再判符号（防浮点噪声伪造「已超 0 B」）。
- *
- * `total_bytes × pct / 100` 是浮点乘法，阈值上恰好卡线的机器会算出 `-0.2 B` 这类残差：
- * 按原始值判符号就会把「刚好到阈值」报成越线。取整到整字节即与 `formatBytes` 的 `B` 档精度
- * 一致（`Math.round(-0.2)` 为 `-0`，`-0 >= 0` 成立，落回非越线分支显示 `0 B`）。
- */
-function bytesHeadroomText(value: number): string {
-  return headroomText(Math.round(value), formatBytes)
-}
-
 /** 取阈值：配置已到达用它，未到达回退契约默认（配置镜像到达后不跳变） */
 function thresholdOr(value: number | null | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -352,115 +337,6 @@ function unavailableRow(
   const state = reason === 'disabled_by_config' ? 'disabled' : 'unavailable'
   // metric 一并传入：磁盘 I/O 的 no_permission 有可操作的专属文案（见 `unavailableReasonText`）
   return blankRow(base, state, `${UNAVAILABLE_TEXT}：${unavailableReasonText(reason, metric)}`)
-}
-
-/** 内存组：内存已用 + 交换已用（两行都是可点跳历史的标量） */
-function memoryGroup(input: MonitorLedgerInput): LedgerGroup {
-  const rows: LedgerRow[] = []
-  const memoryPct = thresholdOr(input.thresholds?.memory_used_pct, LEDGER_DEFAULT_MEMORY_USED_PCT)
-  const swapPct = thresholdOr(input.thresholds?.swap_used_pct, LEDGER_DEFAULT_SWAP_USED_PCT)
-  const { available: memoryAvailable } = availabilityState(input.availability, 'memory')
-
-  const memoryBase = {
-    id: 'memory',
-    group: 'memory' as const,
-    label: '内存已用',
-    contractKey: 'memory',
-  }
-  if (!memoryAvailable) {
-    rows.push(unavailableRow(memoryBase, 'memory', input))
-  } else if (input.memory === null) {
-    rows.push(blankRow(memoryBase, 'empty', '暂无数据：本帧未采集到内存用量'))
-  } else {
-    const memory = input.memory
-    const ratio = memory.used_ratio
-    // 余量 = 阈值对应的字节上限 − 已用。用 threshold 而不是 ratio 差，是因为「还剩多少字节」
-    // 比「还剩几个百分点」更贴近「这台机器还能不能再扛一个策略」这个原始问题。
-    const limitBytes = memory.total_bytes * (memoryPct / 100)
-    const headroom = limitBytes - memory.used_bytes
-    rows.push({
-      ...memoryBase,
-      state: 'ok',
-      stateText: '',
-      stateLabel: '',
-      level: levelOf(ratio),
-      levelText: ledgerLevelText(levelOf(ratio)),
-      ratio,
-      value: formatPercent(ratio),
-      detail: `${formatBytes(memory.used_bytes)} / ${formatBytes(memory.total_bytes)}`,
-      thresholdText: `${memoryPct}%`,
-      headroomText: bytesHeadroomText(headroom),
-      historyKey: 'memory.used_ratio',
-      detailParts: [],
-      fields: [
-        { label: '总量', value: formatBytes(memory.total_bytes) },
-        { label: '已用（总量 − 可用）', value: formatBytes(memory.used_bytes) },
-        { label: '可用', value: formatBytes(memory.available_bytes) },
-        { label: '缓存（可回收）', value: formatBytes(memory.cached_bytes) },
-        { label: '缓冲（内核元数据）', value: formatBytes(memory.buffers_bytes) },
-      ],
-      badges: [],
-    })
-  }
-
-  const swapBase = {
-    id: 'swap',
-    group: 'memory' as const,
-    label: '交换已用',
-    contractKey: 'swap',
-  }
-  const swapAvailability = availabilityState(input.availability, 'swap')
-  if (!swapAvailability.available) {
-    // 无交换分区是平台事实（契约 §2 的 `unsupported`），不是采集故障：给专用文案而不是
-    // 通用的「不可用」，否则用户会去查为什么采集失败。
-    if (swapAvailability.reason === 'unsupported') {
-      rows.push(blankRow(swapBase, 'none', '本机无交换分区/页面文件', '无交换'))
-    } else {
-      rows.push(unavailableRow(swapBase, 'swap', input))
-    }
-  } else if (input.swap === null) {
-    rows.push(blankRow(swapBase, 'empty', '暂无数据：本帧未采集到交换分区'))
-  } else if (input.swap.total_bytes === 0) {
-    // 总量 0 是**合法事实**，不是 0% 的使用率：显示 0% 会被读成「有 swap 但一点没用」。
-    rows.push(blankRow(swapBase, 'none', '无交换分区', '无交换'))
-  } else {
-    const swap = input.swap
-    const ratio = swap.used_ratio
-    const limitBytes = swap.total_bytes * (swapPct / 100)
-    const headroom = limitBytes - swap.used_bytes
-    rows.push({
-      ...swapBase,
-      state: 'ok',
-      stateText: '',
-      stateLabel: '',
-      level: levelOf(ratio),
-      levelText: ledgerLevelText(levelOf(ratio)),
-      ratio,
-      value: formatPercent(ratio),
-      detail: `${formatBytes(swap.used_bytes)} / ${formatBytes(swap.total_bytes)}`,
-      thresholdText: `${swapPct}%`,
-      headroomText: bytesHeadroomText(headroom),
-      historyKey: 'swap.used_ratio',
-      detailParts: [],
-      fields: [
-        { label: '总量', value: formatBytes(swap.total_bytes) },
-        { label: '已用', value: formatBytes(swap.used_bytes) },
-        { label: '剩余', value: formatBytes(Math.max(0, swap.total_bytes - swap.used_bytes)) },
-      ],
-      badges: [],
-    })
-  }
-
-  const memoryTotal = input.memory === null ? UNAVAILABLE_TEXT : formatBytes(input.memory.total_bytes)
-  const swapTotalText = input.swap === null || input.swap.total_bytes === 0
-    ? '无交换'
-    : `交换 ${formatBytes(input.swap.total_bytes)}`
-  return {
-    id: 'memory',
-    title: '内存',
-    note: `${memoryTotal} 总量 · ${swapTotalText}`,
-    rows,
-  }
 }
 
 /** 单个卷的一行（`readableVolumes` 已保证 `used_ratio` 非 null） */
@@ -808,7 +684,7 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
 }
 
 /**
- * 构造资源监控台账（三组、固定顺序：内存 → 存储 → 网络与时钟）。
+ * 构造资源监控台账（两组、固定顺序：存储 → 网络与时钟；CPU / 内存已分别移入各自块卡）。
  *
  * CPU 组已随 #435 移入 CPU 块（每核条形进 CPU 卡、上下文切换 / 中断从实时页移除），台账不再
  * 产出 CPU 行——同一区域只留一套实现。
@@ -817,93 +693,6 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
  * 视图只负责按行渲染，不写任何「该不该显示」的判断。
  */
 export function buildMonitorLedger(input: MonitorLedgerInput): LedgerGroup[] {
-  return [memoryGroup(input), storageGroup(input), networkClockGroup(input)]
+  return [storageGroup(input), networkClockGroup(input)]
 }
 
-// ---- 内存组成带（#363）----
-
-/** 组成带的一段：`ratio` 是占**总量**的比例（所有可画段之和 + 空闲 = 1） */
-export interface MemoryCompositionSegment {
-  id: 'used' | 'cached' | 'buffers' | 'free'
-  label: string
-  /** 该段的字节数（不可得时为 null，**不得**补 0） */
-  bytes: number | null
-  /** 该段占总量比例 [0,1]；null = 不可得（不画这一段） */
-  ratio: number | null
-  /** 该段的可读字节标注（不可得时为 null，由视图显示「不可得」注记） */
-  text: string | null
-}
-
-/** 组成带的完整结果：分段 + 是否退化为两段（缓存 / 缓冲不可得时的标注口径） */
-export interface MemoryComposition {
-  segments: MemoryCompositionSegment[]
-  /** 缓存或缓冲不可得 → 组成带只画「已用 + 可用」两段，视图须给出注记（不得静默补 0） */
-  degraded: boolean
-  /** 退化原因的可读文案（完整时为空串） */
-  degradedText: string
-}
-
-/**
- * 内存组成带（#363；契约 sysmon §2.4 / ADR 0024）。
- *
- * **两个口径不合并**（这是本函数存在的唯一理由）：
- * - 台账主数值是 `used_ratio = (total − available) / total`（ADR 0024 的唯一口径，
- *   `available` 含**可回收**的缓存与缓冲）；
- * - 组成带要回答的是「这 32 GiB 被谁占着」，因此逐段必须相加回到 `total`：
- *   `已用 = total − free − cached − buffers`，其中 `free` **不是快照字段**，
- *   由 `free = total − used − cached − buffers` 派生（钳到 ≥0）。
- *
- * 两段数字在数值上必然自洽（把派生的 `free` 代回即得 `used`），但它们**不是同一个量**：
- * 主数值是「用量比率」，组成带是「总量分解」，视图必须分别标注分母，不得把同一个数字渲染两次
- * 而声称一个是「已用」另一个是「可用」。
- *
- * 缓存或缓冲为 null（Windows 恒无缓冲 / 本帧未读到）时**不补 0**：退化为「已用 + 可用」两段
- * （`used = total − available`、`available` 原样），并以 {@link MemoryComposition.degraded}
- * 标注——补 0 会把「不知道」画成「没有」。
- *
- * @returns 内存对象为 null（或总量非正）时返回 null（调用方不渲染组成带）
- */
-export function buildMemoryComposition(memory: SysmonMemoryInfo | null): MemoryComposition | null {
-  if (memory === null) return null
-  const total = memory.total_bytes
-  if (!(total > 0)) return null
-  const cached = typeof memory.cached_bytes === 'number' ? memory.cached_bytes : null
-  const buffers = typeof memory.buffers_bytes === 'number' ? memory.buffers_bytes : null
-  const segment = (
-    id: MemoryCompositionSegment['id'],
-    label: string,
-    bytes: number | null,
-  ): MemoryCompositionSegment => ({
-    id,
-    label,
-    bytes,
-    ratio: bytes === null ? null : Math.min(1, Math.max(0, bytes / total)),
-    text: bytes === null ? null : formatBytes(bytes),
-  })
-
-  if (cached === null || buffers === null) {
-    // 退化形态：`available` 是契约里唯一可信的「可用」字段（含可回收），把它当空闲段并标注
-    return {
-      segments: [
-        segment('used', '已用', Math.max(0, total - memory.available_bytes)),
-        segment('free', '可用（含缓存/缓冲）', memory.available_bytes),
-      ],
-      degraded: true,
-      degradedText: cached === null && buffers === null
-        ? '缓存与缓冲不可得，组成带只画已用与可用两段'
-        : (cached === null ? '缓存不可得' : '缓冲不可得') + '，组成带只画已用与可用两段',
-    }
-  }
-
-  const free = Math.max(0, total - memory.used_bytes - cached - buffers)
-  return {
-    segments: [
-      segment('used', '已用', Math.max(0, total - free - cached - buffers)),
-      segment('cached', '缓存', cached),
-      segment('buffers', '缓冲', buffers),
-      segment('free', '空闲', free),
-    ],
-    degraded: false,
-    degradedText: '',
-  }
-}

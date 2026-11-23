@@ -133,12 +133,14 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
     }
   })
 
-  it('趋势只覆盖 4 个标量指标（维度指标第一版不做；负载的迷你趋势已随 #435 移除）', () => {
+  it('趋势只保留有消费方的 3 个指标（负载 / 交换没有消费方，不补拉）', () => {
     expect([...SYSMON_TREND_METRIC_KEYS]).toEqual([
       'cpu.usage_ratio',
+      // CPU 块宽图
       'memory.used_ratio',
-      'swap.used_ratio',
+      // 内存块宽图（#445 第三轮）
       'shm_dir.total_bytes',
+      // 台账存储组的内联 sparkline
     ])
   })
 
@@ -248,7 +250,7 @@ describe('useSysmonTrendStore：WS 增量推进（末点 = 当前实时值）', 
     expect(points[points.length - 1].value).toBe(0.187)
   })
 
-  it('每个标量指标各取自己的实时值（内存 / 交换 / 共享内存目录）', async () => {
+  it('每个趋势指标各取自己的实时值（CPU / 内存 / 共享内存目录）', async () => {
     mockAllAvailable()
     const trend = await initTrend()
     const sysmon = useSysmonStore()
@@ -256,8 +258,8 @@ describe('useSysmonTrendStore：WS 增量推进（末点 = 当前实时值）', 
     sysmon.applySnapshot(makeSysmonSnapshot())
     sysmon.applySnapshot(makeSysmonSnapshot({ cpuUsageRatio: 0.5 }))
 
+    expect(lastValue(trend.seriesOf('cpu.usage_ratio'))).toBe(sysmon.cpuUsageRatio)
     expect(lastValue(trend.seriesOf('memory.used_ratio'))).toBe(sysmon.memoryInfo?.used_ratio)
-    expect(lastValue(trend.seriesOf('swap.used_ratio'))).toBe(sysmon.swapInfo?.used_ratio)
     expect(lastValue(trend.seriesOf('shm_dir.total_bytes'))).toBe(sysmon.shmDirInfo?.total_bytes)
   })
 
@@ -541,8 +543,8 @@ describe('useSysmonTrendStore：单指标补拉降级保留上一轮序列（#14
 
     expect(trend.seriesOf('cpu.usage_ratio').map(point => point.value)).toEqual([0.2, 0.3])
     expect(trend.windowOf('cpu.usage_ratio').stale).toBe(true)
-    expect(trend.seriesOf('memory.used_ratio').map(point => point.value)).toEqual([0.7, 0.8])
-    expect(trend.windowOf('memory.used_ratio').stale).toBe(false)
+    expect(trend.seriesOf('shm_dir.total_bytes').map(point => point.value)).toEqual([0.7, 0.8])
+    expect(trend.windowOf('shm_dir.total_bytes').stale).toBe(false)
   })
 
   it('再次补拉返回 available=false（历史被关闭）：保留上一轮序列并标记 stale', async () => {

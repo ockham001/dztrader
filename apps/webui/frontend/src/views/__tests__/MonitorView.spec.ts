@@ -57,7 +57,6 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
       makeSysmonSnapshot({ cpuUsageRatio: 0.187, resourceData: true }),
     )
     const wrapper = await mountView()
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
 
     // 主机条（#430：页头下方通栏一条）接真实数据；CPU 型号已移出（归 CPU 块）
     const host = wrapper.find('[data-test="monitor-host"]')
@@ -68,9 +67,11 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     expect(host.find('[data-test="monitor-host-status"]').text()).toMatch(/^更新于 \d{2}:\d{2}:\d{2}$/)
     // CPU 总使用率接真实数据
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
-    // #363：内存 / 磁盘 / 网络的行数据全部来自台账（行内七列共用一条列基线）
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
-    expect(memoryRow.find('[data-test="ledger-detail"]').text()).toBe('16.0 GiB / 32.0 GiB')
+    // #445：内存 / 交换进独立内存卡（第三轮起通栏 + 四数字）；台账只剩存储 / 网络与时钟
+    expect(wrapper.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-total"]').text()).toBe('总量 32.0 GiB')
+    expect(wrapper.find('[data-test="monitor-memory-available"]').text()).toBe('16.0 GiB')
+    expect(wrapper.find('[data-row-id="memory"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-ledger"]').text()).toContain('/data')
     expect(wrapper.find('[data-test="monitor-ledger"]').text()).toContain('25.0%')
     expect(wrapper.find('[data-test="monitor-ledger"]').text()).toContain('eth0')
@@ -98,15 +99,13 @@ describe('MonitorView 资源监控页（三种快照状态）', () => {
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').text()).toContain('不可用')
     expect(wrapper.find('[data-test="monitor-cpu-unavailable"]').text()).toContain('unsupported')
-    // #363：内存 / 交换 / 卷 / 网卡不可用 → 各自的台账行带「不可用：原因」，不渲染任何数值
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
-    expect(memoryRow.attributes('data-state')).toBe('disabled')
-    expect(memoryRow.find('[data-test="row-state"]').text()).toContain('已在配置中关闭')
-    // 配置关闭是「没有这次读数」而不是「读到了 0」：值列写「—」，且不提供读数槽
-    expect(memoryRow.find('.monitor-view__ledger-value').text()).toBe('—')
-    expect(memoryRow.find('[data-test="monitor-memory-value"]').exists()).toBe(false)
-    const swapRow = wrapper.find('[data-row-id="swap"]')
-    expect(swapRow.find('[data-test="row-state"]').text()).toContain('已在配置中关闭')
+    // #445：内存 / 交换配置关闭 → 内存卡空态标题层写「已在配置中关闭」，不显示任何数值
+    const memoryCard = wrapper.find('[data-test="monitor-memory"]')
+    const memoryEmpty = memoryCard.find('[data-test="monitor-memory-empty"]')
+    expect(memoryEmpty.find('.ds-empty__title').text()).toBe('已在配置中关闭')
+    expect(memoryCard.find('[data-test="monitor-memory-percent"]').exists()).toBe(false)
+    // 交换可用性独立于内存：空态时仍给一行带主语的交换事实
+    expect(memoryCard.find('[data-test="monitor-swap-fallback"]').text()).toContain('已在配置中关闭')
     // not_implemented 不是「配置关闭」：卷 / 网卡按不可用呈现（`disabled_by_config` 才进 disabled 档）
     expect(wrapper.find('[data-row-id="volumes"]').attributes('data-state')).toBe('unavailable')
     expect(wrapper.find('[data-test="monitor-ledger"]').text()).toContain('该指标将在后续版本接入')
@@ -500,7 +499,7 @@ describe('MonitorView 温度与每核频率（#73，可用性驱动）', () => {
   })
 })
 
-describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
+describe('MonitorView 内存块（#445 第三轮：通栏四数字 + 内存曲线 + 组成带 + 交换格）', () => {
   const GIB = 1024 ** 3
 
   beforeEach(() => {
@@ -508,35 +507,64 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
     vi.clearAllMocks()
   })
 
-  it('默认快照：内存使用率 / 已用/总量 / 可用 / 缓存 / 缓冲与交换行均渲染真实数据', async () => {
+  it('默认快照：总量 / 四数字（已用·可用·缓存·交换）/ 组成带 + 图例 / 阈值余量小字均渲染真实数据', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
     const wrapper = await mountView()
 
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
-    expect(memoryRow.find('[data-test="ledger-detail"]').text()).toBe('16.0 GiB / 32.0 GiB')
+    const card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.exists()).toBe(true)
+    expect(card.find('[data-test="monitor-memory-total"]').text()).toBe('总量 32.0 GiB')
 
-    // 展开明细给出五项（总量 / 已用 / 可用 / 缓存 / 缓冲）——「缓存 / 缓冲为 null 就不渲染该行」
-    // 的语义现在落在展开项的**存在性**上（#363），不再是卡片里的列表行。
-    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(0)
-    await memoryRow.find('[data-test="ledger-expand-memory"]').trigger('click')
-    await wrapper.vm.$nextTick()
-    const labels = memoryRow.findAll('[data-test="ledger-field"]').map(field => field.attributes('data-label'))
-    expect(labels).toEqual(['总量', '已用（总量 − 可用）', '可用', '缓存（可回收）', '缓冲（内核元数据）'])
-    const values = memoryRow.findAll('[data-test="ledger-field-value"]').map(field => field.text())
-    expect(values).toEqual(['32.0 GiB', '16.0 GiB', '16.0 GiB', '8.0 GiB', '256.0 MiB'])
+    // 四数字：主值 19px；已用 / 交换百分比可点跳历史，颜色按 70/90 分档
+    const percent = card.find('[data-test="monitor-memory-percent"]')
+    expect(percent.text()).toBe('50.0%')
+    expect(percent.attributes('data-level')).toBe('normal')
+    expect(card.find('[data-test="monitor-memory-used-context"]').text()).toBe('16.0 GiB / 32.0 GiB')
+    expect(card.find('[data-test="monitor-memory-available"]').text()).toBe('16.0 GiB')
+    expect(card.find('[data-test="monitor-memory-available-context"]').text()).toBe('空闲 7.8 GiB + 可回收 8.3 GiB')
+    expect(card.find('[data-test="monitor-memory-cached"]').text()).toBe('8.0 GiB')
+    expect(card.find('[data-test="monitor-memory-buffers-context"]').text()).toBe('缓冲 256.0 MiB')
+    expect(card.find('[data-test="monitor-swap-percent"]').text()).toBe('25.0%')
+    expect(card.find('[data-test="monitor-swap-context"]').text()).toBe('2.0 GiB / 8.0 GiB')
+    // #445 第四轮：交换细条（4px，宽度运行时注入；颜色按 70/90 分档）
+    const swapFill = card.find('.monitor-view__stat-meter-fill')
+    expect(swapFill.exists()).toBe(true)
+    expect(swapFill.attributes('data-level')).toBe('normal')
+    expect(swapFill.attributes('style')).toContain('--meter-fill: 25.0%')
 
-    const swapRow = wrapper.find('[data-row-id="swap"]')
-    expect(swapRow.exists()).toBe(true)
-    expect(wrapper.find('[data-test="monitor-memory-swap-usage"]').text()).toBe('25.0%')
-    expect(swapRow.find('[data-test="ledger-detail"]').text()).toBe('2.0 GiB / 8.0 GiB')
+    // 组成带：四段齐全 + 图例逐段带数值；段色带是纯图形，读屏读图例文字
+    const band = card.find('[data-test="monitor-memory-composition"] .monitor-view__memory-band')
+    expect(band.attributes('aria-hidden')).toBe('true')
+    const segments = card.findAll('[data-test="monitor-memory-composition"] .monitor-view__memory-band-seg')
+    expect(segments.map(segment => segment.attributes('data-segment'))).toEqual(['used', 'cached', 'buffers', 'free'])
+    const legend = card.findAll('[data-test="monitor-memory-legend-item"]')
+    expect(legend.map(item => item.attributes('data-segment'))).toEqual(['used', 'cached', 'buffers', 'free'])
+    expect(legend.map(item => item.find('[data-test="monitor-memory-legend-value"]').text()))
+      .toEqual(['16.0 GiB', '8.0 GiB', '256.0 MiB', '7.8 GiB'])
+    // #445 第四轮：图例带百分比（与字节数分两段，比例一眼可见）
+    expect(legend.map(item => item.find('[data-test="monitor-memory-legend-pct"]').text()))
+      .toEqual(['50.0%', '25.0%', '0.8%', '24.2%'])
 
-    // #120 收口：内存 / 交换使用率色标与卷行、顶栏共享同一组常量（默认 50% / 25% → normal）
-    expect(wrapper.find('[data-row-id="memory"]').attributes('data-level')).toBe('normal')
-    expect(swapRow.attributes('data-level')).toBe('normal')
+    // 阈值 / 余量小字（B2 / B3）：契约默认 90% / 50%，余量按字节算
+    const facts = card.find('[data-test="monitor-memory-facts"]').text()
+    // #445 第四轮口径：「告警阈值」+「距阈值」（不是含糊的「余量」，也不与颜色分档混同）
+    expect(facts).toContain('内存告警阈值 90%')
+    expect(facts).toContain('距阈值 12.8 GiB')
+    expect(facts).toContain('交换分区告警阈值 50%')
+    expect(facts).toContain('距阈值 2.0 GiB')
+
+    // 悬停 / 读屏事实串（B1 + B4）：可用口径、空闲、阈值、剩余都在 title / aria-label 里
+    const percentTitle = percent.attributes('title') ?? ''
+    expect(percentTitle).toContain('可用 16.0 GiB（含可回收缓存/缓冲）')
+    expect(percentTitle).toContain('空闲 7.8 GiB')
+    expect(percentTitle).toContain('告警阈值 90%')
+    expect(percentTitle).toContain('查看内存使用率历史变化')
+    const swapTitle = card.find('[data-test="monitor-swap-percent"]').attributes('title') ?? ''
+    expect(swapTitle).toContain('剩余 6.0 GiB')
+    expect(swapTitle).toContain('查看交换使用率历史变化')
   })
 
-  it('内存 / 交换使用率色标：0.70 → warn、0.90 → danger（边界含，数值照常渲染）', async () => {
+  it('色标只影响数字颜色：0.70 → warn、0.90 → danger，数值照常渲染', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       memory: {
         total_bytes: 100 * GIB,
@@ -550,17 +578,15 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
-    expect(memoryRow.attributes('data-level')).toBe('danger')
-    // 色标只影响颜色，不改变数值展示
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('90.0%')
-
-    const swapRow = wrapper.find('[data-row-id="swap"]')
-    expect(swapRow.attributes('data-level')).toBe('warn')
-    expect(wrapper.find('[data-test="monitor-memory-swap-usage"]').text()).toBe('70.0%')
+    const memoryPercent = wrapper.find('[data-test="monitor-memory-percent"]')
+    expect(memoryPercent.text()).toBe('90.0%')
+    expect(memoryPercent.attributes('data-level')).toBe('danger')
+    const swapPercent = wrapper.find('[data-test="monitor-swap-percent"]')
+    expect(swapPercent.text()).toBe('70.0%')
+    expect(swapPercent.attributes('data-level')).toBe('warn')
   })
 
-  it('Windows 式内存（buffers_bytes=null）：不渲染缓冲行，缓存与可用行保留', async () => {
+  it('Windows 式内存（buffers_bytes=null）：组成带退化为两段并注记，缓冲写「不可得」而不是 0', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       memory: {
         total_bytes: 32 * GIB,
@@ -573,117 +599,93 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
-    // 缓冲不可得 → 组成带退化为「已用 + 可用」两段并标注（不补 0），展开项里缓冲写「不可用」
-    const composition = wrapper.find('[data-test="monitor-memory-composition"]')
-    expect(composition.find('[data-test="monitor-memory-composition-degraded"]').exists()).toBe(true)
-    const segments = composition.findAll('.monitor-view__ledger-band-seg')
+    const card = wrapper.find('[data-test="monitor-memory"]')
+    const segments = card.findAll('[data-test="monitor-memory-composition"] .monitor-view__memory-band-seg')
     expect(segments.map(segment => segment.attributes('data-segment'))).toEqual(['used', 'free'])
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
-    await memoryRow.find('[data-test="ledger-expand-memory"]').trigger('click')
-    await wrapper.vm.$nextTick()
-    const fields = new Map(
-      memoryRow.findAll('[data-test="ledger-field"]')
-        .map(field => [field.attributes('data-label'), field.find('[data-test="ledger-field-value"]').text()]),
-    )
-    expect(fields.get('缓存（可回收）')).toBe('4.0 GiB')
-    // 缓冲为 null：展开项显示「不可用」，不是 0 B
-    expect(fields.get('缓冲（内核元数据）')).toBe('不可用')
+    expect(card.find('[data-test="monitor-memory-composition-degraded"]').text()).toContain('缓冲不可得')
+    expect(card.find('[data-test="monitor-memory-buffers-context"]').text()).toBe('缓冲 不可得')
+    // 缓存/缓冲不可得时「可用」退回口径说明（拆不出空闲/可回收的字节）
+    expect(card.find('[data-test="monitor-memory-available-context"]').text()).toBe('含可回收缓存/缓冲')
+    // 退化时悬停事实串不写「空闲」（free 段其实是 available）
+    expect(card.find('[data-test="monitor-memory-percent"]').attributes('title') ?? '').not.toContain('空闲')
   })
 
-  it('缓存 / 缓冲均不可得（null）：两行都不渲染，不用 0 冒充', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      memory: {
-        total_bytes: 32 * GIB,
-        available_bytes: 16 * GIB,
-        used_bytes: 16 * GIB,
-        used_ratio: 0.5,
-        cached_bytes: null,
-        buffers_bytes: null,
-      },
-    }))
-    const wrapper = await mountView()
-
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
-    // 缓存与缓冲都不可得：组成带只有两段，两处的标注都在（不补 0、不静默丢段）
-    const segments = wrapper.findAll('[data-test="monitor-memory-composition"] .monitor-view__ledger-band-seg')
-    expect(segments.map(segment => segment.attributes('data-segment'))).toEqual(['used', 'free'])
-    expect(wrapper.find('[data-test="monitor-memory-composition-degraded"]').text())
-      .toContain('缓存与缓冲不可得')
-  })
-
-  it('无交换分区（swap 可用且 total_bytes=0）：行写「无交换」+ 事实说明，不显示 0%', async () => {
+  it('交换空态都带主语：无交换 / 配置关闭 / 不可用 / 暂无数据，不显示 0%', async () => {
+    // 1) total_bytes = 0 是合法事实（无交换分区）
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
     }))
-    const wrapper = await mountView()
+    let wrapper = await mountView()
+    let card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-swap-percent"]').text()).toBe('无交换')
+    expect(card.find('[data-test="monitor-swap-context"]').text()).toBe('本机无交换分区/页面文件')
+    expect(card.find('[data-test="monitor-swap-percent"]').element.tagName).not.toBe('BUTTON')
+    wrapper.unmount()
 
-    const swapRow = wrapper.find('[data-row-id="swap"]')
-    // 「无此维度」是合法事实：状态点了给「无交换」，明细给说明，值列写「—」（不是 0%）
-    expect(swapRow.attributes('data-state')).toBe('none')
-    expect(swapRow.find('.monitor-view__ledger-state-text').text()).toBe('无交换')
-    expect(swapRow.find('[data-test="row-state"]').text()).toBe('无交换分区')
-    expect(swapRow.find('.monitor-view__ledger-value').text()).toBe('—')
-    expect(swapRow.text()).not.toContain('%')
-    expect(swapRow.find('[data-test="monitor-memory-swap-usage"]').exists()).toBe(false)
-  })
-
-  it('交换不可用（无交换分区 → unsupported）：行写「无交换」+ 平台事实文案，不渲染 total=0 对象', async () => {
+    // 2) 能力 unsupported：同一平台事实
+    setActivePinia(createPinia())
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
       metrics: { swap: { available: false, reason: 'unsupported' } },
     }))
-    const wrapper = await mountView()
+    wrapper = await mountView()
+    card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-swap-percent"]').text()).toBe('无交换')
+    wrapper.unmount()
 
-    // unsupported 在交换语境下仍是「本机没有这个维度」而不是「采集故障」：
-    // 文案给出平台事实，而不是把裸 reason 丢给用户（契约 §2 的 unsupported 语义）
-    const swapRow = wrapper.find('[data-row-id="swap"]')
-    expect(swapRow.attributes('data-state')).toBe('none')
-    expect(swapRow.find('.monitor-view__ledger-state-text').text()).toBe('无交换')
-    expect(swapRow.find('[data-test="row-state"]').text()).toContain('本机无交换分区/页面文件')
-    expect(swapRow.text()).not.toContain('0.0%')
-  })
+    // 3) 配置关闭：带主语，不与「不可用」混淆
+    setActivePinia(createPinia())
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { swap: { available: false, reason: 'disabled_by_config' } },
+    }))
+    wrapper = await mountView()
+    card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-swap-percent"]').text()).toBe('已关闭')
+    expect(card.find('[data-test="monitor-swap-context"]').text()).toBe('已在配置中关闭')
+    wrapper.unmount()
 
-  it('交换可用但本帧对象缺失（能力粘性 / 未采集）：显示「暂无数据」而不是「不可用」', async () => {
+    // 4) 可用但本帧对象缺失：暂无数据（不是不可用）
+    setActivePinia(createPinia())
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ swap: null }))
-    const wrapper = await mountView()
-
-    // 能力可用但本帧没有对象 = empty 档（不是 unavailable、也不是 none）
-    const swapRow = wrapper.find('[data-row-id="swap"]')
-    expect(swapRow.attributes('data-state')).toBe('empty')
-    expect(swapRow.find('[data-test="row-state"]').text()).toContain('暂无数据')
-    expect(swapRow.find('.monitor-view__ledger-state-text').text()).toBe('暂无数据')
-    expect(swapRow.find('[data-test="monitor-memory-swap-usage"]').exists()).toBe(false)
+    wrapper = await mountView()
+    card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-swap-percent"]').text()).toBe('暂无数据')
+    expect(card.find('[data-test="monitor-swap-context"]').text()).toBe('本帧未采集到交换分区')
   })
 
-  it('内存可用但本帧对象缺失：显示「暂无数据」空态（不是不可用），交换仍独立渲染', async () => {
+  it('内存空态（暂无数据 / 配置关闭 / 不可用）时交换仍独立渲染一行', async () => {
+    // 1) 内存可用但本帧对象缺失 → 暂无数据；交换正常
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ memory: null }))
-    const wrapper = await mountView()
+    let wrapper = await mountView()
+    let card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-memory-empty"]').text()).toContain('暂无数据')
+    expect(card.find('[data-test="monitor-memory-percent"]').exists()).toBe(false)
+    expect(card.find('[data-test="monitor-swap-fallback"]').text()).toContain('交换分区 · 25.0%')
+    wrapper.unmount()
 
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
-    expect(memoryRow.attributes('data-state')).toBe('empty')
-    expect(memoryRow.find('[data-test="row-state"]').text()).toContain('暂无数据')
-    expect(wrapper.find('[data-test="monitor-memory-value"]').exists()).toBe(false)
-    // 交换可用性独立于内存：仍渲染真实数值
-    expect(wrapper.find('[data-row-id="swap"]').attributes('data-state')).toBe('ok')
-  })
+    // 2) 配置关闭 → 标题层写「已在配置中关闭」
+    setActivePinia(createPinia())
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      metrics: { memory: { available: false, reason: 'disabled_by_config' } },
+    }))
+    wrapper = await mountView()
+    card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-memory-empty"] .ds-empty__title').text()).toBe('已在配置中关闭')
+    wrapper.unmount()
 
-  it('内存不可用但 payload 残留数据：按可用性显示不可用，不渲染陈旧数字', async () => {
+    // 3) 采集失败 → 不可用 + reason，不渲染陈旧数字
+    setActivePinia(createPinia())
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       metrics: { memory: { available: false, reason: 'collect_failed' } },
     }))
-    const wrapper = await mountView()
-
-    const memoryRow = wrapper.find('[data-row-id="memory"]')
-    expect(memoryRow.attributes('data-state')).toBe('unavailable')
-    expect(memoryRow.find('[data-test="row-state"]').text()).toContain('采集失败，暂不可用')
-    // 不可用是「读到了但没读到」：值列写「不可用」而不是 0，陈旧数字一律不渲染
-    expect(memoryRow.find('.monitor-view__ledger-value').text()).toBe('不可用')
-    expect(memoryRow.find('[data-test="monitor-memory-value"]').text()).toBe('不可用')
-    expect(memoryRow.text()).not.toContain('50.0%')
-    expect(memoryRow.text()).not.toContain('16.0 GiB')
+    wrapper = await mountView()
+    card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-memory-empty"] .ds-empty__title').text()).toBe('不可用')
+    expect(card.find('[data-test="monitor-memory-empty"]').text()).toContain('采集失败，暂不可用')
+    expect(card.text()).not.toContain('50.0%')
+    expect(card.text()).not.toContain('16.0 GiB')
   })
 
-  it('内存比率由 used/total 派生（不信任 payload 的 used_ratio，保证字节与百分比一致）', async () => {
+  it('内存比率由 store 按 used/total 派生（payload ratio 为 null 也不显示不可用）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       memory: {
         total_bytes: 32 * GIB,
@@ -696,9 +698,28 @@ describe('MonitorView 内存与交换（#74，可用性驱动）', () => {
     }))
     const wrapper = await mountView()
 
-    // 可用且字节有效时按唯一口径派生 50%，不因发送端比率缺失显示「不可用」
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
-    expect(wrapper.find('[data-row-id="memory"] [data-test="ledger-detail"]').text()).toBe('16.0 GiB / 32.0 GiB')
+    const card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
+    expect(card.find('[data-test="monitor-memory-used-context"]').text()).toBe('16.0 GiB / 32.0 GiB')
+  })
+
+  it('Windows 平台：交换格标签写「页面文件」，悬停文案带提交上限口径', async () => {
+    const snapshot = makeSysmonSnapshot()
+    snapshot.platform = {
+      family: 'windows',
+      version: 'Windows 10 Pro',
+      kernel: '10.0.19045',
+      arch: 'x86_64',
+      build: 19045,
+    }
+    snapshot.availability.platform_description = 'Windows 10 Pro (build 19045)'
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(snapshot)
+    const wrapper = await mountView()
+
+    const card = wrapper.find('[data-test="monitor-memory"]')
+    expect(card.find('[data-test="monitor-swap-stat"] .monitor-view__stat-label').text()).toBe('页面文件')
+    expect(card.find('[data-test="monitor-swap-percent"]').attributes('title') ?? '')
+      .toContain('页面文件支撑的提交上限')
   })
 })
 
@@ -1771,15 +1792,18 @@ describe('MonitorView 实时视图信息呈现（#325）', () => {
     const cases = [
       ['[data-test="monitor-cpu-value"]', 'CPU 使用率'],
       ['[data-test="monitor-load-one"]', '系统负载（1 分钟）'],
-      ['[data-test="monitor-memory-value"]', '内存使用率'],
-      ['[data-test="monitor-memory-swap-usage"]', '交换使用率'],
+      // #445：内存 / 交换的百分比按钮在内存卡里（与插件同款 Meter 头）
+      ['[data-test="monitor-memory-percent"]', '内存使用率'],
+      ['[data-test="monitor-swap-percent"]', '交换使用率'],
       // #363：数值本身就是那个按钮（值槽里直接是 <button>），选择器不再多一层
       ['[data-test="monitor-shm-total"]', '共享内存目录占用'],
     ] as const
     for (const [selector, label] of cases) {
       const el = wrapper.find(selector)
       expect(el.exists(), selector).toBe(true)
-      expect(el.attributes('title'), selector).toBe(`查看${label}历史变化`)
+      // #445 起内存 / 交换的 title 先给事实串（可用 / 阈值 / 余量），再接同一历史动作；
+      // 其余标量仍是「查看…历史变化」整串。两者都必须包含动作文案。
+      expect(el.attributes('title'), selector).toContain(`查看${label}历史变化`)
       const aria = el.attributes('aria-label') ?? ''
       // WCAG 2.5.3 Label in Name：aria-label 必须包含可见文本（按钮内就是当前数值）
       expect(aria, selector).toContain(el.text())
@@ -2254,7 +2278,7 @@ describe('MonitorView CPU 块（#435：型号 / 等级着色 / 自适应列数 /
     expect(model.text()).toBe('AMD Ryzen 9 7950X 16-Core Processor')
     expect(model.attributes('title')).toBe('AMD Ryzen 9 7950X 16-Core Processor')
     // 型号在标题行里、标题 h2 之外（标题只写 CPU）
-    expect(wrapper.find('[data-test="monitor-cpu"] .monitor-view__cpu-head').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-cpu"] .monitor-view__block-head').exists()).toBe(true)
 
     // 同一用例里第二次挂载要换一个 pinia：store 的 init 只拉一次快照，复用旧 store 会看到上一份数据
     wrapper.unmount()
@@ -2402,14 +2426,15 @@ describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在
     return match ? match[1].trim() : null
   }
 
-  it('阈值列只出现契约里真实存在的值：内存 90% / 交换 50% / 卷「10% 空闲」，磁盘 / 网卡 / 共享内存为 —', async () => {
+  it('阈值列只出现契约里真实存在的值：卷「10% 空闲」，磁盘 / 网卡 / 共享内存为 —（内存卡不显示阈值）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
 
     const thresholdOf = (rowId: string) =>
       wrapper.find(`[data-row-id="${rowId}"] [data-test="ledger-threshold"]`).text()
-    expect(thresholdOf('memory')).toBe('90%')
-    expect(thresholdOf('swap')).toBe('50%')
+    // #445：内存 / 交换行已移出台账；内存卡第三轮起把契约阈值 + 字节余量作为可见小字展示
+    expect(wrapper.find('[data-row-id="memory"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="monitor-memory-facts"]').text()).toContain('内存告警阈值 90%')
     expect(thresholdOf('volume:/')).toBe('10% 空闲')
     // 磁盘忙碌占比没有契约阈值（不是「忘了写」，是契约里没有这个值）
     expect(thresholdOf('disk:nvme0n1')).toBe('—')
@@ -2417,29 +2442,29 @@ describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在
     expect(thresholdOf('shm_dir')).toBe('—')
   })
 
-  it('余量与阈值同源：把 memory_used_pct 改成 80 后阈值列与余量列同时变（前端不另定一套）', async () => {
+  it('余量与阈值同源：把 volume_free_pct 改成 20 后阈值列与余量列同时变（前端不另定一套）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
-    const memoryRow = () => wrapper.find('[data-row-id="memory"]')
-    // 32 GiB × 90% − 16 GiB 已用 = 12.8 GiB 余量
-    expect(memoryRow().find('[data-test="ledger-threshold"]').text()).toBe('90%')
-    expect(memoryRow().find('[data-test="ledger-headroom"]').text()).toBe('12.8 GiB')
+    const rootVolume = () => wrapper.find('[data-row-id="volume:/"]')
+    // 根卷 40% 已用 → 60% 空闲；默认阈值 10% 空闲 → 余量 50.0 点
+    expect(rootVolume().find('[data-test="ledger-threshold"]').text()).toBe('10% 空闲')
+    expect(rootVolume().find('[data-test="ledger-headroom"]').text()).toBe('50.0 点')
 
-    useSysmonStore().applyConfig(makeSysmonConfig({ thresholds: { memory_used_pct: 80 } }))
+    useSysmonStore().applyConfig(makeSysmonConfig({ thresholds: { volume_free_pct: 20 } }))
     await wrapper.vm.$nextTick()
 
-    // 阈值与余量一起变，且余量是「阈值对应的字节上限 − 已用」而不是另一套常量
-    expect(memoryRow().find('[data-test="ledger-threshold"]').text()).toBe('80%')
-    expect(memoryRow().find('[data-test="ledger-headroom"]').text()).toBe('9.6 GiB')
+    // 阈值与余量一起变，且余量是「空闲百分点 − 契约阈值」而不是另一套常量
+    expect(rootVolume().find('[data-test="ledger-threshold"]').text()).toBe('20% 空闲')
+    expect(rootVolume().find('[data-test="ledger-headroom"]').text()).toBe('40.0 点')
   })
 
-  it('轨道缺口只在有契约阈值的行上：内存 / 交换 / 卷有 70 与 90 两道，磁盘 / 网卡 / 共享内存没有', async () => {
+  it('轨道缺口只在有契约阈值的行上：卷有 70 与 90 两道，磁盘 / 网卡 / 共享内存没有', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ resourceData: true }))
     const wrapper = await mountView()
 
     const gapsOf = (rowId: string) => wrapper.findAll(`[data-row-id="${rowId}"] .monitor-view__ledger-gap`)
-    // 内存 / 交换 / 卷：两道缺口，位置就是 RESOURCE_WARN_RATIO / RESOURCE_DANGER_RATIO
-    for (const rowId of ['memory', 'swap', 'volume:/']) {
+    // 卷：两道缺口，位置就是 RESOURCE_WARN_RATIO / RESOURCE_DANGER_RATIO
+    for (const rowId of ['volume:/']) {
       const gaps = gapsOf(rowId)
       expect(gaps, rowId).toHaveLength(2)
       // 位置来自 RESOURCE_WARN_RATIO / RESOURCE_DANGER_RATIO（0.7 / 0.9 → 百分比一位小数）
@@ -2458,8 +2483,6 @@ describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在
 
     const fillOf = (rowId: string) =>
       injectedVar(wrapper.find(`[data-row-id="${rowId}"] .monitor-view__ledger-track-fill`), '--ledger-fill')
-    expect(fillOf('memory')).toBe('50.0%')
-    expect(fillOf('swap')).toBe('25.0%')
     expect(fillOf('volume:/')).toBe('40.0%')
     // 磁盘有填充（本就忙碌占比）
     expect(fillOf('disk:nvme0n1')).toBe('72.0%')
@@ -2483,36 +2506,35 @@ describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在
     }))
     const wrapper = await mountView()
 
-    const segments = () => wrapper.findAll('[data-test="monitor-memory-composition"] .monitor-view__ledger-band-seg')
+    const segments = () => wrapper.findAll('[data-test="monitor-memory-composition"] .monitor-view__memory-band-seg')
     expect(segments().map(segment => segment.attributes('data-segment'))).toEqual(['used', 'cached', 'buffers', 'free'])
     // 段宽按各自占总量比例注入：已用 16/32、缓存 8/32、缓冲 1/32、空闲 7/32
-    expect(injectedVar(segments()[0], '--ledger-seg')).toBe('50.0%')
-    expect(injectedVar(segments()[1], '--ledger-seg')).toBe('25.0%')
-    expect(injectedVar(segments()[3], '--ledger-seg')).toBe('21.9%')
+    expect(injectedVar(segments()[0], '--memory-seg')).toBe('50.0%')
+    expect(injectedVar(segments()[1], '--memory-seg')).toBe('25.0%')
+    expect(injectedVar(segments()[3], '--memory-seg')).toBe('21.9%')
     // 主数值仍是 available 口径（50.0%），与组成带并存、不合并
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
     expect(wrapper.find('[data-test="monitor-memory-composition-degraded"]').exists()).toBe(false)
   })
 
-  it('四类空态在台账里分别可见且文案不同：不可用 / 暂无数据 / 已关闭 / 无此维度', async () => {
+  it('空态在台账里分别可见且文案不同：不可用 / 暂无数据 / 已关闭 / 尚未探测', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
-      metrics: { memory: { available: false, reason: 'collect_failed' } },
-      swap: { total_bytes: 0, used_bytes: 0, used_ratio: null },
+      metrics: { disk_io: { available: false, reason: 'collect_failed' } },
       diskIo: null,
       shmDir: null,
+      clock: null,
     }))
     const wrapper = await mountView()
 
     // unavailable（采集失败）
-    expect(wrapper.find('[data-row-id="memory"] [data-test="row-state"]').text())
+    expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text())
       .toContain('采集失败，暂不可用')
-    // none（无交换分区）
-    expect(wrapper.find('[data-row-id="swap"] [data-test="row-state"]').text()).toBe('无交换分区')
     // empty（本帧未采集）
-    expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text()).toContain('暂无数据')
     expect(wrapper.find('[data-row-id="shm_dir"] [data-test="row-state"]').text()).toContain('暂无数据')
-    // 四类空态的值列都不是 0
-    for (const rowId of ['memory', 'swap', 'disk_io', 'shm_dir']) {
+    // disabled（时钟 = null）
+    expect(wrapper.find('[data-row-id="clock"] [data-test="row-state"]').text()).toContain('已在配置中关闭')
+    // 空态的值列都不是 0
+    for (const rowId of ['disk_io', 'shm_dir', 'clock']) {
       const value = wrapper.find(`[data-row-id="${rowId}"] .monitor-view__ledger-value`).text()
       expect(value, rowId).not.toBe('0')
       expect(value, rowId).not.toMatch(/^0(\.0)?%$/)
