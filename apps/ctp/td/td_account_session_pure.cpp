@@ -129,6 +129,25 @@ void OrderRefMap::clear() noexcept {
     id_to_strategy_.clear();
 }
 
+QueryErrorTarget route_query_error(int request_id,
+                                   int instrument_request_id,
+                                   int position_request_id,
+                                   int account_request_id) noexcept {
+    if (request_id <= 0) {
+        return QueryErrorTarget::None;
+    }
+    if (request_id == position_request_id) {
+        return QueryErrorTarget::Position;
+    }
+    if (request_id == instrument_request_id) {
+        return QueryErrorTarget::Instrument;
+    }
+    if (request_id == account_request_id) {
+        return QueryErrorTarget::TradingAccount;
+    }
+    return QueryErrorTarget::None;
+}
+
 int64_t sync_order_ref(int64_t current_ref, int64_t ctp_max) noexcept {
     // 设计 §9.4: new = max(current+1, ctp_max+1)
     int64_t from_current = current_ref + 1;

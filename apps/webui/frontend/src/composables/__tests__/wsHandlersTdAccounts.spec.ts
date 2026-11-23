@@ -50,8 +50,7 @@ function dispatch<T extends WsServerMessageType>(
 
 function config(accounts: TdConfigPayload['accounts'] = []): TdConfigPayload {
   return {
-    qry_account_interval_s: 5,
-    qry_flush_interval_ms: 1500,
+    qry_min_interval_ms: 1100,
     accounts,
     ext: { enable_lock_mode: true },
   }

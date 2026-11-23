@@ -10,7 +10,6 @@
 
 **实现注记**：通用化（通用层 + `ext` 分层、进程级 `SetExt` 替代旧 `SetLockMode`）与启动主动推一次已随 #251 落地；旧 `SetLockMode` op 已按方案收敛规则删除，不留双实现。dzweb 已消费本帧：按 `instance_id` 维护配置镜像并 WS 推送（映射见契约 webui-ws），镜像域为 `td_config`。**旧扁平格式配置文件不再兼容**（账户连接参数从账户对象顶层移入 `ext`）：开发期无迁移义务，旧文件按 §6 校验失败处理。
 
-<!-- pending-symbol: qry_min_interval_ms (#455) -->
 
 ---
 
@@ -104,7 +103,7 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `qry_min_interval_ms` | int | 查询通道最小发送间隔（毫秒），> 0，默认 1100；含义见 §2.1 / 契约 td-data-sync §4.1。字段 `qry_account_interval_s` / `qry_flush_interval_ms` 已随 ADR 0055 删除（从未接入 / 从未被消费） |
+| `qry_min_interval_ms` | int | 查询通道最小发送间隔（毫秒），> 0，默认 1100；含义见 §2.1 / 契约 td-data-sync §4.1。字段 qry_account_interval_s / qry_flush_interval_ms 已随 ADR 0055 删除（从未接入 / 从未被消费） |
 | `accounts` | array\<AccountConfig\> | 账户配置列表（2.2 + 2.3） |
 | `ext` | object | 进程级柜台特有配置（2.3 进程级 ext） |
 

@@ -26,7 +26,7 @@ enum class TdConfigOp {
     // 注: AddSchedule/RemoveSchedule/SetAutoLogin 已随契约 auto-login 迁移移除
     // (排程单一真相源为 SET/RTN_AUTO_LOGIN 帧, 见 td_api_scheduled.cpp)
     SetExt,           // 进程级柜台特有配置的字段级补丁 (契约 td-config §2.1)
-    SetQryIntervals,  // qry_account_interval_s / qry_flush_interval_ms
+    SetQryIntervals,  // qry_min_interval_ms (查询通道最小发送间隔, ADR 0055)
 
     // 账户级 op (仅影响该账户)
     UpdateAccount,          // 修改连接参数 (需 state==Idle)
@@ -129,9 +129,8 @@ struct CtpProcessExt {
 /// ——同一事实两处定义必然漂移。代价：旧扁平格式（连接参数直接在账户对象上）不再兼容，
 /// 开发期无迁移义务（契约 §6：内容非法即致命退出）。
 struct TdConfig {
-    int qry_account_interval_s = 5;    // 资金查询间隔 (秒)
-    int qry_flush_interval_ms = 1500;  // 流控队列间隔 (毫秒)
-    CtpProcessExt ext;                 // 进程级柜台特有配置 (interface_type = ctp)
+    int qry_min_interval_ms = 1100;  // 查询通道最小发送间隔 (毫秒, ADR 0055)
+    CtpProcessExt ext;               // 进程级柜台特有配置 (interface_type = ctp)
     std::vector<AccountConfig> accounts;
 
     /// 从 JSON 文件的 "td" section 加载 (与 mdctp CtpMdConfig::load 模式一致)。
@@ -153,8 +152,7 @@ struct TdConfig {
     /// 序列化为脱敏 JSON (账户 ext.password -> "****", 用于上报到 dzweb/前端)。
     [[nodiscard]] nlohmann::json to_safe_json() const;
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        TdConfig, qry_account_interval_s, qry_flush_interval_ms, ext, accounts)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TdConfig, qry_min_interval_ms, ext, accounts)
 };
 
 /// 集中校验 (与 mdctp validate 模式一致): 返回错误消息, 校验通过返回 std::nullopt。

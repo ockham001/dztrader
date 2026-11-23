@@ -168,8 +168,7 @@ describe('TradingAccountsView · 空态与卡片渲染（ADR 0053 / 契约 rest 
     })
     const store = useTdAccountsStore()
     store.applyTdConfig('dztd_ctp', {
-      qry_account_interval_s: 5,
-      qry_flush_interval_ms: 1500,
+      qry_min_interval_ms: 1100,
       accounts: [{
         account_id: 'account_001',
         enabled: true,

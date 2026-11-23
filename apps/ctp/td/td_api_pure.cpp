@@ -133,21 +133,14 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
         case TdConfigOp::SetQryIntervals: {
             // 关键决策: int_val 越界 (<=0) 抛 std::invalid_argument。
             // 部分更新: 仅校验提供的字段, 未提供的字段保留旧值。
-            if (req.params.contains("qry_account_interval_s")) {
-                int v = req.params["qry_account_interval_s"].get<int>();
+            // ADR 0055: 唯一字段 = 查询通道最小发送间隔 (登录链与运行期资金刷新共用)。
+            if (req.params.contains("qry_min_interval_ms")) {
+                int v = req.params["qry_min_interval_ms"].get<int>();
                 if (v <= 0) {
                     throw std::invalid_argument(
-                        std::format("setqryintervals invalid | qry_account_interval_s={}", v));
+                        std::format("setqryintervals invalid | qry_min_interval_ms={}", v));
                 }
-                cfg.qry_account_interval_s = v;
-            }
-            if (req.params.contains("qry_flush_interval_ms")) {
-                int v = req.params["qry_flush_interval_ms"].get<int>();
-                if (v <= 0) {
-                    throw std::invalid_argument(
-                        std::format("setqryintervals invalid | qry_flush_interval_ms={}", v));
-                }
-                cfg.qry_flush_interval_ms = v;
+                cfg.qry_min_interval_ms = v;
             }
             break;
         }

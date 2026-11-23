@@ -50,6 +50,8 @@
 #include "td/td_persist_records.h"
 #include "td/td_persist_writer.h"
 #include "td/td_position.h"
+#include "td/td_query_lane.h"
+#include "td/td_query_pacer.h"
 #include "td/td_report_filter.h"
 #include "td/td_risk_gate.h"
 #include "td/td_spi.h"
@@ -145,6 +147,9 @@ public:
     void on_rsp_user_password_update(const OnRspUserPasswordUpdateField& f);
     /// 修改资金密码响应
     void on_rsp_trading_account_password_update(const OnRspTradingAccountPasswordUpdateField& f);
+    /// 通用错误响应（ADR 0055 / #457）：按在途查询 `nRequestID` 路由到对应失败路径，
+    /// 结束在途查询；未匹配（非查询类请求的错误）只记 WARN。
+    void on_rsp_error(const OnRspErrorTdField& f);
 
     // === 业务接口 ===
     /// 下单. 内部: 风控 -> order_ref 递增 -> 映射表登记 -> ReqOrderInsert.
@@ -166,6 +171,10 @@ public:
     /// 对每个 PositionHolding 执行跨日迁移 (today->yd, 清挂单冻结), 变化侧按
     /// 增量规则推帧/落库 (绝对态旧日镜像不拦截新日首报, spec §4.1 跨日迁移).
     void set_trading_day(int32_t trading_day);
+
+    /// 更新 CTP 查询通道的最小发送间隔（契约 td-config `qry_min_interval_ms`，ADR 0055）。
+    /// 配置热更新时由 TdApi 对活跃会话调用；立即作用于后续调度。
+    void set_query_min_interval(std::chrono::milliseconds interval);
 
     /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false).
     /// 与「登录收尾是否完成」分开暴露: 会话未登录 / 收尾未完成时本标志可能恒为 false,
@@ -336,6 +345,15 @@ private:
     /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
     void drive_finalizer();
 
+    /// 查询发送闸门（ADR 0055 决策 1）：pacer 不允许立即发送时，把 retry 用 TimerQueue
+    /// 延后到最早合法时刻（绝对时间，无轮询），返回 true 表示已延后（调用方应 return）。
+    /// 回调带代际/存活检查，断线重登后自动失效。
+    bool defer_query_if_pacer_busy(const std::function<void()>& retry, std::string_view query_name);
+    /// 查询已被 CTP 接受后登记在途（与 `note_query_done` 配对）。
+    void note_query_sent();
+    /// 查询收口（响应 / 失败 / 超时）退出在途；幂等。
+    void note_query_done();
+
     // === 成员 ===
     std::string account_id_;
     shm::OrderIdMeta& order_id_meta_;
@@ -478,6 +496,15 @@ private:
     /// 数据行与 is_last) 一律丢弃, 防旧响应污染新链 (重灌错行/重复收尾/seq 污染),
     /// 彻底覆盖 "查询在途断连重连" 交错。
     uint64_t query_gen_ = 0;
+
+    /// CTP 查询闸门（ADR 0055 决策 1）：登录链三查询与运行期资金刷新共用
+    /// 「同一时刻至多 1 笔在途 + 任意两笔发送间隔 >= 最小间隔」。
+    QueryPacer query_pacer_;
+    /// 运行期按需查询调度（ADR 0055 决策 2；#458 接入触发源，当前只建类与单测）。
+    QueryLane query_lane_;
+    /// 各查询链在途请求 id（OnRspError 路由 + 响应关联；0 = 未在途）。
+    int instrument_query_request_id_ = 0;
+    int account_query_request_id_ = 0;
 
     /// CTP 登录诊断字段 (open 时保存, 用于 ReqAuthenticate/ReqUserLogin)
     std::string broker_id_;

@@ -537,8 +537,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     const store = await prepare()
     // 配置镜像提供 ext（密码恒脱敏），编辑表单据此回填 broker/user
     store.applyTdConfig('dztd_ctp', {
-      qry_account_interval_s: 5,
-      qry_flush_interval_ms: 1500,
+      qry_min_interval_ms: 1100,
       accounts: [{
         account_id: 'account_001',
         enabled: true,

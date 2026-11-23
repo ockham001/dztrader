@@ -116,11 +116,8 @@ std::optional<std::string> validate(const TdConfig& cfg) {
     // 排程/自动登录校验已随契约 auto-login 迁移到 AutoLoginConfig（SET/RTN_AUTO_LOGIN 帧，
     // 持久化到 auto_login section）——td section 不再含排程字段
 
-    if (cfg.qry_account_interval_s <= 0) {
-        return "qry_account_interval_s must be > 0";
-    }
-    if (cfg.qry_flush_interval_ms <= 0) {
-        return "qry_flush_interval_ms must be > 0";
+    if (cfg.qry_min_interval_ms <= 0) {
+        return "qry_min_interval_ms must be > 0";
     }
 
     return std::nullopt;
