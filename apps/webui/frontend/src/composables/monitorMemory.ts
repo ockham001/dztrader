@@ -45,13 +45,23 @@ function headroomBytes(totalBytes: number, usedBytes: number, thresholdPct: numb
   return totalBytes * (thresholdPct / 100) - usedBytes
 }
 
-/** 资源类阈值行（可见小字用）：`余量 X` / `已超 X`（字节），与悬停串同一口径 */
+/**
+ * 阈值余量的事实串（#445 第四轮文案口径）：`距阈值 X` / `已超阈值 X`。
+ * 「余量」容易被读成「还剩多少空闲内存」，而这里算的是「离告警线还有多少」，
+ * 因此统一写成「距阈值」——与「告警阈值」配套，避免和可用/空闲混淆。
+ */
+export function headroomFactText(headroomBytes: number): string {
+  const rounded = Math.round(headroomBytes)
+  return rounded >= 0 ? `距阈值 ${formatBytes(rounded)}` : `已超阈值 ${formatBytes(-rounded)}`
+}
+
+/** 资源类阈值行（可见小字 / 悬停共用）：总量 + 已用 + 阈值 → `距阈值 X` / `已超阈值 X` */
 export function resourceHeadroomText(
   totalBytes: number,
   usedBytes: number,
   thresholdPct: number,
 ): string {
-  return bytesHeadroomText(headroomBytes(totalBytes, usedBytes, thresholdPct))
+  return headroomFactText(headroomBytes(totalBytes, usedBytes, thresholdPct))
 }
 
 /**
@@ -71,8 +81,8 @@ export function memoryFacts(
     `可用 ${formatBytes(memory.available_bytes)}（含可回收缓存/缓冲）`,
   ]
   if (freeText !== null) parts.push(`空闲 ${freeText}`)
-  parts.push(`阈值 ${thresholdPct}%`)
-  parts.push(`余量 ${bytesHeadroomText(headroomBytes(memory.total_bytes, memory.used_bytes, thresholdPct))}`)
+  parts.push(`告警阈值 ${thresholdPct}%`)
+  parts.push(headroomFactText(headroomBytes(memory.total_bytes, memory.used_bytes, thresholdPct)))
   return parts.join(' · ')
 }
 
@@ -84,8 +94,8 @@ export function swapFacts(swap: SysmonSwapInfo, thresholdPct: number): string {
   const parts = [
     `已用 ${formatBytes(swap.used_bytes)} / 共 ${formatBytes(swap.total_bytes)}`,
     `剩余 ${formatBytes(Math.max(0, swap.total_bytes - swap.used_bytes))}`,
-    `阈值 ${thresholdPct}%`,
-    `余量 ${bytesHeadroomText(headroomBytes(swap.total_bytes, swap.used_bytes, thresholdPct))}`,
+    `告警阈值 ${thresholdPct}%`,
+    headroomFactText(headroomBytes(swap.total_bytes, swap.used_bytes, thresholdPct)),
   ]
   return parts.join(' · ')
 }

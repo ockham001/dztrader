@@ -572,6 +572,7 @@ const RUNTIME_INJECTED: Record<string, string> = {
   '--ledger-fill': 'views/MonitorView.vue 的 trackFillStyle() 按每行的量程比率注入轨道填充宽度（#363）——逐行不同，只能运行时定',
   '--ledger-gap': 'views/MonitorView.vue 的 gapStyle() 把两个展示分档常量（70 / 90）换成缺口位置（#363）——常量在 JS 里，位置只能注入',
   '--memory-seg': 'views/MonitorView.vue 的 memorySegmentStyle() 按内存组成带各段占比注入段宽（#363；#445 迁入内存卡）——逐段不同，只能运行时定',
+  '--meter-fill': 'views/MonitorView.vue 的 meterFillStyle() 按交换使用率注入数字格细条宽度（#445 第四轮）——逐帧不同，只能运行时定',
 }
 
 /**

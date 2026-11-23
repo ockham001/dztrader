@@ -519,12 +519,18 @@ describe('MonitorView 内存块（#445 第三轮：通栏四数字 + 内存曲�
     const percent = card.find('[data-test="monitor-memory-percent"]')
     expect(percent.text()).toBe('50.0%')
     expect(percent.attributes('data-level')).toBe('normal')
-    expect(card.find('[data-test="monitor-memory-used-context"]').text()).toBe('已用 16.0 GiB / 共 32.0 GiB')
+    expect(card.find('[data-test="monitor-memory-used-context"]').text()).toBe('16.0 GiB / 32.0 GiB')
     expect(card.find('[data-test="monitor-memory-available"]').text()).toBe('16.0 GiB')
+    expect(card.find('[data-test="monitor-memory-available-context"]').text()).toBe('空闲 7.8 GiB + 可回收 8.3 GiB')
     expect(card.find('[data-test="monitor-memory-cached"]').text()).toBe('8.0 GiB')
     expect(card.find('[data-test="monitor-memory-buffers-context"]').text()).toBe('缓冲 256.0 MiB')
     expect(card.find('[data-test="monitor-swap-percent"]').text()).toBe('25.0%')
-    expect(card.find('[data-test="monitor-swap-context"]').text()).toBe('已用 2.0 GiB / 共 8.0 GiB')
+    expect(card.find('[data-test="monitor-swap-context"]').text()).toBe('2.0 GiB / 8.0 GiB')
+    // #445 第四轮：交换细条（4px，宽度运行时注入；颜色按 70/90 分档）
+    const swapFill = card.find('.monitor-view__stat-meter-fill')
+    expect(swapFill.exists()).toBe(true)
+    expect(swapFill.attributes('data-level')).toBe('normal')
+    expect(swapFill.attributes('style')).toContain('--meter-fill: 25.0%')
 
     // 组成带：四段齐全 + 图例逐段带数值；段色带是纯图形，读屏读图例文字
     const band = card.find('[data-test="monitor-memory-composition"] .monitor-view__memory-band')
@@ -535,19 +541,23 @@ describe('MonitorView 内存块（#445 第三轮：通栏四数字 + 内存曲�
     expect(legend.map(item => item.attributes('data-segment'))).toEqual(['used', 'cached', 'buffers', 'free'])
     expect(legend.map(item => item.find('[data-test="monitor-memory-legend-value"]').text()))
       .toEqual(['16.0 GiB', '8.0 GiB', '256.0 MiB', '7.8 GiB'])
+    // #445 第四轮：图例带百分比（与字节数分两段，比例一眼可见）
+    expect(legend.map(item => item.find('[data-test="monitor-memory-legend-pct"]').text()))
+      .toEqual(['50.0%', '25.0%', '0.8%', '24.2%'])
 
     // 阈值 / 余量小字（B2 / B3）：契约默认 90% / 50%，余量按字节算
     const facts = card.find('[data-test="monitor-memory-facts"]').text()
-    expect(facts).toContain('内存阈值 90%')
-    expect(facts).toContain('余量 12.8 GiB')
-    expect(facts).toContain('交换分区阈值 50%')
-    expect(facts).toContain('余量 2.0 GiB')
+    // #445 第四轮口径：「告警阈值」+「距阈值」（不是含糊的「余量」，也不与颜色分档混同）
+    expect(facts).toContain('内存告警阈值 90%')
+    expect(facts).toContain('距阈值 12.8 GiB')
+    expect(facts).toContain('交换分区告警阈值 50%')
+    expect(facts).toContain('距阈值 2.0 GiB')
 
     // 悬停 / 读屏事实串（B1 + B4）：可用口径、空闲、阈值、剩余都在 title / aria-label 里
     const percentTitle = percent.attributes('title') ?? ''
     expect(percentTitle).toContain('可用 16.0 GiB（含可回收缓存/缓冲）')
     expect(percentTitle).toContain('空闲 7.8 GiB')
-    expect(percentTitle).toContain('阈值 90%')
+    expect(percentTitle).toContain('告警阈值 90%')
     expect(percentTitle).toContain('查看内存使用率历史变化')
     const swapTitle = card.find('[data-test="monitor-swap-percent"]').attributes('title') ?? ''
     expect(swapTitle).toContain('剩余 6.0 GiB')
@@ -594,6 +604,8 @@ describe('MonitorView 内存块（#445 第三轮：通栏四数字 + 内存曲�
     expect(segments.map(segment => segment.attributes('data-segment'))).toEqual(['used', 'free'])
     expect(card.find('[data-test="monitor-memory-composition-degraded"]').text()).toContain('缓冲不可得')
     expect(card.find('[data-test="monitor-memory-buffers-context"]').text()).toBe('缓冲 不可得')
+    // 缓存/缓冲不可得时「可用」退回口径说明（拆不出空闲/可回收的字节）
+    expect(card.find('[data-test="monitor-memory-available-context"]').text()).toBe('含可回收缓存/缓冲')
     // 退化时悬停事实串不写「空闲」（free 段其实是 available）
     expect(card.find('[data-test="monitor-memory-percent"]').attributes('title') ?? '').not.toContain('空闲')
   })
@@ -688,7 +700,7 @@ describe('MonitorView 内存块（#445 第三轮：通栏四数字 + 内存曲�
 
     const card = wrapper.find('[data-test="monitor-memory"]')
     expect(card.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
-    expect(card.find('[data-test="monitor-memory-used-context"]').text()).toBe('已用 16.0 GiB / 共 32.0 GiB')
+    expect(card.find('[data-test="monitor-memory-used-context"]').text()).toBe('16.0 GiB / 32.0 GiB')
   })
 
   it('Windows 平台：交换格标签写「页面文件」，悬停文案带提交上限口径', async () => {
@@ -2422,7 +2434,7 @@ describe('MonitorView 指标台账（#363：阈值与余量同源、缺口只在
       wrapper.find(`[data-row-id="${rowId}"] [data-test="ledger-threshold"]`).text()
     // #445：内存 / 交换行已移出台账；内存卡第三轮起把契约阈值 + 字节余量作为可见小字展示
     expect(wrapper.find('[data-row-id="memory"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-memory-facts"]').text()).toContain('内存阈值 90%')
+    expect(wrapper.find('[data-test="monitor-memory-facts"]').text()).toContain('内存告警阈值 90%')
     expect(thresholdOf('volume:/')).toBe('10% 空闲')
     // 磁盘忙碌占比没有契约阈值（不是「忘了写」，是契约里没有这个值）
     expect(thresholdOf('disk:nvme0n1')).toBe('—')

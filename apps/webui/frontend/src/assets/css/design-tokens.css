@@ -426,9 +426,9 @@
   --radius-3: 3px;
   /* #435：CPU 块的尺寸。趋势高度、条形轨道高度与四数字字号是「图表/读数几何」而非间距，
      故不进 spacer 步进；每核条形的列数由视图实测容器宽度后计算（`composables/monitorCpu.ts`）。 */
-  --chart-height-trend: 72px;     /* 趋势图绘图区高度（固定 0–100% 轴，72px 足够分辨日常波动） */
+  --chart-height-trend: 88px;     /* 趋势图绘图区高度（固定 0–100% 轴 + 面积填充；#445 第四轮 72→88） */
   --core-bar-height: 54px;        /* 每核条形轨道高度（参考主机面板的 54px，不再撑高整卡） */
-  --memory-band-height: 10px;     /* 内存组成带高度：四段颜色可辨的最小高度（#363 口径，#445 迁入内存卡） */
+  --memory-band-height: 12px;     /* 内存组成带高度：四段颜色可辨的最小高度（#363 口径；#445 第四轮 10→12） */
   --card-stat-value-font-size: 19px;   /* 四数字主值字号（参考主机面板的 19px/600；CPU / 内存块共用） */
   --card-stat-value-line-height: 22px; /* 四数字主值行高（19px × 1.15 取整到 22px） */
   --stat-cell-min-width: 140px;   /* 四数字的最小格宽：约等于「18.7% + 一行上下文小字」不折行的宽度 */

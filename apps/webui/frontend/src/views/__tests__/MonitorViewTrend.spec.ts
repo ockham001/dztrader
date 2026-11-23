@@ -97,15 +97,16 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     vi.restoreAllMocks()
   })
 
-  it('2 个趋势指标各有一条趋势（CPU 块宽图 + 共享内存目录内联 sparkline），负载 / 内存 / 交换没有', async () => {
+  it('3 个趋势指标各有一条趋势（CPU / 内存宽图 + 共享内存目录内联 sparkline），负载 / 交换没有', async () => {
     const wrapper = await mountView()
 
     // #435：CPU 使用率的趋势是 CPU 块内的固定 0–100% 宽图（不是内联 sparkline 组件）；
-    // 负载的迷你趋势已按用户拍板移除；#445 内存卡照主机面板插件做成 Meter，内存 / 交换也没有趋势。
+    // 负载的迷你趋势已按用户拍板移除；#445 第三轮起内存使用率也有同款宽图，交换只有数字格。
     expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(1)
     expect(wrapper.find('[data-test="monitor-sparkline-shm"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-sparkline-load"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-sparkline-memory"]').exists()).toBe(true)
     for (const metric of SYSMON_TREND_METRIC_KEYS) {
       expect(vi.mocked(sysmonApi.getHistory).mock.calls.some(([params]) => params?.metric === metric)).toBe(true)
     }
@@ -113,6 +114,32 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     expect(wrapper.find('[data-test="monitor-temperature"] .sysmon-sparkline').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-disk-io"] .sysmon-sparkline').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-network"] .sysmon-sparkline').exists()).toBe(false)
+  })
+
+  it('两张宽图都是「面积 + 折线」；内存图额外画 90% 告警阈值线并标注（#445 第四轮）', async () => {
+    const wrapper = await mountView()
+
+    for (const selector of ['[data-test="monitor-sparkline-cpu"]', '[data-test="monitor-sparkline-memory"]']) {
+      const chart = wrapper.find(selector)
+      expect(chart.exists(), selector).toBe(true)
+      const area = chart.find('polygon.monitor-view__chart-area')
+      expect(area.exists(), selector).toBe(true)
+      // 面积多边形首尾落在 0% 基线（y=32），中间是折线本身
+      const areaPoints = area.attributes('points') ?? ''
+      expect(areaPoints.startsWith('0,32 '), selector).toBe(true)
+      expect(areaPoints.endsWith(' 100,32'), selector).toBe(true)
+      expect(chart.find('polyline.monitor-view__chart-line').exists(), selector).toBe(true)
+    }
+
+    // 告警阈值线只在内存图（90% → y=5）：CPU 的阈值是「持续占用」语义，不是单帧比率，不画线
+    const memoryChart = wrapper.find('[data-test="monitor-sparkline-memory"]')
+    const threshold = memoryChart.find('line.monitor-view__chart-threshold')
+    expect(threshold.exists()).toBe(true)
+    expect(threshold.attributes('y1')).toBe('5')
+    expect(threshold.attributes('y2')).toBe('5')
+    expect(wrapper.find('[data-test="monitor-sparkline-cpu"] line.monitor-view__chart-threshold').exists()).toBe(false)
+    // 图注右侧写明阈值，与事实行的「距阈值」配套
+    expect(wrapper.find('[data-test="monitor-memory-trend-threshold"]').text()).toContain('90% 告警阈值')
   })
 
   it('sparkline 末点与旁边的实时数字同源同刷新时刻（末点 == 当前值）', async () => {

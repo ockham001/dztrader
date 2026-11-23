@@ -34,12 +34,30 @@ export const PERCENT_TREND_GRIDLINE_YS: readonly number[] = [
 /** 固定 0–100% 趋势折线的几何：`points` 可直接给 `<polyline points="...">` */
 export interface PercentTrendGeometry {
   points: string
+  /**
+   * 面积填充多边形（#445 第四轮）：`points` 折线 + 0% 基线（`y=32`）闭合，
+   * 直接给 `<polygon points="...">`。固定 0–100% 轴下低占用时折线贴底，
+   * 面积填充让「离 100% 的余量」成为可读的量（主流内存图同形），
+   * 且不引入新语义——填充只是同一条序列的面积装饰。
+   */
+  areaPoints: string
   /** 末点值（与旁边的当前数字同源，供末点断言） */
   lastValue: number
   /** 首个有效点的时刻（Unix 秒）：横轴左端标签取它，而不是原始序列的首项 */
   firstTs: number
   /** 末个有效点的时刻（Unix 秒）：横轴右端标签取它 */
   lastTs: number
+}
+
+/**
+ * 固定 0–100% 纵轴上某个比率对应的 SVG y 坐标（viewBox 坐标，顶部 y=2、底部 y=32）。
+ * 阈值参考线（#445 第四轮：内存 90% 告警线）与折线共用同一映射，避免两处各写一份几何。
+ * 越界值夹到 [0,1]（与折线一致）。
+ */
+export function percentTrendY(ratio: number): number {
+  const clamped = Math.min(1, Math.max(0, ratio))
+  // 与折线坐标同一精度（2 位小数）：0.9 → 5 而不是 4.999999999999999
+  return Math.round((TREND_PAD + TREND_PLOT_HEIGHT * (1 - clamped)) * 100) / 100
 }
 
 /**
@@ -76,8 +94,11 @@ export function percentTrendGeometry(
     return `${round2(x)},${round2(y)}`
   })
 
+  const polylinePoints = coordinates.join(' ')
+  const baselineY = TREND_PAD + TREND_PLOT_HEIGHT
   return {
-    points: coordinates.join(' '),
+    points: polylinePoints,
+    areaPoints: `0,${baselineY} ${polylinePoints} ${TREND_SVG_WIDTH},${baselineY}`,
     lastValue: valid[valid.length - 1].value,
     firstTs: valid[0].ts,
     lastTs: valid[valid.length - 1].ts,

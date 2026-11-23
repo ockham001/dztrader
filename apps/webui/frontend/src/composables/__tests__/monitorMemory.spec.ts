@@ -161,11 +161,12 @@ describe('内存 / 交换数字格的事实串（#445 第二轮拍板 B1-B4 + B6
   })
 
   it('字节余量：非负写剩余、越线写「已超」，卡线不被浮点残差误判（#382 同坑）', () => {
+    // #445 第四轮口径：写成「距阈值 / 已超阈值」，避免被读成「还剩多少空闲内存」
     // 32 GiB × 90% − 16 GiB = 12.8 GiB
-    expect(resourceHeadroomText(32 * GIB, 16 * GIB, 90)).toBe('12.8 GiB')
+    expect(resourceHeadroomText(32 * GIB, 16 * GIB, 90)).toBe('距阈值 12.8 GiB')
     // 阈值上恰好卡线：30 GiB × 90% = 27 GiB 已用 → 0 B，不是「已超 0 B」
-    expect(resourceHeadroomText(30 * GIB, 27 * GIB, 90)).toBe('0 B')
-    expect(resourceHeadroomText(32 * GIB, 30 * GIB, 90)).toBe('已超 1.2 GiB')
+    expect(resourceHeadroomText(30 * GIB, 27 * GIB, 90)).toBe('距阈值 0 B')
+    expect(resourceHeadroomText(32 * GIB, 30 * GIB, 90)).toBe('已超阈值 1.2 GiB')
     expect(bytesHeadroomText(-0.2)).toBe('0 B')
   })
 
@@ -174,8 +175,8 @@ describe('内存 / 交换数字格的事实串（#445 第二轮拍板 B1-B4 + B6
     expect(facts).toContain('已用 16.0 GiB / 共 32.0 GiB')
     expect(facts).toContain('可用 16.0 GiB（含可回收缓存/缓冲）')
     expect(facts).toContain('空闲 7.8 GiB')
-    expect(facts).toContain('阈值 90%')
-    expect(facts).toContain('余量 12.8 GiB')
+    expect(facts).toContain('告警阈值 90%')
+    expect(facts).toContain('距阈值 12.8 GiB')
   })
 
   it('组成带退化时不写「空闲」（free 段其实是 available，不能冒充空闲）', () => {
@@ -188,8 +189,8 @@ describe('内存 / 交换数字格的事实串（#445 第二轮拍板 B1-B4 + B6
     const facts = swapFacts(swap, 50)
     expect(facts).toContain('已用 2.0 GiB / 共 8.0 GiB')
     expect(facts).toContain('剩余 6.0 GiB')
-    expect(facts).toContain('阈值 50%')
-    expect(facts).toContain('余量 2.0 GiB')
+    expect(facts).toContain('告警阈值 50%')
+    expect(facts).toContain('距阈值 2.0 GiB')
   })
 
   it('交换剩余不为负（脏数据已用 > 总量时钳到 0）', () => {

@@ -165,6 +165,17 @@ describe('#381 forced-colors：靠背景色表达的图形必须有 border / out
     expect(hasRealBorder(used)).toBe(false)
   })
 
+  it('E. 数字格细条（#445 交换使用率）：轨道与填充各一圈描边，填充比例才分得开', () => {
+    const track = ruleBody('.monitor-view__stat-meter')
+    expect(track, '细条轨道必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    // 4px 高的细条不能被 border 挤掉画布
+    expect(hasRealBorder(track)).toBe(false)
+    const fill = ruleBody('.monitor-view__stat-meter-fill')
+    expect(fill, '细条填充必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    expect(fill).toMatch(/outline-offset:\s*calc\(-1\s*\*\s*var\(--border-width-default\)\)/)
+    expect(hasRealBorder(fill)).toBe(false)
+  })
+
   it('D. 每核条形：轨道与填充各一圈描边，柱高与填充高才分得开', () => {
     const bar = ruleBody('.monitor-view__core-bar')
     expect(bar, '轨道需要 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)

@@ -20,9 +20,9 @@ import {
   SWAP_DEFAULT_USED_PCT,
   buildMemoryComposition,
   memoryFacts,
+  headroomFactText,
   memorySegmentPercent,
   resolveThresholdPct,
-  resourceHeadroomText,
   swapFacts,
   swapLabel,
   swapPlatformNote,
@@ -32,6 +32,7 @@ import {
   PERCENT_TREND_GRIDLINE_YS,
   coreBarColumns,
   percentTrendGeometry,
+  percentTrendY,
 } from '@/composables/monitorCpu'
 import {
   RESOURCE_DANGER_RATIO,
@@ -458,6 +459,35 @@ const memoryFreeText = computed(() => {
   return composition.segments.find(segment => segment.id === 'free')?.text ?? null
 })
 
+/**
+ * 可用格的小字（#445 第四轮）：把「可用」拆成 `空闲 + 可回收`，直接消除
+ * 「可用 16 GiB 但图例空闲 7.8 GiB」看起来矛盾的问题；缓存/缓冲不可得时退回口径说明。
+ */
+const memoryAvailableContext = computed(() => {
+  const info = memoryInfo.value
+  const cached = info?.cached_bytes
+  const buffers = info?.buffers_bytes
+  if (info === null || typeof cached !== 'number' || typeof buffers !== 'number') {
+    return '含可回收缓存/缓冲'
+  }
+  const reclaimable = cached + buffers
+  const freeText = memoryFreeText.value
+  if (freeText === null) return '含可回收缓存/缓冲'
+  // 两项各自按 1 位小数四舍五入（formatBytes 的统一精度），相加可能与「可用」差 0.1 GiB——
+  // 这是显示精度而不是口径错误（与任务管理器等主流工具同形），不要按 bug 修。
+  return `空闲 ${freeText} + 可回收 ${formatBytes(reclaimable)}`
+})
+
+/** 内存曲线的 90% 告警线 y 坐标（与折线同一映射；阈值随配置变化） */
+const memoryThresholdY = computed(() => percentTrendY(memoryThresholdPct.value / 100))
+
+/** 交换细条填充比例 → CSS 变量（#445 第四轮；与 CPU 每核柱同一运行时注入模式） */
+function meterFillStyle(ratio: number | null): Record<string, string> {
+  if (ratio === null) return {}
+  const clamped = Math.min(1, Math.max(0, ratio))
+  return { '--meter-fill': formatPercent(clamped) }
+}
+
 /** 内存数字格的悬停 / 读屏事实串（B1 + B2：可用口径、空闲、阈值、余量） */
 const memoryFactsText = computed(() => (memoryInfo.value === null
   ? ''
@@ -476,11 +506,11 @@ const memoryBuffersText = computed(() => {
 const memoryThresholdLine = computed(() => {
   if (memoryInfo.value === null) return ''
   const parts = [
-    `内存阈值 ${memoryThresholdPct.value}% · 余量 ${resourceHeadroomText(memoryInfo.value.total_bytes, memoryInfo.value.used_bytes, memoryThresholdPct.value)}`,
+    `内存告警阈值 ${memoryThresholdPct.value}% · ${headroomFactText(memoryInfo.value.total_bytes * (memoryThresholdPct.value / 100) - memoryInfo.value.used_bytes)}`,
   ]
   if (swapHasData.value && swapInfo.value !== null) {
     parts.push(
-      `${swapStatLabel.value}阈值 ${swapThresholdPct.value}% · 余量 ${resourceHeadroomText(swapInfo.value.total_bytes, swapInfo.value.used_bytes, swapThresholdPct.value)}`,
+      `${swapStatLabel.value}告警阈值 ${swapThresholdPct.value}% · ${headroomFactText(swapInfo.value.total_bytes * (swapThresholdPct.value / 100) - swapInfo.value.used_bytes)}`,
     )
   }
   return parts.join(' · ')
@@ -523,7 +553,7 @@ const swapStatValueText = computed(() => {
 /** 交换数字格的小字上下文：有读数给已用/总量；无读数给原因（带「交换/页面文件」主语） */
 const swapStatContextText = computed(() => {
   if (swapHasData.value && swapInfo.value !== null) {
-    return `已用 ${formatBytes(swapInfo.value.used_bytes)} / 共 ${formatBytes(swapInfo.value.total_bytes)}`
+    return `${formatBytes(swapInfo.value.used_bytes)} / ${formatBytes(swapInfo.value.total_bytes)}`
   }
   if (!swapAvailable.value) {
     const reason = sysmon.availabilityOf('swap')?.reason
@@ -1299,6 +1329,7 @@ const cpuTrendAriaLabel = computed(() => {
                   :y2="y"
                   vector-effect="non-scaling-stroke"
                 />
+                <polygon class="monitor-view__chart-area" :points="usageGeometry.areaPoints" aria-hidden="true" />
                 <polyline class="monitor-view__chart-line" :points="usageGeometry.points" vector-effect="non-scaling-stroke" />
               </svg>
             </button>
@@ -1383,7 +1414,7 @@ const cpuTrendAriaLabel = computed(() => {
               >{{ formatPercent(memoryUsedRatio) }}</button>
               <span v-else class="monitor-view__metric" data-test="monitor-memory-percent">{{ UNAVAILABLE_TEXT }}</span>
               <p class="monitor-view__stat-context" data-test="monitor-memory-used-context">
-                已用 {{ formatBytes(memoryInfo.used_bytes) }} / 共 {{ formatBytes(memoryInfo.total_bytes) }}
+                {{ formatBytes(memoryInfo.used_bytes) }} / {{ formatBytes(memoryInfo.total_bytes) }}
               </p>
             </div>
 
@@ -1391,7 +1422,7 @@ const cpuTrendAriaLabel = computed(() => {
             <div class="monitor-view__stat">
               <p class="monitor-view__stat-label">可用</p>
               <div class="monitor-view__metric" data-test="monitor-memory-available">{{ formatBytes(memoryInfo.available_bytes) }}</div>
-              <p class="monitor-view__stat-context">含可回收缓存/缓冲</p>
+              <p class="monitor-view__stat-context" data-test="monitor-memory-available-context">{{ memoryAvailableContext }}</p>
             </div>
 
             <!-- 缓存（可回收）+ 缓冲（内核元数据；Windows 恒不可得） -->
@@ -1416,6 +1447,13 @@ const cpuTrendAriaLabel = computed(() => {
               >{{ formatPercent(swapUsedRatio) }}</button>
               <span v-else class="monitor-view__metric monitor-view__metric--empty" data-test="monitor-swap-percent">{{ swapStatValueText }}</span>
               <p class="monitor-view__stat-context" data-test="monitor-swap-context">{{ swapStatContextText }}</p>
+              <div
+                v-if="swapHasData && swapUsedRatio !== null"
+                class="monitor-view__stat-meter"
+                aria-hidden="true"
+              >
+                <span class="monitor-view__stat-meter-fill" :data-level="swapLevel" :style="meterFillStyle(swapUsedRatio)"></span>
+              </div>
             </div>
           </div>
 
@@ -1450,6 +1488,15 @@ const cpuTrendAriaLabel = computed(() => {
                   :y2="y"
                   vector-effect="non-scaling-stroke"
                 />
+                <polygon class="monitor-view__chart-area" :points="memoryGeometry.areaPoints" aria-hidden="true" />
+                <line
+                  class="monitor-view__chart-threshold"
+                  x1="0"
+                  x2="100"
+                  :y1="memoryThresholdY"
+                  :y2="memoryThresholdY"
+                  vector-effect="non-scaling-stroke"
+                />
                 <polyline class="monitor-view__chart-line" :points="memoryGeometry.points" vector-effect="non-scaling-stroke" />
               </svg>
             </button>
@@ -1458,7 +1505,10 @@ const cpuTrendAriaLabel = computed(() => {
               <span class="monitor-view__chart-axis-end" data-test="monitor-memory-trend-end">{{ memoryTrendEndText }}</span>
             </div>
             <p class="monitor-view__meta monitor-view__chart-caption" data-test="monitor-memory-trend-caption">
-              {{ memoryTrendCaption }}
+              <span>{{ memoryTrendCaption }}</span>
+              <span class="monitor-view__chart-threshold-legend" data-test="monitor-memory-trend-threshold">
+                ┄ {{ memoryThresholdPct }}% 告警阈值
+              </span>
             </p>
           </div>
 
@@ -1484,6 +1534,7 @@ const cpuTrendAriaLabel = computed(() => {
               >
                 <span class="monitor-view__memory-legend-swatch" :class="`monitor-view__memory-band-seg--${segment.id}`" aria-hidden="true"></span>
                 <span class="monitor-view__memory-legend-label">{{ segment.label }}</span>
+                <span class="monitor-view__memory-legend-pct" data-test="monitor-memory-legend-pct">{{ memorySegmentPercent(segment) ?? '—' }}</span>
                 <span class="monitor-view__memory-legend-value" data-test="monitor-memory-legend-value">{{ segment.text ?? '不可得' }}</span>
               </li>
             </ul>
@@ -2160,6 +2211,15 @@ const cpuTrendAriaLabel = computed(() => {
   min-width: 0;
 }
 
+/* 四数字之间的列分隔线（#445 第四轮）：只在 4 列并排的宽度下画，避免换行后行首出现孤立竖线
+   （140px 最小格宽 × 4 + 间距 = 590px；≥768 一定有 4 列）。 */
+@media (min-width: 768px) {
+  .monitor-view__stat + .monitor-view__stat {
+    border-left: var(--border-width-default) solid var(--border-neutral-l2);
+    padding-left: var(--spacer-10);
+  }
+}
+
 .monitor-view__stat-label {
   margin: 0;
   color: var(--text-secondary);
@@ -2240,6 +2300,22 @@ const cpuTrendAriaLabel = computed(() => {
   stroke-linejoin: round;
 }
 
+/* 面积填充（#445 第四轮）：固定 0–100% 轴下低占用时折线贴底，填充让「离 100% 的余量」
+   成为可读的量。与折线同一色相、低透明度——它只是同一条序列的面积装饰，不引入新语义；
+   forced-colors 下填充消失、折线仍在，信息不丢。 */
+.monitor-view__chart-area {
+  fill: var(--status-primary-default);
+  fill-opacity: 0.14;
+}
+
+/* 告警阈值参考线（#445 第四轮：内存 90% 告警线）：位置由 JS 按契约阈值注入，
+   CSS 只管形态；橙色是状态色，与「告警」语义对应（不是又一条网格线）。 */
+.monitor-view__chart-threshold {
+  stroke: var(--status-warning-default);
+  stroke-width: var(--border-width-default);
+  stroke-dasharray: 3 2;
+}
+
 /* 横轴两端时刻：与绘图区左右缘对齐；tabular-nums 让推进中的秒数不左右跳 */
 .monitor-view__chart-axis-row {
   display: flex;
@@ -2254,8 +2330,18 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 .monitor-view__chart-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--spacer-8);
   margin: var(--spacer-2) 0 0;
   color: var(--text-secondary);
+}
+
+/* 图注右侧的告警阈值图例（#445 第四轮）：与左侧时间窗说明同一行，颜色与阈值线一致 */
+.monitor-view__chart-threshold-legend {
+  flex-shrink: 0;
+  color: var(--status-warning-default);
+  white-space: nowrap;
 }
 
 /* 可点击数值（#127：点击跳转历史视图并预选指标）：只重置按钮外观，字号/颜色沿用所在行的样式，
@@ -2709,6 +2795,35 @@ const cpuTrendAriaLabel = computed(() => {
   font-weight: var(--body-sm-strong-font-weight);
 }
 
+/* 数字格里的细条（#445 第四轮：交换使用率）：4px 高，宽度由 `--meter-fill` 运行时注入；
+   描边同台账轨道填充（#381）——forced-colors 下背景色会被统一成 Canvas，填充边界只剩 outline。 */
+.monitor-view__stat-meter {
+  height: var(--spacer-4);
+  margin-top: var(--spacer-2);
+  border-radius: var(--radius-full);
+  background: var(--bg-overlay-l2);
+  overflow: hidden;
+  outline: var(--border-width-default) solid transparent;
+}
+
+.monitor-view__stat-meter-fill {
+  display: block;
+  width: var(--meter-fill, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--status-success-default);
+  outline: var(--border-width-default) solid transparent;
+  outline-offset: calc(-1 * var(--border-width-default));
+}
+
+.monitor-view__stat-meter-fill[data-level='warn'] {
+  background: var(--status-warning-default);
+}
+
+.monitor-view__stat-meter-fill[data-level='danger'] {
+  background: var(--status-error-default);
+}
+
 .monitor-view__memory-facts {
   margin: var(--spacer-6) 0 0;
   color: var(--text-secondary);
@@ -2811,6 +2926,12 @@ const cpuTrendAriaLabel = computed(() => {
   align-items: center;
   gap: var(--spacer-6);
   min-width: 0;
+}
+
+/* 图例里的百分比（#445 第四轮）：与字节数分开两段，比例一眼可见；颜色弱于标签 */
+.monitor-view__memory-legend-pct {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
 }
 
 .monitor-view__memory-legend-swatch {
