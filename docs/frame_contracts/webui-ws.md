@@ -92,7 +92,7 @@ domain 清单与挂载实例：
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。
-- 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）。转发条件与补发容量见《帧契约：TD 数据同步》§8；WS 时序与合并语义见 §2.5、§5。
+- 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）。转发条件与补发容量见《帧契约：TD 数据同步》§8；WS 时序与合并语义见 §2.5、§5。资金手动刷新（契约 rest §2.9.11）**不产生新消息**：td 处理 `TD_REFRESH_REQ` 后照常推 `TRADING_ACCOUNT` 帧，前端按同账户新 `seq` 清除该行 pending（§5）。
 - 账户配置与细状态（`td_rtn_config` / `td_rtn_status`）**是镜像域**（`td_config` / `td_status`，进 `snapshot`）：它们与 md 侧的 `md_rtn_config` / `md_rtn_status` 同型——全量覆盖、后到覆盖先到、不进 `td_recent` 补发环。前端基线由 `snapshot` + 增量推送构成，不需要额外的 REST 基线拉取（与交易记录相反：记录不进镜像，配置/状态进镜像）。
 
 ### 2.3 控制消息（`payload` 键）
@@ -192,6 +192,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 12. **精度**：价格显示用行内 price_decimals / avg_price_decimals 做 `toFixed`；不得自行推断小数位，也不得依赖服务端字符串舍入（契约 rest §2.9.6）。
 13. **降级**：列表返回 `available:false` 时展示统一降级提示（不白屏、不用 0 冒充数据），按退避重试；WS 事件照常合并，恢复后重拉基线。
 14. **非契约范围**：有界窗口容量、虚拟滚动、批量刷新节流、新数据气泡等 UI 性能/交互设计见 ADR 0043 决策 7，由前端实现票落地，不属于本契约语义。
+15. **资金手动刷新**：资金面板按行刷新发 `POST /api/td/trading_accounts/{account_id}/refresh`（契约 rest §2.9.11）→ 该行设 pending；收到**同账户** `td_trading_account` 且 `seq` 前进后清除；超时兜底 3s 清除并提示「刷新超时，稍后自动更新」；离线（非 Ready）账户的行不得发起刷新。
 
 ---
 

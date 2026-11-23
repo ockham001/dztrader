@@ -86,7 +86,9 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 - **域内只保留三样状态 + 统计计数器**（`apps/webui/td_domain_service.{h,cpp}`）：在线（`ACCOUNT_STATUS` Ready）账户集合与每账户 `date`、WS 建连补发环、日切感知，外加统计计数器（下节）。Ready/Offline 翻转、日切（`date` 变化）、在线集合变化 → 广播 `data_changed{scope:"td"}` 让前端清空重拉。
 - **前端列表行为只有一份实现**：`apps/webui/frontend/src/composables/tdListStore.ts` 的 `createTdListStore`（REST 基线 + 游标预取 + WS 增量 10Hz 批量合并 + 有界窗口 + 重置触发 + 降级退避），委托（`stores/tdOrders`）与成交（`stores/tdTrades`）是它的两份配置而非两份实现。**持仓不走该工厂**：它是绝对态（按业务键覆盖、无 `sort_key` 排序插入），工厂的合并算法依赖 `sort_key`；持仓 store 因此另写一份（`stores/tdPositions`）。**共用的是降级行为的两块唯一实现**：统一降级文案 `tdDegradedText` 与退避重试定时器 `createTdRetryTimer`（`tdRetryDelay` 定退避口径）——两个 store 各写一份退避会出现同一时刻两个面板用不同节奏重试；**不共用的**是合并算法（持仓是绝对态、无 `sort_key`，语义不兼容）。
 - **前端持仓 / 资金 store**（#249/#250）：两者都是绝对态（按业务键覆盖、无 `sort_key` 排序插入），不走 `createTdListStore`；持仓（`stores/tdPositions`）与资金（`stores/tdTradingAccounts`）各一份 store。**共用的是降级行为的两块唯一实现**：统一降级文案 `tdDegradedText` 与退避重试定时器 `createTdRetryTimer`（`tdRetryDelay` 定退避口径；`dispose()` 卸载停用、`init()` → `reset()` 重新武装）——各写一份退避会出现同一时刻两个面板用不同节奏重试；**不共用的**是合并算法（各自业务键与行形状不同）与 `loadBaseline`（持仓要翻完全部分页、资金是单请求，分页语义不同，抽成同一生命周期反而要参数化行形状与信封解析）。
-- **已知限制**：`td_recent` 有界（300 条/账户，四类事件共享），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。持仓/资金帧只在账户 Ready 之后转发——登录查询阶段（Ready 前）产生的快照帧不进补发环，前端靠 Ready 后的 REST 基线拿到同一批数据；资金盘中不刷新（只在登录收尾链更新，无补查链，契约 td-data-sync §7 已登记）。
+- **已知限制**：`td_recent` 有界（300 条/账户，四类事件共享），dzweb 重启后为空——记录基线以 REST 为准，补发只是收敛窗口内的加速；帧可能先于库提交到达（异步持久化），同一记录由前端按 `seq` 合并（契约 webui-ws §5）。持仓/资金帧只在账户 Ready 之后转发——登录查询阶段（Ready 前）产生的快照帧不进补发环，前端靠 Ready 后的 REST 基线拿到同一批数据；资金快照由 td 按事件 / UI 手动刷新更新（ADR 0055；每行刷新按钮见契约 rest §2.9.11），经既有 `td_trading_account` 推送，dzweb 不参与查询调度。
+
+- **手动刷新（ADR 0055）**：`POST /api/td/trading_accounts/{account_id}/refresh` 写 `TD_REFRESH_REQ`（契约 rest §2.9.11 / td-refresh）——任意已认证用户，预检注册表解析、网关 Running、账户在线、写通道；不查库、不返回资金数据，结果经 WS `td_trading_account` 到达（同账户新 `seq` 清前端 pending）。
 
 ### 统计计数器（#247，契约 rest §2.9.5）
 

@@ -523,6 +523,33 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 登出不发送柜台登出请求，直接释放 API（契约 td-connection）；登出后账户回到 `Idle`，自动登录排程可在下一个 `login_time` 重新登录。
 - 本端点不改变账户配置、不读交易库，不受 §2.9.8 降级影响。
 
+#### 2.9.11 资金刷新
+
+写端点，请求目标交易网关对指定账户做一次 CTP 资金查询（`TD_REFRESH_REQ`，契约 td-refresh）。与 §2.9.10 同属「写帧 + 生效信号」的 fire-and-forget 形态：响应只表示已写入事件通道。
+
+| 方法/路径 | 语义 | 帧/生效信号 |
+|---|---|---|
+| POST `/api/td/trading_accounts/{account_id}/refresh` | 手动刷新单个账户资金快照（**任意已认证用户**，非 admin） | → `TD_REFRESH_REQ`（payload `{"account_id":…}`）；生效信号 = WS `td_trading_account`（同账户 `seq` 前进，契约 webui-ws §2.5） |
+
+**预检**（失败时不写帧）：
+
+1. 已认证用户；未认证按全局规则 401。**不需要 admin**——只读语义的按需刷新，与资金读端点权限一致。
+2. `account_id` 由账户注册表解析网关（§2.9.9）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`；注册表降级（`available:false`）→ 503 `{"error":"account registry unavailable"}`。
+3. 目标网关必须是已注册的 `dztd_*` 进程且当前 Running（`process_status` 镜像，契约 process）；否则 409 `{"error":"td gateway not running","code":"gateway_not_running"}`。
+4. 账户必须在线（`ACCOUNT_STATUS` Ready，dzweb 在线集合）；离线账户无会话可查询 → 409 `{"error":"account offline","code":"account_offline"}`。前端离线行禁用刷新按钮。
+5. 写通道不可用：503 `{"error":"shm writer not available"}` / `{"error":"shm write failed"}`（不带 `code`，同 §2.9.7）。
+
+**响应**：200 `{"ok":true}`——仅表示已写入事件通道；实际查询受 td 账户查询通道合并 / 限速（契约 td-data-sync §4.1），不保证立即发出。
+
+**约束**：
+
+- 不返回新鲜资金数据、不等待查询完成（避免 REST 长挂）；前端 pending 清除 = 同账户资金事件新 `seq` 到达，超时兜底 3s（契约 webui-ws §5）。
+- 查询失败不产生 RTN：td 记日志 + 限频 ERROR 通知；UI 侧展示超时提示「刷新超时，稍后自动更新」。
+- 本端点不改变账户配置、不读交易库、不受 §2.9.8 降级影响；重复点击 / 多客户端并发在 td 侧按最小间隔合并，不放大查询次数。
+- 每行一个刷新入口，不做「全部账户刷新」；账户行是否可点由在线状态决定（前端义务，契约 webui-ws §5）。
+
+---
+
 ### 2.10 交易接口进程
 
 交易接口（td 网关，`dztd_*`）是交易账户页的一级对象：进程可**零账户**存在并运行，账户是接口内部配置项（§2.9.7）；接口生命周期由页面显式管理（ADR 0053），与行情源页同构——添加即动态注册 + 启动，不提供持久的「停止但保留」，删除 = 停止 + 移除进程配置条目。接口**未运行时**的「启动进程」入口用于崩溃恢复（与行情源同款）。

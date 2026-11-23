@@ -10,6 +10,8 @@
 
 **实现注记**：通用化（通用层 + `ext` 分层、进程级 `SetExt` 替代旧 `SetLockMode`）与启动主动推一次已随 #251 落地；旧 `SetLockMode` op 已按方案收敛规则删除，不留双实现。dzweb 已消费本帧：按 `instance_id` 维护配置镜像并 WS 推送（映射见契约 webui-ws），镜像域为 `td_config`。**旧扁平格式配置文件不再兼容**（账户连接参数从账户对象顶层移入 `ext`）：开发期无迁移义务，旧文件按 §6 校验失败处理。
 
+<!-- pending-symbol: qry_min_interval_ms (#455) -->
+
 ---
 
 ## 1. 接口类型识别
@@ -52,7 +54,7 @@
 | `SetAccountEnabled` | `account_id`\*、`enabled`\* | 否 | 启用/禁用只影响后续连接请求（禁用后连接被拒），不强制断开已有会话（断开由连接控制帧负责） |
 | `SetAccountRiskControl` | `account_id`\*、`enabled`\* | 否 | 账户级风控开关（`enabled` = 是否启用风控） |
 | `SetAccountCurrency` | `account_id`\*、`currency_id`\* | 否 | 账户币种 |
-| `SetQryIntervals` | `qry_account_interval_s`、`qry_flush_interval_ms` | 否 | 查询间隔；缺失字段保留旧值，提供值必须 > 0。**持仓查询间隔已随 [ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md) 删除**（持仓无周期查询） |
+| `SetQryIntervals` | `qry_min_interval_ms` | 否 | 查询通道最小发送间隔（毫秒）；缺失字段保留旧值，提供值必须 > 0（默认 1100）。同一账户任意两笔 CTP 查询请求的最小间隔，登录链与运行期资金刷新共用，热更新立即作用于后续调度（契约 td-data-sync §4.1 / [ADR 0055](../adr/0055-td-query-channel-event-driven-fund-refresh.md)）。**无周期查询**（[ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md)） |
 | `SetExt` | `ext`\* | 否 | 进程级柜台特有配置的字段级补丁（缺失字段保留旧值） |
 
 > `*` 标注的字段为必填，缺失或类型不匹配为校验失败。
@@ -102,15 +104,13 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `qry_account_interval_s` | int | 资金查询间隔（秒），> 0；本轮未接入周期资金查询，保留配置 |
-| `qry_flush_interval_ms` | int | 流控队列间隔（毫秒），> 0 |
+| `qry_min_interval_ms` | int | 查询通道最小发送间隔（毫秒），> 0，默认 1100；含义见 §2.1 / 契约 td-data-sync §4.1。字段 `qry_account_interval_s` / `qry_flush_interval_ms` 已随 ADR 0055 删除（从未接入 / 从未被消费） |
 | `accounts` | array\<AccountConfig\> | 账户配置列表（2.2 + 2.3） |
 | `ext` | object | 进程级柜台特有配置（2.3 进程级 ext） |
 
 ```json
 {
-  "qry_account_interval_s": 5,
-  "qry_flush_interval_ms": 1500,
+  "qry_min_interval_ms": 1100,
   "accounts": [{
     "account_id": "account_001",
     "enabled": true,
@@ -147,7 +147,7 @@
 ```json
 {"op": "AddAccount", "params": {"account_id": "account_001", "enabled": true, "ext": {"broker_id": "9999", "user_id": "00001", "password": "123456", "product_info": ""}}}
 {"op": "UpdateAccount", "params": {"account_id": "account_001", "ext": {"password": "****"}}}
-{"op": "SetQryIntervals", "params": {"qry_account_interval_s": 10}}
+{"op": "SetQryIntervals", "params": {"qry_min_interval_ms": 1000}}
 {"op": "SetExt", "params": {"ext": {"enable_lock_mode": false}}}
 ```
 
@@ -204,7 +204,7 @@ payload 为 2.4 结构的安全 JSON（每个账户 `ext.password` → `"****"`�
   - **文件缺失 / section 缺失**：用默认值并修复文件（自愈），不抛异常、不退出——这是"首次启动"的正常形态。
   - **内容非法**（JSON 解析失败 / 校验失败，含旧扁平格式）：**致命**——记 CRITICAL（含原因）后退出非零码，**不**回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法被运维区分于"本来就空"。
   - 两种情况下**启动都不发回报**；但启动初始化完成后仍按 §4 场景 2 主动推一次（当前生效值）。
-- 查询间隔修改立即生效（热更新资金查询间隔 / 流控调度；持仓无周期查询，见 ADR 0049）；连接参数修改要求目标账户 `Idle`（§2.1 状态保护）。
+- 查询通道最小间隔（`qry_min_interval_ms`）修改后立即生效——作用于登录链与运行期资金刷新的后续调度（持仓无周期查询，见 ADR 0049 / ADR 0055）；连接参数修改要求目标账户 `Idle`（§2.1 状态保护）。
 - 配置文件缺失时由进程自动生成默认配置（仓库不保留模板文件）。
 
 ---

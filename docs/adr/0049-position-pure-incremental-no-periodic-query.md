@@ -4,6 +4,8 @@
 
 Accepted（2026-11-21，持仓模型定位变更）
 
+> 另被 [ADR 0055](0055-td-query-channel-event-driven-fund-refresh.md)（2026-11-23，#455）部分取代：Consequences 中「资金仍无周期查询（ADR 0045 决策 6 保留），盘中资金停在最近一次查询」的后半句「盘中资金停在最近一次查询」废止——资金改为事件 / UI 手动触发的按需刷新（仍无周期查询，且「无自愈」思路不变）；本 ADR 其余决策（持仓纯增量、无周期查询）全部保留。
+
 Supersedes（精确到句；未列出的决策与句子全部保留）：
 
 - [ADR 0008](0008-td-position-model.md) 决策 4「漂移自愈：Ready 后每 `qry_position_interval_s` 重查一次，有差异才修正」——**整条废止**；
