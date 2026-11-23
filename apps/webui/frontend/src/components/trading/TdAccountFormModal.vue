@@ -37,7 +37,6 @@ export interface TdAccountFormValue {
   frontends: { address: string; label: string; enabled: boolean }[]
   auth_code: string
   app_id: string
-  flow_dir: string
 }
 
 const props = defineProps<{
@@ -76,7 +75,6 @@ function emptyForm(gateway: string): TdAccountFormValue {
     frontends: [],
     auth_code: '',
     app_id: '',
-    flow_dir: '',
   }
 }
 
@@ -109,7 +107,6 @@ function formFromRow(row: TdAccountRow): TdAccountFormValue {
     })),
     auth_code: ext?.auth_code ?? '',
     app_id: ext?.app_id ?? '',
-    flow_dir: ext?.flow_dir ?? '',
   }
 }
 
@@ -166,7 +163,6 @@ function submit(): void {
     product_info: raw.product_info.trim(),
     auth_code: raw.auth_code.trim(),
     app_id: raw.app_id.trim(),
-    flow_dir: raw.flow_dir.trim(),
     frontends: raw.frontends
       .map(fe => ({ address: fe.address.trim(), label: fe.label.trim(), enabled: fe.enabled }))
       .filter(fe => fe.address !== ''),
@@ -272,32 +268,27 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
           </span>
         </div>
 
-        <div class="td-form__grid">
-          <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-product-info')">产品信息</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-product-info')" v-model="form.product_info" type="text" placeholder="选填" autocomplete="off">
-            </div>
-          </div>
-          <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-flow-dir')">流文件目录</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-flow-dir')" v-model="form.flow_dir" type="text" placeholder="留空 = 网关自动构造" autocomplete="off">
-            </div>
+        <!-- 流文件目录不在表单提供：留空/缺失 = 网关自动构造（契约 td-config §2.3），
+             用户不需要也不应该管理网关的本地文件布局。 -->
+
+        <div class="dialog-field">
+          <label class="dialog-field__label" :for="fieldId('ctp-product-info')">产品信息</label>
+          <div class="ds-input">
+            <input :id="fieldId('ctp-product-info')" v-model="form.product_info" type="text" placeholder="选填" autocomplete="off">
           </div>
         </div>
 
         <div class="td-form__grid">
           <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-auth-code')">认证码</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-auth-code')" v-model="form.auth_code" type="text" placeholder="选填" autocomplete="off">
-            </div>
-          </div>
-          <div class="dialog-field">
             <label class="dialog-field__label" :for="fieldId('ctp-app-id')">AppID</label>
             <div class="ds-input">
               <input :id="fieldId('ctp-app-id')" v-model="form.app_id" type="text" placeholder="选填" autocomplete="off">
+            </div>
+          </div>
+          <div class="dialog-field">
+            <label class="dialog-field__label" :for="fieldId('ctp-auth-code')">认证码</label>
+            <div class="ds-input">
+              <input :id="fieldId('ctp-auth-code')" v-model="form.auth_code" type="text" placeholder="选填" autocomplete="off">
             </div>
           </div>
         </div>
@@ -384,7 +375,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 
 <style scoped>
 /* 最小 layout 修复（2026-11-23 验收发现）：全局 `.dialog-field` 是为「label 80px 右对齐 +
-   输入框同行 + hint 同行」的窄单行弹窗设计的；本表单标签长（经纪公司代码/流文件目录）、
+   输入框同行 + hint 同行」的窄单行弹窗设计的；本表单标签长（经纪公司代码/账户 ID）、
    字段多、还有 hint，沿用同一行会把标签挤成逐字换行、把输入框挤扁。这里把字段改成纵向：
    label 在上、输入框独占一行、hint 在下。仅作用于本弹窗（scoped），不改全局组件。 */
 .td-form .dialog-field {

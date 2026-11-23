@@ -147,7 +147,7 @@ async function submitForm(value: TdAccountFormValue): Promise<void> {
           frontends: value.frontends,
           auth_code: value.auth_code,
           app_id: value.app_id,
-          flow_dir: value.flow_dir,
+          // flow_dir 不提交：缺失 = 网关自动构造（契约 td-config §2.3），用户不管理网关本地文件布局
         },
       })
       if (!result.ok) {
@@ -176,8 +176,9 @@ async function submitForm(value: TdAccountFormValue): Promise<void> {
 
 /**
  * 构造 `UpdateAccount` 的 params 子集（契约 td-config §2.1）：
- * 只包含**确实要改**的字段——空字符串表示「置空该字段」（如清空 flow_dir），
+ * 只包含**确实要改**的字段——空字符串表示「置空该字段」（如清空产品信息/认证码），
  * 但密码例外（空 = 不修改，契约 §2.3）。`frontends` 提供即整体替换。
+ * `flow_dir` 不下发：网关自动构造（契约 td-config §2.3），避免误清网关的本地文件布局。
  */
 function buildUpdatePatch(value: TdAccountFormValue): TdUpdateAccountBody {
   const patch: TdUpdateAccountBody = {
@@ -191,7 +192,6 @@ function buildUpdatePatch(value: TdAccountFormValue): TdUpdateAccountBody {
       frontends: value.frontends,
       auth_code: value.auth_code,
       app_id: value.app_id,
-      flow_dir: value.flow_dir,
     },
   }
   // 密码留空或残留掩码 = 保留旧值，绝不提交（契约 td-config §2.3；避免把 **** 写成新密码）
