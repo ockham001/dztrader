@@ -3,7 +3,7 @@
  *
  * 为什么单独测纯函数：jsdom 没有布局，组件测试无法驱动「容器多宽 → 折成几行」；而
  * 「固定轴不拉伸」「多行等分」正是本票的验收标准，必须逐条锁死在这里
- * （与 `topbarOverflow.spec` 同一先例）。
+ * （与 `topbarClock.spec.ts` 的纯函数单测同一先例）。
  */
 import { describe, it, expect } from 'vitest'
 import { dirname, join } from 'node:path'

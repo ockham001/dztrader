@@ -295,30 +295,21 @@ body {
   flex-shrink: 0;
 }
 
-/* Resources: always shown on desktop */
+/* Resources（#452 / ADR 0054）：服务徽章 + CPU / 内存两枚常驻资源徽章。
+   资源区**任何宽度都不折叠、不收起**：没有按宽度自适应折叠、没有 `<lg` 单状态图标；
+   宽度紧时由文件末尾 Topbar responsive 段的断点规则收紧（全是 CSS，无 JS 行为分支）。 */
 .topbar__resources {
   display: flex;
   align-items: center;
   gap: var(--spacer-12);
   overflow: hidden;
   /* 必须自己吃掉 .topbar__left 的剩余宽度：默认 `flex: 0 1 auto` 会让它按内容撑开，
-     于是它永远「装得下」、里层的资源组行只剩零头（实测 1440px 下只剩 17px，
-     8 个徽章被一次性折完）。`min-width: 0` 是能缩到小于内容的前提。 */
+     窄屏时把右侧墙钟挤出可视区。`min-width: 0` 是能缩到小于内容的前提。 */
   flex: 1 1 auto;
   min-width: 0;
 }
-/* 资源组行（ADR 0048）：MD / TD / STG 与分隔线之外的**剩余空间**全部给它，
-   因此它的 clientWidth 就是资源项真正可用的宽度（折叠判定的唯一输入）。
-   `min-width: 0` 是 flex 子项能被压缩/量到真实可用宽度的前提，缺了会按内容撑开。 */
-.topbar__resource-run {
-  display: flex;
-  align-items: center;
-  gap: var(--spacer-12);
-  flex: 1 1 auto;
-  min-width: 0;
-  position: relative;
-  overflow: hidden;
-}
+/* 资源徽章：标签与数值纵向叠放（9px 微标签 + 9px 数值），比单行 `CPU 19%` 更省横向空间，
+   390 宽下两枚徽章仍能整枚可见（#452 AC）；数值用等宽数字，每秒推送不左右跳位。 */
 .topbar__resource {
   display: inline-flex;
   flex-direction: column;
@@ -348,98 +339,13 @@ body {
 .topbar__resource--normal .res-icon { color: var(--status-success-default); }
 .topbar__resource--warn .res-icon { color: var(--status-alert-default); }
 .topbar__resource--danger .res-icon { color: var(--status-error-default); }
-/* Volume badge status dot（ADR 0048：卷徽章只给状态色点 + 挂载点短标签，不再平铺百分比） */
-.topbar__resource .res-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-  background: currentColor;
-}
-.topbar__resource--normal .res-dot { color: var(--status-success-default); }
-.topbar__resource--warn .res-dot { color: var(--status-alert-default); }
-.topbar__resource--danger .res-dot { color: var(--status-error-default); }
 /* 不可判读（快照未到 / 指标不可用 / 服务状态未知）：中性色，不得用状态色或 0 冒充数据。
-   必须在**本文件**而不能留在 Topbar.vue 的 scoped 块里：`.res-value` / `.res-icon` / `.res-dot`
-   由子组件 TopbarResourceBadge / 内联渲染，父组件的 scoped 规则按末选择器加父 scope 属性，
-   够不到这些节点（静默失效，测试只断言 class 也抓不到）。 */
+   必须在**本文件**而不能留在 Topbar.vue 的 scoped 块里：`.res-value` / `.res-icon` 由子组件
+   TopbarResourceBadge / 内联渲染，父组件的 scoped 规则按末选择器加父 scope 属性，够不到这些
+   节点（静默失效，测试只断言 class 也抓不到）。 */
 .topbar__resource--unavailable .res-value,
-.topbar__resource--unavailable .res-icon,
-.topbar__resource--unavailable .res-dot {
+.topbar__resource--unavailable .res-icon {
   color: var(--text-tertiary);
-}
-/* 隐形测量行（ADR 0048）：渲染全部资源项但不可见、不占布局，只用于量每项宽度。
-   绝对定位 + visibility:hidden —— 不能碰 `display:none`（那会让宽度变成 0，折叠数量必然算错），
-   也不能让它参与可见布局（会在徽章之间留出空白）。 */
-.topbar__resource-measure {
-  position: absolute;
-  visibility: hidden;
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-  gap: var(--spacer-12);
-  white-space: nowrap;
-  left: 0;
-  top: 0;
-}
-/* 溢出入口（▾ N）与浮层（ADR 0048）：视觉复用既有菜单 token，不新造视觉语言 */
-.topbar__overflow-trigger {
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--spacer-2);
-  font-size: var(--font-size-9);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  flex-shrink: 0;
-}
-.topbar__overflow-trigger:hover { color: var(--text-default); }
-.topbar__overflow-count { line-height: 1.2; }
-/* 浮层条目的色点：等级类挂在圆点**自身**（不是外层容器），所以不能用后代选择器，
-   必须逐档写在本元素上 */
-.topbar__overflow-dot.topbar__resource--normal { color: var(--status-success-default); }
-.topbar__overflow-dot.topbar__resource--warn { color: var(--status-alert-default); }
-.topbar__overflow-dot.topbar__resource--danger { color: var(--status-error-default); }
-.topbar__overflow-dot.topbar__resource--unavailable { color: var(--text-tertiary); }
-.topbar__overflow {
-  /* 定位全部由组件内联给出（Teleport 到 body + fixed）：这里不写 position / top / left，
-     否则会留一份被恒覆盖的死声明 */
-  min-width: 180px;
-  background: var(--bg-menu);
-  border: 1px solid var(--border-neutral-l1);
-  border-radius: var(--radius-8);
-  padding: var(--spacer-4);
-  box-shadow: 0 12px 32px color-mix(in srgb, var(--text-default) 16%, transparent), 0 2px 8px color-mix(in srgb, var(--text-default) 8%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacer-2);
-  z-index: 200;
-}
-.topbar__overflow-item {
-  display: flex;
-  align-items: center;
-  gap: var(--spacer-8);
-  padding: 0 var(--spacer-8);
-  height: 24px;
-  white-space: nowrap;
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
-  color: var(--text-default);
-}
-.topbar__overflow-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-  flex-shrink: 0;
-  background: currentColor;
-}
-.topbar__overflow-label { flex-shrink: 0; }
-.topbar__overflow-value {
-  margin-left: auto;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
 }
 /* Divider between service status and system resources */
 /* #349：原先画在 `var(--border-default, var(--bg-base-secondary))` 上 —— `--border-default`
@@ -451,26 +357,6 @@ body {
   background: var(--border-neutral-l1);
   flex-shrink: 0;
 }
-/* Gauge collapsed mode — server icon with status color */
-.topbar__gauge svg { flex-shrink: 0; }
-@keyframes gauge-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-.topbar__gauge.topbar__resource--danger svg {
-  animation: blink-danger 0.8s ease-in-out infinite;
-}
-.topbar__resources--gauge .topbar__resource--cpu,
-.topbar__resources--gauge .topbar__resource--mem,
-.topbar__resources--gauge .topbar__resource--disk,
-.topbar__resources--gauge .topbar__resource--ntp,
-.topbar__resources--gauge .topbar__resource-measure,
-.topbar__resources--gauge .topbar__overflow-trigger { display: none; }
-.topbar__resources--gauge .topbar__gauge { display: inline-flex !important; }
-.topbar__gauge.topbar__resource--normal svg { color: var(--status-success-default); }
-.topbar__gauge.topbar__resource--warn svg { color: var(--status-alert-default); }
-.topbar__gauge.topbar__resource--danger svg { color: var(--status-error-default); }
-
 /* Connection */
 .topbar__conn {
   display: inline-flex;
@@ -501,29 +387,48 @@ body {
 .topbar__resource--danger .res-value,
 .topbar__resource--danger .res-icon { animation: blink-danger 0.8s ease-in-out infinite; }
 
-/* Date/time — split into date+weekday and time */
-.topbar__datetime {
+/* 顶栏墙钟（#452 / ADR 0054）：本机墙钟 + 时钟偏差括号。
+   四档格式只切换文本片段，**秒永远保留**（断点只用既有 1280 / 1024 / 768，不用容器查询）：
+     ≥1280     2026-01-02 周四 13:25:36 (+23ms)
+     1024–1279 01-02 周四 13:25:36 (+23ms)
+     768–1023  周四 13:25:36 (+23ms)
+     <768      13:25:36 (+23ms)
+   四段文本恒在 DOM 里、可见性由断点决定：JS 不读视口宽度（无行为分支）。 */
+.topbar-clock {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--spacer-4);
   font-family: var(--code-editor-font-family);
   font-variant-numeric: tabular-nums;
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
   white-space: nowrap;
   flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--spacer-4);
+  color: var(--text-secondary);
 }
-.topbar__date { white-space: nowrap; }
-.topbar__weekday { white-space: nowrap; }
-.topbar__time { white-space: nowrap; }
-
-.topbar__ntp { display: inline-flex; align-items: center; gap: var(--spacer-2); white-space: nowrap; flex-shrink: 0; }
-@keyframes ntp-warn {
-  0%, 100% { color: var(--status-success-default); }
-  50% { color: var(--status-alert-default); }
+.topbar-clock__date,
+.topbar-clock__date-short,
+.topbar-clock__weekday,
+.topbar-clock__time { white-space: nowrap; }
+/* 默认（<768）：只留时间（秒永远保留） */
+.topbar-clock__date,
+.topbar-clock__date-short,
+.topbar-clock__weekday { display: none; }
+@media (min-width: 768px) {
+  .topbar-clock__weekday { display: inline; }
 }
-.topbar__ntp--warn {
-  animation: ntp-warn 1.5s ease-in-out infinite;
+@media (min-width: 1024px) {
+  .topbar-clock__date-short { display: inline; }
 }
-.topbar__sep { white-space: nowrap; }
+@media (min-width: 1280px) {
+  .topbar-clock__date { display: inline; }
+  .topbar-clock__date-short { display: none; }
+}
+/* 偏差括号：平时中性（等宽数字）；超过配置阈值时**只有括号内文本**变黄 / 变红，整块时钟不变色
+   （DESIGN「The One Job Rule」：一个状态色只表达一种事实）。不可用 `(—)` 走中性，不得用 0 冒充。 */
+.topbar-clock__offset { color: var(--text-secondary); }
+.topbar-clock__offset--warn { color: var(--status-warning-on-surface); }
+.topbar-clock__offset--danger { color: var(--status-error-on-surface); }
 
 /* Theme button */
 .topbar__theme {
@@ -541,21 +446,24 @@ body {
 .topbar__theme:active { background: var(--bg-overlay-l2); }
 
 /* ===== Topbar responsive ===== */
-/* <md：隐藏日期，保留星期+时间（顶栏信息密度降级第一级） */
+/* <md：顶栏切紧凑形态 —— 抽屉按钮出现；资源区间距 / 左右内边距收紧，
+   给 390 宽下的 CPU / 内存 / 墙钟留出空间（墙钟的日期 / 星期档位由上方 .topbar-clock 规则负责） */
 @media (max-width: 767.98px) {
+  .topbar { padding: 0 var(--spacer-10); }
   .topbar__hamburger { display: inline-flex; align-items: center; justify-content: center; width:32px; height:32px; border:none; background:transparent; border-radius:var(--radius-8); cursor:pointer; color:var(--icon-default); }
   .topbar__hamburger:active { background: var(--bg-overlay-l2); }
   .topbar__title { display: inline; }
-  /* Hide date on mobile, keep weekday + time */
-  .topbar__date { display: none; }
-  .topbar__sep { display: none; }
+  .topbar__left,
+  .topbar__resources { gap: var(--spacer-8); }
 }
 
-/* <sm：再隐藏星期与连接文字，保留时间+NTP（P5 收编原 480/320 微断点为两级；
-   更窄场景由 topbar__left 的 overflow:hidden 兜底） */
+/* <sm：连接文字隐藏（只留状态点），资源区保持常驻（P5 收编原 480/320 微断点为两级；
+   更窄场景由 topbar__left 的 overflow:hidden 兜底）。资源区间距再收紧一级：390 宽下
+   CPU / 内存取到三位数百分比、偏差括号取最长形态（如 `(-1000ms)`）时两枚徽章仍整枚可见，
+   不被 `.topbar__resources` 的 overflow 裁掉（#452 AC「390 宽仍可见」）。 */
 @media (max-width: 639.98px) {
   .topbar__conn span:last-child { display: none; }
-  .topbar__weekday { display: none; }
+  .topbar__resources { gap: var(--spacer-6); }
 }
 
 /* ===== Responsive sidebar（<md：离屏抽屉；P5-T2 起 grid 已由上方 mobile-first 段定义，

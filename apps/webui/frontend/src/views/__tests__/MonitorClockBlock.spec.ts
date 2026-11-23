@@ -151,7 +151,7 @@ describe('时钟块 · 只属于本页（不越界到顶栏 / 无历史曲线）
     vi.clearAllMocks()
   })
 
-  it('配置关闭态下本视图不出现 NTP 徽章文案（顶栏徽章由 Topbar 自己渲染）', async () => {
+  it('配置关闭态下本视图不出现 NTP 徽章文案（顶栏墙钟偏差括号由 TopbarClock 自己渲染）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ clock: null }))
     const wrapper = await mountView()
     expect(wrapper.find('[data-test="monitor-clock"]').text()).not.toContain('NTP')
