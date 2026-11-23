@@ -89,7 +89,7 @@ describe('monitorStorage 卷行与空间不足判据', () => {
     expect(stricter.level).toBe('danger')
   })
 
-  it('条色三档走 70/90 展示分档：<70 normal（中性）、70–90 warn、≥90 danger（与顶栏卷徽章一致）', () => {
+  it('条色三档走 70/90 展示分档：<70 normal（中性）、70–90 warn、≥90 danger（与顶栏 CPU/内存徽章一致）', () => {
     expect(buildVolumeRow(volume({ mount: '/a', used_ratio: 0.69 }), 10).level).toBe('normal')
     expect(buildVolumeRow(volume({ mount: '/b', used_ratio: 0.71 }), 10).level).toBe('warn')
     const low = buildVolumeRow(volume({ mount: '/c', used_ratio: 0.95 }), 10)

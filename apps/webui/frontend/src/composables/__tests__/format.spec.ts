@@ -152,7 +152,7 @@ describe('formatMilliseconds / formatSignedMilliseconds：时钟偏差与误差�
     expect(formatSignedMilliseconds(Number.NEGATIVE_INFINITY)).toBe(UNAVAILABLE_TEXT)
   })
 
-  it('紧凑带符号毫秒（顶栏 NTP 徽章，ADR 0048）：取整 + 无空格单位，符号跟取整后的值走', () => {
+  it('紧凑带符号毫秒（顶栏时钟偏差徽章的数值，ADR 0054）：取整 + 无空格单位，符号跟取整后的值走', () => {
     expect(formatCompactSignedMilliseconds(12.34)).toBe('+12ms')
     expect(formatCompactSignedMilliseconds(12.5)).toBe('+13ms')  // Math.round（.5 向上）
     expect(formatCompactSignedMilliseconds(-12.6)).toBe('-13ms')

@@ -1,5 +1,5 @@
 /**
- * 资源使用率色标（顶栏 CPU / 内存 / 卷徽章、监控页卷列表与内存 / 交换使用率共用；
+ * 资源使用率色标（顶栏 CPU / 内存 / 时钟偏差徽章、监控页卷列表与内存 / 交换使用率共用；
  * 阈值只在本模块定义）
  *
  * 90% 已用等价于「10% 空闲」，与契约 sysmon §2.8 的 `thresholds.volume_free_pct` 默认值 10
@@ -45,14 +45,14 @@ export function resourceLevel(ratio: number): ResourceLevel {
   return thresholdLevel(ratio, RESOURCE_WARN_RATIO, RESOURCE_DANGER_RATIO)
 }
 
-/** 等级排序：danger > warn > normal（顶栏资源图标 / 服务徽章的「取最差」共用） */
+/** 等级排序：danger > warn > normal（服务徽章的「取最差」共用） */
 const RESOURCE_LEVEL_RANK: Record<ResourceLevel, number> = { normal: 0, warn: 1, danger: 2 }
 
 /**
  * 展示等级 → CSS 修饰类（顶栏徽章的**唯一**等级类映射）。
  *
  * 为什么放在本模块：等级类把「等级词表」与 `layout.css` 的着色规则绑在一起，分散在
- * 徽章组件 / 服务徽章 / 窄屏图标 / 浮层条目四处各自拼字符串，改词表（例如新增 caution 档）
+ * 徽章组件 / 服务徽章两处各自拼字符串，改词表（例如新增 caution 档）
  * 就会漏改一处、静默少一个颜色。`null` = 不可判读（快照未到 / 指标不可用 / 状态未知），
  * 走中性 `--unavailable` 类，不得用 normal 冒充「一切正常」。
  */

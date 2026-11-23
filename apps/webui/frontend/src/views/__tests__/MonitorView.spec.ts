@@ -864,7 +864,7 @@ describe('MonitorView 存储块（#450：四数字 + 卷容量条 + 无容量挂
     expect(card().find('[data-test="monitor-volume-insufficient"]').exists()).toBe(true)
   })
 
-  it('容量条三档走 70/90 展示分档（与顶栏卷徽章同源），normal 中性不上状态色', async () => {
+  it('容量条三档走 70/90 展示分档（与顶栏 CPU/内存徽章同源），normal 中性不上状态色', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
         { mount: '/neutral', available: true, total_bytes: 100 * GIB, used_bytes: 69 * GIB, used_ratio: 0.69 },

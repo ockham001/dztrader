@@ -136,7 +136,7 @@ import { useToastStore } from '@/stores/toast'
 // 每台服务器表 + 同步服务一行；偏差按配置阈值着色（与资源类共用 `useResourceLevel` 的定档实现
 // 与同一套等级词表），误差界越界另给「测量质量」提示且**不改变**偏差着色；三种空态（配置关闭 /
 // 尚未探测 / 全部失败）都渲染块且都不显示 0；「立即查询」置灰时长取 `manual_min_interval_sec`，
-// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。顶栏另有一枚常驻 NTP 徽章（ADR 0048）。
+// 以随后的 WS 快照（`last_probe_unix_ms` 前进）为清除信号。顶栏另有一枚时钟偏差图标徽章（ADR 0054）。
 // 刷新基线由发送方 realtime.push_interval_sec（默认 5s）决定，本页不轮询、不改 WS 契约。
 const sysmon = useSysmonStore()
 /** 历史视图 store（#79）：与实时 store 完全独立，切换视图不影响 WS 与实时快照 */
@@ -1012,7 +1012,8 @@ const coreBars = computed<CoreBar[]>(() => cpuCores.value.map(core => {
 /**
  * 每核条形容器（#435 决策 6）：用 ResizeObserver 实测容器宽度，交给纯函数
  * `coreBarColumns` 算列数——多行时每行数量尽量相等（23 + 1 这种失衡不允许出现）。
- * 与顶栏资源组同一测量模式（`Topbar.vue`）；jsdom 无布局，组件测试用可手动触发的桩。
+ * 与 history 图表的容器测量同一模式（ResizeObserver + 纯函数算列数）；jsdom 无布局，
+ * 组件测试用可手动触发的桩。
  */
 const coreBarsRef = ref<HTMLElement | null>(null)
 const coreBarsWidth = ref(0)
