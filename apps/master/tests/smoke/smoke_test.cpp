@@ -1551,10 +1551,12 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     // 回归守卫（#440 实测）：td 进程曾在 spdlog::shutdown() 之后才析构 TdApi，
     // ~TdApi 的 PersistWriter::stop() 打日志时 default logger 已是 null → SIGSEGV
     // （退出码 11）→ master 上报 Crashed。快照兜底的 Stopped 会掩盖该失败，故必须在
-    // **每一次 drain** 里记录 Crashed：Crashed 由 on_child_exit 写出、Stopped 由
-    // report_full_snapshot 兜底写出，二者先后取决于 master 线程内事件回调与快照请求的
-    // 交错；只在 Stopped 之后单独开窗，会因 Crashed 已被前序 drain 消费而恒真
-    // （审查 P1 指出的空守卫）。修复见 apps/ctp/td/td_main.cpp。
+    // **每一次 drain** 里记录 Crashed：Crashed 由 on_child_exit 写出，而快照兜底的
+    // Stopped 由 report_full_snapshot 写出——master 是单线程 io_context，on_child_exit
+    // 写帧完成后快照才可能被处理，因此 Crashed 先于快照 Stopped，会被其之前/同一轮的
+    // drain 消费；只在 Stopped 之后单独开窗会因 Crashed 已消费而恒真（审查 P1 指出的
+    // 空守卫）。守卫实现不依赖该先后（逐轮记录），并在收尾留 1s 晚到观察窗；
+    // 修复见 apps/ctp/td/td_main.cpp。
     bool saw_td_crashed = false;
     const auto drain_status = [&](std::string_view wait_stopped_for) {
         bool stopped = false;
