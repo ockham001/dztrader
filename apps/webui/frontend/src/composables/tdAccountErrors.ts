@@ -25,9 +25,9 @@ export type TdAccountErrorCode =
 /** 机器码 → 中文文案（契约 rest §2.9.7） */
 export const TD_ACCOUNT_ERROR_TEXT: Record<TdAccountErrorCode, string> = {
   admin_required: '需要管理员权限才能修改交易账户',
-  invalid_gateway: '目标交易网关不存在或未注册',
-  gateway_not_running: '目标交易网关未运行，请先启动网关',
-  account_exists: '该账户 ID 已被占用（可能属于其它交易网关），请换一个账户 ID',
+  invalid_gateway: '目标交易接口不存在或未注册',
+  gateway_not_running: '目标交易接口未运行，请先启动进程',
+  account_exists: '该账户 ID 已被占用（可能属于其它交易接口），请换一个账户 ID',
   account_not_found: '账户不存在（可能已被删除或未同步），请刷新后重试',
 }
 
@@ -44,7 +44,7 @@ export const TD_ACCOUNT_NETWORK_ERROR_TEXT = '无法连接服务器，请检查�
  * 套用任何预检码文案（会误导用户去改账户 ID / 权限）。
  */
 export function tdAccountServerErrorText(status: number | undefined): string {
-  if (status === 503) return '交易网关服务暂不可用（事件通道未就绪），请稍后重试'
+  if (status === 503) return '交易接口服务暂不可用（事件通道未就绪），请稍后重试'
   if (status === 401) return '登录已失效，请重新登录'
   if (status === 403) return TD_ACCOUNT_ERROR_TEXT.admin_required
   return TD_ACCOUNT_ERROR_FALLBACK

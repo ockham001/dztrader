@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { tdApi } from '@/api/td'
+import {
+  TD_GATEWAY_NETWORK_ERROR_TEXT,
+  tdGatewayErrorText,
+  tdGatewaysApi,
+  tdGatewayServerErrorText,
+  type TdGatewayAvailable,
+} from '@/api/tdGateways'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
 import { sessionPendingClear, sessionStateOfProgress } from '@/composables/sessionProgress'
 import {
@@ -14,6 +21,7 @@ import {
 import { useProcessStore } from '@/stores/process'
 import { useProgressStore } from '@/stores/progress'
 import type {
+  ProcessState,
   TdAccountConfig,
   TdAccountsDegradedReason,
   TdConfigAccountList,
@@ -50,6 +58,14 @@ import type { ProgressView } from '@/stores/progress'
  *   「账户消失」——否则帧里本来就没有该账户时 pending 会悬挂；
  * - 兜底超时 {@link TD_ACCOUNT_OP_TIMEOUT_MS}（5s，契约 webui-ws §5 第 1 条建议值）。
  *
+ * **交易接口卡片（ADR 0053 / #439）**：`interfaces` 把进程镜像里的 `dztd_*` 条目与账户行按
+ * `gateway` 组合成页面渲染单元；卡片本身没有 REST 列表（契约 rest §4）。
+ *
+ * **接口生命周期（契约 rest §2.10）**：`addGateway` / `startGateway` / `removeGateway` 写
+ * `/api/td/gateways/*`，pending key = `tdgw:{gateway}:{op}`，清除信号是 **进程镜像**
+ * （`process_config` 条目出现/消失、`process_status` 到 Running / 操作 event）——与账户写
+ * pending（`td:`，由 `td_rtn_config` 清）和会话 pending（`td_sess:`，由 `progress` 清）分离。
+ *
  * 唯一性预检（契约 rest §2.9.7 预检 4 + §4 前端义务）：提交前查注册表，发现 `account_id`
  * 已被任何网关占用（含已禁用/离线）→ 前端直接提示冲突并**不发请求**。这只是体验优化：
  * 权威校验在 dzweb（409 `account_exists`），两个客户端同时添加时只有服务端能裁决。
@@ -66,7 +82,7 @@ export const TD_ACCOUNT_OP_TIMEOUT_MS = 5_000
 
 /**
  * pending key 前缀（`td:{gateway}:{account}:{op}`）。三处使用点——`opKey()` 构造、
- * `addPending` 的前缀扫描、`applyTdConfig` 的整网关清除——必须共用本常量：
+ * `addPendingFor()` 的前缀扫描、`applyTdConfig` 的整网关清除——必须共用本常量：
  * 各写一份字面量时，改前缀会静默漏改其中一处（例如清除用了新前缀而构造还在用旧前缀，
  * pending 就永远清不掉、只能等 5s 超时）。
  *
@@ -137,7 +153,7 @@ export type TdAccountSubmitResult =
 
 /** 冲突提示文案（注册表条目可展示归属网关，帮用户定位是哪个网关占用了 ID） */
 export function accountConflictText(conflict: TdConfigAccountList): string {
-  return `账户 ID「${conflict.account_id}」已被交易网关 ${conflict.gateway} 占用（含已禁用/离线账户），请换一个账户 ID`
+  return `账户 ID「${conflict.account_id}」已被交易接口 ${conflict.gateway} 占用（含已禁用/离线账户），请换一个账户 ID`
 }
 
 /**
@@ -176,7 +192,7 @@ export function tdStateText(state: TdState | string | null | undefined): string 
 
 /** 降级原因文案（契约 rest §2.9.9 只有 no_gateway_snapshot 一种原因） */
 export const TD_ACCOUNTS_DEGRADED_TEXT =
-  '账户注册表暂不可用（尚未收到任何交易网关配置），列表可能不完整，正在自动重试'
+  '账户注册表暂不可用（尚未收到任何交易接口配置），列表可能不完整，正在自动重试'
 
 /** 交易账户行（页面渲染单元 = 注册表条目 ∪ 配置镜像 ∪ 状态镜像 ∪ 进度镜像） */
 export interface TdAccountRow {
@@ -198,6 +214,57 @@ export interface TdAccountRow {
   gatewayRunning: boolean
 }
 
+/**
+ * 交易接口卡片（页面渲染单元，ADR 0053）：进程镜像里每个 `dztd_*` 条目 = 一张卡片，
+ * 卡片内账户 = {@link TdAccountRow} 按 `gateway` 分组的子集。
+ *
+ * 为什么不新增列表端点（契约 rest §4）：接口身份 = 进程名，进程配置/状态镜像已是权威
+ * 来源；REST 只用于生命周期写操作（§2.10）。
+ */
+export interface TdInterfaceView {
+  /** 进程名（= exe stem = 接口身份，不可改名） */
+  name: string
+  /** 显示名：进程配置 `display_name` 优先，状态帧值次之，最后回退进程名（契约 process） */
+  displayName: string
+  /** 进程状态（契约 process ChildState：Starting/Running/Stopping/Stopped/Crashed）；无镜像为 null */
+  state: ProcessState | null
+  /** 进程是否 Running；账户写操作的门槛（后端 §2.9.7 预检 3 兜底） */
+  running: boolean
+  /** 归本接口的账户行（按 account_id 升序，继承 rows 的排序） */
+  accounts: TdAccountRow[]
+  accountCount: number
+  /** 已启用账户数（卡片头聚合） */
+  enabledCount: number
+  /** 就绪（细状态 Ready）账户数（卡片头聚合） */
+  readyCount: number
+}
+
+/** 交易接口生命周期操作（契约 rest §2.10；UI 只用 start / remove，stop 为 API 完整面） */
+export type TdGatewayOp = 'start' | 'remove'
+
+/**
+ * 接口生命周期 pending 的 key 前缀（`tdgw:{name}:{op}`）。
+ * 与账户写 pending（`td:`）和会话 pending（`td_sess:`）物理隔离：三者清除信号不同
+ *（接口 → process_config/process_status；账户写 → td_rtn_config；会话 → progress）。
+ */
+export const TD_GATEWAY_PENDING_PREFIX = 'tdgw:'
+
+/** 接口启动/删除 pending 兜底超时（进程操作口径与行情源一致：30s） */
+export const TD_GATEWAY_OP_TIMEOUT_MS = 30_000
+
+/**
+ * 接口生命周期 pending 实例。模块级单例导出供 store 与测试共享同一实例
+ *（与 `tdAccountsPending` 同型；测试可重置/断言）。
+ */
+export const tdGatewayPending = usePending()
+
+/** 接口生命周期写操作结果（语义对齐 TdAccountSubmitResult，只少 conflict 态） */
+export type TdGatewaySubmitResult =
+  | { ok: true }
+  | { ok: false; kind: 'failed'; message: string }
+  | { ok: false; kind: 'busy' }
+  | { ok: false; kind: 'timeout' }
+
 export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // === 账户注册表（REST 基线，契约 rest §2.9.9）===
   /** 注册表条目（跨网关全集，按 account_id 升序） */
@@ -205,7 +272,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   /** 注册表可用性；false = 降级（契约 rest §2.9.9，**不是**空列表） */
   const available = ref(true)
   const degradedReason = ref<TdAccountsDegradedReason | null>(null)
-  const loading = ref(false)
   const initialized = ref(false)
   const error = ref<string | null>(null)
 
@@ -229,20 +295,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   const progressStore = useProgressStore()
 
   // === 派生状态 ===
-
-  /**
-   * 已注册的交易网关名单（契约 rest §2.9.7 预检 2：进程配置中的 `dztd_*`）。
-   * 来源 = process_config 镜像（契约 process）——与 dzweb 的预检口径同源。
-   */
-  const gatewayNames = computed<string[]>(() =>
-    Object.keys(processStore.configs).filter(name => name.startsWith('dztd_')).sort())
-
-  /** 可用网关（带上运行态；页面下拉用，运行态只做提示，不放行/拦截由 dzweb 裁决） */
-  const gatewayOptions = computed<{ name: string; running: boolean }[]>(() =>
-    gatewayNames.value.map(name => ({
-      name,
-      running: processStore.statuses[name]?.state === 'Running',
-    })))
 
   /** 进程是否 Running（页面据此提示「先启动网关」；决策权仍在 dzweb 预检 3） */
   function isGatewayRunning(gateway: string): boolean {
@@ -348,12 +400,58 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       a.account_id === b.account_id ? 0 : (a.account_id < b.account_id ? -1 : 1))
   })
 
-  /** 是否「确实没有账户」空态：注册表可用且请求无错且行数为 0（降级/失败都不算空） */
-  const isEmpty = computed<boolean>(
-    () => available.value && error.value === null && rows.value.length === 0)
-
   /** 降级提示文案（可用时为空串） */
   const degradedText = computed<string>(() => (available.value ? '' : TD_ACCOUNTS_DEGRADED_TEXT))
+
+  /**
+   * 接口显示名（契约 process）：**配置镜像为唯一真相源**（`display_name` 可被 Start / SET_PROCESS_CONFIG
+   * 覆盖）；`process_status` 的 `display_name` 只作顺序竞态窗口的兜底展示，不回写配置镜像。
+   */
+  function gatewayDisplayName(name: string): string {
+    const configName = processStore.configs[name]?.['display_name']
+    if (typeof configName === 'string' && configName !== '') return configName
+    const statusName = processStore.statuses[name]?.display_name
+    if (typeof statusName === 'string' && statusName !== '') return statusName
+    return name
+  }
+
+  /**
+   * 交易接口卡片列表（ADR 0053 / 契约 rest §4）：来自 WS `process_config` + `process_status`
+   * 的 `dztd_*` 条目，按进程名升序；卡片内账户 = rows 按 gateway 分组。
+   *
+   * 取两个镜像的**并集**：两者由不同帧独立推送，启动/重连窗口内可能只到达其一
+   *（process_status 先于 process_config 是契约 process 允许的时序）。条目消失由 config 帧
+   * 全量覆盖清理，status 镜像随之被 process store 清理，不会留下幽灵卡片。
+   */
+  const interfaces = computed<TdInterfaceView[]>(() => {
+    const names = new Set<string>()
+    for (const name of Object.keys(processStore.configs)) {
+      if (name.startsWith('dztd_')) names.add(name)
+    }
+    for (const name of Object.keys(processStore.statuses)) {
+      if (name.startsWith('dztd_')) names.add(name)
+    }
+    const grouped = new Map<string, TdAccountRow[]>()
+    for (const row of rows.value) {
+      const list = grouped.get(row.gateway)
+      if (list) list.push(row)
+      else grouped.set(row.gateway, [row])
+    }
+    return [...names].sort().map(name => {
+      const accounts = grouped.get(name) ?? []
+      const state = processStore.statuses[name]?.state ?? null
+      return {
+        name,
+        displayName: gatewayDisplayName(name),
+        state,
+        running: state === 'Running',
+        accounts,
+        accountCount: accounts.length,
+        enabledCount: accounts.filter(row => row.enabled).length,
+        readyCount: accounts.filter(row => row.status?.state === 'Ready').length,
+      }
+    })
+  })
 
   // === pending 查询（页面用） ===
 
@@ -381,10 +479,17 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     return tdAccountsPending.pending[opKey(gateway, accountId, op)] === true
   }
 
-  /** 添加操作的在途态（新账户尚未进注册表，不能用 accountPending 判定） */
-  const addPending = computed<boolean>(() =>
-    Object.keys(tdAccountsPending.pending).some(key =>
-      key.startsWith(TD_PENDING_PREFIX) && key.endsWith(':add') && tdAccountsPending.pending[key] === true))
+  /**
+   * 指定交易接口的「添加账户」在途态（新账户尚未进注册表，不能用 accountPending 判定）。
+   *
+   * **按网关隔离**：key 前缀 = `td:{gateway}:`，A 卡添加中不应禁用 B 卡的添加入口
+   *（多张卡片同页，全局 addPending 会把所有卡片一起锁住）。
+   */
+  function addPendingFor(gateway: string): boolean {
+    const prefix = `${TD_PENDING_PREFIX}${gateway}:`
+    return Object.keys(tdAccountsPending.pending).some(key =>
+      key.startsWith(prefix) && key.endsWith(':add') && tdAccountsPending.pending[key] === true)
+  }
 
   // === 会话 pending 清除（契约 td-connection 前端义务 2 / 契约 progress 网关会话进度骨架） ===
 
@@ -421,6 +526,167 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
           clearSessionPending(gateway, accountId, 'login')
           clearSessionPending(gateway, accountId, 'logout')
         }
+      }
+    },
+    { deep: true },
+  )
+
+  // === 交易接口生命周期（契约 rest §2.10 / ADR 0053） ===
+  //
+  // 页面级「添加交易接口」与卡片级「启动进程 / 删除交易接口」共用本段。pending 语义：
+  // HTTP 200 只表示已写入事件通道（契约 rest §2.10），清除信号是 WS 进程镜像——
+  //   - start：`process_config` 出现该条目，或 `process_status` 到 Running；
+  //   - remove：`process_config` 条目消失（移除完成的权威信号，契约 process），或 RemoveSucceeded。
+  // 失败（StartFailed / RemoveFailed）静默清 pending：失败反馈由 NOTIFY_UI 弹窗承载
+  //（与 process store 的进程操作同一口径，避免双提示）。
+  //
+  // **注意未注册的 start（添加新接口）**：process store 在 `configsInitialized` 后过滤
+  // 不在配置镜像里的进程帧（`applyProcessStatus` 对未注册进程不写镜像），因此新接口的
+  // StartFailed 不会进入本 store 的 status 镜像——该路径没有失败信号，只能等
+  // {@link TD_GATEWAY_OP_TIMEOUT_MS} 兜底超时（`usePending` 会 toast「启动交易接口超时」），
+  // 服务端的失败原因由 NOTIFY_UI 弹窗承载。start 的**恢复**（已注册接口）以 status Running 为主。
+
+  /** 可用交易接口列表（`GET /api/td/gateways/available`；添加下拉数据源） */
+  const gatewayAvailable = ref<TdGatewayAvailable[]>([])
+  const gatewayAvailableLoading = ref(false)
+
+  /** 从任意失败对象取出用户可读文案（不泄露英文 error / snake_case code） */
+  function gatewayFailureMessage(failure: unknown): string {
+    const code = tdAccountErrorCodeOf(failure)
+    if (code !== undefined) return tdGatewayErrorText(code)
+    const status = tdAccountErrorStatusOf(failure)
+    if (status !== undefined) return tdGatewayServerErrorText(status)
+    return TD_GATEWAY_NETWORK_ERROR_TEXT
+  }
+
+  /**
+   * 拉可用交易接口列表（页面下拉打开时刷新）。
+   * 失败写 `error`（页面统一 toast + 清空），不清空已有列表（旧列表比假空态安全）。
+   */
+  async function refreshAvailableGateways(): Promise<void> {
+    gatewayAvailableLoading.value = true
+    try {
+      gatewayAvailable.value = await tdGatewaysApi.listAvailable()
+    } catch (e) {
+      error.value = gatewayFailureMessage(e)
+    } finally {
+      gatewayAvailableLoading.value = false
+    }
+  }
+
+  function gatewayOpKey(name: string, op: TdGatewayOp): string {
+    return `${TD_GATEWAY_PENDING_PREFIX}${name}:${op}`
+  }
+
+  /** 该接口是否有在途「启动/添加」操作（卡片「启动进程」与页面添加入口用） */
+  function gatewayStartPending(name: string): boolean {
+    return tdGatewayPending.pending[gatewayOpKey(name, 'start')] === true
+  }
+
+  /** 该接口是否有在途「删除」操作（卡片删除按钮用） */
+  function gatewayRemovePending(name: string): boolean {
+    return tdGatewayPending.pending[gatewayOpKey(name, 'remove')] === true
+  }
+
+  /**
+   * 提交一个接口生命周期操作：pending 保持到进程镜像确认（见本段头注释），HTTP 失败按 code 映射文案。
+   * `usePending.run` 会吞异常，因此错误先在 `fn` 内捕获进闭包（与账户写 `submit` 同一理由）。
+   */
+  async function submitGateway(
+    name: string,
+    op: TdGatewayOp,
+    request: () => Promise<unknown>,
+  ): Promise<TdGatewaySubmitResult> {
+    const key = gatewayOpKey(name, op)
+    if (tdGatewayPending.pending[key] === true) return { ok: false, kind: 'busy' }
+    let failure: unknown = null
+    let failed = false
+    const result = await tdGatewayPending.run(key, async () => {
+      try {
+        return await request()
+      } catch (e) {
+        failure = e
+        failed = true
+        throw e
+      }
+    }, {
+      timeout: TD_GATEWAY_OP_TIMEOUT_MS,
+      opLabel: op === 'start' ? '启动交易接口' : '删除交易接口',
+      distinguishTimeout: true,
+    })
+    if (result === PENDING_TIMEOUT) return { ok: false, kind: 'timeout' }
+    if (failed) return { ok: false, kind: 'failed', message: gatewayFailureMessage(failure) }
+    return { ok: true }
+  }
+
+  /**
+   * 添加交易接口（页面级唯一入口）：动态注册 + 启动（契约 rest §2.10 `start` 端点）。
+   * `name` 必须匹配 `dztd_*`（后端 400 `invalid_gateway` 兜底，这里只挡明显写错的输入）。
+   */
+  async function addGateway(name: string, displayName?: string): Promise<TdGatewaySubmitResult> {
+    if (!name.startsWith('dztd_')) {
+      return { ok: false, kind: 'failed', message: tdGatewayErrorText('invalid_gateway') }
+    }
+    const trimmed = displayName?.trim() ?? ''
+    return submitGateway(name, 'start', () =>
+      tdGatewaysApi.start(name, trimmed === '' ? undefined : { display_name: trimmed }))
+  }
+
+  /** 恢复非 Running 接口（崩溃重启用；ADR 0053 明确不得以删除重加代替恢复） */
+  async function startGateway(name: string): Promise<TdGatewaySubmitResult> {
+    return submitGateway(name, 'start', () => tdGatewaysApi.start(name))
+  }
+
+  /**
+   * 移除交易接口（停止进程 + 删除进程配置条目）。前端只在卡片无账户时提供入口，
+   * 权威 guard 在服务端 409 `gateway_has_accounts`（契约 rest §2.10 预检 5）。
+   */
+  async function removeGateway(name: string): Promise<TdGatewaySubmitResult> {
+    return submitGateway(name, 'remove', () => tdGatewaysApi.remove(name))
+  }
+
+  // 清除信号 1：process_status —— start 到 Running 清；StartFailed/Remove 结果清并静默失败
+  watch(
+    () => processStore.statuses,
+    (statuses) => {
+      for (const [name, status] of Object.entries(statuses)) {
+        if (!name.startsWith('dztd_')) continue
+        const startKey = gatewayOpKey(name, 'start')
+        if (tdGatewayPending.pending[startKey] === true) {
+          if (status.state === 'Running') tdGatewayPending.resolve(startKey)
+          else if (status.event === 'StartFailed') tdGatewayPending.fail(startKey)
+        }
+        const removeKey = gatewayOpKey(name, 'remove')
+        if (tdGatewayPending.pending[removeKey] === true) {
+          if (status.event === 'RemoveSucceeded') tdGatewayPending.resolve(removeKey)
+          else if (status.event === 'RemoveFailed') tdGatewayPending.fail(removeKey)
+        }
+      }
+    },
+    { deep: true },
+  )
+
+  // 清除信号 2：process_config —— 只认**真实的状态迁移**，不认当前快照（权威信号，契约 process）：
+  //   - start：仅 `未注册 → 已注册`（`!old.has → new.has`）清 pending——接口本就在配置里时
+  //     任何无关配置帧都不该把在途 start 提前清掉（恢复路径以 status Running 为主）；
+  //   - remove：仅 `已注册 → 未注册`（`old.has → !new.has`）清 pending——条目一直不存在的
+  //     配置帧不能冒充「移除完成」。
+  watch(
+    () => processStore.configs,
+    (processConfigs, previousConfigs) => {
+      const has = (map: Record<string, unknown> | undefined, name: string): boolean =>
+        map !== undefined && Object.prototype.hasOwnProperty.call(map, name)
+      for (const key of Object.keys(tdGatewayPending.pending)) {
+        if (tdGatewayPending.pending[key] !== true) continue
+        const rest = key.slice(TD_GATEWAY_PENDING_PREFIX.length)
+        const separator = rest.lastIndexOf(':')
+        if (separator <= 0) continue
+        const name = rest.slice(0, separator)
+        const op = rest.slice(separator + 1)
+        const wasPresent = has(previousConfigs, name)
+        const isPresent = has(processConfigs, name)
+        if (op === 'start' && !wasPresent && isPresent) tdGatewayPending.resolve(key)
+        else if (op === 'remove' && wasPresent && !isPresent) tdGatewayPending.resolve(key)
       }
     },
     { deep: true },
@@ -649,7 +915,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   async function loadRegistry(): Promise<void> {
     if (disposed) return
     const seq = ++requestSeq
-    loading.value = true
     try {
       const response = await tdApi.listAccounts()
       if (disposed || seq !== requestSeq) return
@@ -672,10 +937,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       error.value = e instanceof Error ? e.message : String(e)
       scheduleRetry()
     } finally {
-      if (seq === requestSeq) {
-        loading.value = false
-        initialized.value = true
-      }
+      if (seq === requestSeq) initialized.value = true
     }
   }
 
@@ -706,23 +968,20 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     registry,
     available,
     degradedReason,
-    loading,
     initialized,
     error,
     configs,
     statuses,
     rows,
-    isEmpty,
+    interfaces,
     degradedText,
-    gatewayNames,
-    gatewayOptions,
-    addPending,
     accountIdConflict,
     registryEntry,
     gatewayOf,
     accountPending,
     sessionPending,
     isOpPending,
+    addPendingFor,
     addAccount,
     updateAccount,
     removeAccount,
@@ -736,6 +995,15 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     handleDataChanged,
     dispose,
     isGatewayRunning,
+    // 交易接口生命周期（契约 rest §2.10 / ADR 0053）
+    gatewayAvailable,
+    gatewayAvailableLoading,
+    refreshAvailableGateways,
+    gatewayStartPending,
+    gatewayRemovePending,
+    addGateway,
+    startGateway,
+    removeGateway,
     clearError(): void { error.value = null },
   }
 })

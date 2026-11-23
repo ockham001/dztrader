@@ -33,7 +33,7 @@ export interface NavItem {
 export const appRoutes: RouteRecordRaw[] = [
   { path: '/', name: 'dashboard', component: () => import('@/views/DashboardView.vue'), meta: { title: '仪表盘', icon: 'dashboard' } },
   { path: '/market-sources', name: 'market-sources', component: () => import('@/views/MarketSourcesView.vue'), meta: { title: '行情源', icon: 'ArrowWallRight' } },
-  // 交易账户（#251）：账户配置页（跨网关账户列表 + 增删改启停 + 唯一性冲突提示），已交付 → 不带 wip
+  // 交易账户（#251/#439）：交易接口卡片 + 卡片内账户表（ADR 0053，账户表单不选网关），已交付 → 不带 wip
   { path: '/trading', name: 'trading', component: () => import('@/views/TradingAccountsView.vue'), meta: { title: '交易账户', icon: 'profile' } },
   // 交易数据（#246 委托 / #248 成交）：两个 tab 均已交付，不带 wip
   { path: '/trading-data', name: 'trading-data', component: () => import('@/views/TradingDataView.vue'), meta: { title: '交易数据', icon: 'Bar-list' } },

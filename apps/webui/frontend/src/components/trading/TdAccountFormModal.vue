@@ -7,18 +7,19 @@
  * - **密码是「缺失/空串/`****` = 保留旧值」**（契约 td-config §2.3）：编辑时留空即不修改，
  *   占位提示 `****`（回报恒脱敏），前端**从不**回填明文（镜像里的 password 恒为 `"****"`）。
  *
+ * **所属交易接口由卡片传入（`gateway` prop）**，不再有网关下拉（ADR 0053 / #439）：
+ * 账户是接口内部配置项，归属由所在卡片固定，用户没有"把账户配到别的接口"这个动作。
+ *
  * 字段按接口类型选择（契约 rest §4 前端义务）：本期只有 `ctp`，`ext` 字段集由
  * {@link CTP_FIELD_KEYS} 单一登记；未来新增接口类型时在这里按 interfaceType 分派，
  * 通用层字段（account_id/enabled/risk_control_enabled/currency_id）不动。
  *
- * 组件只负责**收集与校验**，不发起请求、不碰 store：提交由父页面调 store（单一写入点）。
+ * 组件只负责**收集与校验**，不发起请求、不碰 store：提交由父组件（交易接口卡片）调 store（单一写入点）。
  */
 import { computed, ref, watch } from 'vue'
 import Modal from '@/components/shared/Modal.vue'
-import Dropdown from '@/components/shared/Dropdown.vue'
 import Icon from '@/components/shared/Icon.vue'
 import { useFieldId } from '@/composables/useFieldId'
-import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import type { TdAccountRow } from '@/stores/tdAccounts'
 
 export interface TdAccountFormValue {
@@ -36,15 +37,14 @@ export interface TdAccountFormValue {
   frontends: { address: string; label: string; enabled: boolean }[]
   auth_code: string
   app_id: string
-  flow_dir: string
 }
 
 const props = defineProps<{
   open: boolean
   /** null = 添加；非 null = 编辑该行 */
   editing: TdAccountRow | null
-  /** 可选的交易网关进程名（来自 process_config 镜像的 dztd_*） */
-  gateways: { name: string; running: boolean }[]
+  /** 所属交易接口进程名（所在卡片固定；不可在表单内修改） */
+  gateway: string
   /** 提交中（按钮 spinner + 禁用） */
   submitting: boolean
   /** 提交失败文案（表单内展示，不清空用户输入） */
@@ -58,7 +58,9 @@ const emit = defineEmits<{
 
 const fieldId = useFieldId()
 
-/** 空白表单（添加态的初值：默认启用、人民币、无前置） */
+/** 空白表单（添加态的初值：默认启用、无前置）。
+ *  `currency_id` 不在表单暴露：币种应由账户/柜台回报决定（见模板注释），协议字段暂按契约
+ *  默认 CNY 提交，等「柜台回报推导币种」落地后改由网关填充。 */
 function emptyForm(gateway: string): TdAccountFormValue {
   return {
     account_id: '',
@@ -73,7 +75,6 @@ function emptyForm(gateway: string): TdAccountFormValue {
     frontends: [],
     auth_code: '',
     app_id: '',
-    flow_dir: '',
   }
 }
 
@@ -106,7 +107,6 @@ function formFromRow(row: TdAccountRow): TdAccountFormValue {
     })),
     auth_code: ext?.auth_code ?? '',
     app_id: ext?.app_id ?? '',
-    flow_dir: ext?.flow_dir ?? '',
   }
 }
 
@@ -117,9 +117,7 @@ watch(() => [props.open, props.editing], () => {
     form.value = formFromRow(props.editing)
     return
   }
-  // 添加：默认选第一个可用网关（有 Running 的优先），无网关时留空由用户选择
-  const preferred = props.gateways.find(g => g.running)?.name ?? props.gateways[0]?.name ?? ''
-  form.value = emptyForm(preferred)
+  form.value = emptyForm(props.gateway)
 }, { immediate: true })
 
 const isEditing = computed(() => props.editing !== null)
@@ -130,12 +128,6 @@ const isCtp = computed(() => {
   const underscore = tail.indexOf('_')
   return (underscore < 0 ? tail : tail.slice(0, underscore)) === 'ctp'
 })
-
-const gatewayItems = computed<DropdownItem[]>(() => props.gateways.map(g => ({
-  value: g.name,
-  label: g.running ? g.name : `${g.name}（未运行）`,
-  dot: g.running ? 'var(--status-success-default)' : 'var(--status-warning-default)',
-})))
 
 /** account_id 长度上限：`DzAccountId` 容量 31 字节（契约 rest §2.9.7 预检 4） */
 const ACCOUNT_ID_MAX_BYTES = 31
@@ -148,7 +140,6 @@ const accountIdEmpty = computed(() => form.value.account_id.trim() === '')
 const validationText = computed<string>(() => {
   if (!isEditing.value && accountIdEmpty.value) return '账户 ID 不能为空'
   if (accountIdTooLong.value) return `账户 ID 不能超过 ${ACCOUNT_ID_MAX_BYTES} 字节（当前 ${accountIdBytes.value}）`
-  if (form.value.gateway === '') return '请选择交易网关'
   if (isCtp.value) {
     if (form.value.broker_id.trim() === '') return 'CTP 经纪公司代码（broker_id）不能为空'
     if (form.value.user_id.trim() === '') return 'CTP 用户代码（user_id）不能为空'
@@ -172,7 +163,6 @@ function submit(): void {
     product_info: raw.product_info.trim(),
     auth_code: raw.auth_code.trim(),
     app_id: raw.app_id.trim(),
-    flow_dir: raw.flow_dir.trim(),
     frontends: raw.frontends
       .map(fe => ({ address: fe.address.trim(), label: fe.label.trim(), enabled: fe.enabled }))
       .filter(fe => fe.address !== ''),
@@ -201,22 +191,11 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
     :title="isEditing ? `编辑交易账户：${form.account_id}` : '添加交易账户'"
     @close="emit('close')"
   >
-    <div class="dialog-form">
+    <div class="td-form dialog-form">
       <div class="dialog-field">
-        <label class="dialog-field__label" :for="fieldId('account-gateway')">交易网关</label>
-        <Dropdown
-          :id="fieldId('account-gateway')"
-          :items="gatewayItems"
-          v-model="form.gateway"
-          :placeholder="gateways.length === 0 ? '无已注册交易网关' : '请选择交易网关'"
-          :disabled="isEditing || gateways.length === 0"
-        />
-        <span v-if="gateways.length === 0" class="dialog-field__hint">
-          未发现已注册的交易网关进程（dztd_*），请先在行情源页添加并启动交易网关
-        </span>
-        <span v-else-if="isEditing" class="dialog-field__hint">
-          网关由账户注册表决定，不可在此修改（修改账户不会迁移归属）
-        </span>
+        <span class="dialog-field__label">所属交易接口</span>
+        <span class="td-form__gateway" data-test="td-form-gateway">{{ gateway }}</span>
+        <span class="dialog-field__hint">账户归属于所在交易接口，不可在此修改</span>
       </div>
 
       <div class="dialog-field">
@@ -227,13 +206,13 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
             v-model="form.account_id"
             type="text"
             :readonly="isEditing"
-            :placeholder="isEditing ? '' : '账户唯一标识，跨全部交易网关唯一'"
+            :placeholder="isEditing ? '' : '账户唯一标识，全部交易接口间唯一'"
             autocomplete="off"
           >
         </div>
         <span class="dialog-field__hint" :class="{ 'td-form__hint--warn': accountIdTooLong }">
           <template v-if="isEditing">账户 ID 是不可变标识，不可修改</template>
-          <template v-else>跨全部交易网关唯一（含已禁用/离线账户），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节</template>
+          <template v-else>全部交易接口间唯一（含已禁用/离线账户），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节</template>
           <template v-if="!isEditing"> · 当前 {{ accountIdBytes }}/{{ ACCOUNT_ID_MAX_BYTES }}</template>
         </span>
       </div>
@@ -249,12 +228,9 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
         </label>
       </div>
 
-      <div class="dialog-field">
-        <label class="dialog-field__label" :for="fieldId('account-currency')">账户币种</label>
-        <div class="ds-input">
-          <input :id="fieldId('account-currency')" v-model="form.currency_id" type="text" placeholder="CNY" autocomplete="off">
-        </div>
-      </div>
+      <!-- 账户币种：不做用户配置。币种应由账户/柜台给出（CTP 资金账户查询回报自带
+           CurrencyID），平台侧人工填写没有消费者且会引入错配；协议字段 currency_id
+           暂保留（契约 td-config §2.2 通用层，默认 CNY），推导落地前由网关按 CNY 处理。 -->
 
       <!-- ===== CTP ext（interface_type = ctp，契约 td-config §2.3） ===== -->
       <template v-if="isCtp">
@@ -292,32 +268,27 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
           </span>
         </div>
 
-        <div class="td-form__grid">
-          <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-product-info')">产品信息</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-product-info')" v-model="form.product_info" type="text" placeholder="选填" autocomplete="off">
-            </div>
-          </div>
-          <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-flow-dir')">流文件目录</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-flow-dir')" v-model="form.flow_dir" type="text" placeholder="留空 = 网关自动构造" autocomplete="off">
-            </div>
+        <!-- 流文件目录不在表单提供：留空/缺失 = 网关自动构造（契约 td-config §2.3），
+             用户不需要也不应该管理网关的本地文件布局。 -->
+
+        <div class="dialog-field">
+          <label class="dialog-field__label" :for="fieldId('ctp-product-info')">产品信息</label>
+          <div class="ds-input">
+            <input :id="fieldId('ctp-product-info')" v-model="form.product_info" type="text" placeholder="选填" autocomplete="off">
           </div>
         </div>
 
         <div class="td-form__grid">
           <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-auth-code')">认证码</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-auth-code')" v-model="form.auth_code" type="text" placeholder="选填" autocomplete="off">
-            </div>
-          </div>
-          <div class="dialog-field">
             <label class="dialog-field__label" :for="fieldId('ctp-app-id')">AppID</label>
             <div class="ds-input">
               <input :id="fieldId('ctp-app-id')" v-model="form.app_id" type="text" placeholder="选填" autocomplete="off">
+            </div>
+          </div>
+          <div class="dialog-field">
+            <label class="dialog-field__label" :for="fieldId('ctp-auth-code')">认证码</label>
+            <div class="ds-input">
+              <input :id="fieldId('ctp-auth-code')" v-model="form.auth_code" type="text" placeholder="选填" autocomplete="off">
             </div>
           </div>
         </div>
@@ -403,6 +374,34 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 </template>
 
 <style scoped>
+/* 最小 layout 修复（2026-11-23 验收发现）：全局 `.dialog-field` 是为「label 80px 右对齐 +
+   输入框同行 + hint 同行」的窄单行弹窗设计的；本表单标签长（经纪公司代码/账户 ID）、
+   字段多、还有 hint，沿用同一行会把标签挤成逐字换行、把输入框挤扁。这里把字段改成纵向：
+   label 在上、输入框独占一行、hint 在下。仅作用于本弹窗（scoped），不改全局组件。 */
+.td-form .dialog-field {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--spacer-4);
+}
+
+.td-form .dialog-field__label {
+  width: auto;
+  text-align: left;
+}
+
+/* 纵向排列后不再让输入框按 flex 主轴纵向拉伸，宽度撑满字段列；
+   select/textarea 与 input 同规则（当前表单未用，保持与全局 .dialog-field 子项对称）。 */
+.td-form .dialog-field > .ds-input,
+.td-form .dialog-field > .ds-select-wrap,
+.td-form .dialog-field > .ds-textarea {
+  flex: none;
+  width: 100%;
+}
+
+.td-form .dialog-field__hint {
+  margin-top: var(--spacer-4);
+}
+
 .td-form__row {
   display: flex;
   align-items: center;
@@ -445,6 +444,13 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 
 .td-form__hint--warn {
   color: var(--status-warning-default);
+}
+
+/* 所属交易接口：只读展示（不再是下拉，ADR 0053） */
+.td-form__gateway {
+  font-size: var(--body-base-font-size);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-default);
 }
 
 /* #346：原模板内联 minHeight: 'auto' 归位（压住 .ds-check 的 min-height: 40px）；

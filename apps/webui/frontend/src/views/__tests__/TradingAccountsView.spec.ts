@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { useTdAccountsStore, tdAccountsPending } from '@/stores/tdAccounts'
+import { useTdAccountsStore, tdAccountsPending, tdGatewayPending } from '@/stores/tdAccounts'
 import { useAuthStore } from '@/stores/auth'
 import { useProcessStore } from '@/stores/process'
 import { useToastStore } from '@/stores/toast'
-import { useProgressStore } from '@/stores/progress'
 import { tdApi } from '@/api/td'
+import { tdGatewaysApi } from '@/api/tdGateways'
+import type { ProcessState } from '@/types/api'
 import TradingAccountsView from '../TradingAccountsView.vue'
 
 vi.mock('@/api/td', () => ({
@@ -20,390 +21,390 @@ vi.mock('@/api/td', () => ({
   },
 }))
 
+vi.mock('@/api/tdGateways', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/tdGateways')>()
+  return {
+    ...actual,
+    tdGatewaysApi: {
+      listAvailable: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+      remove: vi.fn(),
+    },
+  }
+})
+
 /**
- * 交易账户配置页（#251；契约 rest §2.9.7/§2.9.9/§4）。
+ * 交易账户页（#439 / ADR 0053；契约 rest §2.9.7/§2.9.9/§2.10/§4）。
  *
- * 页面级契约事实（store 已覆盖的不重复，这里固定「用户看到什么」）：
- * - 降级 `available:false` → 展示降级提示，**不得**当作空列表；
- * - 非 admin → 写操作禁用并给出原因（契约 rest §2.9.7 预检 1）；
- * - 删除必须二次确认（确认框未确认不发请求）；
- * - 冲突提示可见且不发请求；密码不展示明文（回报恒为 ****）；
- * - 细状态/交易日/登录时间来自 td_rtn_status，未上报显示占位。
+ * 页面级契约事实（卡片细节已在 TdInterfaceCard.spec 覆盖，这里固定「页面给出什么」）：
+ * - 页面 = 交易接口卡片列表，导航/页头文案仍是「交易账户」；空系统 → 空态 + 添加入口；
+ * - 卡片来源 = WS process_config / process_status 的 dztd_* 条目（不拉列表端点）；
+ * - 页面级只有 1 个入口「添加交易接口」：available 下拉 + 显示名弹窗 + 添加即 start；
+ * - 非 admin：无接口级按钮、账户写按钮禁用（现有权限行为保持）；
+ * - 账户注册表降级 → 展示降级提示，不把降级当空列表。
  */
+type TdAccountsStoreView = ReturnType<typeof useTdAccountsStore>
+
 const stubs = {
   Icon: { props: ['name', 'size'], template: '<span class="icon" :data-icon="name" />' },
   Modal: {
     props: ['open', 'title'],
     template: '<div v-if="open" class="modal-stub" :data-title="title"><slot /><div class="modal-footer-stub"><slot name="footer" /></div></div>',
   },
-  Dropdown: {
-    props: ['items', 'modelValue', 'id', 'placeholder', 'disabled'],
-    template: '<select class="dropdown-stub"><option v-for="i in items" :key="i.value" :value="i.value">{{ i.label }}</option></select>',
-  },
 }
 
-/** 管理员登录态（页面写操作前置） */
 function loginAsAdmin(): void {
-  const auth = useAuthStore()
-  auth.user = {
+  useAuthStore().user = {
     id: 1, username: 'admin', display_name: 'Admin', email: 'a@x.com',
     role: 'admin', status: 'online', created_at: '2026-08-01',
   }
 }
 
 function loginAsUser(): void {
-  const auth = useAuthStore()
-  auth.user = {
+  useAuthStore().user = {
     id: 2, username: 'bob', display_name: 'Bob', email: 'b@x.com',
     role: 'user', status: 'online', created_at: '2026-08-01',
   }
 }
 
-function registerGateway(name: string, running = true): void {
+/** 登记一个 dztd_* 进程（卡片来源 = process 镜像） */
+function registerGateway(
+  name: string,
+  options: { running?: boolean; displayName?: string; state?: ProcessState } = {},
+): void {
+  const running = options.running ?? true
   const process = useProcessStore()
-  process.applyProcessConfig({ [name]: { exe: `${name}.exe` } })
+  process.applyProcessConfig({
+    ...process.configs,
+    [name]: { exe: `${name}.exe`, display_name: options.displayName ?? name },
+  })
   process.applyProcessStatus({
     name,
-    state: running ? 'Running' : 'Stopped',
+    state: options.state ?? (running ? 'Running' : 'Stopped'),
     pid: running ? 100 : 0,
   })
 }
 
-function accountRow(overrides: Record<string, unknown> = {}) {
-  return { account_id: 'account_001', gateway: 'dztd_ctp', enabled: true, ...overrides }
+function mockRegistry(accounts: { account_id: string; gateway: string; enabled?: boolean }[]): void {
+  vi.mocked(tdApi.listAccounts).mockResolvedValue({
+    available: true,
+    accounts: accounts.map(account => ({ enabled: true, ...account })),
+  })
 }
 
-describe('TradingAccountsView · 列表与状态（契约 rest §2.9.9、契约 td-status）', () => {
+function mountPage() {
+  return mount(TradingAccountsView, { global: { stubs } })
+}
+
+describe('TradingAccountsView · 空态与卡片渲染（ADR 0053 / 契约 rest §4）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.resetAllMocks()
     tdAccountsPending.__resetForTests()
+    tdGatewayPending.__resetForTests()
     loginAsAdmin()
-    registerGateway('dztd_ctp')
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] })
+    mockRegistry([])
+    vi.mocked(tdGatewaysApi.listAvailable).mockResolvedValue([])
   })
 
   afterEach(() => {
     useTdAccountsStore().dispose()
   })
 
-  it('挂载即拉注册表并渲染账户行与聚合数', async () => {
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({
-      available: true,
-      accounts: [accountRow(), accountRow({ account_id: 'account_002', enabled: false })],
-    })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  it('进程配置快照未到达：先给加载占位，不闪「还没有交易接口」空态', async () => {
+    const w = mountPage()
     await flushPromises()
 
-    expect(tdApi.listAccounts).toHaveBeenCalledTimes(1)
+    expect(w.find('[data-test="td-interfaces-loading"]').exists()).toBe(true)
+    expect(w.find('[data-test="td-interfaces-loading"]').text()).toContain('正在读取交易接口进程配置')
+    expect(w.find('[data-test="td-interfaces-empty"]').exists()).toBe(false)
+  })
+
+  it('无任何交易接口（镜像已就绪）：空态 + 页面级唯一入口「添加交易接口」，标题仍是「交易账户」', async () => {
+    // process_config 全量帧到达 = 镜像就绪（空配置也是有效快照，之后才允许判空）
+    useProcessStore().applyProcessConfig({})
+    const w = mountPage()
+    await flushPromises()
+
     expect(w.text()).toContain('交易账户')
-    expect(w.find('[data-test="td-account-count"]').text()).toContain('共 2 个账户')
-    expect(w.find('[data-test="td-account-count"]').text()).toContain('启用 1')
-    expect(w.find('[data-test="td-account-row-account_001"]').exists()).toBe(true)
-    expect(w.find('[data-test="td-account-row-account_002"]').exists()).toBe(true)
+    expect(w.find('[data-test="td-interface-count"]').text()).toContain('共 0 个交易接口')
+    expect(w.find('[data-test="td-interfaces-empty"]').exists()).toBe(true)
+    // 页面级只有 1 个入口：SyncSelect 触发器（带 Plus 前缀），没有第二个按钮
+    expect(w.find('[data-test="td-add-interface"]').exists()).toBe(true)
+    expect(w.find('[data-test="td-add-interface"]').text()).toContain('添加交易接口')
+    expect(w.findAll('button')).toHaveLength(1)
   })
 
-  it('细状态/交易日/登录时间来自 td_rtn_status；未上报显示占位', async () => {
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({
-      available: true,
-      accounts: [accountRow(), accountRow({ account_id: 'account_002' })],
-    })
-    const store = useTdAccountsStore()
-    store.applyTdStatus('dztd_ctp:account_001', {
-      account_id: 'account_001',
-      state: 'Ready',
-      date: '20260808',
-      login_time: '2026-08-08 08:45:32',
-      progress_desc: 'ready',
-      progress_min: 0,
-      progress_max: 10,
-      progress_current: 10,
-      ext: {},
-    })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  it('卡片来自 process 镜像：显示名/进程名/状态/账户；页头聚合计数', async () => {
+    registerGateway('dztd_ctp', { displayName: 'CTP 交易接口' })
+    registerGateway('dztd_xtp', { displayName: 'XTP 交易接口', running: false })
+    mockRegistry([
+      { account_id: 'account_001', gateway: 'dztd_ctp' },
+      { account_id: 'account_009', gateway: 'dztd_xtp' },
+    ])
+    const w = mountPage()
     await flushPromises()
 
-    const ready = w.find('[data-test="td-account-row-account_001"]')
-    expect(ready.find('[data-test="td-account-state"]').text()).toBe('就绪')
-    expect(ready.text()).toContain('2026-08-08')
-    expect(ready.text()).toContain('2026-08-08 08:45:32')
+    expect(w.find('[data-test="td-interface-count"]').text()).toContain('共 2 个交易接口 · 2 个账户')
+    expect(w.find('[data-test="td-interface-card-dztd_ctp"]').exists()).toBe(true)
+    expect(w.find('[data-test="td-interface-card-dztd_xtp"]').exists()).toBe(true)
 
-    // 未上报：占位而不是"未启动/今天"之类的伪造值
-    const unknown = w.find('[data-test="td-account-row-account_002"]')
-    expect(unknown.find('[data-test="td-account-state"]').text()).toBe('—')
-    expect(unknown.text()).toContain('—')
-    expect(w.find('[data-test="td-account-count"]').text()).toContain('就绪 1')
+    const ctp = w.find('[data-test="td-interface-card-dztd_ctp"]')
+    expect(ctp.find('[data-test="td-interface-name"]').text()).toBe('CTP 交易接口')
+    expect(ctp.find('[data-test="td-interface-process"]').text()).toBe('dztd_ctp')
+    expect(ctp.find('[data-test="td-interface-state"]').text()).toContain('运行中')
+    expect(ctp.find('[data-test="td-account-row-account_001"]').exists()).toBe(true)
+
+    const xtp = w.find('[data-test="td-interface-card-dztd_xtp"]')
+    expect(xtp.find('[data-test="td-interface-state"]').text()).toContain('已停止')
+    expect(xtp.find('[data-test="td-account-row-account_009"]').exists()).toBe(true)
   })
 
-  it('注册表 available:false → 展示降级提示，且不当作空列表', async () => {
+  it('账户注册表降级 → 展示降级提示，配置镜像里的账户照常进卡片（不当作无账户）', async () => {
+    registerGateway('dztd_ctp', { displayName: 'CTP 交易接口' })
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: false, reason: 'no_gateway_snapshot',
     })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+    const store = useTdAccountsStore()
+    store.applyTdConfig('dztd_ctp', {
+      qry_account_interval_s: 5,
+      qry_flush_interval_ms: 1500,
+      accounts: [{
+        account_id: 'account_001',
+        enabled: true,
+        ext: { broker_id: '9999', user_id: 'u1', password: '****' },
+      }],
+      ext: {},
+    })
+    const w = mountPage()
     await flushPromises()
 
     expect(w.find('[data-test="td-accounts-degraded"]').exists()).toBe(true)
     expect(w.find('[data-test="td-accounts-degraded"]').text()).toContain('账户注册表暂不可用')
-    // 关键契约：降级不显示"还没有配置任何交易账户"（用户会以为账户被删了）
-    expect(w.find('[data-test="td-accounts-empty"]').exists()).toBe(false)
-  })
-
-  it('成功读到空注册表 → 空态提示（与降级可区分）', async () => {
-    const w = mount(TradingAccountsView, { global: { stubs } })
-    await flushPromises()
-
-    expect(w.find('[data-test="td-accounts-empty"]').exists()).toBe(true)
-    expect(w.find('[data-test="td-accounts-degraded"]').exists()).toBe(false)
-  })
-
-  it('降级但配置镜像有账户 → 仍展示账户行（降级不等于隐藏事实）', async () => {
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({
-      available: false, reason: 'no_gateway_snapshot',
-    })
-    const store = useTdAccountsStore()
-    store.applyTdConfig('dztd_ctp', {
-      qry_account_interval_s: 5,
-      qry_flush_interval_ms: 1500,
-      accounts: [{
-        account_id: 'account_001', enabled: true,
-        ext: { broker_id: '9999', user_id: 'u1', password: '****' },
-      }],
-      ext: {},
-    })
-    const w = mount(TradingAccountsView, { global: { stubs } })
-    await flushPromises()
-
-    expect(w.find('[data-test="td-accounts-degraded"]').exists()).toBe(true)
     expect(w.find('[data-test="td-account-row-account_001"]').exists()).toBe(true)
   })
 
-  it('密码不展示明文（配置镜像里的值恒为 ****，页面也不提供明文入口）', async () => {
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [accountRow()] })
-    const store = useTdAccountsStore()
-    store.applyTdConfig('dztd_ctp', {
-      qry_account_interval_s: 5,
-      qry_flush_interval_ms: 1500,
-      accounts: [{
-        account_id: 'account_001', enabled: true,
-        ext: { broker_id: '9999', user_id: 'u1', password: '****' },
-      }],
-      ext: {},
-    })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  it('非 admin：无添加交易接口入口，显示只读提示；卡片内无接口级按钮', async () => {
+    loginAsUser()
+    registerGateway('dztd_ctp', { displayName: 'CTP 交易接口' })
+    mockRegistry([{ account_id: 'account_001', gateway: 'dztd_ctp' }])
+    const w = mountPage()
     await flushPromises()
 
-    // 列表不渲染任何密码文本；打开编辑表单也不把 **** 当作用户可读的密码回显
-    expect(w.text()).not.toContain('password')
+    expect(w.find('[data-test="td-add-interface"]').exists()).toBe(false)
+    expect(w.find('[data-test="td-accounts-readonly"]').exists()).toBe(true)
+    // 契约 AC5：非 admin 无删除/启停接口按钮（不是禁用）
+    expect(w.find('[data-test="td-interface-remove"]').exists()).toBe(false)
+    expect(w.find('[data-test="td-interface-start"]').exists()).toBe(false)
+    // 账户写按钮禁用（现有权限行为保持）
+    expect(w.find('[data-test="td-card-add-account"]').attributes('disabled')).toBeDefined()
+    expect(w.find('[data-test="td-edit-account_001"]').attributes('disabled')).toBeDefined()
   })
 })
 
-describe('TradingAccountsView · 权限与写操作（契约 rest §2.9.7）', () => {
+describe('TradingAccountsView · 添加交易接口（契约 rest §2.10，与行情源页同构）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.resetAllMocks()
     tdAccountsPending.__resetForTests()
-    registerGateway('dztd_ctp')
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [accountRow()] })
+    tdGatewayPending.__resetForTests()
+    loginAsAdmin()
+    mockRegistry([])
   })
 
   afterEach(() => {
     useTdAccountsStore().dispose()
   })
 
-  it('非 admin：添加/编辑/删除/启停全部禁用，并展示只读原因', async () => {
-    loginAsUser()
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  function mockAvailable(): void {
+    vi.mocked(tdGatewaysApi.listAvailable).mockResolvedValue([
+      { name: 'dztd_ctp', display_name: 'CTP 交易接口', added: false, running: false },
+      { name: 'dztd_xtp', display_name: 'XTP 交易接口', added: true, running: true },
+    ])
+  }
+
+  async function openDropdown(w: ReturnType<typeof mountPage>): Promise<void> {
+    await w.find('[data-test="td-add-interface"] .ds-sync-select__trigger').trigger('click')
+    await flushPromises()
+  }
+
+  it('打开下拉即刷新 available，已添加项标注「(已添加)」', async () => {
+    mockAvailable()
+    const w = mountPage()
     await flushPromises()
 
-    expect(w.find('[data-test="td-accounts-readonly"]').exists()).toBe(true)
-    expect(w.find('[data-test="td-add-account"]').attributes('disabled')).toBeDefined()
-    expect(w.find('[data-test="td-edit-account_001"]').attributes('disabled')).toBeDefined()
-    expect(w.find('[data-test="td-toggle-account_001"]').attributes('disabled')).toBeDefined()
-    expect(w.find('[data-test="td-remove-account_001"]').attributes('disabled')).toBeDefined()
+    await openDropdown(w)
+
+    expect(tdGatewaysApi.listAvailable).toHaveBeenCalled()
+    const items = w.findAll('.ds-sync-select__item').map(item => item.text())
+    expect(items).toEqual(['CTP 交易接口', 'XTP 交易接口 (已添加)'])
   })
 
-  it('删除必须先二次确认：未确认不发请求，确认后才发 DELETE', async () => {
-    loginAsAdmin()
-    vi.mocked(tdApi.removeAccount).mockResolvedValue({ ok: true })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  it('选择未添加项 → 显示名弹窗 → 确认调 start；WS 条目到达后卡片出现', async () => {
+    mockAvailable()
+    vi.mocked(tdGatewaysApi.start).mockResolvedValue({ ok: true })
+    const w = mountPage()
+    await flushPromises()
+    await openDropdown(w)
+
+    await w.findAll('.ds-sync-select__item')[0].trigger('click')
     await flushPromises()
 
-    await w.find('[data-test="td-remove-account_001"]').trigger('click')
+    const modal = w.find('.modal-stub')
+    expect(modal.attributes('data-title')).toContain('添加交易接口：dztd_ctp')
+    const displayInput = w.find('input[placeholder="例如：CTP 交易接口"]')
+    expect((displayInput.element as HTMLInputElement).value).toBe('CTP 交易接口')
+
+    await displayInput.setValue('CTP 主交易接口')
+    await w.find('[data-test="td-add-interface-confirm"]').trigger('click')
     await flushPromises()
 
-    // 确认框出现且说明影响范围
-    expect(w.find('[data-test="td-remove-confirm-text"]').exists()).toBe(true)
-    expect(w.text()).toContain('已存在的交易数据不会被删除')
-    expect(tdApi.removeAccount).not.toHaveBeenCalled()
+    // 添加即 start（body 带显示名）；HTTP 200 不伪造卡片
+    expect(tdGatewaysApi.start).toHaveBeenCalledWith('dztd_ctp', { display_name: 'CTP 主交易接口' })
+    expect(w.find('.modal-stub').exists()).toBe(false)
+    expect(w.find('[data-test="td-interface-card-dztd_ctp"]').exists()).toBe(false)
 
-    await w.find('[data-test="td-remove-confirm"]').trigger('click')
+    // WS process_config / process_status 到达 → 卡片出现（接口可零账户）
+    registerGateway('dztd_ctp', { displayName: 'CTP 主交易接口' })
     await flushPromises()
-
-    expect(tdApi.removeAccount).toHaveBeenCalledWith('account_001')
+    expect(w.find('[data-test="td-interface-card-dztd_ctp"]').exists()).toBe(true)
+    expect(w.find('[data-test="td-interface-empty"]').exists()).toBe(true)
   })
 
-  it('启停走 UpdateAccount 的 {enabled}（契约 rest §2.9.7 唯一写端点）', async () => {
-    loginAsAdmin()
-    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  it('选择已添加项被忽略：不弹窗、不发 start（恢复走卡片「启动进程」）', async () => {
+    mockAvailable()
+    const w = mountPage()
+    await flushPromises()
+    await openDropdown(w)
+
+    await w.findAll('.ds-sync-select__item')[1].trigger('click')
     await flushPromises()
 
-    await w.find('[data-test="td-toggle-account_001"]').trigger('click')
-    await flushPromises()
-
-    expect(tdApi.updateAccount).toHaveBeenCalledWith('account_001', { enabled: false })
+    expect(w.find('.modal-stub').exists()).toBe(false)
+    expect(tdGatewaysApi.start).not.toHaveBeenCalled()
   })
 
-  it('写操作成功后提示「等待回报」，不宣称已生效（契约 webui-ws §5 第 1 条）', async () => {
+  it('start 失败（invalid_gateway）→ 弹窗内展示中文原因，不回显英文 error', async () => {
+    mockAvailable()
+    vi.mocked(tdGatewaysApi.start).mockRejectedValue(Object.assign(
+      new Error('invalid gateway'),
+      { status: 400, body: { error: 'invalid gateway', code: 'invalid_gateway' } },
+    ))
+    const w = mountPage()
+    await flushPromises()
+    await openDropdown(w)
+
+    await w.findAll('.ds-sync-select__item')[0].trigger('click')
+    await flushPromises()
+    await w.find('[data-test="td-add-interface-confirm"]').trigger('click')
+    await flushPromises()
+
+    const error = w.find('[data-test="td-add-interface-error"]')
+    expect(error.exists()).toBe(true)
+    expect(error.text()).toContain('不是可用的交易接口')
+    expect(error.text()).not.toContain('invalid gateway')
+    // 失败停在弹窗内可重试，不会留下幽灵卡片
+    expect(w.find('.modal-stub').exists()).toBe(true)
+  })
+})
+
+describe('TradingAccountsView · 非 Running 与删除 guard（ADR 0053 / 契约 rest §4）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    tdGatewayPending.__resetForTests()
     loginAsAdmin()
-    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    vi.mocked(tdGatewaysApi.listAvailable).mockResolvedValue([])
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  it('非 Running 卡片显示「启动进程」；点击调 start 恢复（不得删除重加）', async () => {
+    registerGateway('dztd_ctp', { displayName: 'CTP 交易接口', running: false })
+    mockRegistry([])
+    vi.mocked(tdGatewaysApi.start).mockResolvedValue({ ok: true })
+    const w = mountPage()
+    await flushPromises()
+
+    expect(w.find('[data-test="td-interface-state"]').text()).toContain('已停止')
+    const start = w.find('[data-test="td-interface-start"]')
+    expect(start.exists()).toBe(true)
+
+    await start.trigger('click')
+    await flushPromises()
+
+    expect(tdGatewaysApi.start).toHaveBeenCalledWith('dztd_ctp')
+  })
+
+  it('有账户时删除接口按钮禁用 + title「先删除账户」；清空后确认删除才发 DELETE', async () => {
+    registerGateway('dztd_ctp', { displayName: 'CTP 交易接口' })
+    mockRegistry([{ account_id: 'account_001', gateway: 'dztd_ctp' }])
+    vi.mocked(tdGatewaysApi.remove).mockResolvedValue({ ok: true })
+    const store: TdAccountsStoreView = useTdAccountsStore()
+    const w = mountPage()
+    await flushPromises()
+
+    const removeButton = w.find('[data-test="td-interface-remove"]')
+    expect(removeButton.attributes('disabled')).toBeDefined()
+    expect(removeButton.attributes('title')).toBe('先删除账户')
+    await removeButton.trigger('click')
+    await flushPromises()
+    expect(tdGatewaysApi.remove).not.toHaveBeenCalled()
+
+    // 清空账户（注册表重拉）→ 删除按钮恢复可用
+    mockRegistry([])
+    await store.loadRegistry()
+    await flushPromises()
+    expect(w.find('[data-test="td-interface-remove"]').attributes('disabled')).toBeUndefined()
+
+    await w.find('[data-test="td-interface-remove"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="td-interface-remove-confirm-text"]').text()).toContain('CTP 交易接口')
+    await w.find('[data-test="td-interface-remove-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(tdGatewaysApi.remove).toHaveBeenCalledWith('dztd_ctp')
+  })
+
+  it('删除成功提示「等待进程配置回报」；卡片由 WS 条目消失移除（不本地伪造）', async () => {
+    registerGateway('dztd_ctp', { displayName: 'CTP 交易接口' })
+    mockRegistry([])
+    vi.mocked(tdGatewaysApi.remove).mockResolvedValue({ ok: true })
     const toast = useToastStore()
     const successSpy = vi.spyOn(toast, 'success')
-    const w = mount(TradingAccountsView, { global: { stubs } })
+    const w = mountPage()
     await flushPromises()
 
-    await w.find('[data-test="td-toggle-account_001"]').trigger('click')
+    await w.find('[data-test="td-interface-remove"]').trigger('click')
+    await flushPromises()
+    await w.find('[data-test="td-interface-remove-confirm"]').trigger('click')
     await flushPromises()
 
-    expect(successSpy).toHaveBeenCalled()
-    expect(successSpy.mock.calls[0][0]).toContain('等待交易网关回报')
+    expect(successSpy).toHaveBeenCalledWith(expect.stringContaining('已提交移除请求') as unknown as string)
+    // HTTP 200 不代表已生效：卡片仍在，等 process_config 条目消失
+    expect(w.find('[data-test="td-interface-card-dztd_ctp"]').exists()).toBe(true)
+
+    useProcessStore().applyProcessConfig({})
+    await flushPromises()
+    expect(w.find('[data-test="td-interface-card-dztd_ctp"]').exists()).toBe(false)
+    expect(w.find('[data-test="td-interfaces-empty"]').exists()).toBe(true)
   })
 
-  it('唯一性冲突 → 表单内提示「已被占用」且不发请求（契约 rest §2.9.7 预检 4）', async () => {
-    loginAsAdmin()
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({
-      available: true,
-      accounts: [accountRow({ account_id: 'taken', gateway: 'dztd_ctp_2' })],
-    })
-    vi.mocked(tdApi.addAccount).mockResolvedValue({ ok: true })
-    const w = mount(TradingAccountsView, { global: { stubs } })
+  it('store.error 非空时触发 toast 并清空（页面不重复展示）', async () => {
+    const store = useTdAccountsStore()
+    const toast = useToastStore()
+    const toastSpy = vi.spyOn(toast, 'error')
+    const w = mountPage()
     await flushPromises()
 
-    await w.find('[data-test="td-add-account"]').trigger('click')
-    await flushPromises()
+    store.error = '测试错误'
+    await w.vm.$nextTick()
 
-    // 填必填字段：account_id 与注册表中 dztd_ctp_2 已占用的值相同
-    await w.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('taken')
-    await w.find('input[placeholder="broker_id"]').setValue('9999')
-    await w.find('input[placeholder="user_id"]').setValue('00001')
-    await w.find('input[placeholder="登录密码"]').setValue('secret')
-    await flushPromises()
-
-    const submit = w.find('[data-test="td-form-submit"]')
-    expect(submit.attributes('disabled')).toBeUndefined()
-    await submit.trigger('click')
-    await flushPromises()
-
-    // 冲突是前端预检：明确提示归属网关，且**不发请求**（权威校验在 dzweb）
-    const error = w.find('[data-test="td-form-error"]')
-    expect(error.exists()).toBe(true)
-    expect(error.text()).toContain('占用')
-    expect(error.text()).toContain('dztd_ctp_2')
-    expect(tdApi.addAccount).not.toHaveBeenCalled()
-  })
-
-  it('表单校验拦住缺失必填项：不填 broker_id 时提交按钮禁用（本地预检）', async () => {
-    loginAsAdmin()
-    const w = mount(TradingAccountsView, { global: { stubs } })
-    await flushPromises()
-
-    await w.find('[data-test="td-add-account"]').trigger('click')
-    await flushPromises()
-    await w.find('input[placeholder="账户唯一标识，跨全部交易网关唯一"]').setValue('account_new')
-    await flushPromises()
-
-    const submit = w.find('[data-test="td-form-submit"]')
-    expect(submit.attributes('disabled')).toBeDefined()
-    expect(w.find('[data-test="td-form-validation"]').text()).toContain('经纪公司代码')
-  })
-})
-
-describe('TradingAccountsView · 会话控制（ADR 0051 / 契约 td-connection）', () => {
-  const INSTANCE = 'dztd_ctp:account_001'
-
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.resetAllMocks()
-    tdAccountsPending.__resetForTests()
-    loginAsAdmin()
-    registerGateway('dztd_ctp')
-  })
-
-  afterEach(() => {
-    useTdAccountsStore().dispose()
-  })
-
-  function progress(current: number): void {
-    useProgressStore().applyProgress(INSTANCE, { min: 0, max: 10, current })
-  }
-
-  async function mountWithOneAccount() {
-    vi.mocked(tdApi.listAccounts).mockResolvedValue({
-      available: true,
-      accounts: [accountRow()],
-    })
-    const w = mount(TradingAccountsView, { global: { stubs } })
-    await flushPromises()
-    return w
-  }
-
-  it('未登录（progress 到 min）：登录可点、登出禁用；点登录下发 REST', async () => {
-    vi.mocked(tdApi.loginAccount).mockResolvedValue({ ok: true })
-    progress(0)
-    const w = await mountWithOneAccount()
-
-    const login = w.find('[data-test="td-login-account_001"]')
-    const logout = w.find('[data-test="td-logout-account_001"]')
-    expect(login.attributes('disabled')).toBeUndefined()
-    expect(logout.attributes('disabled')).toBeDefined()
-
-    await login.trigger('click')
-    await flushPromises()
-    expect(tdApi.loginAccount).toHaveBeenCalledWith('account_001')
-  })
-
-  it('就绪（progress 到 max）：登录禁用（先登出才可重登）、登出可点', async () => {
-    vi.mocked(tdApi.logoutAccount).mockResolvedValue({ ok: true })
-    progress(10)
-    const w = await mountWithOneAccount()
-
-    const login = w.find('[data-test="td-login-account_001"]')
-    const logout = w.find('[data-test="td-logout-account_001"]')
-    expect(login.attributes('disabled')).toBeDefined()
-    expect(logout.attributes('disabled')).toBeUndefined()
-
-    await logout.trigger('click')
-    await flushPromises()
-    expect(tdApi.logoutAccount).toHaveBeenCalledWith('account_001')
-  })
-
-  it('建立中/重连中（progress 中间）：登录禁用、登出可点（= 强制中断）', async () => {
-    progress(2)
-    const w = await mountWithOneAccount()
-
-    expect(w.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeDefined()
-    expect(w.find('[data-test="td-logout-account_001"]').attributes('disabled')).toBeUndefined()
-  })
-
-  it('非 admin：两个会话按钮都禁用并给出原因（契约 rest §2.9.10 预检 1）', async () => {
-    loginAsUser()
-    progress(0)
-    const w = await mountWithOneAccount()
-
-    const login = w.find('[data-test="td-login-account_001"]')
-    const logout = w.find('[data-test="td-logout-account_001"]')
-    expect(login.attributes('disabled')).toBeDefined()
-    expect(logout.attributes('disabled')).toBeDefined()
-    expect(login.attributes('title')).toContain('仅管理员')
-  })
-
-  it('网关未运行：两个会话按钮都禁用并提示先启动网关', async () => {
-    registerGateway('dztd_ctp', false)
-    progress(0)
-    const w = await mountWithOneAccount()
-
-    const login = w.find('[data-test="td-login-account_001"]')
-    expect(login.attributes('disabled')).toBeDefined()
-    expect(login.attributes('title')).toContain('网关未运行')
+    expect(toastSpy).toHaveBeenCalledWith('测试错误')
+    expect(store.error).toBeNull()
   })
 })

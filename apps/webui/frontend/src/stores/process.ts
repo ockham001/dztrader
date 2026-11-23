@@ -161,6 +161,7 @@ export const useProcessStore = defineStore('process', () => {
   return {
     statuses,
     configs,
+    configsInitialized,
     removedNames,
     applyProcessStatus,
     applyProcessConfig,

@@ -4,12 +4,15 @@ import { setActivePinia, createPinia } from 'pinia'
 import {
   useTdAccountsStore,
   tdAccountsPending,
+  tdGatewayPending,
   tdInterfaceType,
   tdStateText,
   TD_ACCOUNT_OP_TIMEOUT_MS,
+  TD_GATEWAY_OP_TIMEOUT_MS,
   TD_SESSION_LOGIN_TIMEOUT_MS,
 } from '../tdAccounts'
 import { tdApi } from '@/api/td'
+import { tdGatewaysApi } from '@/api/tdGateways'
 import { useProgressStore } from '@/stores/progress'
 import { useProcessStore } from '@/stores/process'
 import { TD_ACCOUNT_ERROR_TEXT } from '@/composables/tdAccountErrors'
@@ -31,6 +34,20 @@ vi.mock('@/api/td', () => ({
     logoutAccount: vi.fn(),
   },
 }))
+
+// 交易接口生命周期端点（契约 rest §2.10）：只替身 API，错误文案映射保留真实实现
+vi.mock('@/api/tdGateways', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/tdGateways')>()
+  return {
+    ...actual,
+    tdGatewaysApi: {
+      listAvailable: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+      remove: vi.fn(),
+    },
+  }
+})
 
 /**
  * 交易账户配置 store 用例（#251；契约 rest §2.9.7/§2.9.9、契约 td-config §1/§2/§4/§5、
@@ -156,7 +173,7 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
     expect(store.rows[1].enabled).toBe(false)
   })
 
-  it('available:false → 进降级态，且**不**把列表当空（isEmpty 保持 false）', async () => {
+  it('available:false → 进降级态（"无账户"不可信，页面不得当空展示）', async () => {
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: false,
       reason: 'no_gateway_snapshot',
@@ -168,8 +185,8 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
     expect(store.available).toBe(false)
     expect(store.degradedReason).toBe('no_gateway_snapshot')
     expect(store.degradedText).toContain('账户注册表暂不可用')
-    // 关键契约：降级 ≠ 空列表（用户会以为账户被删了）
-    expect(store.isEmpty).toBe(false)
+    // 关键契约：降级 ≠ 空列表（用户会以为账户被删了）。空态判定已随卡片化上移到页面
+    // （接口级空态由进程镜像就绪 + 卡片数决定），store 不再提供 account-level isEmpty。
   })
 
   it('降级时保留旧条目并以配置镜像为骨架展示（不出现空屏）', async () => {
@@ -743,5 +760,398 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
       ok: false, kind: 'failed', message: TD_ACCOUNT_ERROR_TEXT.gateway_not_running,
     })
     expect(isPending(SESSION_KEY('login'))).toBe(false)
+  })
+})
+
+describe('useTdAccountsStore · 交易接口卡片派生（#439 / ADR 0053 / 契约 rest §4）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  it('按 process 镜像派生卡片：display_name / 进程状态 / 账户分组 / 排序', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({
+      dztd_ctp: { exe: 'dztd_ctp.exe', display_name: 'CTP 交易接口' },
+      dztd_xtp: { exe: 'dztd_xtp.exe', display_name: 'XTP 交易接口' },
+    })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 100 })
+    process.applyProcessStatus({ name: 'dztd_xtp', state: 'Crashed', pid: 0 })
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [
+        registryEntry({ account_id: 'account_002', gateway: 'dztd_ctp' }),
+        registryEntry({ account_id: 'account_001', gateway: 'dztd_ctp' }),
+        registryEntry({ account_id: 'account_009', gateway: 'dztd_xtp' }),
+      ],
+    } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    expect(store.interfaces.map(i => i.name)).toEqual(['dztd_ctp', 'dztd_xtp'])
+    const ctp = store.interfaces[0]
+    expect(ctp.displayName).toBe('CTP 交易接口')
+    expect(ctp.state).toBe('Running')
+    expect(ctp.running).toBe(true)
+    expect(ctp.accountCount).toBe(2)
+    expect(ctp.enabledCount).toBe(2)
+    // 账户行按 account_id 升序、只含本接口账户
+    expect(ctp.accounts.map(row => row.account_id)).toEqual(['account_001', 'account_002'])
+    expect(ctp.accounts[0].gatewayRunning).toBe(true)
+
+    const xtp = store.interfaces[1]
+    expect(xtp.running).toBe(false)
+    expect(xtp.state).toBe('Crashed')
+    expect(xtp.accounts[0].gatewayRunning).toBe(false)
+  })
+
+  it('接口可零账户：账户注册表为空也照样出卡片（ADR 0053 决策 2）', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe', display_name: 'CTP 交易接口' } })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 100 })
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    expect(store.interfaces).toHaveLength(1)
+    expect(store.interfaces[0].accountCount).toBe(0)
+    expect(store.interfaces[0].running).toBe(true)
+  })
+
+  it('display_name：配置镜像优先于状态帧；两者都缺失回退进程名（契约 process）', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe', display_name: '配置显示名' } })
+    process.applyProcessStatus({
+      name: 'dztd_ctp', state: 'Running', pid: 1, display_name: '状态帧显示名',
+    })
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    // 契约 process：配置镜像为唯一真相源，状态帧 display_name 仅用于展示
+    expect(store.interfaces[0].displayName).toBe('配置显示名')
+  })
+
+  it('process_status 先于 process_config 到达（快照时序）也不丢卡片，配置到达后以配置为准', async () => {
+    const process = useProcessStore()
+    // status 先到（configsInitialized 尚为 false，process store 放行写入）
+    process.applyProcessStatus({
+      name: 'dztd_ctp', state: 'Starting', pid: 0, display_name: 'CTP 交易接口',
+    })
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    expect(store.interfaces.map(i => i.name)).toEqual(['dztd_ctp'])
+    // 竞态窗口内用状态帧的 display_name 兜底展示，避免闪一下进程名
+    expect(store.interfaces[0].displayName).toBe('CTP 交易接口')
+    // 配置帧到达后显示名以配置为准
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe', display_name: '配置显示名' } })
+    await nextTick()
+    expect(store.interfaces[0].displayName).toBe('配置显示名')
+  })
+
+  it('display_name 两个镜像都缺失时回退进程名（契约 process）', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe' } })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 1 })
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    expect(store.interfaces[0].displayName).toBe('dztd_ctp')
+  })
+})
+
+describe('useTdAccountsStore · 交易接口生命周期（契约 rest §2.10 / ADR 0053）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    tdGatewayPending.__resetForTests()
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+    vi.useRealTimers()
+  })
+
+  function apiError(code: string, status = 400): Error & { body: { error: string; code: string }; status: number } {
+    return Object.assign(new Error('english message'), {
+      body: { error: 'english message', code }, status,
+    })
+  }
+
+  it('refreshAvailableGateways 写入可用列表（添加下拉数据源）', async () => {
+    vi.mocked(tdGatewaysApi.listAvailable).mockResolvedValue([
+      { name: 'dztd_ctp', display_name: 'CTP 交易接口', added: false, running: false },
+    ])
+    const store = useTdAccountsStore()
+
+    await store.refreshAvailableGateways()
+
+    expect(store.gatewayAvailable).toHaveLength(1)
+    expect(store.gatewayAvailable[0].display_name).toBe('CTP 交易接口')
+    expect(store.gatewayAvailableLoading).toBe(false)
+  })
+
+  it('添加接口 = start + display_name；pending 由 process_config 条目出现清除', async () => {
+    vi.mocked(tdGatewaysApi.start).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+
+    const result = await store.addGateway('dztd_ctp', ' CTP 交易接口 ')
+
+    expect(result).toEqual({ ok: true })
+    expect(tdGatewaysApi.start).toHaveBeenCalledWith('dztd_ctp', { display_name: 'CTP 交易接口' })
+    // HTTP 200 不清 pending（契约 rest §2.10：生效信号是 WS 进程镜像）
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(true)
+
+    useProcessStore().applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe', display_name: 'CTP 交易接口' } })
+    await nextTick()
+
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(false)
+    expect(store.interfaces.map(i => i.name)).toEqual(['dztd_ctp'])
+  })
+
+  it('恢复接口 = start 无 body；pending 由 process_status 到 Running 清除', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe' } })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Crashed', pid: 0 })
+    vi.mocked(tdGatewaysApi.start).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+
+    const result = await store.startGateway('dztd_ctp')
+
+    expect(result).toEqual({ ok: true })
+    expect(tdGatewaysApi.start).toHaveBeenCalledWith('dztd_ctp')
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(true)
+
+    // 无关配置帧（该接口仍在配置中）不得提前清掉在途 start：只认 未注册 → 已注册 的迁移
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe', display_name: '改名' } })
+    await nextTick()
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(true)
+
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 100 })
+    await nextTick()
+
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(false)
+    expect(store.interfaces[0].running).toBe(true)
+  })
+
+  it('start 失败事件（StartFailed）清 pending（失败反馈由 NOTIFY_UI 承载，不额外抛错）', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe' } })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Crashed', pid: 0 })
+    vi.mocked(tdGatewaysApi.start).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+
+    await store.startGateway('dztd_ctp')
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(true)
+
+    process.applyProcessStatus({
+      name: 'dztd_ctp', state: 'Crashed', pid: 0, event: 'StartFailed',
+    })
+    await nextTick()
+
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(false)
+  })
+
+  it('移除接口 = DELETE；pending 由 process_config 条目消失（权威信号）清除', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe' } })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 100 })
+    vi.mocked(tdGatewaysApi.remove).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+
+    const result = await store.removeGateway('dztd_ctp')
+
+    expect(result).toEqual({ ok: true })
+    expect(tdGatewaysApi.remove).toHaveBeenCalledWith('dztd_ctp')
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(true)
+
+    // 条目仍在配置里时，任何配置帧都不算「移除完成」（只认 已注册 → 未注册 的迁移）
+    process.applyProcessConfig({
+      dztd_ctp: { exe: 'dztd_ctp.exe' }, dztd_xtp: { exe: 'dztd_xtp.exe' },
+    })
+    await nextTick()
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(true)
+
+    // 契约 process：process_config 条目消失 = 移除完成
+    process.applyProcessConfig({})
+    await nextTick()
+
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(false)
+    expect(store.interfaces).toHaveLength(0)
+  })
+
+  it('RemoveFailed 也清 pending（不留 30s 悬挂）', async () => {
+    const process = useProcessStore()
+    process.applyProcessConfig({ dztd_ctp: { exe: 'dztd_ctp.exe' } })
+    process.applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 100 })
+    vi.mocked(tdGatewaysApi.remove).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+
+    await store.removeGateway('dztd_ctp')
+    process.applyProcessStatus({
+      name: 'dztd_ctp', state: 'Running', pid: 100, event: 'RemoveFailed',
+    })
+    await nextTick()
+
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(false)
+    // 失败不清配置条目：卡片仍在
+    expect(store.interfaces).toHaveLength(1)
+  })
+
+  it('失败文案按 code 映射中文，绝不回显英文 error', async () => {
+    vi.mocked(tdGatewaysApi.remove).mockRejectedValue(apiError('gateway_has_accounts', 409))
+    const store = useTdAccountsStore()
+
+    const result = await store.removeGateway('dztd_ctp')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok && result.kind === 'failed') {
+      expect(result.message).toContain('先删除全部账户')
+    }
+    expect(JSON.stringify(result)).not.toContain('english')
+    expect(store.gatewayRemovePending('dztd_ctp')).toBe(false)
+  })
+
+  it('invalid_gateway / gateway_not_found 各映射到不同中文文案', async () => {
+    const store = useTdAccountsStore()
+    const texts = new Set<string>()
+    for (const code of ['invalid_gateway', 'gateway_not_found'] as const) {
+      tdGatewayPending.__resetForTests()
+      vi.mocked(tdGatewaysApi.start).mockRejectedValue(apiError(code))
+      const result = await store.startGateway('dztd_ctp')
+      expect(result.ok).toBe(false)
+      if (!result.ok && result.kind === 'failed') texts.add(result.message)
+    }
+    expect(texts.size).toBe(2)
+    expect([...texts].some(t => t.includes('不是可用的交易接口'))).toBe(true)
+    expect([...texts].some(t => t.includes('不存在'))).toBe(true)
+  })
+
+  it('503（事件通道未就绪，无 code）→ 基础设施文案，不冒充网络/预检失败', async () => {
+    vi.mocked(tdGatewaysApi.start).mockRejectedValue(
+      Object.assign(new Error('shm writer not available'), { status: 503, body: { error: 'shm writer not available' } }))
+    const store = useTdAccountsStore()
+
+    const result = await store.startGateway('dztd_ctp')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok && result.kind === 'failed') {
+      expect(result.message).toContain('暂不可用')
+      expect(result.message).not.toContain('无法连接服务器')
+      expect(result.message).not.toContain('不是可用的交易接口')
+    }
+  })
+
+  it('网络层错误 → 统一无法连接服务器文案', async () => {
+    vi.mocked(tdGatewaysApi.start).mockRejectedValue(new Error('Failed to fetch'))
+    const store = useTdAccountsStore()
+
+    const result = await store.startGateway('dztd_ctp')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok && result.kind === 'failed') {
+      expect(result.message).toContain('无法连接服务器')
+      expect(result.message).not.toContain('Failed to fetch')
+    }
+  })
+
+  it('非法进程名本地拒绝（不发出必然 400 的请求）', async () => {
+    const store = useTdAccountsStore()
+
+    const result = await store.addGateway('dzmd_ctp', 'x')
+
+    expect(result.ok).toBe(false)
+    if (!result.ok && result.kind === 'failed') {
+      expect(result.message).toContain('不是可用的交易接口')
+    }
+    expect(tdGatewaysApi.start).not.toHaveBeenCalled()
+  })
+
+  it('同接口在途时再次提交返回 busy（防重入），只发一个请求', async () => {
+    let release: (() => void) | null = null
+    vi.mocked(tdGatewaysApi.start).mockImplementation(() =>
+      new Promise(resolve => { release = () => resolve({ ok: true }) }))
+    const store = useTdAccountsStore()
+
+    const first = store.startGateway('dztd_ctp')
+    const second = await store.startGateway('dztd_ctp')
+
+    expect(second).toEqual({ ok: false, kind: 'busy' })
+    expect(tdGatewaysApi.start).toHaveBeenCalledTimes(1)
+    release!()
+    expect((await first).ok).toBe(true)
+  })
+
+  it('超时兜底清 pending 并返回 timeout（30s 进程操作口径）', async () => {
+    vi.useFakeTimers()
+    vi.mocked(tdGatewaysApi.start).mockImplementation(() => new Promise(() => {}))
+    const store = useTdAccountsStore()
+
+    const pending = store.startGateway('dztd_ctp')
+    expect(TD_GATEWAY_OP_TIMEOUT_MS).toBe(30_000)
+    await vi.advanceTimersByTimeAsync(TD_GATEWAY_OP_TIMEOUT_MS)
+
+    expect(await pending).toEqual({ ok: false, kind: 'timeout' })
+    expect(store.gatewayStartPending('dztd_ctp')).toBe(false)
+  })
+
+  it('refreshAvailableGateways 失败写 error（中文、无英文），不清空已有列表', async () => {
+    vi.mocked(tdGatewaysApi.listAvailable).mockResolvedValueOnce([
+      { name: 'dztd_ctp', display_name: 'CTP 交易接口', added: true, running: true },
+    ])
+    const store = useTdAccountsStore()
+    await store.refreshAvailableGateways()
+
+    vi.mocked(tdGatewaysApi.listAvailable).mockRejectedValue(new Error('Failed to fetch'))
+    await store.refreshAvailableGateways()
+
+    expect(store.error).toContain('无法连接服务器')
+    expect(store.error).not.toContain('Failed to fetch')
+    expect(store.gatewayAvailable).toHaveLength(1)
+    expect(store.gatewayAvailableLoading).toBe(false)
+    store.clearError()
+  })
+})
+
+describe('useTdAccountsStore · 添加账户 pending 按网关隔离（#439 审查收敛）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] } satisfies TdAccountsListResponse)
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  it('addPendingFor 只看本网关：一台接口添加中不锁另一张卡片，配置帧按网关清除', async () => {
+    registerGateway('dztd_ctp')
+    registerGateway('dztd_ctp_2')
+    vi.mocked(tdApi.addAccount).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+    await store.init()
+
+    await store.addAccount('dztd_ctp', { account_id: 'account_a1' })
+    expect(store.addPendingFor('dztd_ctp')).toBe(true)
+    expect(store.addPendingFor('dztd_ctp_2')).toBe(false)
+
+    await store.addAccount('dztd_ctp_2', { account_id: 'account_a2' })
+    expect(store.addPendingFor('dztd_ctp_2')).toBe(true)
+
+    // 配置帧是整网关全量：只清自己网关的 pending
+    store.applyTdConfig('dztd_ctp', configPayload([]))
+    expect(store.addPendingFor('dztd_ctp')).toBe(false)
+    expect(store.addPendingFor('dztd_ctp_2')).toBe(true)
   })
 })

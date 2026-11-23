@@ -31,7 +31,7 @@ describe('tdAccountErrors（契约 rest §2.9.7 预检 code 全集）', () => {
     expect(tdAccountErrorText('account_exists')).toContain('账户 ID')
     expect(tdAccountErrorText('account_not_found')).toContain('不存在')
     expect(tdAccountErrorText('gateway_not_running')).toContain('未运行')
-    expect(tdAccountErrorText('invalid_gateway')).toContain('网关')
+    expect(tdAccountErrorText('invalid_gateway')).toContain('交易接口')
     expect(tdAccountErrorText('admin_required')).toContain('管理员')
   })
 
