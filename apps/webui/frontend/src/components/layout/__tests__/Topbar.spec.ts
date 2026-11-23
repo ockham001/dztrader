@@ -122,6 +122,15 @@ function isHiddenAnywhere(selectorFragment: string): boolean {
   return hidden
 }
 
+/** 某选择器在基础（非媒体）位置的规则体（拼接所有命中规则） */
+function ruleBody(selector: string): string {
+  let body = ''
+  CSS_ROOT.walkRules((rule) => {
+    if (rule.selectors.some(part => part.trim() === selector)) body += `${rule.toString()}\n`
+  })
+  return body
+}
+
 /** 某选择器在指定媒体块内的规则体（同一档位可能有多个块，取包含该选择器的那个） */
 function ruleInMedia(mediaParams: string, selector: string): string {
   let found = ''
@@ -435,6 +444,15 @@ describe('Topbar 宽窄行为（纯 CSS：三枚徽章任何宽度都常驻，�
     }
     // 不引入容器查询（会造成同一份信息按容器宽度出现 / 消失）
     expect(LAYOUT_CSS_SOURCE).not.toContain('@container')
+  })
+
+  it('<768 三枚指标徽章改为竖排（图标在上、数值在下），进一步省横向宽度', () => {
+    const block = ruleInMedia('(max-width: 767.98px)', '.topbar__metric')
+    expect(block).toContain('flex-direction: column')
+    expect(block).toContain('align-items: center')
+    // 宽屏仍是横排（图标 + 数值同一行）
+    expect(ruleBody('.topbar__metric')).toContain('display: inline-flex')
+    expect(ruleBody('.topbar__metric')).toContain('align-items: center')
   })
 
   it('窄屏只收紧间距 / 内边距：<768 收 topbar padding、<640 再收资源区 gap', () => {

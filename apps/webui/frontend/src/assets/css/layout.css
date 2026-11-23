@@ -443,6 +443,14 @@ body {
   .topbar__title { display: inline; }
   .topbar__left,
   .topbar__resources { gap: var(--spacer-8); }
+  /* 三枚指标徽章在 <768 竖排：图标在上、数值在下（与服务徽章同为双层微标签）。
+     横排每组 ≈ icon 14 + gap 4 + 数值 ≈ 50px；竖排后每组 = max(14, 数值宽) ≈ 30px，
+     390 宽下三枚 + 服务徽章 + 右侧控件更从容（#452 AC「390 仍可见」）。 */
+  .topbar__metric {
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
 }
 
 /* <sm：连接文字隐藏（只留状态点），资源区保持常驻（P5 收编原 480/320 微断点为两级；
