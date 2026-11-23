@@ -216,7 +216,7 @@
 ### 退出与已知限制
 
 - `stop()`：通知 Writer 停止，对失败批做最后一次立即重试；成功则继续排空队列后退出；仍失败只记 ERROR 并退出——未提交的内存积压丢弃，登记为已知限制（ADR 0042 决策 6）。等待 Writer 退出设 30s 上限（大事务 fsync 兜底；超时则快速退出进程、跳过析构）；正常路径必须显式 `stop()`，析构仅作 best-effort 兜底。
-- **关停时必须先析构 `TdApi` 再 `spdlog::shutdown()`**（`td_main.cpp` 显式 `api.reset()`）：`~TdApi` → `PersistWriter::stop()` 在"已经停止"的确认路径上会打 info 日志，而 shutdown 之后 default logger 为 null → SIGSEGV（退出码 11）。后果是 master 把正常关停上报成 `Crashed` 并弹「child crashed」错误通知（#440 E2E 实测；`SmokeTest` 已加 Crashed 回归断言：逐轮 drain 记录 Crashed、不依赖与快照兜底 Stopped 的先后，并在收尾留 1s 晚到观察窗）。md 侧正常路径静默，但异常路径仍会打日志、且 `md_main.cpp` 同样是 shutdown 先于 `MdApi` 析构——同型潜在风险由另票跟踪 #449（`apps/ctp/md` 生产锁定）。
+- **关停时必须先析构 `TdApi` 再 `spdlog::shutdown()`**（`td_main.cpp` 显式 `api.reset()`）：`~TdApi` → `PersistWriter::stop()` 在"已经停止"的确认路径上会打 info 日志，而 shutdown 之后 default logger 为 null → SIGSEGV（退出码 11）。后果是 master 把正常关停上报成 `Crashed` 并弹「child crashed」错误通知（#440 E2E 实测；`SmokeTest` 已加 Crashed 回归断言：逐轮 drain 记录 Crashed、不依赖与快照兜底 Stopped 的先后，并在收尾留 1s 晚到观察窗）。md 侧同型风险已在 #449 对齐修复（`md_main.cpp` 同样先析构 `MdApi`；`~MdApi` 入口的关停日志让该守卫对 md 同样可红），删掉任一侧的 `api.reset()` 都会使守卫变红。
 - 坏库重建后历史查询缺口由备份 / 归档兜底（本轮不实现，ADR 0042）。
 - 跨进程旧会话已入队未提交的任务可能晚于新会话的整组替换落地：当日持仓回到旧值后**无自愈路径**，需等下一次完整成功查询（下一次登录 / 重连）替换，不丢行、不产生键冲突（《帧契约：TD 数据同步》§7；ADR 0049）。
 
