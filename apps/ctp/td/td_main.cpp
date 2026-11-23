@@ -184,8 +184,8 @@ int main(int argc, char* argv[]) {
     // 的确认路径上会打 info 日志（td_persist_writer.cpp），而 spdlog::shutdown() 之后
     // default logger 为 null，SPDLOG_INFO 解引用空指针 → 进程 SIGSEGV 退出（exit=11）。
     // 后果（#440 E2E 实测）：正常关停被 master 上报成 Crashed 并弹「child crashed」
-    // 错误通知。md 侧正常路径静默，但异常路径仍会打日志、且 md_main 同样是
-    // spdlog::shutdown() 先于 api 析构——同型潜在 SIGSEGV，apps/ctp/md 锁定，另票跟踪 #449。
+    // 错误通知。md 侧同型风险已在 #449 对齐修复（md_main.cpp 同样在
+    // spdlog::shutdown() 前 api.reset()，并由 smoke 的 Crashed 守卫覆盖）。
     api.reset();
     spdlog::shutdown();
     return 0;

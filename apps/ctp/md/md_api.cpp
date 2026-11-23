@@ -178,7 +178,7 @@ void MdApi::dispatch_ctp_event(Event& event) {
 }
 
 MdApi::~MdApi() {
-    // 关停锚点: 正常关停路径其余日志均在 run() 内已打完, 这里补一条析构期日志。
+    // 关停锚点: 关停相关日志都在析构之前已打完, 这里补一条析构期日志。
     // 它同时是关停顺序的回归探针: MdApi 必须在 spdlog::shutdown() 之前析构
     // (md_main.cpp 的 api.reset()), 否则本行在 default logger 为 null 时 SIGSEGV,
     // 冒烟守卫 (SmokeTest 的 Crashed 断言) 据此可红 (#449)。
