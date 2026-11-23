@@ -161,6 +161,26 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
   `td_rtn_status` 体现，ack / HTTP 200 只表示已写入事件通道。登录失败不自动重试（#406），
   前端恢复路径 = 先登出、再登录；失败原因持久化（`td-status.last_error`）见 #427。
 
+## 交易接口进程生命周期（#438/#440，ADR 0053 / 契约 rest §2.10）
+
+交易账户页的一级对象是**交易接口**（td 网关进程，`dztd_*`）：进程可零账户存在与运行，账户是接口内部配置项（契约 td-config §6）；接口的添加 / 启动 / 停止 / 移除由页面显式管理，与行情源页同构。**不新增列表端点**——卡片列表从 WS `process_config` / `process_status` 的 `dztd_*` 条目派生（契约 rest §4）。无帧协议变更：全部动作复用 `REQUEST_PROCESS_CONTROL{Start|Stop|Remove}`（契约 process），master 侧动态注册 / Remove 均为现成能力。
+
+| 端点 | 权限 | 语义与生效信号 |
+|---|---|---|
+| `GET /api/td/gateways/available` | 任意已认证用户 | 扫描 App Root 的 `dztd_*` exe，叠加进程配置镜像（`added`）与进程状态（`running`）；`display_name` 取镜像配置值、未注册回退进程名；按 `name` 升序 |
+| `POST /api/td/gateways/{name}/start` | admin | 添加/启动（body 可选 `display_name`）→ `REQUEST_PROCESS_CONTROL{Start}`；生效 = WS `process_config` + `process_status` |
+| `POST /api/td/gateways/{name}/stop` | admin | 瞬时停止，不是持久期望态 → `{Stop}`；生效 = WS `process_status` |
+| `DELETE /api/td/gateways/{name}` | admin | 停止进程 + 删除进程配置条目（`dztraderd.json` 的 `td.<name>` 段）→ `{Remove}`；生效 = `process_config` 条目消失（移除完成的权威信号） |
+
+- **实现**：`apps/webui/td_gateway_controller.{h,cpp}`（`main.cpp` 注册）。与行情源控制器共用同一条写帧调用（`ShmWriter::write_process_control`）与 Start 配置 patch 规则（`controller_base.h` 的 `process_start_config_patch`：`display_name` 非空才下发），不复制第二套实现；`dztd_` 前缀谓词与 `td_session_guard.h` 的 `is_td_gateway_name` 单一实现。
+- **Start 动态注册**（契约 process）：目标未注册时 master 实时扫描 App Root，命中网关 exe 才注册（registry + 写 `dztraderd.json` 对应段 + store 镜像），随后应用 `display_name` patch 并启动；已 Running 时幂等回 `StartSucceeded`；spawn 失败推 `Crashed` 但保留配置。添加交易接口因此不需要重启 master。
+- **移除是持久下线**：`Remove` 删除进程配置条目（`dztraderd.json` 的 td 段）——master 重启时按配置无差别拉起，条目已删即不再拉起。「停止但保留」不存在：`stop` 是瞬时态，未运行时由页面「启动进程」恢复，不得以删除重加代替恢复。
+- **移除 guard**（唯一权威在服务端）：该网关在账户注册表里仍有任意账户（含禁用 / 离线）→ 409 `{"error":"gateway has accounts","code":"gateway_has_accounts"}`，必须先删空账户；注册表降级（`available:false`，无法确认是否为空）→ 503 `{"error":"account registry unavailable"}`（不带 `code`），**不得在无法确认时移除接口**。理由：账户配置持久化在接口自身文件（契约 td-config §6），带账户移除会让账户在重新添加时复活，且期间出现 `account_id` 全局唯一校验窗口（ADR 0045）。
+- **错误码**：`admin_required`(403) / `invalid_gateway`(400，含未注册且 App Root 扫不到同名 exe) / `gateway_not_found`(404，`stop` / `DELETE` 对未注册目标；Remove 不幂等) / `gateway_has_accounts`(409) / 写通道不可用 503（不带 `code`，同 §2.9.7）。响应 `200 {"ok":true}` **只表示已写入事件通道**，成败以 WS 帧为准。
+- **账户写入前置不变**：`POST/PUT/DELETE /api/td/accounts*` 仍要求目标网关已注册且 Running（契约 rest §2.9.7）。接口非 Running（启动中 / 崩溃重启窗口 / 重启耗尽 / spawn 失败 / 关机中）时账户写操作禁用并给出原因，页面提供「启动进程」恢复；接口可零账户存在与运行。
+- **测试**：端点 / 预检顺序 / guard / available 扫描单测在 `apps/webui/tests/td_gateway_controller_test.cpp`；跨进程 E2E 在 `apps/master/tests/smoke/smoke_test.cpp` 的 `SmokeTdLifecycleTest`（动态 start → `process_config` 条目 + Running → 加账户 `RTN_TD_CONFIG` 与注册表可见 → 带账户 DELETE 回 409 → 删账户 → DELETE 移除 → master 重启不再拉起）。
+- **已知边界**：移除 guard 基于注册表**投影**判定，预检通过与 `Remove` 下发之间的并发 `AddAccount` 仍可能让账户复活（契约 rest §2.10「投影窗口」，ADR 0045 同源已知限制）；接口有账户且 exe 丢失时无法从 UI 删除（需修复部署或手工改配置）。
+
 ## 监听与暴露面（#201）
 
 | 项 | 现状 |
