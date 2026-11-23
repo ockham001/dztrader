@@ -15,10 +15,12 @@ import postcss, { type Root } from 'postcss'
 // 也不需要 `forced-color-adjust: none`（那会剥夺用户的高对比度配色选择）。
 //
 // 本 spec 锁的是「图形仍有边界」这件事本身，不是某个具体像素：
-//   A. 台账量程轨道的**填充块**（#363 只给轨道加了 outline，填充块没有 → 框在、比例不在）；
+//   A. 存储块**卷容量条**的轨道与填充块（#450：两者都是纯背景色，不描边就整条消失）；
+//   A3. 存储块**磁盘忙碌条**的轨道与填充块（同上）；
 //   B. 组成带的**外框**（段间缝由 #363 的 `border-inline-start` 撑起，但首末段没有外缘）；
 //   C. 组成带「已用」的**实心块描边**（原实现只有 `box-shadow: inset`）；
-//   D. 每核条形的**轨道 + 填充**（两者都是纯背景色）。
+//   D. 每核条形的**轨道 + 填充**（两者都是纯背景色）；
+//   E. 数字格细条（#445 交换使用率）与内存组成带（#363 迁入）。
 //
 // 反向断言（防「只加了一条无关规则」的假绿）：样式表里任何一条 `box-shadow` 都不许**单独**
 // 承担边界语义 —— 带 `box-shadow` 的规则必须在同一条规则里同时给出 `border` 或 `outline`。
@@ -128,23 +130,41 @@ function isDecorativeShadow(body: string): boolean {
 }
 
 describe('#381 forced-colors：靠背景色表达的图形必须有 border / outline', () => {
-  it('A. 量程轨道的填充块自带描边：轨道有空框还不够，「填充到哪里」才是这条图形要传达的信息', () => {
-    const body = ruleBody('.monitor-view__ledger-track-fill')
-    // 描边色可以是 transparent（普通渲染零像素，forced-colors 下自动取 CanvasText）
-    expect(body, '填充块必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+  it('A. 卷容量条的轨道与填充块各一圈描边：填充比例才分得开', () => {
+    const track = ruleBody('.monitor-view__volume-track')
+    expect(track, '容量条轨道必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    // 6px 高的细条不能被 border 挤掉画布
+    expect(hasRealBorder(track)).toBe(false)
+
+    const fill = ruleBody('.monitor-view__volume-fill')
+    expect(fill, '容量条填充必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
     // 负 offset：描边画在填充块内部，否则会在轨道上额外长出 2px 宽度
-    expect(body).toMatch(/outline-offset:\s*calc\(-1\s*\*\s*var\(--border-width-default\)\)/)
-    // 不许用 border 顶替：border 占盒模型，`--ledger-fill: 0.4%` 会被 1px 边界抬高成可见的谎报
-    expect(hasRealBorder(body), '不得用 border（会改变盒模型 / 比例语义）').toBe(false)
+    expect(fill).toMatch(/outline-offset:\s*calc\(-1\s*\*\s*var\(--border-width-default\)\)/)
+    // 不许用 border 顶替：border 占盒模型，`--volume-fill: 0.4%` 会被 1px 边界抬高成可见的谎报
+    expect(hasRealBorder(fill), '不得用 border（会改变盒模型 / 比例语义）').toBe(false)
+    // 填充宽度仍只由运行时变量驱动
+    expect(fill).toContain('width: var(--volume-fill, 0%)')
   })
 
-  it('A2. 四个等级色都继承同一条描边规则（不各写一份，避免其中一档漏掉）', () => {
-    // 等级色只改 background，不重复定义 outline：重复定义会有「改一档忘一档」的漂移面
-    for (const level of ['normal', 'warn', 'danger']) {
-      const body = ruleBody(`.monitor-view__ledger-row[data-level='${level}'] .monitor-view__ledger-track-fill`)
+  it('A2. 卷容量条的三档色只改 background，不重复定义 outline（避免改一档忘一档）', () => {
+    for (const level of ['warn', 'danger']) {
+      const body = ruleBody(`.monitor-view__volume-fill[data-level='${level}']`)
       expect(body, level).toContain('background: var(--status-')
       expect(hasOutline(body), `${level} 不应各自重复定义 outline`).toBe(false)
     }
+    // normal 与磁盘忙碌条同族：健康 = 成功色（只有越线才换 warn / danger）
+    expect(ruleBody('.monitor-view__volume-fill')).toContain('background: var(--status-success-default)')
+  })
+
+  it('A3. 磁盘忙碌条的轨道与填充块各一圈描边', () => {
+    const track = ruleBody('.monitor-view__disk-track')
+    expect(track, '忙碌条轨道必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    expect(hasRealBorder(track)).toBe(false)
+    const fill = ruleBody('.monitor-view__disk-fill')
+    expect(fill, '忙碌条填充必须有 outline').toMatch(/(^|[\s;{])outline\s*:\s*[^;]*solid\s+transparent/)
+    expect(fill).toMatch(/outline-offset:\s*calc\(-1\s*\*\s*var\(--border-width-default\)\)/)
+    expect(hasRealBorder(fill)).toBe(false)
+    expect(fill).toContain('width: var(--disk-busy, 0%)')
   })
 
   it('B. 组成带整条有外框：段间缝只管内部，首末段的外缘只有 border 撑不起来', () => {

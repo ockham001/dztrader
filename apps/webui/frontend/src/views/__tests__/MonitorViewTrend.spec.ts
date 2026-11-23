@@ -10,7 +10,7 @@ import { sysmonApi } from '@/api/sysmon'
 import { useSysmonHistoryStore } from '@/stores/sysmonHistory'
 import { useSysmonStore } from '@/stores/sysmon'
 import { SYSMON_TREND_METRIC_KEYS } from '@/stores/sysmonTrend'
-import { SYSMON_CLOCK_LIVE, makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
+import { makeSysmonSnapshot } from '@/test-utils/sysmonSnapshot'
 import type { SysmonHistoryAvailable } from '@/types/api'
 
 // #127：内联趋势 / 卡片折叠 / 响应式布局。
@@ -68,12 +68,6 @@ async function mountView(
   return wrapper
 }
 
-/** 点击折叠按钮（#127 维度明细默认收起） */
-async function toggle(wrapper: VueWrapper, testId: string): Promise<void> {
-  await wrapper.find(`[data-test="${testId}"]`).trigger('click')
-  await wrapper.vm.$nextTick()
-}
-
 /** assets/css 下某个文件的绝对路径（从本 spec 文件位置推导，不依赖 cwd） */
 function cssPath(name: string): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'assets', 'css', name)
@@ -103,7 +97,7 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     // #435：CPU 使用率的趋势是 CPU 块内的固定 0–100% 宽图（不是内联 sparkline 组件）；
     // 负载的迷你趋势已按用户拍板移除；#445 第三轮起内存使用率也有同款宽图，交换只有数字格。
     expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(1)
-    expect(wrapper.find('[data-test="monitor-sparkline-shm"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="monitor-storage"] [data-test="monitor-sparkline-shm"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-sparkline-load"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-sparkline-memory"]').exists()).toBe(true)
@@ -323,178 +317,6 @@ describe('MonitorView 跳转历史（#127：点击 sparkline / 数值预选指�
   })
 })
 
-describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.clearAllMocks()
-    vi.spyOn(Date, 'now').mockReturnValue(NOW_MS)
-    mockHistoryAvailable()
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('每核条形常驻 CPU 块（#435）：不在折叠区；台账 CPU 组与每核频率明细入口均已删除', async () => {
-    const wrapper = await mountView()
-
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-    expect(wrapper.find('[data-test="monitor-cpu-cores"]').exists()).toBe(true)
-    // 台账不再有 CPU 组：cpu.cores / cpu.rates 两行都不存在
-    expect(wrapper.find('[data-row-id="cpu.cores"]').exists()).toBe(false)
-    expect(wrapper.find('[data-row-id="cpu.rates"]').exists()).toBe(false)
-    // 每核频率明细入口已删除（频率进条形 tooltip）
-    expect(wrapper.find('[data-test="monitor-cpu-detail-toggle"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-core"]').attributes('title')).toContain('GHz')
-    // 条形不属于任何折叠内容（CPU 块已没有折叠区）：始终全部渲染
-    expect(wrapper.findAll('[data-test="monitor-core"]')).toHaveLength(16)
-  })
-
-  it('温度明细不进页面 DOM：全部传感器通过 title / aria 可达，四数字行没有折叠按钮（#435 验收收敛）', async () => {
-    const wrapper = await mountView(makeSysmonSnapshot({
-      sensorData: true,
-      temperatures: [
-        { sensor: 'coretemp#hwmon3:Package id 0', chip: 'coretemp', label: 'Package id 0', celsius: 45.5 },
-        { sensor: 'coretemp#hwmon3:Core 0', chip: 'coretemp', label: 'Core 0', celsius: 41.5 },
-        { sensor: 'acpitz_0#hwmon0:temp1', chip: 'acpitz_0', label: '', celsius: 27.8 },
-      ],
-    }))
-
-    expect(wrapper.findAll('[data-test="monitor-temperature-sensor"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="monitor-temperature-detail-toggle"]').exists()).toBe(false)
-    // 主数值 = 最高温度；归属 = 该读数的芯片与通道
-    expect(wrapper.find('[data-test="monitor-temperature-max"]').text()).toBe('45.5 °C')
-    expect(wrapper.find('[data-test="monitor-temperature-summary"]').text()).toBe('CPU · Package id 0')
-    // 全部传感器在 title 里（悬停可看；读屏用同一份 aria-label）
-    const title = wrapper.find('[data-test="monitor-temperature-max"]').attributes('title') ?? ''
-    expect(title).toContain('CPU · Package id 0 45.5 °C')
-    expect(title).toContain('CPU · Core 0 41.5 °C')
-    expect(title).toContain('主板 ACPI · temp1 27.8 °C')
-    expect(wrapper.find('[data-test="monitor-temperature"]').attributes('aria-label')).toBe(`温度 45.5 °C；${title}`)
-  })
-
-  it('每盘七项明细默认收起：行本身平铺可见，「展开明细」给出完整七项', async () => {
-    const wrapper = await mountView()
-
-    // #363：盘行平铺（不点开就能看见盘名 / 忙碌占比 / 关键明细），收起的是**完整明细**
-    const rows = wrapper.findAll('[data-test="monitor-disk-io-row"]')
-    expect(rows).toHaveLength(2)
-    // 夹具两块盘忙碌占比 0.35 / 0.72：行内直接给读数（不是摘要里的「最高」）
-    expect(rows.map(row => row.find('.monitor-view__ledger-value').text())).toEqual(['72.0%', '35.0%'])
-    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(0)
-
-    await toggle(wrapper, 'ledger-expand-disk:nvme0n1')
-    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(1)
-    const labels = rows[0].findAll('[data-test="ledger-field"]').map(field => field.attributes('data-label'))
-    expect(labels).toEqual(['读吞吐', '写吞吐', '读 IOPS', '写 IOPS', '平均延迟', '队列深度', '忙碌占比'])
-  })
-
-  it('每个展开按钮的可访问名各不相同，且都以可见文本开头（#363 C6：WCAG 2.5.3 + 4.1.2）', async () => {
-    const wrapper = await mountView()
-
-    const buttons = wrapper.findAll('[data-test^="ledger-expand-"]')
-    expect(buttons.length).toBeGreaterThan(1)
-    const names = buttons.map(button => button.attributes('aria-label') ?? '')
-    // 唯一：原先 15 个按钮的可访问名全是「明细」，读屏里无法区分展开的是哪一行
-    expect(new Set(names).size).toBe(names.length)
-    for (const button of buttons) {
-      const label = button.attributes('aria-label') ?? ''
-      // 以可见文本开头（Label in Name）：可见文字就是「明细」/「收起」
-      expect(label, button.attributes('data-test')).toMatch(/^(明细|收起) · .+/)
-      expect(label, button.attributes('data-test')).toContain(button.text())
-    }
-
-    // 收起时不指向不存在的元素（aria-controls 条件绑定），展开后指向真实存在的字段表 id。
-    const fieldsButton = buttons[0]
-    const rowId = (fieldsButton.attributes('data-test') ?? '').replace('ledger-expand-', '')
-    expect(fieldsButton.attributes('aria-controls')).toBeUndefined()
-    await toggle(wrapper, `ledger-expand-${rowId}`)
-    expect(fieldsButton.attributes('aria-controls')).toBe(`ledger-fields-${rowId}`)
-    const fields = wrapper.find(`[data-test="ledger-fields"]`)
-    expect(fields.attributes('id')).toBe(`ledger-fields-${rowId}`)
-  })
-
-  it('时钟行的展开按钮同样带唯一的可访问名（#363 C6）', async () => {
-    const wrapper = await mountView(makeSysmonSnapshot({ clock: SYSMON_CLOCK_LIVE }))
-
-    const toggleBtn = wrapper.find('[data-test="monitor-clock-detail-toggle"]')
-    expect(toggleBtn.exists()).toBe(true)
-    const label = toggleBtn.attributes('aria-label') ?? ''
-    expect(label).toContain('展开服务器明细')
-    // 与其他展开按钮不重名：带上了行名（时钟偏差）
-    expect(label).toContain('时钟偏差')
-  })
-
-  it('每网卡十项明细默认收起：收发各占一行平铺，展开给出完整八项', async () => {
-    const wrapper = await mountView()
-
-    // 一张网卡 = 接收 + 发送两行，都平铺可见
-    const rows = wrapper.findAll('[data-test="monitor-network-row"]')
-    expect(rows).toHaveLength(2)
-    expect(rows.map(row => row.attributes('data-direction'))).toEqual(['rx', 'tx'])
-    expect(wrapper.findAll('[data-test="ledger-fields"]')).toHaveLength(0)
-
-    await toggle(wrapper, 'ledger-expand-nic:eth0:rx')
-    const labels = rows[0].findAll('[data-test="ledger-field"]').map(field => field.attributes('data-label'))
-    expect(labels).toEqual([
-      '接收速率',
-      '接收错误速率',
-      '接收丢弃速率',
-      '接收字节（累计）',
-      '接收包数（累计）',
-      '接收错误（累计）',
-      '接收丢弃（累计）',
-      '虚拟网卡',
-    ])
-  })
-
-  it('可用性空态不藏在折叠后面（不可用 / 无数据事实照常可见）', async () => {
-    const wrapper = await mountView(makeSysmonSnapshot({
-      metrics: {
-        'cpu.cores': { available: false, reason: 'no_permission' },
-        disk_io: { available: false, reason: 'no_permission' },
-        network: { available: false, reason: 'collect_failed' },
-        temperature: { available: false, reason: 'no_sensor' },
-      },
-      diskIo: [],
-      network: [],
-    }))
-
-    // 不需要展开就能看到「不可用」空态与原因（no_permission 由共享映射给出可读文案）。
-    // #435：每核条形在 CPU 块里常驻；不可用事实直接显示在条形区的空态上，台账不再有 CPU 行。
-    expect(wrapper.find('[data-test="monitor-cores-empty"]').text())
-      .toContain('权限不足，无法读取该指标')
-    expect(wrapper.find('[data-row-id="cpu.cores"]').exists()).toBe(false)
-    // #363：磁盘 I/O 与网卡的不可用是台账行上的说明文字，行本身平铺可见
-    expect(wrapper.find('[data-row-id="disk_io"] [data-test="row-state"]').text())
-      .toContain('磁盘性能计数器不可用')
-    expect(wrapper.find('[data-row-id="network"] [data-test="row-state"]').text()).toContain('采集失败')
-    expect(wrapper.find('[data-test="monitor-temperature"]').exists()).toBe(false)
-    // 不可用的行没有完整明细可展开（没有 fields 就不渲染展开按钮）
-    expect(wrapper.find('[data-test="ledger-expand-disk_io"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="ledger-expand-network"]').exists()).toBe(false)
-  })
-
-  it('台账行明细展开状态不持久化：重新挂载（等价刷新）回到收起', async () => {
-    const wrapper = await mountView()
-    // 展开盘行明细（#445 后内存行已移出台账，用磁盘 I/O 行验证同一机制）
-    await toggle(wrapper, 'ledger-expand-disk:nvme0n1')
-    expect(wrapper.find('[data-test="ledger-fields"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="ledger-expand-disk:nvme0n1"]').attributes('aria-expanded')).toBe('true')
-
-    // 重新挂载 = 刷新的组件生命周期：不读写 localStorage / sessionStorage，必须回到默认收起
-    wrapper.unmount()
-    const refreshed = await mountView()
-
-    expect(refreshed.find('[data-test="ledger-fields"]').exists()).toBe(false)
-    expect(refreshed.find('[data-test="ledger-expand-disk:nvme0n1"]').attributes('aria-expanded')).toBe('false')
-    // 也没有把展开态写进任何持久化存储
-    expect(Object.keys(localStorage).filter(key => key.includes('ledger'))).toEqual([])
-  })
-
-
-})
-
 describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）', () => {
   const testDir = dirname(fileURLToPath(import.meta.url))
   const source = readFileSync(join(testDir, '..', 'MonitorView.vue'), 'utf8')
@@ -541,7 +363,8 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
       const close = source.indexOf('\n}', open)
       expect(close).toBeGreaterThan(open)
       const body = source.slice(open, close)
-      if (body.includes(selector)) return body
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      if (new RegExp(`${escaped}\\s*\\{`).test(body)) return body
       from = close
     }
   }
@@ -558,10 +381,12 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 因此不存在为页面网格改列数的媒体规则——块内部需要分栏时在块内解决。
     expect(source).not.toMatch(/@media[^{]*\{[^}]*\.monitor-view__grid[^}]*grid-template-columns/)
 
-    // 网格里的子元素跨满整行：CPU 块与台账由 CSS 声明跨列（内存块在单列网格里天然通栏）。
-    // #430 后主机条是顶栏下方的独立一条，不是网格项——它不在网格里断言，见下一条。
+    // 网格里的子元素跨满整行（单列网格里天然通栏）；旧台账（#363）随 #450 整体删除。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
-    expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
+    expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-cpu"/)
+    expect(source).not.toContain('monitor-ledger')
+    // #450 整页视觉收敛：监控页卡片只留色调差（去掉边框 + 色调差的双重分隔）；全局 ds-card 不动
+    expect(ruleBody('.monitor-view__card')).toContain('border-color: transparent')
     // 主机条不在网格里（#430：顶栏下方的独立一条）：它的规则不得再声明跨列
     // （否则是死规则，会误导下一个人以为它在网格内）
     expect(ruleBody('.monitor-view__host'), '主机条不在网格内，不得残留网格跨列规则').not.toContain('grid-column')
@@ -621,21 +446,17 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(source).not.toContain('monitor-core-saturated')
   })
 
-  it('长 token 在台账里按列收口：名称 / 明细 / 展开值可断行，读数列不折（#321 / #363）', () => {
-    // 挂载点与契约键可任意长度：名称列开 anywhere（它同时收窄 min-content，避免窄屏横向溢出）
-    expect(ruleBody('.monitor-view__ledger-label')).toContain('overflow-wrap: anywhere')
-    expect(ruleBody('.monitor-view__ledger-key')).toContain('overflow-wrap: anywhere')
-    // 明细列的**文字**允许断行（列本身是 flex：文字 + 右端按钮，按钮不压缩）
-    expect(ruleBody('.monitor-view__ledger-detail-text')).toContain('overflow-wrap: anywhere')
-    expect(ruleBody('.monitor-view__ledger-detail')).toContain('display: flex')
-    expect(ruleBody('.monitor-view__ledger-expand-btn')).toContain('flex: none')
-    expect(ruleBody('.monitor-view__ledger-field-value')).toContain('overflow-wrap: anywhere')
-    // 读数与阈值列**不折**：百分比 / 容量在窄列里折成两行等于读错（实测 320 下 68.8% 被折断）
-    for (const selector of ['.monitor-view__ledger-value', '.monitor-view__ledger-threshold',
-      '.monitor-view__ledger-headroom']) {
-      const body = ruleBody(selector)
-      expect(body, selector).toContain('white-space: nowrap')
-      expect(body, selector).not.toContain('overflow-wrap')
+  it('长 token 收口：挂载点 / 网卡名可断行，数字读数与标签不折（#321 / #450）', () => {
+    // 挂载点与网卡名可任意长度：开 anywhere（同时收窄 min-content，避免窄屏横向溢出）
+    for (const selector of ['.monitor-view__volume-mount', '.monitor-view__nic-name',
+      '.monitor-view__block-muted', '.monitor-view__clock-host']) {
+      expect(ruleBody(selector), selector).toContain('overflow-wrap: anywhere')
+    }
+    // 数字读数 / 百分比 / 状态标签**不折**：窄列里折成两行等于读错
+    for (const selector of ['.monitor-view__volume-available', '.monitor-view__volume-percent',
+      '.monitor-view__disk-io', '.monitor-view__disk-busy', '.monitor-view__disk-extra',
+      '.monitor-view__net-totals', '.monitor-view__clock-num']) {
+      expect(ruleBody(selector), selector).toContain('white-space: nowrap')
     }
   })
 
@@ -643,121 +464,80 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(source).not.toContain('@container')
   })
 
-  it('台账七列共用一条列基线：一条 grid-template-columns 定义七列，三档只改列宽不改列数', () => {
-    // 基础规则（≥1280）：七列，状态点 / 名称 / 轨道 / 当前值 / 明细 / 阈值 / 余量
-    const base = ruleBody('.monitor-view__ledger-row')
-    expect(base).toContain('display: grid')
-    const columns = base.match(/grid-template-columns:\s*([^;]+);/)
-    expect(columns, '台账行必须是网格').not.toBeNull()
-    // 七列：按括号配平把每个轨道折成一个占位符再计数（minmax 里还嵌着 var(...)，
-    // 只按正则截到第一个 ')' 会把一条轨道切成两半，让「七列」这条断言失去意义）
-    const tracks: string[] = []
-    let depth = 0
-    let current = ''
-    for (const char of columns![1]) {
-      if (char === '(') depth += 1
-      if (char === ')') depth -= 1
-      if (/\s/.test(char) && depth === 0) {
-        if (current.trim().length > 0) tracks.push(current.trim())
-        current = ''
-        continue
-      }
-      current += char
+  it('存储 / 网络行各有一条网格基线：≥1024 全列，<1024 用 grid-template-areas 收成第二行', () => {
+    for (const selector of ['.monitor-view__volume-row', '.monitor-view__disk-row', '.monitor-view__network-row']) {
+      const body = ruleBody(selector)
+      expect(body, selector).toContain('display: grid')
+      expect(body, selector).toMatch(/grid-template-columns:/)
     }
-    if (current.trim().length > 0) tracks.push(current.trim())
-    expect(tracks).toHaveLength(7)
-    // 列宽全部来自 token（列宽是版面几何量，直接写字面量会被 dz/token-literal 拦下；
-    // 这里再断言一次，避免有人用 var(--spacer-*) 冒充列宽）
-    for (const token of ['--ledger-col-state', '--ledger-col-name', '--ledger-col-track',
-      '--ledger-col-value', '--ledger-col-detail', '--ledger-col-threshold', '--ledger-col-headroom']) {
-      expect(columns![1], `列宽缺 ${token}`).toContain(`var(${token})`)
+    // <1024：行内次要列（可用 / 延迟 / 累计）落到第二行，不横向溢出
+    for (const [selector, area] of [
+      ['.monitor-view__volume-row', 'track track'],
+      ['.monitor-view__disk-row', 'track track'],
+      ['.monitor-view__network-row', 'totals totals totals'],
+    ] as const) {
+      const narrow = ruleInMedia('@media (max-width: 1023.98px)', selector)
+      expect(narrow, selector).toContain('grid-template-areas')
+      expect(narrow, selector).toContain(area)
     }
-
-    // 中档（1024–1279）：仍是七列，只换成 md 档的收缩宽度（并同时收起列间距）
-    const md = ruleInMedia('@media (min-width: 1024px) and (max-width: 1279.98px)', '.monitor-view__ledger-row')
-    expect(md).toContain('var(--ledger-col-name-md)')
-    expect(md).toContain('var(--ledger-col-track-md)')
-    expect(md).toContain('var(--ledger-col-detail-md)')
-    expect(md).toContain('column-gap: var(--spacer-8)')
-
-    // 窄屏（<1024，即侧栏常驻后容器不再够分七列）：三行堆叠，用 grid-template-areas 重排
-    const narrow = ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__ledger-row')
-    expect(narrow).toContain('grid-template-areas')
-    for (const area of ['track track', 'detail detail', 'threshold headroom']) {
-      expect(narrow, `窄屏缺少 ${area} 行`).toContain(area)
-    }
-    // 阈值与余量离开列位置后必须自带列名（否则「90%」与「12.8 GiB」是两个无主数字）
-    expect(ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__ledger-col-label'))
-      .toContain('display: inline')
-    // 桌面档列名隐藏（七列各有固定位置，列名是噪声）
-    expect(ruleBody('.monitor-view__ledger-col-label')).toContain('display: none')
+    // <768 再收一档（每卷 / 每盘 / 每网卡名称 + 主数值第一行）
+    expect(ruleInMedia('@media (max-width: 767.98px)', '.monitor-view__volume-row'))
+      .toContain('grid-template-areas')
   })
 
-  it('阈值 / 余量两列按契约全空间定宽（#382：数字列只由内容定宽，不随版面收窄）', () => {
-    // 实测（11px 等宽数字，台账真实单元格）：
-    // 阈值最宽 = 默认档 `±100 / ±1000 ms` 84.86px（秒档最宽 80.47px、分钟档 64.06px）；
-    // 余量最宽 = 字节余量 `已超 1023.9 MiB` 82.09px（时钟余量换秒后 ≤ 58px、点数余量 66.8px）。
-    // 两列在两个位宽档都必须容得下这两串——#382 的教训正是「按当前机器实测值定列宽」。
+  it('时钟表数字列右对齐 + 等宽数字；窄屏收起 RTT / stratum / 误差界（次要列进行 title）', () => {
+    const num = ruleBody('.monitor-view__clock-num')
+    expect(num).toContain('font-variant-numeric: tabular-nums')
+    expect(num).toContain('text-align: right')
+    expect(num).toContain('white-space: nowrap')
+    // 次要列在 <1024 隐藏（完整读数留在行 title 里），<768 再收误差界
+    for (const cls of ['rtt', 'stratum']) {
+      const block = mediaRuleBody('@media (max-width: 1023.98px)', `.monitor-view__clock-col-${cls}`)
+      expect(block, cls).toContain('display: none')
+    }
+    expect(mediaRuleBody('@media (max-width: 767.98px)', '.monitor-view__clock-col-bound'))
+      .toContain('display: none')
+    // 新增的两个条形几何走 design token（不是字面量），旧台账几何 token 已删除
     const tokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
-    const REQUIRED: Record<string, number> = {
-      '--ledger-col-threshold': 88,
-      '--ledger-col-headroom': 88,
-      '--ledger-col-threshold-md': 88,
-      '--ledger-col-headroom-md': 88,
-    }
-    for (const [token, min] of Object.entries(REQUIRED)) {
-      const value = tokens.get(token)
-      expect(value, `design-tokens.css 缺少 ${token}`).toBeDefined()
-      const px = Number.parseFloat(String(value))
-      expect(px, `${token}=${value} 容不下契约上限文案（需 ≥ ${min}px）`).toBeGreaterThanOrEqual(min)
-    }
-    // 两档的阈值 / 余量列宽必须一致：同一串文本在两个位宽档不能一档放得下一档放不下
-    expect(tokens.get('--ledger-col-threshold')).toBe(tokens.get('--ledger-col-threshold-md'))
-    expect(tokens.get('--ledger-col-headroom')).toBe(tokens.get('--ledger-col-headroom-md'))
+    expect(tokens.get('--volume-track-height')).toBe('6px')
+    expect(tokens.get('--disk-busy-height')).toBe('4px')
+    expect(tokens.has('--ledger-col-state')).toBe(false)
   })
 
-  it('数值列右对齐（DESIGN.md:354）：阈值 / 余量 / 值槽；值槽是 flex 列，还要给 alignItems', () => {
-    // 表格口径：数值列右对齐 + 等宽数字。阈值 / 余量是纯文字格 → text-align: right
-    for (const selector of ['.monitor-view__ledger-threshold', '.monitor-view__ledger-headroom']) {
+  it('数值列右对齐（DESIGN.md:354）：可用% / 忙碌% / 延迟队列', () => {
+    for (const selector of ['.monitor-view__volume-percent', '.monitor-view__disk-busy',
+      '.monitor-view__disk-extra']) {
       const body = ruleBody(selector)
       expect(body, selector).toContain('text-align: right')
       expect(body, selector).toContain('font-variant-numeric: tabular-nums')
     }
-    // 值槽是纵向 flex（值 + sparkline 两层）：`text-align` 管不到 flex 项，必须 align-items
-    const value = ruleBody('.monitor-view__ledger-value')
-    expect(value).toContain('align-items: flex-end')
-    expect(value).toContain('text-align: right')
-    // 窄屏堆叠时阈值格回到左对齐（它此时在「阈值 headroom」一行的左端，右对齐会贴住余量）
-    expect(ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__ledger-threshold'))
-      .toContain('text-align: start')
+    // 窄屏堆叠后忙碌值在第一行右端，延迟 / 队列改左对齐（此时它在独立一行）
+    expect(ruleInMedia('@media (max-width: 1023.98px)', '.monitor-view__disk-extra'))
+      .toContain('text-align: left')
   })
 
-  it('台账元信息文字用 --text-secondary（tertiary 在两套主题下都够不到 11px 正文的 4.5:1）', () => {
-    // 承载**信息**的小字（不是装饰）：状态文字 / 契约键 / 明细列 / 组注 / 窄屏列名
-    for (const selector of ['.monitor-view__ledger-state-text', '.monitor-view__ledger-key',
-      '.monitor-view__ledger-detail-text', '.monitor-view__ledger-group-note',
-      '.monitor-view__ledger-col-label']) {
+  it('三块的小字用 --text-secondary；状态文字走 -on-surface 配对档（Paired-Step Rule）', () => {
+    for (const selector of ['.monitor-view__block-meta', '.monitor-view__subhead-meta',
+      '.monitor-view__block-muted', '.monitor-view__net-totals', '.monitor-view__clock-status',
+      '.monitor-view__clock-footer']) {
       expect(ruleBody(selector), selector).toContain('color: var(--text-secondary)')
     }
-    // 等级文字与等级数值走**配对档** -on-surface（Paired-Step Rule，DESIGN.md:229）；
-    // 点 / 轨道填充仍保持实体 -default —— 这条重启只约束文字。
     const tokens = [
-      ['.monitor-view__ledger-row[data-level=\'warn\'] .monitor-view__ledger-state-text',
-        'var(--status-warning-on-surface)'],
-      ['.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-state-text',
-        'var(--status-error-on-surface)'],
-      ['.monitor-view__ledger-row[data-level=\'warn\'] .monitor-view__ledger-value',
-        'var(--status-warning-on-surface)'],
-      ['.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-value',
-        'var(--status-error-on-surface)'],
+      ['.monitor-view__volume-percent[data-level=\'warn\']', 'var(--status-warning-on-surface)'],
+      ['.monitor-view__volume-percent[data-level=\'danger\']', 'var(--status-error-on-surface)'],
+      ['.monitor-view__disk-busy[data-level=\'warn\']', 'var(--status-warning-on-surface)'],
+      ['.monitor-view__net-counter--warn', 'var(--status-warning-on-surface)'],
+      ['.monitor-view__clock-offset[data-level=\'normal\']', 'var(--status-success-on-surface)'],
+      ['.monitor-view__clock-offset[data-level=\'danger\']', 'var(--status-error-on-surface)'],
+      ['.monitor-view__clock-conflict', 'var(--status-warning-on-surface)'],
     ] as const
     for (const [selector, token] of tokens) {
       expect(ruleBody(selector), selector).toContain(`color: ${token}`)
     }
-    // 点与轨道填充不动（它们是 -default 的正当归属：实体色只给点/条/图标）
-    expect(ruleBody('.monitor-view__ledger-row[data-level=\'warn\'] .monitor-view__ledger-dot'))
-      .toContain('background: var(--status-alert-default)')
-    expect(ruleBody('.monitor-view__ledger-row[data-level=\'danger\'] .monitor-view__ledger-track-fill'))
+    // 条 / 填充才是实体 -default 的正当归属（文字只走配对档）
+    expect(ruleBody('.monitor-view__volume-fill[data-level=\'warn\']'))
+      .toContain('background: var(--status-warning-default)')
+    expect(ruleBody('.monitor-view__disk-fill[data-level=\'danger\']'))
       .toContain('background: var(--status-error-default)')
   })
 
@@ -795,15 +575,12 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(ruleBody('.monitor-view__host-status')).toContain('flex: none')
   })
 
-  it('#432 存活点与指标点共用 success 绿：同色族不同义，语义分工由 DESIGN / GLOSSARY 承担', () => {
+  it('#432 存活点与指标正常条共用 success 绿：同色族不同义，语义分工由 DESIGN / GLOSSARY 承担', () => {
     // #371 曾要求「存活信号与状态绿解析后必须不同值」。#432 起这条被反转（用户拍板「绿黄」）：
-    // 存活点用 success 绿，与台账 normal 点同族；两件事靠**语义文档**区分（DESIGN.md 的
+    // 存活点用 success 绿，与指标 normal 条同族；两件事靠**语义文档**区分（DESIGN.md 的
     // Liveness signals 一句 + GLOSSARY.md「存活信号」），不再靠颜色差异承担。
-    // 这里做两件事：① 源码级确认两处都指向同一个 token（不是各造一套绿）；
-    // ② 解析后确认 token 在两套主题下都有定义（挡「token 被删/改名」这类改动）。
     expect(ruleBody('.monitor-view__host-dot')).toContain('background: var(--status-success-default)')
-    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
-      .toContain('background: var(--status-success-default)')
+    expect(ruleBody('.monitor-view__disk-fill')).toContain('background: var(--status-success-default)')
 
     const designTokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
     const themeRoot = parseCssFile(themePath())
@@ -817,11 +594,23 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   })
 
-  it('#432 台账的 normal 状态点与轨道填充仍用指标绿（与存活绿同族，语义靠文档区分）', () => {
-    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-dot'))
-      .toContain('background: var(--status-success-default)')
-    expect(ruleBody('.monitor-view__ledger-row[data-level=\'normal\'] .monitor-view__ledger-track-fill'))
-      .toContain('background: var(--status-success-default)')
+  it('指标 normal 的实体色 = success 绿（磁盘忙碌 / 每核条形）；文字仍只在 -on-surface 档', () => {
+    expect(ruleBody('.monitor-view__core-bar-fill')).toContain('background: var(--status-success-default)')
+    expect(ruleBody('.monitor-view__disk-fill')).toContain('background: var(--status-success-default)')
+    // 文字色规则里不出现 -default（实体色只给点/条/图标）
+    for (const selector of ['.monitor-view__volume-percent', '.monitor-view__disk-busy']) {
+      expect(ruleBody(selector), selector).not.toContain('var(--status-success-default)')
+      expect(ruleBody(selector), selector).not.toContain('var(--status-warning-default)')
+      expect(ruleBody(selector), selector).not.toContain('var(--status-error-default)')
+    }
+    // 偏差文字的三档都走 -on-surface（实体 -default 只给条 / 点）
+    for (const [level, token] of [
+      ['normal', 'var(--status-success-on-surface)'],
+      ['warn', 'var(--status-warning-on-surface)'],
+      ['danger', 'var(--status-error-on-surface)'],
+    ] as const) {
+      expect(ruleBody(`.monitor-view__clock-offset[data-level='${level}']`)).toContain(`color: ${token}`)
+    }
   })
 
   it('组成带的「已用」与「缓存」分得开：阶梯整体往「虚」侧挪一格（#363 C7）', () => {
@@ -849,13 +638,14 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(coarse).toMatch(/\.monitor-view__value-btn\s*\{[^}]*min-height:\s*var\(--spacer-40\)/)
   })
 
-  it('轨道缺口只画在有契约阈值的行上：CSS 用属性选择器不做判断，判断在纯函数层', () => {
-    // 缺口是展示分档（70 / 90），位置由 JS 注入；CSS 侧只定义位置与形状
-    expect(ruleBody('.monitor-view__ledger-gap')).toContain('left: var(--ledger-gap, 0%)')
-    // 轨道填充同理：逐行不同，只能运行时注入（未注入时退回 0%，不闪一条满格轨道）
-    expect(ruleBody('.monitor-view__ledger-track-fill')).toContain('width: var(--ledger-fill, 0%)')
-    // 组成带各段宽度按各自占比注入（#445 迁入内存卡，变量改名）
+  it('两条比例条靠运行时注入填充：卷容量 --volume-fill / 磁盘忙碌 --disk-busy（未注入时 0%）', () => {
+    expect(ruleBody('.monitor-view__volume-fill')).toContain('width: var(--volume-fill, 0%)')
+    expect(ruleBody('.monitor-view__disk-fill')).toContain('width: var(--disk-busy, 0%)')
+    // 组成带各段宽度按各自占比注入（#445 迁入内存卡，变量名不变）
     expect(ruleBody('.monitor-view__memory-band-seg')).toContain('var(--memory-seg, 0%)')
+    // 旧台账的运行时变量与选择器已整体删除
+    expect(source).not.toMatch(/--ledger-/)
+    expect(source).not.toMatch(/monitor-view__ledger/)
   })
 
   it('「立即查询」按钮按最长冷却文案预留宽度，倒计时不引起跳动（#326）', () => {
