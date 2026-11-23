@@ -113,6 +113,24 @@ bool event_channel_semaphore_exists() {
 
 bool smoke_strict() { return env::get("DZ_SMOKE_STRICT") == "1"; }
 
+/// 写最小 webui.json（三处冒烟夹具共用；仅 listen / 日志级别 / JWT secret / 通知缓存
+/// 容量按夹具不同）。admin 口令固定为 `kSmokeAdminPassword`（非系统默认口令），
+/// 理由见该常量注释；写失败返回 false，调用方用 ASSERT_TRUE 给出上下文。
+bool write_webui_config(const std::filesystem::path& configs_dir,
+                        int port,
+                        std::string_view listen,
+                        std::string_view log_level,
+                        std::string_view jwt_secret,
+                        int notify_cache_size) {
+    std::ofstream ofs(configs_dir / "webui.json");
+    ofs << "{\"server\":{\"listen\":\"" << listen << "\",\"port\":" << port << "},"
+        << "\"log\":{\"level\":\"" << log_level << "\",\"flush_on\":\"" << log_level << "\"},"
+        << "\"auth\":{\"jwt_secret\":\"" << jwt_secret << "\",\"token_ttl_sec\":3600},"
+        << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword << "\"},"
+        << "\"notify\":{\"cache_size\":" << notify_cache_size << "}}";
+    return static_cast<bool>(ofs);
+}
+
 /// 按 pid 强杀 (等价于 run-dev -Stop 的 Stop-Process -Force)。
 /// 不用 ChildProcess::terminate: 外部强杀后其 async_wait 状态回调不触发, 判定不可靠。
 void force_kill_pid(uint32_t pid) {
@@ -851,16 +869,9 @@ protected:
         // admin 口令**必须是 kSmokeAdminPassword（非系统默认口令）**，理由见该常量注释：
         // 用默认的 88888888 会让 dzweb 启动即置 must_change_password=1，之后所有 /api/*
         // 与 WS 都被 403 password_change_required 拦住（#253 实测）。别改回默认值。
-        {
-            std::ofstream ofs(home_ / "configs" / "webui.json");
-            ofs << "{\"server\":{\"listen\":\"0.0.0.0\",\"port\":" << webui_port_ << "},"
-                << "\"log\":{\"level\":\"info\",\"flush_on\":\"info\"},"
-                << "\"auth\":{\"jwt_secret\":\"smoke_test_secret\",\"token_ttl_sec\":3600},"
-                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
-                << "\"},"
-                << "\"notify\":{\"cache_size\":100}}";
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
-        }
+        ASSERT_TRUE(write_webui_config(home_ / "configs", webui_port_, "0.0.0.0", "info",
+                                       "smoke_test_secret", 100))
+            << "write webui.json failed";
 
         // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接, 会话懒创建于 connect
         // 不会发生; 下单走 no_session 拒单回报。
@@ -1539,41 +1550,48 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     };
     // 回归守卫（#440 实测）：td 进程曾在 spdlog::shutdown() 之后才析构 TdApi，
     // ~TdApi 的 PersistWriter::stop() 打日志时 default logger 已是 null → SIGSEGV
-    // （退出码 11）→ master 上报 Crashed。快照兜底的 Stopped 会把该失败掩盖成绿，
-    // 故在 Stopped 之后再观察一段 Crashed 帧（修复见 apps/ctp/td/td_main.cpp）。
+    // （退出码 11）→ master 上报 Crashed。快照兜底的 Stopped 会掩盖该失败，故必须在
+    // **每一次 drain** 里记录 Crashed：Crashed 由 on_child_exit 写出、Stopped 由
+    // report_full_snapshot 兜底写出，二者先后取决于 master 线程内事件回调与快照请求的
+    // 交错；只在 Stopped 之后单独开窗，会因 Crashed 已被前序 drain 消费而恒真
+    // （审查 P1 指出的空守卫）。修复见 apps/ctp/td/td_main.cpp。
     bool saw_td_crashed = false;
-    const auto saw_stopped = [&](const std::string& name) {
+    const auto drain_status = [&](std::string_view wait_stopped_for) {
+        bool stopped = false;
         for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS && f.payload.value("name", "") == name &&
-                f.payload.value("state", "") == "Stopped") {
-                return true;
+            if (!f.has_payload || f.type != DZ_FRAME_RTN_PROCESS_STATUS) {
+                continue;
             }
-        }
-        return false;
-    };
-    const bool md_stopped =
-        wait_until([&] { return saw_stopped("dzmd_ctp"); }, 15000, send_shutdown_and_snapshot);
-    ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed SHUTDOWN";
-    const bool td_stopped =
-        wait_until([&] { return saw_stopped("dztd_ctp"); }, 15000, send_shutdown_and_snapshot);
-    ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed SHUTDOWN";
-    // Crashed 帧可能晚于快照兜底的 Stopped：给 1.5s 观察窗口再断言（回归守卫见上）。
-    const auto td_crashed_seen = [&] {
-        for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS &&
-                f.payload.value("name", "") == "dztd_ctp" &&
-                f.payload.value("state", "") == "Crashed") {
+            const std::string frame_name = f.payload.value("name", "");
+            const std::string state = f.payload.value("state", "");
+            if (frame_name == "dztd_ctp" && state == "Crashed") {
                 saw_td_crashed = true;
             }
+            if (!wait_stopped_for.empty() && frame_name == wait_stopped_for && state == "Stopped") {
+                stopped = true;
+            }
         }
-        return saw_td_crashed;
+        return stopped;
     };
-    ASSERT_FALSE(wait_until(td_crashed_seen, 1500, send_shutdown_and_snapshot))
+    const bool md_stopped =
+        wait_until([&] { return drain_status("dzmd_ctp"); }, 15000, send_shutdown_and_snapshot);
+    ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed SHUTDOWN";
+    const bool td_stopped =
+        wait_until([&] { return drain_status("dztd_ctp"); }, 15000, send_shutdown_and_snapshot);
+    ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed SHUTDOWN";
+    const bool webui_stopped =
+        wait_until([&] { return drain_status("dzweb"); }, 15000, send_shutdown_and_snapshot);
+    ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed SHUTDOWN";
+    // 收尾观察窗（1s）：覆盖「Crashed 晚于 Stopped 到达」的异步交错；窗口内一旦记录到
+    // Crashed 即断言失败（三个子进程都已退出，窗口后不会再出现该进程的状态帧）。
+    EXPECT_FALSE(wait_until(
+        [&] {
+            (void)drain_status("");
+            return saw_td_crashed;
+        },
+        1000, send_shutdown_and_snapshot))
         << "dztd_ctp reported Crashed on graceful SHUTDOWN (must exit 0; check td_main "
            "spdlog::shutdown ordering)";
-    const bool webui_stopped =
-        wait_until([&] { return saw_stopped("dzweb"); }, 15000, send_shutdown_and_snapshot);
-    ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed SHUTDOWN";
 
     // 5. 终止 master (master 常驻无自退出协议, 与 run-dev -Stop 同策略: 强杀)
     //    双轨判定: ChildProcess 状态回调 + 进程级 liveness (async_wait 在外部强杀后不触发)
@@ -1622,16 +1640,9 @@ protected:
         // 刻意**不建 db/ 目录**：读端点必须走 not_found 降级。
         // admin 口令同样必须非默认（否则 403 password_change_required 挡住 REST），
         // 理由见 SmokeTest 的 kSmokeAdminPassword 注释。
-        {
-            std::ofstream ofs(home_ / "configs" / "webui.json");
-            ofs << "{\"server\":{\"listen\":\"127.0.0.1\",\"port\":" << port_ << "},"
-                << "\"log\":{\"level\":\"warn\",\"flush_on\":\"warn\"},"
-                << "\"auth\":{\"jwt_secret\":\"smoke_degraded_secret\",\"token_ttl_sec\":3600},"
-                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
-                << "\"},"
-                << "\"notify\":{\"cache_size\":10}}";
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
-        }
+        ASSERT_TRUE(write_webui_config(home_ / "configs", port_, "127.0.0.1", "warn",
+                                       "smoke_degraded_secret", 10))
+            << "write webui.json failed";
 
         const auto webui_exe = out_dir_ /
                                "dzweb"
@@ -1792,17 +1803,9 @@ protected:
         }
         // 不写 configs/dztd_ctp.json：启动路径同时回归「配置文件缺失自愈 + 零账户运行」
         // （契约 td-config §6 / ADR 0053）。
-        {
-            std::ofstream ofs(home_ / "configs" / "webui.json");
-            ofs << "{\"server\":{\"listen\":\"0.0.0.0\",\"port\":" << webui_port_ << "},"
-                << "\"log\":{\"level\":\"info\",\"flush_on\":\"info\"},"
-                << "\"auth\":{\"jwt_secret\":\"smoke_td_lifecycle_secret\","
-                << "\"token_ttl_sec\":3600},"
-                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
-                << "\"},"
-                << "\"notify\":{\"cache_size\":100}}";
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
-        }
+        ASSERT_TRUE(write_webui_config(home_ / "configs", webui_port_, "0.0.0.0", "info",
+                                       "smoke_td_lifecycle_secret", 100))
+            << "write webui.json failed";
 
         master_exe_ = out_dir_ /
                       "dztraderd"
@@ -2205,18 +2208,22 @@ TEST_F(SmokeTdLifecycleTest, GatewayStartAccountGuardRemoveAndMasterRestart) {
         << "account registry does not expose the added account after RTN_TD_CONFIG";
 
     // 5. 带账户 DELETE：服务端 guard 回 409 gateway_has_accounts，且**不写 Remove 帧**
-    //    （接口仍在 process_config 中、仍 Running）。
+    //    （接口仍在 process_config 中、仍 Running）。拒绝是同步的，但「未写帧」的检查
+    //    不能只看拒绝瞬间：若服务端误写 Remove 帧，进程状态/配置镜像会在随后 1s 内翻转，
+    //    故用观察窗（快照查询触发收敛），窗口内任一条目消失或非 Running 即视为违规。
     {
         HttpClient http(ioc_, webui_port_);
         const HttpResponse resp = http.del("/api/td/gateways/dztd_ctp", auth_token_);
         ASSERT_EQ(resp.status, 409) << "DELETE with accounts must be rejected | body=" << resp.body;
         ASSERT_TRUE(resp.json_ok) << "409 body is not json | body=" << resp.body;
         EXPECT_EQ(resp.json.value("code", ""), "gateway_has_accounts") << "body=" << resp.body;
-        pump_frames();
-        EXPECT_TRUE(process_config_entry("dztd_ctp").has_value())
-            << "guard rejection must not write Remove frame (process_config lost the entry)";
-        EXPECT_TRUE(process_state_is("dztd_ctp", "Running"))
-            << "guard rejection must not stop the gateway";
+        const auto guard_violated = [&] {
+            pump_frames();
+            return !process_config_entry("dztd_ctp").has_value() ||
+                   !process_state_is("dztd_ctp", "Running");
+        };
+        EXPECT_FALSE(wait_until(guard_violated, 1000, [&] { send_full_snapshot_query(); }))
+            << "guard rejection must not write Remove frame / stop the gateway (1s window)";
     }
 
     // 6. 删账户：RTN_TD_CONFIG 去掉该账户 + 注册表不再可见。
@@ -2305,9 +2312,29 @@ TEST_F(SmokeTdLifecycleTest, GatewayStartAccountGuardRemoveAndMasterRestart) {
     ASSERT_TRUE(start_master()) << "master restart failed";
     ASSERT_TRUE(wait_health(30000))
         << "dzweb /health not 200 within 30s after master restart (port=" << webui_port_ << ")";
+    // 重开事件通道：TearDown 的失败兜底要靠 writer_ 定向 SHUTDOWN 新 dzweb。新 master
+    // 的 child pid 在断言提前失败时可能还来不及从 /api/processes 记录，而旧 writer_ 指向
+    // 被杀 master 的通道句柄也不可靠——故 restart 成功后立即重建 writer/reader 句柄。
+    ASSERT_TRUE(open_event_channel()) << "event channel not reopened after master restart";
     auth_token_.clear();
     ASSERT_TRUE(wait_until([&] { return login(); }, 15000, [] {}))
         << "login after master restart failed";
+    // 尽早（best-effort）记录重启后的 dzweb pid 供 TearDown 兜底清理：/api/processes
+    // 镜像可能尚未填充，轮询 5s 收窄窗口；尾部在镜像确认填充后会再取一次并硬断言。
+    (void)wait_until(
+        [&] {
+            const auto webui = rest_process_entry("dzweb");
+            if (!webui.has_value()) {
+                return false;
+            }
+            const int pid = webui->value("pid", 0);
+            if (pid <= 0) {
+                return false;
+            }
+            dzweb_pid_ = static_cast<std::uint32_t>(pid);
+            return true;
+        },
+        5000, [] {});
     // 新 master 的进程镜像必须先被观察到（dzweb 在新 master 的配置条目里），否则
     // 「没有 dztd_ctp」可能只是镜像尚未填充 —— 先等 dzweb 出现，再断言它不存在。
     ASSERT_TRUE(wait_until([&] { return rest_process_names().contains("dzweb"); }, 30000, [] {}))
@@ -2328,13 +2355,12 @@ TEST_F(SmokeTdLifecycleTest, GatewayStartAccountGuardRemoveAndMasterRestart) {
     }
     EXPECT_FALSE(master_config_td_gateways().contains("dztd_ctp"))
         << "dztraderd.json td section resurrected dztd_ctp after master restart";
-    // 新 dzweb 的 pid 更新到 TearDown 的清理集合。
+    // 镜像此时必然已填充（上一等待成功）：记录重启后的 dzweb pid 供 TearDown 兜底清理。
     const auto new_webui = rest_process_entry("dzweb");
     ASSERT_TRUE(new_webui.has_value());
     const int new_webui_pid = new_webui->value("pid", 0);
-    if (new_webui_pid > 0) {
-        dzweb_pid_ = static_cast<std::uint32_t>(new_webui_pid);
-    }
+    ASSERT_GT(new_webui_pid, 0) << "restarted dzweb status carries no pid";
+    dzweb_pid_ = static_cast<std::uint32_t>(new_webui_pid);
 }
 
 }  // namespace
