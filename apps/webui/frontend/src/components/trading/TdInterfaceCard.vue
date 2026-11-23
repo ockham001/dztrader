@@ -482,7 +482,6 @@ function progressPercent(row: TdAccountRow): number {
                   <span class="td-card__account-id">{{ row.account_id }}</span>
                   <span v-if="row.riskControlEnabled" class="ds-tag td-card__badge">风控</span>
                 </div>
-                <div class="td-card__account-meta">{{ row.currencyId }}</div>
               </td>
               <td>
                 <span class="ds-tag" :class="row.enabled ? '' : 'td-card__badge--muted'" data-test="td-account-enabled">

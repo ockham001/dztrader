@@ -59,7 +59,9 @@ const emit = defineEmits<{
 
 const fieldId = useFieldId()
 
-/** 空白表单（添加态的初值：默认启用、人民币、无前置） */
+/** 空白表单（添加态的初值：默认启用、无前置）。
+ *  `currency_id` 不在表单暴露：币种应由账户/柜台回报决定（见模板注释），协议字段暂按契约
+ *  默认 CNY 提交，等「柜台回报推导币种」落地后改由网关填充。 */
 function emptyForm(gateway: string): TdAccountFormValue {
   return {
     account_id: '',
@@ -230,12 +232,9 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
         </label>
       </div>
 
-      <div class="dialog-field">
-        <label class="dialog-field__label" :for="fieldId('account-currency')">账户币种</label>
-        <div class="ds-input">
-          <input :id="fieldId('account-currency')" v-model="form.currency_id" type="text" placeholder="CNY" autocomplete="off">
-        </div>
-      </div>
+      <!-- 账户币种：不做用户配置。币种应由账户/柜台给出（CTP 资金账户查询回报自带
+           CurrencyID），平台侧人工填写没有消费者且会引入错配；协议字段 currency_id
+           暂保留（契约 td-config §2.2 通用层，默认 CNY），推导落地前由网关按 CNY 处理。 -->
 
       <!-- ===== CTP ext（interface_type = ctp，契约 td-config §2.3） ===== -->
       <template v-if="isCtp">
