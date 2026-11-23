@@ -178,6 +178,11 @@ void MdApi::dispatch_ctp_event(Event& event) {
 }
 
 MdApi::~MdApi() {
+    // 关停锚点: 关停相关日志都在析构之前已打完, 这里补一条析构期日志。
+    // 它同时是关停顺序的回归探针: MdApi 必须在 spdlog::shutdown() 之前析构
+    // (md_main.cpp 的 api.reset()), 否则本行在 default logger 为 null 时 SIGSEGV,
+    // 冒烟守卫 (SmokeTest 的 Crashed 断言) 据此可红 (#449)。
+    SPDLOG_INFO("md api destroying | name={}", name_);
     running_ = false;
     cancel_login_timer();  // 取消可能挂起的登录超时, 避免析构期间回调唤醒
     // 1. 释放 CTP API: RegisterSpi(nullptr) 断开回调, Release() 同步等待内部线程退出

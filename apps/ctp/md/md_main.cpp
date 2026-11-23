@@ -160,6 +160,12 @@ int main(int argc, char* argv[]) {
 
     SPDLOG_INFO("stop");
     g_event_sem.store(nullptr, std::memory_order_relaxed);  // 防止信号处理器在析构后访问悬垂指针
+    // 必须先析构 MdApi 再关全局 logger：~MdApi 会打日志（入口的关停锚点；异常路径的
+    // Release 抛出 catch 与 drain Unknown 事件），而 spdlog::shutdown() 之后 default
+    // logger 为 null，SPDLOG_* 解引用空指针 → 进程 SIGSEGV 退出（td 侧 #440 实测
+    // exit=11）。后果：正常关停被 master 误报 Crashed 并弹「child crashed」错误通知。
+    // 同一顺序缺陷在 td_main.cpp 已修（#440），本票对齐 md 侧（#449）。
+    api.reset();
     spdlog::shutdown();
     return 0;
 }

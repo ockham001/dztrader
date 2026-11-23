@@ -1548,16 +1548,18 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
             writer_->notify_subscribers();
         }
     };
-    // 回归守卫（#440 实测）：td 进程曾在 spdlog::shutdown() 之后才析构 TdApi，
-    // ~TdApi 的 PersistWriter::stop() 打日志时 default logger 已是 null → SIGSEGV
-    // （退出码 11）→ master 上报 Crashed。快照兜底的 Stopped 会掩盖该失败，故必须在
-    // **每一次 drain** 里记录 Crashed：Crashed 由 on_child_exit 写出，而快照兜底的
-    // Stopped 由 report_full_snapshot 写出——master 是单线程 io_context，on_child_exit
-    // 写帧完成后快照才可能被处理，因此 Crashed 先于快照 Stopped，会被其之前/同一轮的
-    // drain 消费；只在 Stopped 之后单独开窗会因 Crashed 已消费而恒真（审查 P1 指出的
-    // 空守卫）。守卫实现不依赖该先后（逐轮记录），并在收尾留 1s 晚到观察窗；
-    // 修复见 apps/ctp/td/td_main.cpp。
-    bool saw_td_crashed = false;
+    // 回归守卫（#440 实测、#449 扩展）：td 的 ~TdApi 在 spdlog::shutdown() 之后才析构，
+    // PersistWriter 的确认日志打到已为 null 的 default logger → SIGSEGV（退出码 11）→
+    // master 上报 Crashed。md 侧原有同样的顺序缺陷（正常路径静默、只有异常路径才打日志，
+    // 故单看进程级守卫会恒真）；#449 修复顺序并在 ~MdApi 入口补关停日志，使本守卫对 md
+    // 同样可红。快照兜底的 Stopped 会掩盖该失败，故必须在**每一次 drain** 里记录
+    // Crashed：Crashed 由 on_child_exit 写出，而快照兜底的 Stopped 由
+    // report_full_snapshot 写出——master 是单线程 io_context，on_child_exit 写帧完成后
+    // 快照才可能被处理，因此 Crashed 先于快照 Stopped，会被其之前/同一轮的 drain 消费；
+    // 只在 Stopped 之后单独开窗会因 Crashed 已消费而恒真（审查 P1 指出的空守卫）。
+    // 守卫实现不依赖该先后（逐轮记录），并在收尾留 1s 晚到观察窗。
+    // 修复见 apps/ctp/{td,md}/*_main.cpp 里 spdlog::shutdown() 前的 api.reset()。
+    std::set<std::string> crashed_gateways;
     const auto drain_status = [&](std::string_view wait_stopped_for) {
         bool stopped = false;
         for (auto& f : drain_available(*reader_)) {
@@ -1566,8 +1568,8 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
             }
             const std::string frame_name = f.payload.value("name", "");
             const std::string state = f.payload.value("state", "");
-            if (frame_name == "dztd_ctp" && state == "Crashed") {
-                saw_td_crashed = true;
+            if (state == "Crashed" && (frame_name == "dztd_ctp" || frame_name == "dzmd_ctp")) {
+                crashed_gateways.insert(frame_name);
             }
             if (!wait_stopped_for.empty() && frame_name == wait_stopped_for && state == "Stopped") {
                 stopped = true;
@@ -1586,14 +1588,20 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed SHUTDOWN";
     // 收尾观察窗（1s）：覆盖「Crashed 晚于 Stopped 到达」的异步交错；窗口内一旦记录到
     // Crashed 即断言失败（三个子进程都已退出，窗口后不会再出现该进程的状态帧）。
-    EXPECT_FALSE(wait_until(
+    const bool crashed_on_shutdown = wait_until(
         [&] {
             (void)drain_status("");
-            return saw_td_crashed;
+            return !crashed_gateways.empty();
         },
-        1000, send_shutdown_and_snapshot))
-        << "dztd_ctp reported Crashed on graceful SHUTDOWN (must exit 0; check td_main "
-           "spdlog::shutdown ordering)";
+        1000, send_shutdown_and_snapshot);
+    std::string crashed_list;
+    for (const auto& gateway : crashed_gateways) {
+        crashed_list += (crashed_list.empty() ? "" : ",") + gateway;
+    }
+    EXPECT_FALSE(crashed_on_shutdown)
+        << "gateway reported Crashed on graceful SHUTDOWN (must exit 0; check *_main.cpp "
+           "spdlog::shutdown ordering) | crashed="
+        << crashed_list;
 
     // 5. 终止 master (master 常驻无自退出协议, 与 run-dev -Stop 同策略: 强杀)
     //    双轨判定: ChildProcess 状态回调 + 进程级 liveness (async_wait 在外部强杀后不触发)

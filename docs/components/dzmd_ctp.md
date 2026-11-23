@@ -67,6 +67,10 @@
 - 此**订阅者指订阅该合约的策略 / 进程**，区别于行情通道的读取端列表（后者是 SHM 读者，由 `UPDATE_SHM_MD_SUBSCRIBER` 广播被动刷新维护，见「SHM 通道」）。
 - **乐观退订**：发送退订即置未订阅状态，不等 CTP 回调反馈；遵循"宁多勿少"原则——宁可多订 / 多收，也不漏订。
 
+## 退出与关停
+
+- **必须先析构 `MdApi` 再 `spdlog::shutdown()`**（`md_main.cpp` 显式 `api.reset()`）：`~MdApi` 会打日志（入口的关停锚点；异常路径的 `Release()` 抛出 catch 与 drain Unknown 事件），而 shutdown 之后 default logger 为 null → SIGSEGV（退出码 11），master 会把正常关停误报 `Crashed` 并弹「child crashed」（与 #440 的 td 侧同型，#449 对齐修复）。`SmokeTest` 的 Crashed 回归守卫同时覆盖 `dzmd_ctp` / `dztd_ctp`：逐轮 drain 记录、收尾留 1s 晚到观察窗，删掉 `api.reset()` 即变红。
+
 ## 设计原则
 
 - **锁选型对齐并发模型**：单写者用轻量自旋锁（进程内跨线程互斥）；多写者用崩溃安全的进程锁（跨进程互斥）；读取端无锁。锁不跨出通道边界。
