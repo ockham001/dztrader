@@ -469,7 +469,7 @@
   --ledger-col-headroom-md: 88px;
   --ledger-dot-size: 6px;          /* 状态点直径：与顶栏快照状态点同一视觉尺寸 */
   --ledger-track-height: 6px;      /* 量程轨道高度：容纳 1px 缺口线且不遮住读数 */
-  --ledger-band-height: 10px;      /* 内存组成带高度：四段颜色可辨的最小高度 */
+  --memory-band-height: 10px;      /* 内存组成带高度：四段颜色可辨的最小高度（#363 迁入内存卡，#445） */
   --ledger-field-min-width: 160px; /* 展开明细的两列网格下限 */
   --font-size-9: 9px;         /* 微标签/徽标字号 */
   --font-size-10: 10px;

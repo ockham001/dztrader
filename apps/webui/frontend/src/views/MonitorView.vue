@@ -31,6 +31,7 @@ import type { ResourceLevel } from '@/composables/useResourceLevel'
 import {
   UNAVAILABLE_TEXT,
   formatAge,
+  formatBytes,
   formatClockTime,
   formatDateTime,
   formatDecimal,
@@ -379,10 +380,8 @@ const ledgerNowUnixMs = computed(() => {
   return typeof ts === 'number' ? ts : Date.now()
 })
 
-/** 台账三组（内存 / 存储 / 网络与时钟），行数由数据决定；CPU 组已随 #435 移入 CPU 块 */
+/** 台账两组（存储 / 网络与时钟），行数由数据决定；CPU 组随 #435、内存组随 #445 移入各自的块卡 */
 const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
-  memory: sysmon.memoryInfo,
-  swap: sysmon.swapInfo,
   readableVolumes: sysmon.readableVolumes,
   zeroCapacityVolumes: sysmon.zeroCapacityVolumes,
   diskIo: sysmon.diskIo,
@@ -397,8 +396,59 @@ const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   networkFilteredAll: sysmon.networkFilteredAll && sysmon.hideVirtual,
 }))
 
+// ---- 内存块（#445）：照主机面板插件内存卡（半宽、Meter + 组成带 + 交换子条） ----
+
+/** 内存快照与能力（契约 sysmon §2.4；可用性按映射判，不按平台名分支） */
+const memoryInfo = computed(() => sysmon.memoryInfo)
+const memoryAvailable = computed(() => isAvailable('memory'))
+const memoryUsedRatio = computed(() => memoryInfo.value?.used_ratio ?? null)
+/** 内存已用率的展示等级：与顶栏 MEM 徽章共用 70 / 90 分档（ADR 0034，色标不是越限判定） */
+const memoryLevel = computed(() => (memoryUsedRatio.value === null ? null : resourceLevel(memoryUsedRatio.value)))
+const memoryEmptyTitle = computed(() => {
+  if (memoryAvailable.value) return '暂无数据'
+  return sysmon.availabilityOf('memory')?.reason === 'disabled_by_config' ? DISABLED_BY_CONFIG_TEXT : UNAVAILABLE_TEXT
+})
+const memoryEmptyDesc = computed(() => {
+  if (memoryAvailable.value) return '当前快照未提供内存数据'
+  if (sysmon.availabilityOf('memory')?.reason === 'disabled_by_config') return '可在「配置」页重新启用内存指标组'
+  return unavailableDesc('memory')
+})
+
 /** 内存组成带（#363）：四段 + 图例；缓存/缓冲不可得时退化为两段并标注（不补 0） */
 const memoryComposition = computed(() => buildMemoryComposition(sysmon.memoryInfo))
+
+/** 交换分区（契约 sysmon §2.4：Windows = 页面文件支撑的提交上限口径；无交换为 unsupported） */
+const swapInfo = computed(() => sysmon.swapInfo)
+const swapAvailable = computed(() => isAvailable('swap'))
+const swapUsedRatio = computed(() => swapInfo.value?.used_ratio ?? null)
+/** 交换已用率的展示等级：与内存同一 70 / 90 分档；交换无单独顶栏徽章 */
+const swapLevel = computed(() => (swapUsedRatio.value === null ? null : resourceLevel(swapUsedRatio.value)))
+/** 有可画的交换读数：可用 + 本帧有数据 + 总量 > 0（总量 0 是「无交换」事实，不画 0%） */
+const swapHasData = computed(
+  () => swapAvailable.value && swapInfo.value !== null && swapInfo.value.total_bytes > 0,
+)
+/** 交换子区的空态文案：无交换 / 配置关闭 / 不可用 / 暂无数据，四档不混淆 */
+const swapEmptyText = computed(() => {
+  if (!swapAvailable.value) {
+    const reason = sysmon.availabilityOf('swap')?.reason
+    if (reason === 'unsupported') return '本机无交换分区/页面文件'
+    if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
+    return `${UNAVAILABLE_TEXT} · ${unavailableDesc('swap')}`
+  }
+  // 可用但总量 0：与 unsupported 同一平台事实（契约 §2.4：无交换时 total_bytes=0），不是 0%
+  if (swapInfo.value !== null && swapInfo.value.total_bytes === 0) return '本机无交换分区/页面文件'
+  return '暂无数据：本帧未采集到交换分区'
+})
+
+/**
+ * Meter 填充比例 → CSS 变量（与 CPU 每核柱的 `--core-fill` 同一形态：值逐帧不同，只能运行时注入）。
+ * `ratio === null` 不注入变量 → 轨道空着；与「真的 0%」的区别由数值文字承担（空读数写「不可用」）。
+ */
+function meterFillStyle(ratio: number | null): Record<string, string> {
+  if (ratio === null) return {}
+  const clamped = Math.min(1, Math.max(0, ratio))
+  return { '--meter-fill': formatPercent(clamped) }
+}
 
 /**
  * 轨道填充比例 → CSS 变量（与 CPU 每核柱的 `--core-fill` 同一形态：值逐行不同，只能运行时注入）。
@@ -413,9 +463,9 @@ function trackFillStyle(row: LedgerRow): Record<string, string> {
 }
 
 /** 组成带某段占总量比例 → CSS 变量（`flex-basis`），不可得的段不画（不注入变量） */
-function compositionStyle(segment: MemoryCompositionSegment): Record<string, string> {
+function memorySegmentStyle(segment: MemoryCompositionSegment): Record<string, string> {
   if (segment.ratio === null) return {}
-  return { '--ledger-seg': formatPercent(Math.min(1, Math.max(0, segment.ratio))) }
+  return { '--memory-seg': formatPercent(Math.min(1, Math.max(0, segment.ratio))) }
 }
 
 /**
@@ -999,7 +1049,7 @@ const cpuTrendAriaLabel = computed(() => {
            曲线不叠内存 / 负载第二条线；曲线下方不设标题行；上下文切换 / 中断已移出实时页
            （历史视图两项都可查），避免同一事实两处实现。 -->
       <section class="ds-card monitor-view__card monitor-view__card--wide" data-test="monitor-cpu">
-        <div class="monitor-view__cpu-head">
+        <div class="monitor-view__block-head">
           <h2 class="ds-card__title monitor-view__card-title">
             <span class="monitor-view__card-icon"><Icon name="CPU" :size="14" /></span>CPU
           </h2>
@@ -1203,6 +1253,111 @@ const cpuTrendAriaLabel = computed(() => {
         </div>
       </section>
 
+      <!-- 内存块（#445）：照主机面板插件的内存卡——标题 + 右端总量、已用率 Meter、
+           四段组成带 + 图例、交换子 Meter。与插件一致只占半宽（插件那半是 GPU；本机无 GPU，
+           右列暂空，后续块再占用）；不做 15 分钟曲线（插件内存卡无图）。 -->
+      <section class="ds-card monitor-view__card monitor-view__memory" data-test="monitor-memory">
+        <div class="monitor-view__block-head">
+          <h2 class="ds-card__title monitor-view__card-title">
+            <span class="monitor-view__card-icon"><Icon name="memory" :size="14" /></span>内存
+          </h2>
+          <p
+            v-if="memoryAvailable && memoryInfo"
+            class="monitor-view__memory-total"
+            data-test="monitor-memory-total"
+          >{{ formatBytes(memoryInfo.total_bytes) }}</p>
+        </div>
+
+        <template v-if="memoryAvailable && memoryInfo">
+          <div class="monitor-view__meter" data-test="monitor-memory-meter">
+            <div class="monitor-view__meter-head">
+              <span class="monitor-view__meter-label">已用</span>
+              <button
+                v-if="memoryUsedRatio !== null"
+                type="button"
+                class="monitor-view__value-btn monitor-view__meter-value"
+                :data-level="memoryLevel"
+                data-test="monitor-memory-percent"
+                :title="historyTitle('memory.used_ratio')"
+                :aria-label="historyAriaLabel('memory.used_ratio', formatPercent(memoryUsedRatio))"
+                @click="openHistory('memory.used_ratio')"
+              >{{ formatPercent(memoryUsedRatio) }}</button>
+              <span v-else class="monitor-view__meter-value" data-test="monitor-memory-percent">{{ UNAVAILABLE_TEXT }}</span>
+            </div>
+            <div class="monitor-view__meter-track" aria-hidden="true">
+              <span class="monitor-view__meter-fill" :data-level="memoryLevel" :style="meterFillStyle(memoryUsedRatio)"></span>
+            </div>
+            <p class="monitor-view__meter-caption" data-test="monitor-memory-caption">
+              {{ formatBytes(memoryInfo.used_bytes) }} · 共 {{ formatBytes(memoryInfo.total_bytes) }}
+            </p>
+          </div>
+
+          <!-- 组成带（#363 口径，迁入内存块）：主数值是「用量比率」，组成带是「总量分解」，
+               两者各自标注分母；缓存/缓冲不可得时退化为两段并注记（不补 0）。 -->
+          <div v-if="memoryComposition" class="monitor-view__memory-composition" data-test="monitor-memory-composition">
+            <div class="monitor-view__memory-band">
+              <span
+                v-for="segment in memoryComposition.segments"
+                :key="segment.id"
+                class="monitor-view__memory-band-seg"
+                :class="`monitor-view__memory-band-seg--${segment.id}`"
+                :style="memorySegmentStyle(segment)"
+                :data-segment="segment.id"
+              ></span>
+            </div>
+            <ul class="monitor-view__memory-legend" data-test="monitor-memory-legend">
+              <li
+                v-for="segment in memoryComposition.segments"
+                :key="segment.id"
+                class="monitor-view__memory-legend-item"
+                :data-segment="segment.id"
+                data-test="monitor-memory-legend-item"
+              >
+                <span class="monitor-view__memory-legend-swatch" :class="`monitor-view__memory-band-seg--${segment.id}`" aria-hidden="true"></span>
+                <span class="monitor-view__memory-legend-label">{{ segment.label }}</span>
+                <span class="monitor-view__memory-legend-value" data-test="monitor-memory-legend-value">{{ segment.text ?? '不可得' }}</span>
+              </li>
+            </ul>
+            <p
+              v-if="memoryComposition.degraded"
+              class="monitor-view__hint"
+              data-test="monitor-memory-composition-degraded"
+            >{{ memoryComposition.degradedText }}</p>
+          </div>
+
+        </template>
+        <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-empty">
+          <div class="ds-empty__title">{{ memoryEmptyTitle }}</div>
+          <div class="ds-empty__desc">{{ memoryEmptyDesc }}</div>
+        </div>
+
+        <!-- 交换子 Meter（插件式）：有交换分区才画条；无交换/关闭/不可用/暂无数据只给一句文案。
+             交换可用性独立于内存：内存空态不影响交换读数。 -->
+        <div v-if="swapHasData" class="monitor-view__meter monitor-view__meter--compact" data-test="monitor-swap">
+            <div class="monitor-view__meter-head">
+              <span class="monitor-view__meter-label">交换分区</span>
+              <button
+                v-if="swapUsedRatio !== null"
+                type="button"
+                class="monitor-view__value-btn monitor-view__meter-value"
+                :data-level="swapLevel"
+                data-test="monitor-swap-percent"
+                :title="historyTitle('swap.used_ratio')"
+                :aria-label="historyAriaLabel('swap.used_ratio', formatPercent(swapUsedRatio))"
+                @click="openHistory('swap.used_ratio')"
+              >{{ formatPercent(swapUsedRatio) }}</button>
+              <span v-else class="monitor-view__meter-value" data-test="monitor-swap-percent">{{ UNAVAILABLE_TEXT }}</span>
+            </div>
+            <div class="monitor-view__meter-track monitor-view__meter-track--compact" aria-hidden="true">
+              <span class="monitor-view__meter-fill" :data-level="swapLevel" :style="meterFillStyle(swapUsedRatio)"></span>
+            </div>
+            <p class="monitor-view__meter-caption" data-test="monitor-swap-caption">
+              {{ formatBytes(swapInfo!.used_bytes) }} · 共 {{ formatBytes(swapInfo!.total_bytes) }}
+            </p>
+        </div>
+        <p v-else class="monitor-view__memory-muted" data-test="monitor-swap-empty">{{ swapEmptyText }}</p>
+      </section>
+
       <!-- 指标台账（#363；#435 起 CPU 组移入 CPU 块，只剩三组 内存 → 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
            组件不写任何「该不该显示」的判断——行的存在、空态类别、阈值与余量、能否点跳历史
            全部由 `@/composables/monitorLedger` 决定。七列共用一条列基线（每行同一套
@@ -1379,43 +1534,6 @@ const cpuTrendAriaLabel = computed(() => {
                 <span class="monitor-view__ledger-col-label">余量</span>
                 <span data-test="ledger-headroom">{{ row.headroomText }}</span>
               </span>
-
-              <!-- 内存组成带（#363）：嵌在内存行下方。两个口径不合并——主数值是
-                   `total − available` 的用量比率，组成带的「已用」段是 `total − free − cached − buffers`
-                   的总量分解；`free` 由前三段派生。缓存/缓冲不可得时退化为两段并标注（不补 0）。 -->
-              <div
-                v-if="row.id === 'memory' && memoryComposition"
-                class="monitor-view__ledger-composition"
-                data-test="monitor-memory-composition"
-              >
-                <div class="monitor-view__ledger-band">
-                  <span
-                    v-for="segment in memoryComposition.segments"
-                    :key="segment.id"
-                    class="monitor-view__ledger-band-seg"
-                    :class="`monitor-view__ledger-band-seg--${segment.id}`"
-                    :style="compositionStyle(segment)"
-                    :data-segment="segment.id"
-                  ></span>
-                </div>
-                <ul class="monitor-view__ledger-legend">
-                  <li
-                    v-for="segment in memoryComposition.segments"
-                    :key="segment.id"
-                    class="monitor-view__ledger-legend-item"
-                    :data-segment="segment.id"
-                  >
-                    <span class="monitor-view__ledger-legend-swatch" :class="`monitor-view__ledger-band-seg--${segment.id}`" aria-hidden="true"></span>
-                    <span class="monitor-view__ledger-legend-label">{{ segment.label }}</span>
-                    <span class="monitor-view__ledger-legend-value" data-test="ledger-legend-value">{{ segment.text ?? '不可得' }}</span>
-                  </li>
-                </ul>
-                <p
-                  v-if="memoryComposition.degraded"
-                  class="monitor-view__hint"
-                  data-test="monitor-memory-composition-degraded"
-                >{{ memoryComposition.degradedText }}</p>
-              </div>
 
               <!-- 行明细（#363）：按钮在上面的明细列里（「明细」/「收起」），展开后整行宽度铺开
                    完整字段表——按钮在格内、内容跨满行，因此行高只在真正展开时才长高。
@@ -1703,6 +1821,16 @@ const cpuTrendAriaLabel = computed(() => {
   gap: var(--spacer-16);
 }
 
+/* #445：≥lg 两列——宽块（CPU / 台账）跨满整行，半宽块（内存，后续还有别的）各占一列。
+   与主机面板插件一致（它也是两列网格 + CPU/磁盘通栏，内存与 GPU 各半宽）；
+   <lg 单列，内存卡自然变全宽。 */
+@media (min-width: 1024px) {
+  .monitor-view__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--spacer-10);
+  }
+}
+
 .monitor-view__card--wide {
   grid-column: 1 / -1;
 }
@@ -1836,7 +1964,7 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 /* ---- CPU 标题行（#435）：标题左、型号右（型号过长省略号 + title，不换行撑破标题行） ---- */
-.monitor-view__cpu-head {
+.monitor-view__block-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -1845,12 +1973,12 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 /* 卡片标题是行内 flex，作为 flex item 不参与收缩；型号吃掉剩余宽度 */
-.monitor-view__cpu-head .monitor-view__card-title {
+.monitor-view__block-head .monitor-view__card-title {
   flex: none;
 }
 
 /* 标题字号对齐参照（主机面板 13px）：CPU 块是「仪器读数组」，标题不该压过四数字 */
-.monitor-view__cpu-head .monitor-view__card-title {
+.monitor-view__block-head .monitor-view__card-title {
   font-size: var(--heading-2xs-font-size);
   line-height: var(--heading-2xs-line-height);
   font-weight: var(--heading-2xs-font-weight);
@@ -2409,18 +2537,119 @@ const cpuTrendAriaLabel = computed(() => {
   white-space: nowrap;
 }
 
-/* 内存组成带（#363）：四段横向堆叠，宽度按各自占总量比例（`--ledger-seg`），下方图例逐段标注。
-   与主数值是两个口径：主数值是「用量比率」，组成带是「总量分解」，因此各自标注自己的分母。 */
-.monitor-view__ledger-composition {
-  grid-column: 1 / -1;
+/* ---- 内存块（#445）：照主机面板插件内存卡——半宽卡片（≥lg 占一列，<lg 全宽）----
+   组成带沿用 #363 的中性色阶（DESIGN：只有状态才有颜色；不搬插件的紫/绿分段色），
+   Meter 填充仍走状态色 + 70 / 90 分档（与顶栏 MEM 徽章同判据）。 */
+.monitor-view__memory {
   min-width: 0;
-  margin-top: var(--spacer-4);
 }
 
-.monitor-view__ledger-band {
+.monitor-view__memory-total {
+  min-width: 0;
+  margin: 0 0 0 auto;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Meter：标签 + 百分比同一行两端对齐，轨道在下面，字节小字在最下（插件同款三段结构） */
+.monitor-view__meter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacer-4);
+  min-width: 0;
+}
+
+.monitor-view__meter--compact {
+  margin-top: var(--spacer-8);
+}
+
+.monitor-view__meter-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--spacer-8);
+  min-width: 0;
+}
+
+.monitor-view__meter-label {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-view__meter-value {
+  flex: none;
+  color: var(--text-default);
+  font-family: var(--font-family-metric);
+  font-size: var(--body-sm-font-size);
+  line-height: var(--body-sm-line-height);
+  font-weight: var(--body-sm-strong-font-weight);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.monitor-view__meter-track {
+  width: 100%;
+  height: var(--ledger-track-height);
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--bg-overlay-l2);
+}
+
+.monitor-view__meter-track--compact {
+  height: var(--spacer-4);
+}
+
+.monitor-view__meter-fill {
+  display: block;
+  width: var(--meter-fill, 0%);
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--status-success-default);
+}
+
+/* 等级色只给填充条（实体色档）；数值文字保持主色——插件同款。 */
+.monitor-view__meter-fill[data-level='warn'] {
+  background: var(--status-alert-default);
+}
+
+.monitor-view__meter-fill[data-level='danger'] {
+  background: var(--status-error-default);
+}
+
+.monitor-view__meter-caption {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-view__memory-muted {
+  margin: var(--spacer-8) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
+}
+
+/* 组成带（#363 迁入）：四段横向堆叠，宽度按各自占总量比例（`--memory-seg`），下方图例逐段标注。
+   与主数值是两个口径：主数值是「用量比率」，组成带是「总量分解」，因此各自标注自己的分母。 */
+.monitor-view__memory-composition {
+  min-width: 0;
+  margin-top: var(--spacer-8);
+}
+
+.monitor-view__memory-band {
   display: flex;
   width: 100%;
-  height: var(--ledger-band-height);
+  height: var(--memory-band-height);
   overflow: hidden;
   border-radius: var(--radius-2);
   background: var(--bg-overlay-l1);
@@ -2432,9 +2661,9 @@ const cpuTrendAriaLabel = computed(() => {
   outline-offset: 0;
 }
 
-.monitor-view__ledger-band-seg {
+.monitor-view__memory-band-seg {
   display: block;
-  flex: 0 0 var(--ledger-seg, 0%);
+  flex: 0 0 var(--memory-seg, 0%);
   height: 100%;
 }
 
@@ -2450,7 +2679,7 @@ const cpuTrendAriaLabel = computed(() => {
    （末两对接近，因为「缓存 / 缓冲 / 空闲」三者都是可回收或未用，本就不该互相争抢注意力）。
    四段严格单调（实→虚），且已用额外加一圈 1px 内描边把它钉成「实心块」，
    边界不单独依赖色差。 */
-.monitor-view__ledger-band-seg--used {
+.monitor-view__memory-band-seg--used {
   background: var(--text-default);
   /* 内描边用既有底色 token（与段间缝隙同色）：把「已用」圈成一块，边界不依赖相邻段的色差。 */
   box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1);
@@ -2463,15 +2692,15 @@ const cpuTrendAriaLabel = computed(() => {
   outline-offset: calc(-1 * var(--border-width-default));
 }
 
-.monitor-view__ledger-band-seg--cached {
+.monitor-view__memory-band-seg--cached {
   background: var(--text-tertiary);
 }
 
-.monitor-view__ledger-band-seg--buffers {
+.monitor-view__memory-band-seg--buffers {
   background: var(--text-disabled);
 }
 
-.monitor-view__ledger-band-seg--free {
+.monitor-view__memory-band-seg--free {
   background: var(--bg-overlay-l3);
 }
 
@@ -2480,11 +2709,11 @@ const cpuTrendAriaLabel = computed(() => {
    `box-shadow` 被系统强制为 `none`、`background-color` 被统一成 Canvas/ButtonFace ——
    四段会糊成一片白、整条带子消失。`border` 在 forced-colors 下保留并自动取 `CanvasText`，
    段间边界因此仍然可读。 */
-.monitor-view__ledger-band-seg + .monitor-view__ledger-band-seg {
+.monitor-view__memory-band-seg + .monitor-view__memory-band-seg {
   border-inline-start: var(--border-width-default) solid var(--bg-layout-1);
 }
 
-.monitor-view__ledger-legend {
+.monitor-view__memory-legend {
   display: flex;
   flex-wrap: wrap;
   gap: var(--spacer-2) var(--spacer-16);
@@ -2493,28 +2722,28 @@ const cpuTrendAriaLabel = computed(() => {
   list-style: none;
 }
 
-.monitor-view__ledger-legend-item {
+.monitor-view__memory-legend-item {
   display: inline-flex;
   align-items: center;
   gap: var(--spacer-6);
   min-width: 0;
 }
 
-.monitor-view__ledger-legend-swatch {
+.monitor-view__memory-legend-swatch {
   flex-shrink: 0;
   width: var(--ledger-dot-size);
   height: var(--ledger-dot-size);
   border-radius: var(--radius-2);
 }
 
-.monitor-view__ledger-legend-label {
+.monitor-view__memory-legend-label {
   /* 图例是「这一段多少 GiB」的归属说明 —— 信息文字，不是装饰。 */
   color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
 }
 
-.monitor-view__ledger-legend-value {
+.monitor-view__memory-legend-value {
   color: var(--text-secondary);
   font-family: var(--font-family-metric);
   font-size: var(--body-xs-font-size);

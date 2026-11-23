@@ -97,12 +97,13 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     vi.restoreAllMocks()
   })
 
-  it('4 个趋势指标各有一条趋势（CPU 块宽图 + 3 条内联 sparkline），负载与维度指标没有', async () => {
+  it('2 个趋势指标各有一条趋势（CPU 块宽图 + 共享内存目录内联 sparkline），负载 / 内存 / 交换没有', async () => {
     const wrapper = await mountView()
 
     // #435：CPU 使用率的趋势是 CPU 块内的固定 0–100% 宽图（不是内联 sparkline 组件）；
-    // 负载的迷你趋势已按用户拍板移除；其余三个标量指标（内存 / 交换 / 共享内存目录）仍是内联 sparkline。
-    expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(3)
+    // 负载的迷你趋势已按用户拍板移除；#445 内存卡照主机面板插件做成 Meter，内存 / 交换也没有趋势。
+    expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(1)
+    expect(wrapper.find('[data-test="monitor-sparkline-shm"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="monitor-sparkline-load"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').exists()).toBe(true)
     for (const metric of SYSMON_TREND_METRIC_KEYS) {
@@ -119,12 +120,10 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
 
     // 数据层：末点就是 store 的当前值（不是另一次采样）
     expect(wrapper.find('[data-test="monitor-sparkline-cpu"]').attributes('data-last-value')).toBe('0.187')
-    expect(wrapper.find('[data-test="monitor-sparkline-memory"]').attributes('data-last-value')).toBe('0.5')
-    expect(wrapper.find('[data-test="monitor-sparkline-swap"]').attributes('data-last-value')).toBe('0.25')
     expect(wrapper.find('[data-test="monitor-sparkline-shm"]').attributes('data-last-value')).toBe(String(720 * 1024 * 1024))
-    // 展示层：旁边的数字是同一个值的格式化结果（18.7% ↔ 0.187、50.0% ↔ 0.5）
+    // 展示层：旁边的数字是同一个值的格式化结果（18.7% ↔ 0.187；#445 内存百分比在内存卡里）
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
   })
 
   it('同一次快照推送后，sparkline 末点与旁边数字在同一 tick 内同步更新', async () => {
@@ -146,7 +145,7 @@ describe('MonitorView 内联趋势（#127：sparkline 覆盖标量指标）', ()
     expect(wrapper.findAll('.sysmon-sparkline')).toHaveLength(0)
     // 数值照常
     expect(wrapper.find('[data-test="monitor-cpu-value"]').text()).toBe('18.7%')
-    expect(wrapper.find('[data-test="monitor-memory-value"]').text()).toBe('50.0%')
+    expect(wrapper.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
     // 不是错误提示：页面没有「历史不可用」之类的降级文案
     expect(wrapper.text()).not.toContain('历史不可用')
   })
@@ -274,7 +273,7 @@ describe('MonitorView 跳转历史（#127：点击 sparkline / 数值预选指�
     const history = useSysmonHistoryStore()
     const before = vi.mocked(sysmonApi.getHistory).mock.calls.length
 
-    await wrapper.find('[data-test="monitor-memory-value"]').trigger('click')
+    await wrapper.find('[data-test="monitor-memory-percent"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-test="sysmon-history"]').exists()).toBe(true)
@@ -286,10 +285,10 @@ describe('MonitorView 跳转历史（#127：点击 sparkline / 数值预选指�
     expect(calls[calls.length - 1][0]?.metric).toBe('memory.used_ratio')
   })
 
-  it('点击 sparkline 同样跳转历史并预选（交换使用率）', async () => {
+  it('点击内存卡里的交换百分比同样跳转历史并预选（交换使用率）', async () => {
     const wrapper = await mountView()
 
-    await wrapper.find('[data-test="monitor-sparkline-swap"]').trigger('click')
+    await wrapper.find('[data-test="monitor-swap-percent"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-test="sysmon-history"]').exists()).toBe(true)
@@ -451,17 +450,17 @@ describe('MonitorView 台账维度明细展开（#127 → #363）', () => {
 
   it('台账行明细展开状态不持久化：重新挂载（等价刷新）回到收起', async () => {
     const wrapper = await mountView()
-    // 展开内存行明细
-    await toggle(wrapper, 'ledger-expand-memory')
+    // 展开盘行明细（#445 后内存行已移出台账，用磁盘 I/O 行验证同一机制）
+    await toggle(wrapper, 'ledger-expand-disk:nvme0n1')
     expect(wrapper.find('[data-test="ledger-fields"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="ledger-expand-memory"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-test="ledger-expand-disk:nvme0n1"]').attributes('aria-expanded')).toBe('true')
 
     // 重新挂载 = 刷新的组件生命周期：不读写 localStorage / sessionStorage，必须回到默认收起
     wrapper.unmount()
     const refreshed = await mountView()
 
     expect(refreshed.find('[data-test="ledger-fields"]').exists()).toBe(false)
-    expect(refreshed.find('[data-test="ledger-expand-memory"]').attributes('aria-expanded')).toBe('false')
+    expect(refreshed.find('[data-test="ledger-expand-disk:nvme0n1"]').attributes('aria-expanded')).toBe('false')
     // 也没有把展开态写进任何持久化存储
     expect(Object.keys(localStorage).filter(key => key.includes('ledger'))).toEqual([])
   })
@@ -520,14 +519,19 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   }
 
-  it('监控页网格是单列纵向：CPU 块与台账跨满整行，没有任何媒体规则为网格改列数（#363）', () => {
+  it('监控页网格：<lg 单列、≥lg 两列；CPU 块与台账跨满整行，内存卡占半宽（#445）', () => {
     // 基础规则即单列。必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
     const grid = ruleBody('.monitor-view__grid')
     expect(grid).toContain('grid-template-columns: minmax(0, 1fr)')
-    expect(grid).not.toContain('repeat(')
     // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
     expect(grid).toContain('align-items: start')
+
+    // #445：≥lg 两列（主机面板插件的两列网格同形），内存卡占一列；宽块仍跨满整行
+    const lg = ruleInMedia('@media (min-width: 1024px)', '.monitor-view__grid')
+    expect(lg).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
+    const memoryCard = source.match(/class="[^"]*monitor-view__memory[^"]*"/)?.[0] ?? ''
+    expect(memoryCard).not.toContain('monitor-view__card--wide')
 
     // 网格里的子元素跨满整行：CPU 块与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
     // 独立一条，不是网格项——它不在网格里断言，见下一条）。
@@ -536,15 +540,6 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 主机条不在网格里（#430：顶栏下方的独立一条）：它的规则不得再声明跨列
     // （否则是死规则，会误导下一个人以为它在网格内）
     expect(ruleBody('.monitor-view__host'), '主机条不在网格内，不得残留网格跨列规则').not.toContain('grid-column')
-
-    // 不存在为 `.monitor-view__grid` 单独改列数的媒体规则（列数不是版面变量了）。
-    // 媒体块按「行首 `}` 收尾」切分，与上面的 mediaRuleBody 同一假设。
-    const mediaBlocks = source.match(/@media[^{]*\{[\s\S]*?\n\}/g) ?? []
-    expect(mediaBlocks.length).toBeGreaterThan(0)
-    for (const block of mediaBlocks) {
-      if (!block.includes('.monitor-view__grid')) continue
-      expect(block, '媒体规则不得为页面网格改列数').not.toContain('grid-template-columns')
-    }
   })
 
   it('每核条形按容器实测自适应：列数由纯函数算好经 --core-columns 注入，不用 auto-fit（#435）', () => {
@@ -806,17 +801,17 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
 
   it('组成带的「已用」与「缓存」分得开：阶梯整体往「虚」侧挪一格（#363 C7）', () => {
     // 已用：保持最实的中性色 + 一圈底色内描边（用既有 token，不引入新 token / 新纹理）
-    const used = ruleBody('.monitor-view__ledger-band-seg--used')
+    const used = ruleBody('.monitor-view__memory-band-seg--used')
     expect(used).toContain('background: var(--text-default)')
     expect(used).toContain('box-shadow: inset 0 0 0 var(--border-width-default) var(--bg-layout-1)')
     // 缓存 / 缓冲各接过下一档：整条阶梯往「虚」侧挪一格，让弱边界从「已用|缓存」
     // （压力 / 可回收的分界，必须看清）挪到「缓存|缓冲」（两者都属可回收）。
-    expect(ruleBody('.monitor-view__ledger-band-seg--cached'))
+    expect(ruleBody('.monitor-view__memory-band-seg--cached'))
       .toContain('background: var(--text-tertiary)')
-    expect(ruleBody('.monitor-view__ledger-band-seg--buffers'))
+    expect(ruleBody('.monitor-view__memory-band-seg--buffers'))
       .toContain('background: var(--text-disabled)')
     // 空闲仍是最虚的叠色阶
-    expect(ruleBody('.monitor-view__ledger-band-seg--free'))
+    expect(ruleBody('.monitor-view__memory-band-seg--free'))
       .toContain('background: var(--bg-overlay-l3)')
   })
 
@@ -834,8 +829,8 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(ruleBody('.monitor-view__ledger-gap')).toContain('left: var(--ledger-gap, 0%)')
     // 轨道填充同理：逐行不同，只能运行时注入（未注入时退回 0%，不闪一条满格轨道）
     expect(ruleBody('.monitor-view__ledger-track-fill')).toContain('width: var(--ledger-fill, 0%)')
-    // 组成带各段宽度按各自占比注入
-    expect(ruleBody('.monitor-view__ledger-band-seg')).toContain('var(--ledger-seg, 0%)')
+    // 组成带各段宽度按各自占比注入（#445 迁入内存卡，变量改名）
+    expect(ruleBody('.monitor-view__memory-band-seg')).toContain('var(--memory-seg, 0%)')
   })
 
   it('「立即查询」按钮按最长冷却文案预留宽度，倒计时不引起跳动（#326）', () => {
