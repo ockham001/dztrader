@@ -130,6 +130,7 @@ domain 清单与挂载实例：
 - **payload 即行对象**：消息载荷（`data`）= 契约 rest §2.9.3 与契约 rest §2.9.4 定义的同一行 schema（含 seq、price_decimals、sort_key 等派生字段）；`instance_id` 为空（account_id 在 payload 内）。
 - **转发与容量**：转发条件、在线账户过滤、Offline 清环与每账户补发容量见《帧契约：TD 数据同步》§8；dzweb 不维护记录镜像，前端记录基线由 REST 拉取（契约 rest §2.9）。
 - **合并**：前端按业务键去重、同键 seq 大者胜（§5）；委托/成交按 sort_key 降序插入，持仓/资金按业务键覆盖。
+- **手动刷新**：资金行刷新（契约 rest §2.9.11）**不产生新消息**——td 处理 `DZ_FRAME_TD_REFRESH_REQ` 后照常推 `TRADING_ACCOUNT` 帧；前端按同账户新 `seq` 清除该行 pending（§5）。
 
 **td_recent（建连补发）**：
 
@@ -192,6 +193,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 12. **精度**：价格显示用行内 price_decimals / avg_price_decimals 做 `toFixed`；不得自行推断小数位，也不得依赖服务端字符串舍入（契约 rest §2.9.6）。
 13. **降级**：列表返回 `available:false` 时展示统一降级提示（不白屏、不用 0 冒充数据），按退避重试；WS 事件照常合并，恢复后重拉基线。
 14. **非契约范围**：有界窗口容量、虚拟滚动、批量刷新节流、新数据气泡等 UI 性能/交互设计见 ADR 0043 决策 7，由前端实现票落地，不属于本契约语义。
+15. **资金手动刷新**：资金面板按行刷新发 `POST /api/td/trading_accounts/{account_id}/refresh`（契约 rest §2.9.11）→ 该行设 pending；收到**同账户** `td_trading_account` 且 `seq` 前进后清除；超时兜底 3s 清除并提示「刷新超时，稍后自动更新」；离线（非 Ready）账户的行不得发起刷新。
 
 ---
 

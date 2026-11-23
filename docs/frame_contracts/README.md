@@ -26,6 +26,7 @@
 | [td-connection](td-connection.md) | 交易账户连接控制（登录/登出） | `TD_CONNECT`/`TD_DISCONNECT` | 本契约（JSON schema） |
 | [td-status](td-status.md) | 交易网关状态 | `TD_RTN_STATUS` | `apps/ctp/td/td_state.h` |
 | [td-account-ops](td-account-ops.md) | 出入金与改密 | `TD_TRANSFER_REQ`/`TD_TRANSFER_RSP`/`TD_TRANSFER_RTN`、`TD_PASSWORD_UPDATE_REQ`/`TD_PASSWORD_UPDATE_RSP` | `libs/platform/.../td_account_ops.h` |
+| [td-refresh](td-refresh.md) | 交易数据刷新请求 | `TD_REFRESH_REQ` | 本契约（JSON schema） |
 | [td-risk-reject](td-risk-reject.md) | 风控拒绝通知 | `TD_RISK_REJECT` | `libs/platform/.../risk_reject.h` |
 | [instrument](instrument.md) | 合约信息 | （无帧，DB 查询） | `libs/tdstore/.../records.h` |
 | [strategy](strategy.md) | 策略帧与本地调度 | `UI_INPUT`/`OUTPUT_UI`/`SET_LOGICAL_POSITION`/`SCHEDULE` | `libs/strategy_api/.../struct.h`、`libs/core/.../core_struct.h` |
@@ -49,7 +50,7 @@
 
 - 本目录覆盖事件通道的低频控制/配置/通知帧。
 - 策略帧契约已收录（见 [strategy](strategy.md)）；`OUTPUT_UI`/`SET_LOGICAL_POSITION` 的 dzweb 消费与 WS/REST 映射未接线（契约定义语义，实现滞后由 general §11.3 checklist 跟踪）。
-- **未覆盖**（后续独立契约）：交易帧的其余部分——生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`（其余交易帧均已收录：委托见 td-order、账户登录状态见 account-status、TD 推送见 td-data-sync、配置见 td-config、连接控制见 td-connection、状态见 td-status、风控拒绝见 td-risk-reject、出入金与改密见 td-account-ops）；行情/交易数据帧（`TICK`）、`SYS_SCHED`（帧已移除，见 general §10）。
+- **未覆盖**（后续独立契约）：交易帧的其余部分——生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`（其余交易帧均已收录：委托见 td-order、账户登录状态见 account-status、TD 推送见 td-data-sync、配置见 td-config、连接控制见 td-connection、状态见 td-status、风控拒绝见 td-risk-reject、出入金与改密见 td-account-ops、交易数据刷新见 td-refresh）；行情/交易数据帧（`TICK`）、`SYS_SCHED`（帧已移除，见 general §10）。
 
 ## 变更流程
 

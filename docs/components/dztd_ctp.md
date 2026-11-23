@@ -81,9 +81,15 @@
 - **跨日 GFD 委托的已知限制**：累计只含当前会话交易日的成交——登录日装载只装当日（契约 §3 明文），日切时累计基准清空重建，昨日成交部分不回填——跨日未成交完的委托在日切后只反映当日段的均价，直到该单再次成交。历史回看页（后续）按 `trades` 重算不受此限。
 - **对统计计数器的影响（已消除）**：均价变化时产生的刷新 `ORDER_REPORT` 在委托已终态后仍会到达；dzweb 统计计数器按每账户 `order_id` 单调水位判首见，该帧是「见过的委托」，不会重复计 total / volume（ADR 0050，契约 rest §2.9.5）。刷新帧形态本身不变。
 
-### 登录后自动查询
+### 查询通道（登录 + 运行期资金刷新，ADR 0055）
 
-登录成功后自动发起基础查询（资金、持仓等），供 UI 与策略初始数据。查询受 CTP 流控约束，需排队调度；流控窗口、批次等调度细节属实现。持仓的基准建立与盘中增量维护见《持仓维护与偏移转换》——**无周期重查**（ADR 0049）。
+> **实现状态**：查询通道与运行期刷新尚未落地（#455 子票 1 / 2）；本节描述的目标行为以契约为准。
+
+CTP 的 `ReqQry*` 在同一 API 实例上共用查询流控：同时至多 1 笔在途、前置按每秒限额。td 因此给**每个账户一条查询通道**（`QueryPacer` + 运行期 `QueryLane`）：
+
+- **登录链**：结算确认后查合约、合约加载后查持仓、持仓收口后查资金；三笔共享同一闸门（发送间隔 ≥ 查询通道最小间隔，配置项见契约 td-config），不足间隔用 `TimerQueue` 延后发送（登录收尾状态机与失败语义不变）。持仓基准建立与盘中增量见《持仓维护与偏移转换》——**无周期重查**（ADR 0049）。
+- **运行期资金刷新**：账户 Ready 后，`OnRtnOrder`（任意状态）/ `OnRtnTrade` / 出入金 `RSP`/`RTN` 置脏，UI 手动刷新帧 `DZ_FRAME_TD_REFRESH_REQ`（契约 td-refresh）同样置脏；窗口内事件合并，空闲且满足间隔时发一笔，发送后到达的事件在收口后补一笔（不丢）。**无周期查询、无轮询**——只有事件与绝对时间定时器（`TimerQueue`，主循环 `next_timeout` 驱动）。
+- **失败**：有界退避（≤3 次），失败不改变账户状态、不阻塞交易；`OnRspError` 与 `nRequestID` 关联补齐（查询失败不再悬挂到 5 分钟超时）。
 
 ## 交易委托与回报
 
@@ -129,15 +135,15 @@
 
 - **今昨冻结未拆分落库**：**schema v1 的 `positions` 只有 `frozen_volume` 单列**。td 内存里冻结是 `frozen_td` / `frozen_yd` 拆分维护的（今仓优先、溢出到昨），但落库与 `POSITION_INFO` 帧只带合计值；读端（REST / WebUI）只看得到总冻结，无法分别展示今/昨冻结。窗口 = 本轮 schema。
 - **旧会话残留写入无自愈路径**：跨进程旧会话已入队未提交的 persist 任务可能晚于新会话整组替换落地 → 当日持仓回到旧值，**要等到下一次完整成功查询（下一次登录 / 重连）才被替换**；不丢行、不产生键冲突（《帧契约：TD 数据同步》§7、ADR 0049）。
-- 其余持仓准确性边界（增量累积误差与私有流缺口无自愈、非 SHFE generic 平仓今昨归属为本地约定、期权行权/履约/到期与盘后自动组合依赖次日登录吸收、套利组合行不统计、资金盘中不刷新）见《帧契约：TD 数据同步》§7。
+- 其余持仓准确性边界（增量累积误差与私有流缺口无自愈、非 SHFE generic 平仓今昨归属为本地约定、期权行权/履约/到期与盘后自动组合依赖次日登录吸收、套利组合行不统计、资金刷新的事件缺失窗口）见《帧契约：TD 数据同步》§7。
 
-### 资金快照（#250 锁定的行为）
+### 资金快照（#250 / ADR 0055 锁定的行为）
 
-资金查询走与持仓同一条登录收尾链：`on_rsp_qry_investor_position` 收口 → 发起 `ReqQryTradingAccount` → `on_rsp_qry_trading_account` 写库/推帧（`DZ_FRAME_TRADING_ACCOUNT`）。行为由 `td_position_lifecycle_test.cpp`（会话层）、`td_persist_writer_test.cpp`（写入器层）断言库内容：
+资金查询有两个触发面、一个写入点：登录收尾链（`on_rsp_qry_investor_position` 收口 → 发起 `ReqQryTradingAccount`）与运行期按需刷新（委托 / 成交 / 出入金事件 + UI 手动刷新，见上节）；响应统一走 `on_rsp_qry_trading_account` 写库/推帧（`DZ_FRAME_TRADING_ACCOUNT`）。行为由 `td_position_lifecycle_test.cpp`（会话层）、`td_persist_writer_test.cpp`（写入器层）断言库内容：
 
 - **按 `(account_id, date)` 多日累积**：每个交易日一行最新快照；同账户同日重复查询是 upsert（覆盖余额类列与 `seq`，不追加行），历史交易日行不被改写（`SameDayFundQueryUpsertsInsteadOfAppending` / `DaySwitchFundQueriesCoexistAsTwoDayRows`）。
 - **资金行只在持仓查询成功后写入**：`on_rsp_qry_trading_account` 的唯一写入点有 `position_query_ok_` 守卫——持仓查询失败时资金行不落库、不推帧，锚点日（两张快照表 `MAX(date)`，ADR 0046）不会被资金行单独推进。
-- **盘中不做周期资金查询**（已知限制，契约 td-data-sync §7）：资金查询**只有登录收尾链一处**触发（持仓查询成功后按同序发起），无补查链（ADR 0049 删除了两条补查重试链），盘中停在最近一次查询结果；其他终端交易造成的资金变化不收敛到下一次登录。
+- **无周期查询、事件驱动刷新**（ADR 0049 / ADR 0055）：登录收尾后由委托 / 成交 / 出入金变化与 UI 手动刷新触发按需查询；同一账户任意两笔查询间隔 ≥ 查询通道最小间隔（契约 td-config）、窗口内事件合并；失败有界退避、不改变账户状态。事件缺失（断线 / 私有流缺口）时资金停在最近一次成功查询（已知限制，契约 td-data-sync §7）。
 
 ## 配置（契约 td-config / td-status）
 
@@ -145,7 +151,7 @@
 
 ### 配置结构与持久化
 
-- **文件形态 = 帧形态**：`td` section 与 `RTN_TD_CONFIG` payload 同形（顶层 `qry_account_interval_s` / `qry_flush_interval_ms` / `ext` / `accounts[]`；账户 `ext` 内是 `broker_id` / `user_id` / `password` / `product_info` / `frontends` / `auth_code` / `app_id` / `flow_dir`）。不做「文件旧形 / 帧新形」双序列化——同一事实两处定义必然漂移。代价：**旧扁平格式（连接参数直接在账户对象上）不再兼容**，开发期无迁移义务。持仓查询间隔已随 [ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md) 删除。
+- **文件形态 = 帧形态**：`td` section 与 `RTN_TD_CONFIG` payload 同形（顶层查询通道最小间隔（契约 td-config §2.4）/ `ext` / `accounts[]`；账户 `ext` 内是 `broker_id` / `user_id` / `password` / `product_info` / `frontends` / `auth_code` / `app_id` / `flow_dir`）。不做「文件旧形 / 帧新形」双序列化——同一事实两处定义必然漂移。代价：**旧扁平格式（连接参数直接在账户对象上）不再兼容**，开发期无迁移义务。持仓查询间隔已随 [ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md) 删除；`qry_account_interval_s` / `qry_flush_interval_ms` 已随 [ADR 0055](../adr/0055-td-query-channel-event-driven-fund-refresh.md) 删除。
 - **启动加载两级语义**（契约 td-config §6）：文件 / `td` section **缺失** → 用默认值 + 原子修复文件（自愈，首次启动的正常形态，写失败只记 ERROR 不阻断）；内容**非法**（JSON 解析失败 / section 类型不符）→ 记 CRITICAL 后**退出非零码**，不回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法与"本来就空"区分。旧扁平格式因未知字段被忽略（总则 §8）不会触发解码失败，但账户 `ext` 为空 → `validate()` 以 `broker_id empty` 拒绝 → 同样致命退出。
 - **启动主动推一次**：`run()` 首次进入即 `report_full_snapshot()`（首帧 `report_config()`），供 dzweb 账户注册表启动快照（契约 td-config §4 场景 2）。配置在 `td_main` 中先于 `TdApi` 构造加载，推的是已加载的当前值。
 - **op 收敛**：进程级柜台特有配置统一走 `SetExt`（字段级补丁），旧 `SetLockMode` 已删除，不留双实现；`ext.enable_lock_mode` 是本进程唯一形态。账户级 op（`AddAccount` / `UpdateAccount` / `SetAccountEnabled` / `SetAccountRiskControl` / `SetAccountCurrency`）与 `SetQryIntervals` 语义见契约 §2.1。
