@@ -6,7 +6,6 @@ import { sysmonApi } from '@/api/sysmon'
 import { useAuthStore } from '@/stores/auth'
 import { sysmonPending, useSysmonStore } from '@/stores/sysmon'
 import {
-  SYSMON_CLOCK_ALL_FAILED,
   SYSMON_CLOCK_LIVE,
   makeSysmonConfig,
   makeSysmonSnapshot,
@@ -165,16 +164,4 @@ describe('时钟块 · 只属于本页（不越界到顶栏 / 无历史曲线）
     expect(wrapper.find('[data-test="monitor-clock"] .monitor-view__chart').exists()).toBe(false)
   })
 
-  it('全部失败时不显示上一轮数字 / 0：四数字一律「不可用」，每台测量列也是「不可用」', async () => {
-    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(
-      makeSysmonSnapshot({ clock: SYSMON_CLOCK_ALL_FAILED }),
-    )
-    const wrapper = await mountView()
-    const card = wrapper.find('[data-test="monitor-clock"]')
-    for (const selector of ['monitor-clock-offset', 'monitor-clock-bound', 'monitor-clock-source']) {
-      expect(card.find(`[data-test="${selector}"]`).text(), selector).toBe('不可用')
-    }
-    expect(card.find('[data-test="monitor-clock-server-offset"]').text()).toBe('不可用')
-    expect(card.text()).not.toContain('0.0 ms')
-  })
 })

@@ -61,7 +61,7 @@ describe('monitorStorage 卷行与空间不足判据', () => {
     expect(row).toMatchObject({
       mount: '/',
       fill: '40.0%',
-      usedLevel: 'normal',
+      level: 'normal',
       availableText: '60.0 GiB / 100.0 GiB',
       freeBytes: 60 * GIB,
       totalBytes: 100 * GIB,
@@ -76,14 +76,25 @@ describe('monitorStorage 卷行与空间不足判据', () => {
     expect(volumeFreePercent({ used_ratio: 0.9 })).toBe(10)
     expect(boundary.freeText).toBe('10.0% 可用')
     expect(boundary.insufficient).toBe(false)
-    expect(boundary.usedLevel).toBe('danger')  // 色标分档仍是 90 → danger，两件事互不推导
+    // 两套数字不互相推导：条色按 70/90 展示分档（used=0.90 → danger），chip 按契约阈值（恰好 10% 不算不足）
+    expect(boundary.level).toBe('danger')
 
     const below = buildVolumeRow(volume({ mount: '/below', used_ratio: 0.91, used_bytes: 91 * GIB }), 10)
     expect(below.freeText).toBe('9.0% 可用')
     expect(below.insufficient).toBe(true)
 
-    // 改阈值即改判定（前端不另定一套常量）
-    expect(buildVolumeRow(volume({ mount: '/boundary', used_ratio: 0.9 }), 11).insufficient).toBe(true)
+    // 改阈值即改判定（前端不另定一套常量），且颜色与 chip 一起变
+    const stricter = buildVolumeRow(volume({ mount: '/boundary', used_ratio: 0.9 }), 11)
+    expect(stricter.insufficient).toBe(true)
+    expect(stricter.level).toBe('danger')
+  })
+
+  it('条色三档走 70/90 展示分档：<70 normal（中性）、70–90 warn、≥90 danger（与顶栏卷徽章一致）', () => {
+    expect(buildVolumeRow(volume({ mount: '/a', used_ratio: 0.69 }), 10).level).toBe('normal')
+    expect(buildVolumeRow(volume({ mount: '/b', used_ratio: 0.71 }), 10).level).toBe('warn')
+    const low = buildVolumeRow(volume({ mount: '/c', used_ratio: 0.95 }), 10)
+    expect(low.level).toBe('danger')
+    expect(low.insufficient).toBe(true)
   })
 
   it('已用比例 null（不可读 / 总量 0）不冒充 0%：可用文本与 freePercent 走不可用语义', () => {
@@ -94,7 +105,7 @@ describe('monitorStorage 卷行与空间不足判据', () => {
       used_ratio: null,
     }), 10)
     expect(row.fill).toBe('不可用')
-    expect(row.usedLevel).toBeNull()
+    expect(row.level).toBeNull()
     expect(row.freeText).toContain('不可用')
     expect(row.insufficient).toBe(false)
   })
@@ -164,14 +175,13 @@ describe('monitorStorage 无容量挂载与原因文案', () => {
       volume({ mount: '/run/user/1000', total_bytes: 0, used_bytes: 0, used_ratio: null }),
       volume({ mount: '/backup', available: false, total_bytes: null, used_bytes: null, used_ratio: null, reason: 'no_permission' }),
     ])
-    expect(text).toBe('无容量挂载（2） · /run/user/1000（总容量为 0） · /backup（无访问权限）')
+    expect(text).toBe('无容量挂载（2） · /run/user/1000（总容量为 0） · /backup（权限不足，无法读取该指标）')
     expect(zeroCapacityText([])).toBeNull()
   })
 
   it('原因映射：已知 reason 中文、未知 reason 原样透出、缺失给兜底', () => {
-    expect(volumeReasonText('no_permission')).toBe('无访问权限')
-    expect(volumeReasonText('path_not_found')).toBe('路径不存在或无法解析')
-    expect(volumeReasonText('collect_failed')).toBe('采集失败')
+    expect(volumeReasonText('no_permission')).toBe('权限不足，无法读取该指标')
+    expect(volumeReasonText('collect_failed')).toBe('采集失败，暂不可用')
     expect(volumeReasonText('disabled_by_config')).toBe('已在配置中关闭')
     expect(volumeReasonText('some_new_reason')).toBe('some_new_reason')
     expect(volumeReasonText(undefined)).toBe('容量读取失败')
@@ -221,7 +231,7 @@ describe('monitorStorage 磁盘行格式化（契约 sysmon §2.4 disk_io）', (
 })
 
 describe('monitorStorage 共享内存一行', () => {
-  it('占用 · 页文件数 · 最旧年龄（年龄 null 写不可用，不写 0 秒）', () => {
+  it('占用 · 页文件数 · 最旧年龄（无页文件写「无页文件」，有页文件但年龄缺失才写不可用）', () => {
     expect(shmUsageText({
       path: '/srv/dztrader/shm',
       total_bytes: 720 * MIB,
@@ -234,6 +244,14 @@ describe('monitorStorage 共享内存一行', () => {
       total_bytes: 0,
       page_files: 0,
       oldest_file_age_sec: null,
-    })).toBe('0 B · 0 页文件 · 最旧 不可用')
+    })).toBe('0 B · 0 页文件 · 最旧 无页文件')
+
+    // 有页文件但年龄读不到：值缺失，写不可用（不是「没有页文件」）
+    expect(shmUsageText({
+      path: '/srv/dztrader/shm',
+      total_bytes: 1024,
+      page_files: 3,
+      oldest_file_age_sec: null,
+    })).toBe('1.0 KiB · 3 页文件 · 最旧 不可用')
   })
 })

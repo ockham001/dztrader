@@ -14,6 +14,7 @@ import {
   buildStorageSummary,
   buildVolumeRow,
   resolveVolumeFreePct,
+  shmDetailText,
   shmUsageText,
   zeroCapacityText,
 } from '@/composables/monitorStorage'
@@ -529,6 +530,8 @@ const volumesAvailable = computed(() => isAvailable('volumes'))
 const diskIoAvailable = computed(() => isAvailable('disk_io'))
 /** 契约 §3.1 `thresholds.volume_free_pct`（配置未到达时回退默认 10，避免标签跳变） */
 const volumeFreeThresholdPct = computed(() => resolveVolumeFreePct(sysmon.config?.thresholds))
+/** 本帧 disk_io 为 null（能力粘性 true 但本帧没读到）——与「空数组 = 本机无物理盘」是两种事实 */
+const diskIoMissing = computed(() => snapshot.value !== null && snapshot.value.disk_io === null)
 const storageSummary = computed(() => buildStorageSummary({
   readableVolumes: sysmon.readableVolumes,
   zeroCapacityVolumes: sysmon.zeroCapacityVolumes,
@@ -537,8 +540,14 @@ const storageSummary = computed(() => buildStorageSummary({
 }))
 const storageVolumeRows = computed(() =>
   sysmon.readableVolumes.map(volume => buildVolumeRow(volume, volumeFreeThresholdPct.value)))
-/** 「空间不足」数字格：有不足时写「N 个卷」，没有时写 0（此时不上 danger 色） */
+/** 存储四数字的显示文本：可用但**无可读卷**时写 `—`（不是 0；0 是「没有可用卷」的断言） */
+const storageHasReadableVolumes = computed(() => volumesAvailable.value && sysmon.readableVolumes.length > 0)
+const storageVolumeCountText = computed(() => (storageHasReadableVolumes.value ? String(storageSummary.value.volumeCount) : '—'))
+const storageTotalText = computed(() => (storageHasReadableVolumes.value ? formatBytes(storageSummary.value.totalBytes) : '—'))
+const storageFreeText = computed(() => (storageHasReadableVolumes.value ? formatBytes(storageSummary.value.freeBytes) : '—'))
+/** 「空间不足」数字格：有不足时写「N 个卷」，没有时写 0（此时不上 danger 色）；无可读卷写 `—` */
 const insufficientCountText = computed(() => {
+  if (!storageHasReadableVolumes.value) return '—'
   const count = storageSummary.value.insufficientCount
   return count > 0 ? `${count} 个卷` : '0'
 })
@@ -547,12 +556,18 @@ const insufficientContextText = computed(() => {
   const summary = storageSummary.value
   if (summary.insufficientCount > 0 && summary.tightest !== null) {
     const free = summary.tightest.freeBytes === null ? UNAVAILABLE_TEXT : formatBytes(summary.tightest.freeBytes)
-    return `${summary.tightest.mount} 可用 ${summary.tightest.freePercent.toFixed(1)}% · ${free}`
+    return `${summary.tightest.mount} 可用 ${formatPercent(summary.tightest.freePercent / 100)} · ${free}`
   }
   return `阈值：可用 < ${volumeFreeThresholdPct.value}%`
 })
 /** 无容量 / 不可读挂载折叠成一行（#122 的口径保留，#450 不再提供展开交互） */
 const storageZeroText = computed(() => zeroCapacityText(sysmon.zeroCapacityVolumes))
+/** 块头 meta：指标不可用 / 本帧未采集时计数写 `—`，不用 0 冒充（契约 §2.5） */
+const storageMetaText = computed(() => {
+  const volumes = volumesAvailable.value ? String(storageSummary.value.volumeCount) : '—'
+  const disks = diskIoAvailable.value && !diskIoMissing.value ? String(sysmon.diskIo.length) : '—'
+  return `${volumes} 个卷 · ${disks} 块物理盘`
+})
 /** 卷指标整块不可用时的说明（可用但空列表另给「暂无数据」） */
 const storageUnavailableText = computed(() => volumesAvailable.value
   ? '暂无数据：本帧没有容量可读的挂载点'
@@ -565,9 +580,18 @@ function volumeFillStyle(row: ReturnType<typeof buildVolumeRow>): Record<string,
 
 const diskRows = computed(() => sysmon.diskIo.map(buildDiskRow))
 /** 磁盘 I/O 子区的空态文案：不可用 → 契约 reason（disk_io 的 no_permission 有专属可操作文案） */
-const diskEmptyText = computed(() => diskIoAvailable.value
-  ? '本机无物理盘'
-  : `${UNAVAILABLE_TEXT}：${unavailableReasonText(sysmon.availabilityOf('disk_io')?.reason, 'disk_io')}`)
+/** 磁盘子区 meta：不可用 / 本帧未采集时盘数写 `—`（不用 0 冒充） */
+const diskMetaText = computed(() => (diskIoAvailable.value && !diskIoMissing.value
+  ? `${diskRows.value.length} 块物理盘 · 当前值`
+  : '— 块物理盘 · 当前值'))
+const diskEmptyText = computed(() => {
+  if (!diskIoAvailable.value) {
+    return `${UNAVAILABLE_TEXT}：${unavailableReasonText(sysmon.availabilityOf('disk_io')?.reason, 'disk_io')}`
+  }
+  // 能力粘性可用、本帧值为 null = 本帧未采集到（不是「本机没有盘」）；空数组才是「没有物理盘」。
+  if (diskIoMissing.value) return '暂无数据：本帧未采集物理盘'
+  return '本机无物理盘'
+})
 /** 忙碌条填充（utilization）→ CSS 变量；null 不注入（空轨道，不冒充 0%） */
 function diskBusyStyle(row: ReturnType<typeof buildDiskRow>): Record<string, string> {
   return row.busyFill === '' ? {} : { '--disk-busy': row.busyFill }
@@ -578,12 +602,7 @@ const shmAvailable = computed(() => isAvailable('shm_dir'))
 /** 共享内存目录占用的一行事实（`720.0 MiB · 12 页文件 · 最旧 8 分钟`） */
 const shmUsageLine = computed(() => (shmInfo.value === null ? '' : shmUsageText(shmInfo.value)))
 /** 总量之后的细节段（总量本身是按钮，见模板；这半句随总量同一行） */
-const shmMetaText = computed(() => {
-  const info = shmInfo.value
-  if (info === null) return ''
-  const oldest = info.oldest_file_age_sec === null ? UNAVAILABLE_TEXT : formatAge(info.oldest_file_age_sec)
-  return `${formatCount(info.page_files)} 页文件 · 最旧 ${oldest}`
-})
+const shmMetaText = computed(() => (shmInfo.value === null ? '' : shmDetailText(shmInfo.value)))
 const shmEmptyText = computed(() => shmAvailable.value
   ? '暂无数据：本帧未采集到共享内存目录'
   : `${UNAVAILABLE_TEXT}：${unavailableReasonText(sysmon.availabilityOf('shm_dir')?.reason)}`)
@@ -627,6 +646,10 @@ async function onToggleShowAll(next: boolean): Promise<void> {
 // 空数组有两种事实（契约 sysmon §2.5）：发送方按 hide_virtual 滤掉全部虚拟网卡 ≠ 采集失败，
 // 两者文案不同（可自助恢复的那一种要点明开关）。
 const physicalNicCount = computed(() => sysmon.network.filter(nic => !nic.is_virtual).length)
+/** 块头 meta：网络不可用时计数写 `—`（不拿 0 冒充，契约 §2.5） */
+const networkMetaText = computed(() => (networkAvailable.value
+  ? `${physicalNicCount.value} 个物理网卡`
+  : '— 个物理网卡'))
 
 /** 收发合计的每秒速率：任一方向为 null（首次采样 / 计数器重置）即整体不可用，不得当 0 求和 */
 function sumRates(first: number | null, second: number | null): number | null {
@@ -647,6 +670,7 @@ const networkRows = computed(() => sysmon.network.map(nic => {
     dropsText: `丢 ${formatPerSec(dropRate, 1)}（累计 ${formatCount(nic.rx_drops_total + nic.tx_drops_total)}）`,
     errorsWarn: errorRate !== null && errorRate > 0,
     dropsWarn: dropRate !== null && dropRate > 0,
+    title: `${nic.interface} · 接收 ${formatByteRate(nic.rx_bytes_per_sec)} · 发送 ${formatByteRate(nic.tx_bytes_per_sec)} · 累计 收 ${formatBytes(nic.rx_bytes_total)} · 发 ${formatBytes(nic.tx_bytes_total)} · 错 ${formatPerSec(errorRate, 1)}（累计 ${formatCount(nic.rx_errors_total + nic.tx_errors_total)}） · 丢 ${formatPerSec(dropRate, 1)}（累计 ${formatCount(nic.rx_drops_total + nic.tx_drops_total)}）`,
   }
 }))
 
@@ -748,6 +772,12 @@ const clockDaemonDetailText = computed(() => (clockDaemons.value.length === 0
   : clockDaemons.value.map(daemon => `${daemon.name}（${daemon.running ? '运行中' : '未运行'}）`).join(' · ')))
 /** 块头 meta 的「上次探测相对时间」：无探测时刻时给 `—`（不写「0 秒前」） */
 const clockProbeAgeText = computed(() => (clockProbeAge.value === null ? '—' : `${clockProbeAge.value}前`))
+/** 块头 meta：非 live 态（配置关闭 / 尚未探测 / 全部失败）服务器数与上次探测写 `—` 或实际值 */
+const clockMetaText = computed(() => {
+  if (clockState.value === 'live') return `${clockProbeAgeText.value} · ${clockServers.value.length} 台服务器`
+  const age = clockState.value === 'unprobed' ? CLOCK_UNPROBED_TITLE : clockProbeAgeText.value
+  return `${age} · — 台服务器`
+})
 /** 每台服务器一行：单元格复用 `clockServerCells`，失败原因复用 `clockFailureText`，采用台标 chip */
 const clockServerRows = computed(() => clockServers.value.map(server => ({
   host: server.host,
@@ -1576,16 +1606,14 @@ const cpuTrendAriaLabel = computed(() => {
           <h2 class="ds-card__title monitor-view__card-title">
             <span class="monitor-view__card-icon"><Icon name="storage" :size="14" /></span>存储
           </h2>
-          <p class="monitor-view__block-meta" data-test="monitor-storage-meta">
-            {{ storageSummary.volumeCount }} 个卷 · {{ storageSummary.diskCount }} 块物理盘
-          </p>
+          <p class="monitor-view__block-meta" data-test="monitor-storage-meta">{{ storageMetaText }}</p>
         </div>
 
         <template v-if="volumesAvailable">
           <div class="monitor-view__stats">
             <div class="monitor-view__stat">
               <p class="monitor-view__stat-label">卷</p>
-              <div class="monitor-view__metric" data-test="monitor-storage-volume-count">{{ storageSummary.volumeCount }}</div>
+              <div class="monitor-view__metric" data-test="monitor-storage-volume-count">{{ storageVolumeCountText }}</div>
               <p
                 v-if="storageSummary.zeroCount > 0"
                 class="monitor-view__stat-context"
@@ -1594,12 +1622,12 @@ const cpuTrendAriaLabel = computed(() => {
             </div>
             <div class="monitor-view__stat">
               <p class="monitor-view__stat-label">总容量</p>
-              <div class="monitor-view__metric" data-test="monitor-storage-total">{{ formatBytes(storageSummary.totalBytes) }}</div>
+              <div class="monitor-view__metric" data-test="monitor-storage-total">{{ storageTotalText }}</div>
               <p class="monitor-view__stat-context">可读卷合计</p>
             </div>
             <div class="monitor-view__stat">
               <p class="monitor-view__stat-label">可用</p>
-              <div class="monitor-view__metric" data-test="monitor-storage-free">{{ formatBytes(storageSummary.freeBytes) }}</div>
+              <div class="monitor-view__metric" data-test="monitor-storage-free">{{ storageFreeText }}</div>
               <p class="monitor-view__stat-context" data-test="monitor-storage-free-context">占总量 {{ storageSummary.freeTotalPercentText }}</p>
             </div>
             <div class="monitor-view__stat">
@@ -1620,7 +1648,7 @@ const cpuTrendAriaLabel = computed(() => {
               class="monitor-view__volume-row"
               data-test="monitor-disk-volume"
               :data-mount="row.mount"
-              :data-level="row.usedLevel ?? undefined"
+               :data-level="row.level ?? undefined"
             >
               <span class="monitor-view__volume-mount" :title="row.mount">{{ row.mount }}</span>
               <!-- 容量条：used 填充；颜色按 70 / 90 展示分档（ADR 0034，不是越限判定）。
@@ -1628,7 +1656,7 @@ const cpuTrendAriaLabel = computed(() => {
               <span class="monitor-view__volume-track" aria-hidden="true">
                 <span
                   class="monitor-view__volume-fill"
-                  :data-level="row.usedLevel ?? undefined"
+                   :data-level="row.level ?? undefined"
                   :style="volumeFillStyle(row)"
                 ></span>
               </span>
@@ -1638,7 +1666,7 @@ const cpuTrendAriaLabel = computed(() => {
               </span>
               <span
                 class="monitor-view__volume-percent"
-                :data-level="row.usedLevel ?? undefined"
+                 :data-level="row.level ?? undefined"
                 :title="row.freeText"
                 data-test="monitor-volume-percent"
               >{{ row.freeText }}</span>
@@ -1663,7 +1691,7 @@ const cpuTrendAriaLabel = computed(() => {
         <div class="monitor-view__subhead">
           <h3 class="monitor-view__subhead-title">磁盘 I/O</h3>
           <p class="monitor-view__subhead-meta" data-test="monitor-storage-disk-meta">
-            {{ storageSummary.diskCount }} 块物理盘 · 当前值
+            {{ diskMetaText }}
           </p>
         </div>
         <ul v-if="diskIoAvailable && diskRows.length > 0" class="monitor-view__rows">
@@ -1736,7 +1764,7 @@ const cpuTrendAriaLabel = computed(() => {
             <span class="monitor-view__card-icon"><Icon name="network" :size="14" /></span>网络
           </h2>
           <div class="monitor-view__block-head-actions">
-            <p class="monitor-view__block-meta" data-test="monitor-network-meta">{{ physicalNicCount }} 个物理网卡</p>
+            <p class="monitor-view__block-meta" data-test="monitor-network-meta">{{ networkMetaText }}</p>
             <!-- 「显示全部网卡」开关：admin 才可操作，实际值取生效配置镜像（契约 §3.1），
                  切换走既有 SET_SYSMON_CONFIG，等 WS sysmon_config 回推才变更。 -->
             <div v-if="networkAvailable" class="monitor-view__net-toggle" data-test="monitor-network-show-all">
@@ -1758,6 +1786,7 @@ const cpuTrendAriaLabel = computed(() => {
             class="monitor-view__network-row"
             data-test="monitor-network-row"
             :data-interface="row.interface"
+            :title="row.title"
           >
             <span class="monitor-view__nic-name" :title="row.interface">
               {{ row.interface }}
@@ -1803,9 +1832,7 @@ const cpuTrendAriaLabel = computed(() => {
             <span class="monitor-view__card-icon"><Icon name="clock_timer_filled" :size="14" /></span>时钟
           </h2>
           <div class="monitor-view__block-head-actions">
-            <p class="monitor-view__block-meta" data-test="monitor-clock-meta">
-              {{ clockProbeAgeText }} · {{ clockServers.length }} 台服务器
-            </p>
+            <p class="monitor-view__block-meta" data-test="monitor-clock-meta">{{ clockMetaText }}</p>
             <div class="monitor-view__clock-probe">
               <button
                 class="ds-btn ds-btn--secondary ds-btn--sm"
@@ -1844,7 +1871,8 @@ const cpuTrendAriaLabel = computed(() => {
                 :data-level="clockLevel ?? undefined"
                 data-test="monitor-clock-offset"
               >{{ clockOffsetText }}</div>
-              <p class="monitor-view__stat-context" data-test="monitor-clock-offset-context">
+              <!-- 方向说明只对 live 有意义：不可用时偏差是「不可用」，说「正 = 本地快」会误导（#326） -->
+              <p v-if="clockState === 'live'" class="monitor-view__stat-context" data-test="monitor-clock-offset-context">
                 正 = 本地快 · 阈值 {{ clockThresholds.warn_ms }} ms
               </p>
             </div>
@@ -1902,6 +1930,7 @@ const cpuTrendAriaLabel = computed(() => {
                 :data-host="server.host"
                 :data-ok="server.ok"
                 :title="server.title"
+                :aria-label="server.title"
               >
                 <th scope="row" class="monitor-view__clock-host">
                   <span class="monitor-view__clock-host-name">{{ server.host }}</span>
@@ -2097,7 +2126,7 @@ const cpuTrendAriaLabel = computed(() => {
   min-width: 0;
   margin-bottom: var(--spacer-24);
   padding: var(--spacer-8) var(--spacer-12);
-  border: 1px solid var(--border-neutral-l1);
+  border: var(--border-width-default) solid transparent;
   border-radius: var(--radius-8);
   background: var(--bg-base-secondary);
   font-size: var(--body-xs-font-size);
@@ -2547,9 +2576,9 @@ const cpuTrendAriaLabel = computed(() => {
   width: var(--volume-fill, 0%);
   height: 100%;
   border-radius: var(--radius-2);
-  /* normal 与磁盘忙碌条 / CPU 核条同族：健康 = 成功色；只有越线才换 warn / danger
-     （容量条填充的是「已用」，读者先要的是「还剩多少」——条只做量感，读数在右侧文字）。 */
-  background: var(--status-success-default);
+  /* 容量是**数据型**图形（#450 拍板 4）：日常中性；只有「可用 <30% / <契约阈值」才换状态色，
+     与「空间不足」chip 同一判据源。填充的是「已用」，条只做量感，读数在右侧文字。 */
+  background: var(--text-tertiary);
   outline: var(--border-width-default) solid transparent;
   outline-offset: calc(-1 * var(--border-width-default));
 }
@@ -2939,8 +2968,15 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 /* ---- 响应式（沿用既有断点白名单 640/768/1024/1280，不使用容器查询） ----
-   ≥1024 全列；<1024 把行内次要列收成第二行 / tooltip；<768 每卷 / 每盘 / 每网卡堆叠：
-   名称 + 主数值第一行、条 + 次要在第二行，不横向溢出。 */
+   ≥1280 全列；1024–1279 收次要列（盘延迟/队列、网卡累计、时钟 RTT/stratum——完整读数在行 title）；
+   <1024 行内次要列再收成第二行 / 堆叠：名称 + 主数值第一行、条 + 次要在第二行，不横向溢出。 */
+@media (max-width: 1279.98px) {
+  .monitor-view__disk-extra { display: none; }
+  .monitor-view__net-totals { display: none; }
+  .monitor-view__clock-col-rtt { display: none; }
+  .monitor-view__clock-col-stratum { display: none; }
+}
+
 @media (max-width: 1023.98px) {
   /* 卷：mount + 可用% 第一行；条独占一行；可用 / chip 第三行 */
   .monitor-view__volume-row {
@@ -2991,14 +3027,6 @@ const cpuTrendAriaLabel = computed(() => {
   .monitor-view__net-totals { grid-area: totals; }
   .monitor-view__net-counters { grid-area: counters; justify-content: flex-start; }
 
-  /* 时钟表：RTT / stratum 收进行 title（次要列不在窄屏里互相挤压） */
-  .monitor-view__clock-col-rtt {
-    display: none;
-  }
-
-  .monitor-view__clock-col-stratum {
-    display: none;
-  }
 }
 
 @media (max-width: 767.98px) {
@@ -3289,7 +3317,7 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 /* 柱的填充：高度由 `--core-fill`（占用率）驱动；默认成功色，≥70% / ≥90% 换警示 / 危险色。
-   描边同台账轨道填充（#381）：`outline` 不占盒模型、不改变 `--core-fill` 的百分比语义，
+   描边同卷容量条填充（#381）：`outline` 不占盒模型、不改变 `--core-fill` 的百分比语义，
    `outline-offset` 负值把它压进填充块内部，四边都随轨道 `overflow: hidden` 收口。
 
    **已知边界（实测，不粉饰）**：填充高度 < 3px 时（本机 8 核里 4 个核 < 3%），
@@ -3338,7 +3366,7 @@ const cpuTrendAriaLabel = computed(() => {
 /* 时钟卡片的「需要关注」提示（#302）：测量质量劣化 / 未检测到同步服务 / 多服务冲突。
    与常规语义提示（中性灰）区分——这三条都是「该看一眼」但**不弹窗**的状态（契约 §2.8 静默原则）。 */
 .monitor-view__hint--alert {
-  color: var(--status-warning-default);
+  color: var(--status-warning-on-surface);
 }
 
 /* 时钟卡片的「立即查询」按钮（#302）：与卡片标题同排，不抢主数值的位置 */

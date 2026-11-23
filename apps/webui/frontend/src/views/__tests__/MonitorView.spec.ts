@@ -864,6 +864,25 @@ describe('MonitorView 存储块（#450：四数字 + 卷容量条 + 无容量挂
     expect(card().find('[data-test="monitor-volume-insufficient"]').exists()).toBe(true)
   })
 
+  it('容量条三档走 70/90 展示分档（与顶栏卷徽章同源），normal 中性不上状态色', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
+      volumes: [
+        { mount: '/neutral', available: true, total_bytes: 100 * GIB, used_bytes: 69 * GIB, used_ratio: 0.69 },
+        { mount: '/warn', available: true, total_bytes: 100 * GIB, used_bytes: 71 * GIB, used_ratio: 0.71 },
+        { mount: '/danger', available: true, total_bytes: 100 * GIB, used_bytes: 95 * GIB, used_ratio: 0.95 },
+      ],
+    }))
+    const wrapper = await mountView()
+    const rows = wrapper.findAll('[data-test="monitor-disk-volume"]')
+    const levelOf = (mount: string) => rows.find(row => row.attributes('data-mount') === mount)
+      ?.find('.monitor-view__volume-fill').attributes('data-level')
+    expect(levelOf('/neutral')).toBe('normal')
+    expect(levelOf('/warn')).toBe('warn')
+    expect(levelOf('/danger')).toBe('danger')
+    // chip 与 danger 档同一个判据源：只有 < 契约阈值才标「空间不足」
+    expect(wrapper.findAll('[data-test="monitor-volume-insufficient"]')).toHaveLength(1)
+  })
+
   it('#122 无容量挂载折叠成一行：数量 + 逐个挂载点与原因（只有 N>0 才渲染）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       volumes: [
@@ -878,7 +897,7 @@ describe('MonitorView 存储块（#450：四数字 + 卷容量条 + 无容量挂
     expect(card.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(1)
     const zero = card.find('[data-test="monitor-disk-zero-volumes"]')
     expect(zero.text()).toBe(
-      '无容量挂载（2） · /backup（无访问权限） · /run/user/1000/cliprdr-abc（总容量为 0）',
+      '无容量挂载（2） · /backup（权限不足，无法读取该指标） · /run/user/1000/cliprdr-abc（总容量为 0）',
     )
     // 四数字的「卷」context 给出无容量挂载数
     expect(card.find('[data-test="monitor-storage-zero-context"]').text()).toBe('另有 2 个挂载无容量')
@@ -906,8 +925,8 @@ describe('MonitorView 存储块（#450：四数字 + 卷容量条 + 无容量挂
     const wrapper = await mountView()
 
     const card = wrapper.find('[data-test="monitor-storage"]')
-    expect(card.find('[data-test="monitor-storage-volume-count"]').text()).toBe('0')
-    expect(card.find('[data-test="monitor-storage-total"]').text()).toBe('0 B')
+    expect(card.find('[data-test="monitor-storage-volume-count"]').text()).toBe('—')
+    expect(card.find('[data-test="monitor-storage-total"]').text()).toBe('—')
     expect(card.find('[data-test="monitor-storage-free-context"]').text()).toBe('占总量 —')
     expect(card.find('[data-test="monitor-storage-empty"]').text()).toContain('暂无数据')
     expect(card.find('[data-test="monitor-storage-unavailable"]').exists()).toBe(false)
@@ -924,7 +943,7 @@ describe('MonitorView 存储块（#450：四数字 + 卷容量条 + 无容量挂
 
     expect(wrapper.findAll('[data-test="monitor-disk-volume"]')).toHaveLength(0)
     const zero = wrapper.find('[data-test="monitor-disk-zero-volumes"]')
-    expect(zero.text()).toContain('/dirty（采集失败）')
+    expect(zero.text()).toContain('/dirty（采集失败，暂不可用）')
     expect(zero.text()).not.toContain('0 B')
   })
 
@@ -969,7 +988,7 @@ describe('MonitorView 存储块（#450：四数字 + 卷容量条 + 无容量挂
     expect(rows).toHaveLength(1)
     expect(rows[0].attributes('data-mount')).toBe('C:')
     expect(rows[0].find('[data-test="monitor-volume-percent"]').text()).toBe('50.0% 可用')
-    expect(wrapper.find('[data-test="monitor-disk-zero-volumes"]').text()).toContain('D:（无访问权限）')
+    expect(wrapper.find('[data-test="monitor-disk-zero-volumes"]').text()).toContain('D:（权限不足，无法读取该指标）')
   })
 })
 
@@ -1044,20 +1063,21 @@ describe('MonitorView 磁盘 I/O 子区（#450：盘行 + 忙碌条 + 共享内�
     expect(empty.text()).toContain('不可用')
     expect(empty.text()).toContain('磁盘性能计数器不可用（需管理员权限或性能计数器未开启）')
     expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="monitor-storage-disk-meta"]').text()).toContain('0 块物理盘')
+    expect(wrapper.find('[data-test="monitor-storage-disk-meta"]').text()).toContain('— 块物理盘')
   })
 
-  it('可用但数组为空 / null：写「本机无物理盘」而不是「不可用」', async () => {
+  it('空数组 = 本机无物理盘；能力可用但本帧 null = 本帧未采集（两种事实不混用）', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({ diskIo: [] }))
     const wrapper = await mountView()
     expect(wrapper.find('[data-test="monitor-disk-io-empty"]').text()).toBe('本机无物理盘')
     expect(wrapper.findAll('[data-test="monitor-disk-io-row"]')).toHaveLength(0)
 
-    // 能力粘性可用、本帧值为 null（WS 推送）→ 同一事实，不改成不可用
+    // 能力粘性可用、本帧值为 null（WS 推送）：是「没读到」不是「没有盘」，计数也不拿 0 冒充
     useSysmonStore().applySnapshot(makeSysmonSnapshot({ diskIo: null }))
     await wrapper.vm.$nextTick()
-    expect(wrapper.find('[data-test="monitor-disk-io-empty"]').text()).toBe('本机无物理盘')
+    expect(wrapper.find('[data-test="monitor-disk-io-empty"]').text()).toBe('暂无数据：本帧未采集物理盘')
     expect(wrapper.find('[data-test="monitor-disk-io-empty"]').text()).not.toContain('不可用')
+    expect(wrapper.find('[data-test="monitor-storage-disk-meta"]').text()).toContain('— 块物理盘')
   })
 
   it('语义提示：发送方带 disk_io 口径时显示中文提示，原文留在 tooltip；为空不渲染', async () => {
@@ -1095,12 +1115,12 @@ describe('MonitorView 磁盘 I/O 子区（#450：盘行 + 忙碌条 + 共享内�
       .toContain('查看共享内存目录占用历史变化')
   })
 
-  it('共享内存 oldest_file_age_sec=null：写「最旧 不可用」而不是 0 秒', async () => {
+  it('共享内存没有页文件：写「无页文件」而不是不可用 / 0 秒', async () => {
     vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot({
       shmDir: { path: '/srv/shm', total_bytes: 0, page_files: 0, oldest_file_age_sec: null },
     }))
     const wrapper = await mountView()
-    expect(wrapper.find('[data-test="monitor-shm-meta"]').text()).toBe('· 0 页文件 · 最旧 不可用')
+    expect(wrapper.find('[data-test="monitor-shm-meta"]').text()).toBe('· 0 页文件 · 最旧 无页文件')
     expect(wrapper.find('[data-test="monitor-shm-row"]').text()).not.toContain('0 秒')
   })
 
@@ -1253,7 +1273,7 @@ describe('MonitorView 网络块（#450：每网卡一行）', () => {
     expect(empty.text()).toContain('已在配置中关闭')
     expect(wrapper.findAll('[data-test="monitor-network-row"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="monitor-network-show-all"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="monitor-network-meta"]').text()).toBe('0 个物理网卡')
+    expect(wrapper.find('[data-test="monitor-network-meta"]').text()).toBe('— 个物理网卡')
 
     useSysmonStore().applySnapshot(makeSysmonSnapshot({
       metrics: { network: { available: false, reason: 'collect_failed' } },
@@ -1913,13 +1933,13 @@ describe('MonitorView 快照停推降级（#371）', () => {
     expect(wrapper.find('[data-test="monitor-host-status"]').text()).toContain('快照已停 1 分钟')
   })
 
-  it('停推不改变台账的指标等级：normal 行仍是 normal（数据旧 ≠ 指标异常）', async () => {
+  it('停推不改变指标读数：数据旧 ≠ 指标异常（停推只降级存活信号）', async () => {
     const wrapper = await mountAtAge(16_000)
 
-    // 停推只降级存活信号，不改数据本身的等级判定——两件事不得互相污染
+    // 停推只降级存活信号，不改数据本身——两件事不得互相污染
     expect(wrapper.find('[data-test="monitor-host-status"]').text()).toContain('快照已停')
-    const normalRows = wrapper.findAll('.monitor-view__volume-row[data-level="normal"]')
-    expect(normalRows.length).toBeGreaterThan(0)
+    expect(wrapper.findAll('[data-test="monitor-disk-volume"]').length).toBeGreaterThan(0)
+    expect(wrapper.find('[data-test="monitor-memory-percent"]').text()).toBe('50.0%')
   })
 
   it('发送方钟慢 60 秒也不判停推：判据是本机接收时刻，不是 snapshot.timestamp', async () => {
@@ -2502,6 +2522,14 @@ describe('MonitorView 时钟块（#450：四数字 + 服务器表 + 同步服务
       clock: { ...SYSMON_CLOCK_LIVE, bound_ms: 200 },
     }))
     await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-clock-bound-context"]').text()).toBe('测量质量正常')
+
+    // 两个判定对象独立：偏差越界 + 误差界正常时，质量提示不出现、偏差等级照常 danger
+    useSysmonStore().applySnapshot(makeSysmonSnapshot({
+      clock: { ...SYSMON_CLOCK_LIVE, offset_ms: -1200, bound_ms: 100 },
+    }))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-test="monitor-clock-offset"]').attributes('data-level')).toBe('danger')
     expect(wrapper.find('[data-test="monitor-clock-bound-context"]').text()).toBe('测量质量正常')
   })
 

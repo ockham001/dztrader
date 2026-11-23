@@ -10,9 +10,14 @@
  *    展示精度后的空闲百分比** `<` 阈值。若按原始浮点判，`used_ratio = 0.9` 会算出
  *    `(1 − 0.9) × 100 = 9.999…`，恰好卡在默认阈值 10 上显示「空间不足」——一个精度噪声
  *    伪装成的越线结论。展示值（`10.0% 可用`）与判定值必须是同一个数。
- * 2. **容量条的填充是「已用」**（与资源管理器 / 存储设置同读法）：填充比例 = `used_ratio`，
- *    颜色按 `useResourceLevel` 的 70 / 90 展示分档（ADR 0034：色标是展示规则，不是越限判定），
- *    而「空间不足」标签与顶部计数才用契约阈值——两者是不同的东西，不得互相推导。
+ * 2. **容量条的填充是「已用」**（与资源管理器 / 存储设置同读法）：填充比例 = `used_ratio`；
+ *    颜色是**数据型图形**（#450 拍板 4）：正常中性，可用 < 30% 橙（提前提醒），可用低于契约
+ *    `volume_free_pct` 红——danger 与「空间不足」chip / 顶部计数同源（freePercent），
+ *    不与 70 / 90 展示分档混用（那套只用于 CPU / 内存使用率等状态型数值）。
+ *
+ * **已知差异（≤0.05pp）**：契约日志按原始 `free_pct = 1 − used_ratio` 判，例如
+ * `used_ratio = 0.9005` 原始 free = 9.95 → 日志 warning，页面展示 10.0 → 不标不足；
+ * 这是「页面只承诺自己的展示精度」的取舍，对账时不要当成回归。
  * 3. **不可用不等于 0**：`null` 走 `format.ts` 的不可用占位；字节为 0 只在求和结果确实是 0
  *    （无可用卷）时出现，且空态文案另有说明。
  * 4. **磁盘忙碌占比不叫「利用率」**：`utilization` 度量的是设备忙时间占比（契约 §2.4），
@@ -30,6 +35,10 @@ import {
   formatLatency,
   formatPercent,
 } from '@/composables/format'
+import {
+  DISABLED_BY_CONFIG_TEXT,
+  unavailableReasonText,
+} from '@/composables/monitorAvailability'
 import { resourceLevel, type ResourceLevel } from '@/composables/useResourceLevel'
 import type {
   SysmonDiskIoInfo,
@@ -70,8 +79,12 @@ export interface VolumeRow {
   mount: string
   /** 容量条按「已用」填充的百分比文本（`formatPercent` 口径） */
   fill: string
-  /** 已用比例的展示等级（70 / 90 分档；null 不套色） */
-  usedLevel: ResourceLevel | null
+  /**
+   * 容量条的展示等级：**日常中性**（normal 也不上色），按 `useResourceLevel` 的 70 / 90
+   * 展示分档取 warn / danger——与顶栏卷徽章共用同一套色标（#369 一致性）。
+   * null = 不可读、不套色；与契约阈值的「空间不足」chip 是两套数字，不得互相推导。
+   */
+  level: ResourceLevel | null
   /** `可用 60.0 GiB / 共 100.0 GiB`（可用值在视图里加粗为主色） */
   availableText: string
   /** 可用容量（字节，供视图加粗段与测试取数） */
@@ -90,10 +103,12 @@ export function buildVolumeRow(volume: SysmonVolumeInfo, freeThresholdPct: numbe
   const used = volume.used_bytes
   const free = total === null || used === null ? null : total - used
   const freePercent = volumeFreePercent(volume)
+  // 容量条色标与顶栏卷徽章同源（70 / 90 展示分档）；「空间不足」chip 仍按契约阈值判。
+  const level: ResourceLevel | null = volume.used_ratio === null ? null : resourceLevel(volume.used_ratio)
   return {
     mount: volume.mount,
     fill: formatPercent(volume.used_ratio),
-    usedLevel: volume.used_ratio === null ? null : resourceLevel(volume.used_ratio),
+    level,
     availableText: `${formatBytes(free)} / ${formatBytes(total)}`,
     freeBytes: free,
     totalBytes: total,
@@ -178,11 +193,10 @@ export function buildStorageSummary(input: StorageSummaryInput): StorageSummary 
  */
 export function volumeReasonText(reason: string | undefined): string {
   if (!reason) return '容量读取失败'
-  if (reason === 'no_permission') return '无访问权限'
-  if (reason === 'path_not_found') return '路径不存在或无法解析'
-  if (reason === 'collect_failed') return '采集失败'
-  if (reason === 'disabled_by_config') return '已在配置中关闭'
-  return reason
+  // 原因文案只有一份（`monitorAvailability.unavailableReasonText`）：配置关闭复用同一常量，
+  // 未知 reason 原样透出（与契约 §2.5 的自由文案约定一致）；此处只补「无 reason」的卷语境兜底。
+  if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
+  return unavailableReasonText(reason)
 }
 
 /**
@@ -240,8 +254,20 @@ export function buildDiskRow(disk: SysmonDiskIoInfo): DiskRow {
  * 「不可用」占位——同一行里其它两项照常显示，不整行退化。
  */
 export function shmUsageText(shm: SysmonShmDirInfo): string {
-  const oldest = shm.oldest_file_age_sec === null
-    ? UNAVAILABLE_TEXT
-    : formatAge(shm.oldest_file_age_sec)
-  return `${formatBytes(shm.total_bytes)} · ${formatCount(shm.page_files)} 页文件 · 最旧 ${oldest}`
+  return `${formatBytes(shm.total_bytes)} · ${shmDetailText(shm)}`
+}
+
+/**
+ * 共享内存的细节段（`12 页文件 · 最旧 8 分钟`）：总量按钮之后的同一行小字与 tooltip 共用。
+ *
+ * `oldest_file_age_sec === null` 是「当前没有页文件」这一合法事实（契约 §2.4），
+ * 不是「值缺失」——`page_files === 0` 时写「无页文件」，只有页文件数非 0 却读不到年龄
+ * 才写「不可用」（否则会把一个可自行确认的空状态伪装成采集失败）。
+ */
+export function shmDetailText(shm: SysmonShmDirInfo): string {
+  let oldest: string
+  if (shm.page_files === 0) oldest = '无页文件'
+  else if (shm.oldest_file_age_sec === null) oldest = UNAVAILABLE_TEXT
+  else oldest = formatAge(shm.oldest_file_age_sec)
+  return `${formatCount(shm.page_files)} 页文件 · 最旧 ${oldest}`
 }

@@ -194,17 +194,12 @@ export function formatFrequencyParts(mhz: number | null | undefined): FrequencyP
   return { value: String(Math.round(mhz)), unit: 'MHz' }
 }
 
-/** 频率整串（数值 + 单位）：`3.80 GHz` / `962 MHz`；tooltip / 台账等只需一句话的地方用 */
+/** 频率整串（数值 + 单位）：`3.80 GHz` / `962 MHz`；tooltip / 历史视图等只需一句话的地方用 */
 export function formatFrequency(mhz: number | null | undefined): string {
   const parts = formatFrequencyParts(mhz)
   return parts.unit === '' ? parts.value : `${parts.value} ${parts.unit}`
 }
 
-/** 每秒 I/O 操作数（IOPS）：取整 + `IOPS`（`2048 IOPS`） */
-export function formatIops(value: number | null | undefined): string {
-  if (!isFiniteNumber(value)) return UNAVAILABLE_TEXT
-  return `${Math.round(value)} IOPS`
-}
 
 /**
  * 每秒事件数（通用档）：取整或指定小数位 + `/s`。
@@ -217,10 +212,6 @@ export function formatPerSec(value: number | null | undefined, digits = 0): stri
   return `${value.toFixed(digits)}/s`
 }
 
-/** 每秒事件数（上下文切换 / 中断）：取整 + `/s`（`1234/s`） */
-export function formatCountPerSec(value: number | null | undefined): string {
-  return formatPerSec(value, 0)
-}
 
 /** 计数（包 / 错误 / 丢弃 / 页文件等累计量）：取整 + 千分位（`12,000,000`） */
 export function formatCount(value: number | null | undefined): string {

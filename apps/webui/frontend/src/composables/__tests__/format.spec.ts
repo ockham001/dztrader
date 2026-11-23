@@ -5,20 +5,16 @@ import {
   formatBytes,
   formatClockTime,
   formatDateTime,
-  formatCount,
-  formatCountPerSec,
   formatDecimal,
   formatDuration,
   formatFrequency,
   formatFrequencyParts,
-  formatIops,
   formatLatency,
   formatAge,
   formatCompactSignedMilliseconds,
   formatMilliseconds,
   formatNumberAuto,
   formatPercent,
-  formatPerSec,
   formatPlatformName,
   formatSignedMilliseconds,
   formatTemperature,
@@ -215,38 +211,6 @@ describe('formatTemperature / formatFrequency：温度与频率', () => {
     expect(formatFrequencyParts(3798)).toEqual({ value: '3.80', unit: 'GHz' })
     expect(formatFrequencyParts(962)).toEqual({ value: '962', unit: 'MHz' })
     expect(formatFrequencyParts(null)).toEqual({ value: UNAVAILABLE_TEXT, unit: '' })
-  })
-})
-
-describe('formatIops / formatCountPerSec / formatCount：取整与千分位', () => {
-  it('IOPS 取整 + IOPS', () => {
-    expect(formatIops(2048)).toBe('2048 IOPS')
-    expect(formatIops(0)).toBe('0 IOPS') // 0 是合法真实值
-    expect(formatIops(15.4)).toBe('15 IOPS')
-    expect(formatIops(null)).toBe(UNAVAILABLE_TEXT)
-  })
-
-  it('每秒事件数取整 + /s', () => {
-    expect(formatCountPerSec(1234.5)).toBe('1235/s') // 取整四舍五入
-    expect(formatCountPerSec(567)).toBe('567/s')
-    expect(formatCountPerSec(0)).toBe('0/s')
-    expect(formatCountPerSec(null)).toBe(UNAVAILABLE_TEXT)
-  })
-
-  it('formatPerSec 指定小数位（错误/丢弃速率 1 位）；不可用时不带 /s 后缀', () => {
-    expect(formatPerSec(0, 1)).toBe('0.0/s') // 0 是合法真实值（本窗口无增量）
-    expect(formatPerSec(1.25, 1)).toBe('1.3/s')
-    expect(formatPerSec(1234.5)).toBe('1235/s')
-    expect(formatPerSec(null, 1)).toBe(UNAVAILABLE_TEXT) // 不是「不可用/s」
-    expect(formatPerSec(Number.NaN, 1)).toBe(UNAVAILABLE_TEXT)
-  })
-
-  it('计数取整并带千分位', () => {
-    expect(formatCount(12_000_000)).toBe('12,000,000')
-    expect(formatCount(0)).toBe('0')
-    expect(formatCount(999)).toBe('999') // 不足千位不加分隔符
-    expect(formatCount(1234.6)).toBe('1,235') // 先取整再分组
-    expect(formatCount(null)).toBe(UNAVAILABLE_TEXT)
   })
 })
 

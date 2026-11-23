@@ -490,9 +490,14 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     expect(num).toContain('font-variant-numeric: tabular-nums')
     expect(num).toContain('text-align: right')
     expect(num).toContain('white-space: nowrap')
-    // 次要列在 <1024 隐藏（完整读数留在行 title 里），<768 再收误差界
+    // 次要列在 1024–1279 就收起（完整读数留在行 title 里），<768 再收误差界
     for (const cls of ['rtt', 'stratum']) {
-      const block = mediaRuleBody('@media (max-width: 1023.98px)', `.monitor-view__clock-col-${cls}`)
+      const block = mediaRuleBody('@media (max-width: 1279.98px)', `.monitor-view__clock-col-${cls}`)
+      expect(block, cls).toContain('display: none')
+    }
+    // 盘延迟/队列、网卡累计也在同一档收起（行 title 保留全文）
+    for (const cls of ['disk-extra', 'net-totals']) {
+      const block = mediaRuleBody('@media (max-width: 1279.98px)', `.monitor-view__${cls}`)
       expect(block, cls).toContain('display: none')
     }
     expect(mediaRuleBody('@media (max-width: 767.98px)', '.monitor-view__clock-col-bound'))
@@ -630,7 +635,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
   })
 
   it('值按钮在触摸设备上有 44px 下限（.ds-btn 的 P5-T3 规则管不到自绘按钮，#363 C8）', () => {
-    // 必须在 `@media (pointer: coarse)` 里（桌面 pointer: fine 保持台账紧凑密度）
+    // 必须在 `@media (pointer: coarse)` 里（桌面 pointer: fine 保持紧凑密度）
     const coarse = source.slice(source.indexOf('@media (pointer: coarse)'))
     expect(coarse, '缺少 @media (pointer: coarse) 块').not.toBe('')
     expect(coarse).toContain('.monitor-view__value-btn')
