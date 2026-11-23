@@ -191,7 +191,6 @@ export const CLOCK_DISABLED_DESC = '在「配置」tab 的「时钟偏差」段�
 export const CLOCK_UNPROBED_TITLE = '尚未探测'
 export const CLOCK_UNPROBED_DESC = 'dzsysmon 尚未完成首轮 NTP 探测（进程启动后会立即探测一次）'
 export const CLOCK_NO_DAEMON_TEXT = '未检测到运行中的时间同步服务'
-export const CLOCK_NO_DAEMON_DESC = '本机可能没有启动任何常见时间同步服务（检测不到不影响偏差测量）'
 export const CLOCK_DAEMON_CONFLICT_TEXT = '检测到多个时间同步服务同时运行，请确认只保留一个'
 /** 「测量质量」提示正文（契约 §2.8：只提示，不改偏差着色） */
 export const CLOCK_QUALITY_HINT = '测量质量偏弱：误差界较大，本次偏差读数的可信度下降（网络或服务器响应慢）'

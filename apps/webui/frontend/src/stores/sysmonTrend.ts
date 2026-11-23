@@ -24,8 +24,9 @@ import { useSysmonStore } from '@/stores/sysmon'
  * 维度查询需要 `dimension` 参数，而维度选择器不在本版本范围。
  *
  * 消费方：#435 起 `cpu.usage_ratio` 供 CPU 块内的固定 0–100% 宽图；#445 第三轮起
- * `memory.used_ratio` 供内存块内的同款宽图；`shm_dir.total_bytes` 仍是台账存储组里的内联
- * sparkline。`cpu.load_average.one`（#435）、`swap.used_ratio`（#445：交换只有数字格，没有趋势）
+ * `memory.used_ratio` 供内存块内的同款宽图；#450 起 `shm_dir.total_bytes` 供存储块底部的
+ * 共享内存（应用数据）一行（旧台账删除后消费者不变，只是宿主块从台账变成存储块）。
+ * `cpu.load_average.one`（#435）、`swap.used_ratio`（#445：交换只有数字格，没有趋势）
  * 已从本清单移除——没有消费方的历史查询不留在每次进页面的请求里（历史视图仍能按需查这些指标）。
  */
 export const SYSMON_TREND_METRIC_KEYS = [

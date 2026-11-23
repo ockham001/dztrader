@@ -140,7 +140,7 @@ describe('useSysmonTrendStore：历史补齐（最近 15 分钟 / max_points=60�
       'memory.used_ratio',
       // 内存块宽图（#445 第三轮）
       'shm_dir.total_bytes',
-      // 台账存储组的内联 sparkline
+      // 存储块里共享内存（应用数据）一行的内联 sparkline
     ])
   })
 

@@ -569,8 +569,8 @@ const RUNTIME_INJECTED: Record<string, string> = {
   '--ds-status-fill': 'components/shared/StatusIndicator.vue:56 按进度注入填充百分比',
   '--core-fill': 'views/MonitorView.vue 的 coreBars computed 按每核占用率注入柱高（#435；原 coreBarStyle 已并入）——值逐核不同，只能运行时定',
   '--core-columns': 'views/MonitorView.vue 的每核条形区按容器实测宽度注入列数（#435）——宽度只能运行时测（monitorCpu.ts 的 coreBarColumns 算值）',
-  '--ledger-fill': 'views/MonitorView.vue 的 trackFillStyle() 按每行的量程比率注入轨道填充宽度（#363）——逐行不同，只能运行时定',
-  '--ledger-gap': 'views/MonitorView.vue 的 gapStyle() 把两个展示分档常量（70 / 90）换成缺口位置（#363）——常量在 JS 里，位置只能注入',
+  '--volume-fill': 'views/MonitorView.vue 的 volumeFillStyle() 按每个卷的已用比例注入容量条填充宽度（#450）——逐卷不同，只能运行时定',
+  '--disk-busy': 'views/MonitorView.vue 的 diskBusyStyle() 按每块盘的 utilization 注入忙碌条填充宽度（#450）——逐盘不同，只能运行时定',
   '--memory-seg': 'views/MonitorView.vue 的 memorySegmentStyle() 按内存组成带各段占比注入段宽（#363；#445 迁入内存卡）——逐段不同，只能运行时定',
   '--meter-fill': 'views/MonitorView.vue 的 meterFillStyle() 按交换使用率注入数字格细条宽度（#445 第四轮）——逐帧不同，只能运行时定',
 }
