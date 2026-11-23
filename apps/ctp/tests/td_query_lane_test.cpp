@@ -130,6 +130,23 @@ TEST_F(QueryLaneTest, NextWakeIsImmediateWhenReady) {
     EXPECT_LE(*wake, at(500));
 }
 
+TEST_F(QueryLaneTest, BackoffIsCappedAtFiveSeconds) {
+    QueryPacer pacer{milliseconds(1100)};
+    QueryLane lane{pacer, /*max_retries=*/6};  // 允许第 4 次失败（理论退避 8800ms > 5s 封顶）
+    lane.mark_dirty(kFunds);
+
+    int64_t t = 0;
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(lane.take_ready(at(t)).has_value()) << "attempt " << i;
+        lane.note_sent(at(t), kFunds);
+        lane.note_failure(at(t), kFunds);
+        t += 10000;
+    }
+    // 第 4 次失败发生在 30000：min(1100 * 8, 5000) = 5000 → 35000 才可重试。
+    EXPECT_EQ(lane.attempts(kFunds), 4);
+    EXPECT_EQ(lane.next_wake(at(30000)), at(35000));
+}
+
 TEST_F(QueryLaneTest, InFlightHasNoWake) {
     lane_.mark_dirty(kFunds);
     ASSERT_TRUE(lane_.take_ready(at(0)).has_value());
@@ -152,6 +169,54 @@ TEST_F(QueryLaneTest, ResetClearsEverything) {
     // 复位后 pacer 立即允许，再置脏可马上发。
     lane_.mark_dirty(kFunds);
     EXPECT_TRUE(lane_.take_ready(at(0)).has_value());
+}
+
+TEST_F(QueryLaneTest, EventDuringBackoffDoesNotResetBudget) {
+    lane_.mark_dirty(kFunds);
+    ASSERT_TRUE(lane_.take_ready(at(0)).has_value());
+    lane_.note_sent(at(0), kFunds);
+    lane_.note_failure(at(0), kFunds);  // 第 1 次失败：退避到 1100
+    ASSERT_EQ(lane_.attempts(kFunds), 1);
+
+    // 退避期间的新事件不重置尝试次数/退避时刻（持续事件流不得吞掉失败预算）。
+    lane_.mark_dirty(kFunds);
+    EXPECT_EQ(lane_.attempts(kFunds), 1);
+    EXPECT_EQ(lane_.take_ready(at(0)), std::nullopt);
+    EXPECT_EQ(lane_.next_wake(at(0)), at(1100));
+
+    // 第 2 次失败按翻倍退避（1100 + 2200 = 3300）。
+    ASSERT_TRUE(lane_.take_ready(at(1100)).has_value());
+    lane_.note_sent(at(1100), kFunds);
+    lane_.note_failure(at(1100), kFunds);
+    EXPECT_EQ(lane_.attempts(kFunds), 2);
+    EXPECT_EQ(lane_.next_wake(at(1100)), at(3300));
+}
+
+TEST_F(QueryLaneTest, SendFailureCountsWithoutInFlight) {
+    lane_.mark_dirty(kFunds);
+    ASSERT_TRUE(lane_.take_ready(at(0)).has_value());
+    // 发送失败：ReqQry* 返回非 0，未进入在途，仍须计入退避预算。
+    lane_.note_send_failure(at(0), kFunds);
+    EXPECT_EQ(lane_.attempts(kFunds), 1);
+    EXPECT_TRUE(lane_.pending(kFunds));
+    EXPECT_EQ(lane_.take_ready(at(0)), std::nullopt);
+    EXPECT_EQ(lane_.next_wake(at(0)), at(1100));
+    ASSERT_TRUE(lane_.take_ready(at(1100)).has_value());
+}
+
+TEST_F(QueryLaneTest, LateResponseAfterResetIsIgnored) {
+    lane_.mark_dirty(kFunds);
+    ASSERT_TRUE(lane_.take_ready(at(0)).has_value());
+    lane_.note_sent(at(0), kFunds);
+    lane_.reset();
+
+    // 断线复位后迟到的失败/成功响应不得复活待查或推进退避预算。
+    lane_.note_failure(at(10), kFunds);
+    lane_.note_response(at(10), kFunds);
+    EXPECT_FALSE(lane_.in_flight());
+    EXPECT_FALSE(lane_.pending(kFunds));
+    EXPECT_FALSE(lane_.exhausted(kFunds));
+    EXPECT_EQ(lane_.attempts(kFunds), 0);
 }
 
 TEST_F(QueryLaneTest, TakeReadyDoesNotMutateInFlight) {

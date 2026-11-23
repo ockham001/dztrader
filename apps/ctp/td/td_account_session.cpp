@@ -140,8 +140,10 @@ bool AccountSession::defer_query_if_pacer_busy(const std::function<void()>& retr
     }
     auto eligible = query_pacer_.next_eligible(now);
     if (eligible == QueryPacer::TimePoint::max()) {
-        // 登录链自身串行、理论上不会在在途时再次进入发送点；防御性按最小间隔重试，
-        // 避免任何竞态把查询永久悬挂。
+        // 登录链自身串行、理论上不会在在途时再次进入发送点；防御性按最小间隔重排，
+        // 重排次数受响应/超时收口约束（不会无限自旋）。
+        SPDLOG_WARN("td query send deferred while in flight | account={} query={}", account_id_,
+                    query_name);
         eligible = now + query_pacer_.min_gap();
     }
     auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(eligible - now);
@@ -150,12 +152,15 @@ bool AccountSession::defer_query_if_pacer_busy(const std::function<void()>& retr
     }
     const uint64_t gen = generation_;
     std::weak_ptr<void> weak = alive_token_;
-    timer_queue_.schedule_after(delay, [this, weak, gen, retry, name = std::string(query_name)]() {
-        if (weak.expired()) return;
-        if (gen != generation_) return;
-        SPDLOG_DEBUG("td query send deferred | account={} query={}", account_id_, name);
-        retry();
-    });
+    // 带 tag 的可替换定时器：同一查询重复进入发送点时替换而不是叠加（范围 4）。
+    timer_queue_.schedule_after_replace(
+        "td_qry_defer_" + std::string(query_name), delay,
+        [this, weak, gen, retry, name = std::string(query_name)]() {
+            if (weak.expired()) return;
+            if (gen != generation_) return;
+            SPDLOG_DEBUG("td query send deferred | account={} query={}", account_id_, name);
+            retry();
+        });
     SPDLOG_DEBUG("td query waiting for flow control gap | account={} query={} delay_ms={}",
                  account_id_, query_name, delay.count());
     return true;
@@ -515,6 +520,7 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
     }
     if (f.is_last) {
         note_query_done();  // 本查询收口（无论成功/失败）
+        instrument_query_request_id_ = 0;
         // Ready 后无合约查询发起方 (定向刷新已退役, ADR 0014); 重复/迟到 is_last 一律忽略.
         if (state_machine_.state() != TdState::LoadingInstruments) {
             SPDLOG_INFO(
@@ -1155,6 +1161,7 @@ void AccountSession::req_qry_instrument() {
     int ret = api_->ReqQryInstrument(&qry, instrument_query_request_id_);
     if (ret != 0) {
         note_query_done();
+        instrument_query_request_id_ = 0;
         if (ret == -3) {
             // I3: 流控 (-3), 1.5s 后重试 (参考 mdctp 流控队列模式)
             SPDLOG_WARN("td qry instrument flow control, retry in 1.5s | account={}", account_id_);
@@ -1184,6 +1191,7 @@ void AccountSession::req_qry_instrument() {
             if (state_machine_.state() == TdState::LoadingInstruments) {
                 SPDLOG_ERROR("td instruments load timeout | account={}", account_id_);
                 note_query_done();
+                instrument_query_request_id_ = 0;
                 state_machine_.on_instruments_load_failed("query timeout 5min");
             }
         });
@@ -1354,6 +1362,7 @@ void AccountSession::req_qry_trading_account() {
     int ret = api_->ReqQryTradingAccount(&qry, account_query_request_id_);
     if (ret != 0) {
         note_query_done();
+        account_query_request_id_ = 0;
         if (ret == -3) {
             SPDLOG_WARN("td qry account flow control, retry in 1.5s | account={}", account_id_);
             uint64_t gen = generation_;
@@ -1383,6 +1392,7 @@ void AccountSession::req_qry_trading_account() {
             finalizer_.phase() == Phase::kQueryAccount) {
             SPDLOG_ERROR("td qry account timeout, degrade | account={}", account_id_);
             note_query_done();
+            account_query_request_id_ = 0;
             finalizer_.on_account_failed();
             finalize_login();
         }
@@ -1899,6 +1909,7 @@ void AccountSession::on_rsp_qry_trading_account(const OnRspQryTradingAccountFiel
         }
         if (f.is_last) {
             note_query_done();  // 本查询收口（成功或错误均由 is_last 收尾）
+            account_query_request_id_ = 0;
             // 资金查询完成 -> 进入收尾序列 (replay -> flush -> ready), 由 drive_finalizer 推进.
             // 幂等防御: 超时/失败路径已推进过 kQueryAccount 时, 迟到的 is_last 不再重复收尾.
             if (finalizer_.phase() == Phase::kQueryAccount) {
@@ -2352,31 +2363,49 @@ void AccountSession::on_rsp_error(const OnRspErrorTdField& f) {
     switch (route_query_error(f.request_id, instrument_query_request_id_,
                               position_query_request_id_, account_query_request_id_)) {
         case QueryErrorTarget::Instrument:
+            if (state_machine_.state() != TdState::LoadingInstruments ||
+                instrument_query_request_id_ == 0) {
+                SPDLOG_WARN(
+                    "td stale instrument query error ignored | account={} request_id={} state={}",
+                    account_id_, f.request_id, static_cast<int>(state_machine_.state()));
+                return;
+            }
             SPDLOG_ERROR("td qry instrument error response | account={} error_id={} error=\"{}\"",
                          account_id_, error_id, error_msg);
             note_query_done();
+            instrument_query_request_id_ = 0;
             cancel_instruments_load_timer();
             state_machine_.on_instruments_load_failed(
                 std::format("OnRspError error_id={}", error_id));
             return;
         case QueryErrorTarget::Position:
+            if (!position_query_in_flight_ || finalizer_.phase() != Phase::kQueryPosition) {
+                SPDLOG_WARN("td stale position query error ignored | account={} request_id={}",
+                            account_id_, f.request_id);
+                return;
+            }
             SPDLOG_ERROR("td qry position error response | account={} error_id={} error=\"{}\"",
                          account_id_, error_id, error_msg);
             on_position_query_attempt_failed(std::format("OnRspError error_id={}", error_id));
             return;
         case QueryErrorTarget::TradingAccount:
+            if (finalizer_.phase() != Phase::kQueryAccount || account_query_request_id_ == 0) {
+                SPDLOG_WARN("td stale account query error ignored | account={} request_id={}",
+                            account_id_, f.request_id);
+                return;
+            }
             SPDLOG_ERROR("td qry account error response | account={} error_id={} error=\"{}\"",
                          account_id_, error_id, error_msg);
             note_query_done();
-            if (finalizer_.phase() == Phase::kQueryAccount) {
-                finalizer_.on_account_failed();
-                finalize_login();
-            }
+            account_query_request_id_ = 0;
+            finalizer_.on_account_failed();
+            finalize_login();
             return;
         case QueryErrorTarget::None:
             // 非查询类请求的错误（下单/出入金等）沿用「仅日志」语义；Session 级 WARN 留证。
-            SPDLOG_WARN("td rsp error unmatched | account={} error_id={} request_id={}",
-                        account_id_, error_id, f.request_id);
+            SPDLOG_WARN(
+                "td rsp error unmatched | account={} error_id={} request_id={} error=\"{}\"",
+                account_id_, error_id, f.request_id, error_msg);
             return;
     }
 }

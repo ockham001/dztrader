@@ -210,8 +210,7 @@ struct OnRspUserPasswordUpdateField {
 struct OnRspErrorTdField {
     std::optional<CThostFtdcRspInfoField> rsp_info;
     int request_id = -1;
-    bool is_last = true;
-    std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
+    std::string account_id;  // 多账户路由用, TdSpi push 时填入
 };
 
 /// OnRspTradingAccountPasswordUpdate 回调数据 (修改资金密码响应)

@@ -11,11 +11,13 @@ QueryLane::QueryLane(QueryPacer& pacer, int max_retries) noexcept
 void QueryLane::mark_dirty(QueryKind kind) noexcept {
     const std::size_t k = query_kind_index(kind);
     ++dirty_seq_[k];
-    // 新的业务变化重新武装该种类：清耗尽/退避，允许下一轮重新尝试。
-    exhausted_[k] = false;
-    attempts_[k] = 0;
-    retry_pending_[k] = false;
-    has_retry_at_[k] = false;
+    // 耗尽后的新事件重新武装该种类；**退避期间**的新置脏不重置预算——
+    // 持续事件流不得吞掉失败退避（ADR 0055 决策 6）。
+    if (exhausted_[k]) {
+        exhausted_[k] = false;
+        attempts_[k] = 0;
+        has_retry_at_[k] = false;
+    }
 }
 
 bool QueryLane::pending(QueryKind kind) const noexcept {
@@ -88,11 +90,12 @@ void QueryLane::note_sent(TimePoint now, QueryKind kind) noexcept {
 
 void QueryLane::note_response(TimePoint now, QueryKind kind) noexcept {
     (void)now;  // 与 note_failure 对称；成功路径不需要退避时刻。
-    const std::size_t k = query_kind_index(kind);
-    if (in_flight_ == kind) {
-        pacer_.note_done();
-        in_flight_.reset();
+    if (in_flight_ != kind) {
+        return;  // 迟到/重复响应：不推进状态
     }
+    const std::size_t k = query_kind_index(kind);
+    pacer_.note_done();
+    in_flight_.reset();
     attempts_[k] = 0;
     retry_pending_[k] = false;
     has_retry_at_[k] = false;
@@ -100,11 +103,21 @@ void QueryLane::note_response(TimePoint now, QueryKind kind) noexcept {
 }
 
 void QueryLane::note_failure(TimePoint now, QueryKind kind) noexcept {
-    const std::size_t k = query_kind_index(kind);
-    if (in_flight_ == kind) {
-        pacer_.note_done();
-        in_flight_.reset();
+    if (in_flight_ != kind) {
+        return;  // 迟到/串号/已 reset 的响应：不得复活待查或推进预算
     }
+    pacer_.note_done();
+    in_flight_.reset();
+    apply_failure(now, kind);
+}
+
+void QueryLane::note_send_failure(TimePoint now, QueryKind kind) noexcept {
+    // 发送失败发生在进入在途之前：不要求 in_flight，但仍计入同一份退避预算。
+    apply_failure(now, kind);
+}
+
+void QueryLane::apply_failure(TimePoint now, QueryKind kind) noexcept {
+    const std::size_t k = query_kind_index(kind);
     ++attempts_[k];
     if (attempts_[k] > max_retries_) {
         // 退避用尽：丢弃本次待查（下一个事件 / 手动刷新可重新置脏），标记一次性通知。

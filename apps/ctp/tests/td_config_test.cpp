@@ -40,12 +40,13 @@ protected:
 
 TEST_F(TdConfigTest, LoadFullConfig) {
     dztrader::test::TdConfigSeed seed;
+    seed.qry_min_interval_ms = 900;  // 非默认值，确保字段确实被解析
     seed.frontend_address = "tcp://180.168.146.187:10130";
     seed.frontend_label = "SimNow 7x24";
     write_config(seed);
 
     auto cfg = TdConfig::load(path_, "td");
-    EXPECT_EQ(cfg.qry_min_interval_ms, 1100);
+    EXPECT_EQ(cfg.qry_min_interval_ms, 900);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].account_id, "account_001");
@@ -205,7 +206,7 @@ TEST_F(TdConfigTest, LoadInvalidContentDoesNotOverwriteFile) {
 
 TEST_F(TdConfigTest, SaveAndLoadRoundTrip) {
     TdConfig cfg;
-    cfg.qry_min_interval_ms = 1100;
+    cfg.qry_min_interval_ms = 900;
     cfg.ext.enable_lock_mode = false;
     AccountConfig acct;
     acct.account_id = "test_001";
@@ -221,7 +222,7 @@ TEST_F(TdConfigTest, SaveAndLoadRoundTrip) {
     cfg.save(path_, "td");
 
     auto loaded = TdConfig::load(path_, "td");
-    EXPECT_EQ(loaded.qry_min_interval_ms, 1100);
+    EXPECT_EQ(loaded.qry_min_interval_ms, 900);
     EXPECT_FALSE(loaded.ext.enable_lock_mode);
     ASSERT_EQ(loaded.accounts.size(), 1u);
     EXPECT_EQ(loaded.accounts[0].account_id, "test_001");

@@ -9,8 +9,8 @@
 
 namespace dztrader::ctp {
 
-/// 运行期按需查询种类（ADR 0055）。当前只有资金刷新；新增种类时在此追加并同步
-/// `kQueryKindCount` 与调用侧 switch（编译期数组大小保证漏改会编译失败）。
+/// 运行期按需查询种类（ADR 0055）。当前只有资金刷新；新增种类时在此追加并**同步**
+/// `kQueryKindCount`（越界下标会防御性归 0，不会编译失败，故须人工同步）。
 enum class QueryKind : uint8_t {
     TradingAccount = 0,  ///< 资金快照（ReqQryTradingAccount）
 };
@@ -72,8 +72,13 @@ public:
     /// 响应成功收口：退出在途、清尝试次数；若发送后又置脏则继续待查（受 pacer 间隔约束）。
     void note_response(TimePoint now, QueryKind kind) noexcept;
 
-    /// 失败收口（发送失败 / OnRspError / 业务错误 / 超时）：退出在途并进入退避。
+    /// 响应侧失败收口（OnRspError / 业务错误 / 超时）：仅当该种类在途时生效，
+    /// 退出在途并进入退避；迟到/串号响应（已 NOT 在途 / 已 reset）直接忽略。
     void note_failure(TimePoint now, QueryKind kind) noexcept;
+
+    /// 发送侧失败（`ReqQry*` 返回非 0，尚未进入在途）：同样计入退避预算，
+    /// 但不要求 in-flight（调用方在发送失败时调用）。
+    void note_send_failure(TimePoint now, QueryKind kind) noexcept;
 
     /// 断线 / 离开 Ready：清空脏、在途、退避与耗尽标记，并复位 pacer。
     void reset() noexcept;
@@ -82,9 +87,9 @@ public:
     [[nodiscard]] int attempts(QueryKind kind) const noexcept;
 
     [[nodiscard]] bool in_flight() const noexcept { return in_flight_.has_value(); }
-    [[nodiscard]] std::optional<QueryKind> in_flight_kind() const noexcept { return in_flight_; }
 
 private:
+    void apply_failure(TimePoint now, QueryKind kind) noexcept;
     [[nodiscard]] Duration backoff_for(int attempts) const noexcept;
     [[nodiscard]] bool retry_ready(QueryKind kind, TimePoint now) const noexcept;
 

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "common/sched_common.h"
+#include "td/td_query_pacer.h"
 
 #include <dztrader/core/json_enum.h>
 #include <dztrader/platform/ctp_md_config.h>
@@ -129,8 +130,9 @@ struct CtpProcessExt {
 /// ——同一事实两处定义必然漂移。代价：旧扁平格式（连接参数直接在账户对象上）不再兼容，
 /// 开发期无迁移义务（契约 §6：内容非法即致命退出）。
 struct TdConfig {
-    int qry_min_interval_ms = 1100;  // 查询通道最小发送间隔 (毫秒, ADR 0055)
-    CtpProcessExt ext;               // 进程级柜台特有配置 (interface_type = ctp)
+    int qry_min_interval_ms =
+        QueryPacer::kDefaultMinGapMs;  // 查询通道最小发送间隔 (毫秒, ADR 0055)
+    CtpProcessExt ext;                 // 进程级柜台特有配置 (interface_type = ctp)
     std::vector<AccountConfig> accounts;
 
     /// 从 JSON 文件的 "td" section 加载 (与 mdctp CtpMdConfig::load 模式一致)。
