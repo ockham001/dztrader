@@ -23,7 +23,7 @@
  *    同一块盘在行与行之间来回换位，扫读位置不稳定。
  *
  * 4. **四类空态互不混淆，任何一类都不产出数字。** 不可用（能力缺失，带 reason）/ 暂无数据
- *    （能力可用但本帧无值）/ 配置关闭（`disabled_by_config`）/ 无此维度（如本机无交换分区）。
+ *    （能力可用但本帧无值）/ 配置关闭（`disabled_by_config`）/ 无此维度（如时钟「尚未探测」）。
  *    用 0 冒充任何一种都是撒谎（契约 §2 的「不得用 0 冒充」贯穿全篇）。
  *
  * 5. **`level` 为 null 表示「无法定档」，不得冒充 `normal`。** 没有比率分母的行（网卡 / 共享
@@ -56,7 +56,6 @@ import type {
   SysmonClockConfigPayload,
   SysmonClockInfo,
   SysmonDiskIoInfo,
-  SysmonMemoryInfo,
   SysmonNetworkInfo,
   SysmonShmDirInfo,
   SysmonThresholdsConfigPayload,
@@ -108,7 +107,7 @@ export interface LedgerDetailPart {
 
 /** 台账的一行：行内容即七列的取值，视图只负责摆放 */
 export interface LedgerRow {
-  /** 稳定标识（`v-for` 的 `:key` 与测试断言用），形如 `memory` / `volume:/data` / `nic:eno1:rx` */
+  /** 稳定标识（`v-for` 的 `:key` 与测试断言用），形如 `volume:/data` / `nic:eno1:rx` / `clock` */
   id: string
   group: LedgerGroupId
   /** 行的中文名（指标名 / 挂载点 / 设备名 / 网卡名） */
@@ -340,7 +339,6 @@ function unavailableRow(
   return blankRow(base, state, `${UNAVAILABLE_TEXT}：${unavailableReasonText(reason, metric)}`)
 }
 
-/** 内存组：内存已用 + 交换已用（两行都是可点跳历史的标量） */
 /** 单个卷的一行（`readableVolumes` 已保证 `used_ratio` 非 null） */
 function volumeRow(volume: SysmonVolumeInfo, freePct: number): LedgerRow {
   const ratio = volume.used_ratio
@@ -686,7 +684,7 @@ function networkClockGroup(input: MonitorLedgerInput): LedgerGroup {
 }
 
 /**
- * 构造资源监控台账（三组、固定顺序：内存 → 存储 → 网络与时钟）。
+ * 构造资源监控台账（两组、固定顺序：存储 → 网络与时钟；CPU / 内存已分别移入各自块卡）。
  *
  * CPU 组已随 #435 移入 CPU 块（每核条形进 CPU 卡、上下文切换 / 中断从实时页移除），台账不再
  * 产出 CPU 行——同一区域只留一套实现。
@@ -698,90 +696,3 @@ export function buildMonitorLedger(input: MonitorLedgerInput): LedgerGroup[] {
   return [storageGroup(input), networkClockGroup(input)]
 }
 
-// ---- 内存组成带（#363）----
-
-/** 组成带的一段：`ratio` 是占**总量**的比例（所有可画段之和 + 空闲 = 1） */
-export interface MemoryCompositionSegment {
-  id: 'used' | 'cached' | 'buffers' | 'free'
-  label: string
-  /** 该段的字节数（不可得时为 null，**不得**补 0） */
-  bytes: number | null
-  /** 该段占总量比例 [0,1]；null = 不可得（不画这一段） */
-  ratio: number | null
-  /** 该段的可读字节标注（不可得时为 null，由视图显示「不可得」注记） */
-  text: string | null
-}
-
-/** 组成带的完整结果：分段 + 是否退化为两段（缓存 / 缓冲不可得时的标注口径） */
-export interface MemoryComposition {
-  segments: MemoryCompositionSegment[]
-  /** 缓存或缓冲不可得 → 组成带只画「已用 + 可用」两段，视图须给出注记（不得静默补 0） */
-  degraded: boolean
-  /** 退化原因的可读文案（完整时为空串） */
-  degradedText: string
-}
-
-/**
- * 内存组成带（#363；契约 sysmon §2.4 / ADR 0024）。
- *
- * **两个口径不合并**（这是本函数存在的唯一理由）：
- * - 台账主数值是 `used_ratio = (total − available) / total`（ADR 0024 的唯一口径，
- *   `available` 含**可回收**的缓存与缓冲）；
- * - 组成带要回答的是「这 32 GiB 被谁占着」，因此逐段必须相加回到 `total`：
- *   `已用 = total − free − cached − buffers`，其中 `free` **不是快照字段**，
- *   由 `free = total − used − cached − buffers` 派生（钳到 ≥0）。
- *
- * 两段数字在数值上必然自洽（把派生的 `free` 代回即得 `used`），但它们**不是同一个量**：
- * 主数值是「用量比率」，组成带是「总量分解」，视图必须分别标注分母，不得把同一个数字渲染两次
- * 而声称一个是「已用」另一个是「可用」。
- *
- * 缓存或缓冲为 null（Windows 恒无缓冲 / 本帧未读到）时**不补 0**：退化为「已用 + 可用」两段
- * （`used = total − available`、`available` 原样），并以 {@link MemoryComposition.degraded}
- * 标注——补 0 会把「不知道」画成「没有」。
- *
- * @returns 内存对象为 null（或总量非正）时返回 null（调用方不渲染组成带）
- */
-export function buildMemoryComposition(memory: SysmonMemoryInfo | null): MemoryComposition | null {
-  if (memory === null) return null
-  const total = memory.total_bytes
-  if (!(total > 0)) return null
-  const cached = typeof memory.cached_bytes === 'number' ? memory.cached_bytes : null
-  const buffers = typeof memory.buffers_bytes === 'number' ? memory.buffers_bytes : null
-  const segment = (
-    id: MemoryCompositionSegment['id'],
-    label: string,
-    bytes: number | null,
-  ): MemoryCompositionSegment => ({
-    id,
-    label,
-    bytes,
-    ratio: bytes === null ? null : Math.min(1, Math.max(0, bytes / total)),
-    text: bytes === null ? null : formatBytes(bytes),
-  })
-
-  if (cached === null || buffers === null) {
-    // 退化形态：`available` 是契约里唯一可信的「可用」字段（含可回收），把它当空闲段并标注
-    return {
-      segments: [
-        segment('used', '已用', Math.max(0, total - memory.available_bytes)),
-        segment('free', '可用（含缓存/缓冲）', memory.available_bytes),
-      ],
-      degraded: true,
-      degradedText: cached === null && buffers === null
-        ? '缓存与缓冲不可得，组成带只画已用与可用两段'
-        : (cached === null ? '缓存不可得' : '缓冲不可得') + '，组成带只画已用与可用两段',
-    }
-  }
-
-  const free = Math.max(0, total - memory.used_bytes - cached - buffers)
-  return {
-    segments: [
-      segment('used', '已用', Math.max(0, total - free - cached - buffers)),
-      segment('cached', '缓存', cached),
-      segment('buffers', '缓冲', buffers),
-      segment('free', '空闲', free),
-    ],
-    degraded: false,
-    degradedText: '',
-  }
-}

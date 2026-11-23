@@ -519,7 +519,7 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     }
   }
 
-  it('监控页网格：<lg 单列、≥lg 两列；CPU 块与台账跨满整行，内存卡占半宽（#445）', () => {
+  it('监控页网格：所有块通栏单列（块间不并排；#445 第三轮定稿）', () => {
     // 基础规则即单列。必须是 minmax(0, 1fr)——裸 1fr 的最小轨道是 auto，
     // 列会被卡片内最长不可断行内容顶宽（#321 的 320 宽溢出就复现于此形态）
     const grid = ruleBody('.monitor-view__grid')
@@ -527,14 +527,12 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // #325：卡片按内容高度排布（默认 stretch 会把同行卡片拉到最高者，造成大片卡内留白）
     expect(grid).toContain('align-items: start')
 
-    // #445：≥lg 两列（主机面板插件的两列网格同形），内存卡占一列；宽块仍跨满整行
-    const lg = ruleInMedia('@media (min-width: 1024px)', '.monitor-view__grid')
-    expect(lg).toContain('grid-template-columns: repeat(2, minmax(0, 1fr))')
-    const memoryCard = source.match(/class="[^"]*monitor-view__memory[^"]*"/)?.[0] ?? ''
-    expect(memoryCard).not.toContain('monitor-view__card--wide')
+    // #445 第三轮：磁盘 / 网络块高度随条目数变化，块与块不并排（主流监控同样每个子系统一条通栏）。
+    // 因此不存在为页面网格改列数的媒体规则——块内部需要分栏时在块内解决。
+    expect(source).not.toMatch(/@media[^{]*\{[^}]*\.monitor-view__grid[^}]*grid-template-columns/)
 
-    // 网格里的子元素跨满整行：CPU 块与台账由 CSS 声明跨列（#430 后主机条是顶栏下方的
-    // 独立一条，不是网格项——它不在网格里断言，见下一条）。
+    // 网格里的子元素跨满整行：CPU 块与台账由 CSS 声明跨列（内存块在单列网格里天然通栏）。
+    // #430 后主机条是顶栏下方的独立一条，不是网格项——它不在网格里断言，见下一条。
     expect(ruleBody('.monitor-view__card--wide')).toContain('grid-column: 1 / -1')
     expect(source).toMatch(/class="[^"]*monitor-view__card--wide[^"]*"[^>]*data-test="monitor-ledger"/)
     // 主机条不在网格里（#430：顶栏下方的独立一条）：它的规则不得再声明跨列
@@ -930,9 +928,10 @@ describe('MonitorView CPU 固定 0–100% 趋势（#435：单曲线 + 网格线 
     expect(caption).not.toContain('纵轴')
     expect(caption).not.toContain('自适应')
 
-    // 网格线是静态几何：0/25/50/75/100 五条
-    expect(wrapper.findAll('.monitor-view__chart-gridline')).toHaveLength(5)
-    expect(wrapper.find('.monitor-view__chart-gridline').attributes('vector-effect')).toBe('non-scaling-stroke')
+    // 网格线是静态几何：0/25/50/75/100 五条（页面上有 CPU / 内存两张图，断言按图表作用域取）
+    const cpuGridlines = wrapper.findAll('[data-test="monitor-sparkline-cpu"] .monitor-view__chart-gridline')
+    expect(cpuGridlines).toHaveLength(5)
+    expect(cpuGridlines[0].attributes('vector-effect')).toBe('non-scaling-stroke')
 
     // 19%–21% 在固定轴上接近底边（y∈(25,27)），而不是像自适应轴那样铺满绘图区
     const points = wrapper.find('[data-test="monitor-sparkline-cpu"] polyline').attributes('points') ?? ''

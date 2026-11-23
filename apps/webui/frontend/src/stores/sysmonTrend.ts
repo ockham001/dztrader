@@ -23,13 +23,14 @@ import { useSysmonStore } from '@/stores/sysmon'
  * 指标下拉的子集。维度指标（每核 / 每盘 / 每网卡 / 每传感器）第一版不做趋势 ——
  * 维度查询需要 `dimension` 参数，而维度选择器不在本版本范围。
  *
- * 消费方：#435 起 `cpu.usage_ratio` 供 CPU 块内的固定 0–100% 宽图；`shm_dir.total_bytes`
- * 仍是台账存储组里的内联 sparkline。`cpu.load_average.one`（#435）、`memory.used_ratio` /
- * `swap.used_ratio`（#445：内存卡照主机面板插件做成 Meter，没有内联/宽图趋势）已从本清单移除——
- * 没有消费方的历史查询不留在每次进页面的请求里（历史视图仍能按需查这三个指标）。
+ * 消费方：#435 起 `cpu.usage_ratio` 供 CPU 块内的固定 0–100% 宽图；#445 第三轮起
+ * `memory.used_ratio` 供内存块内的同款宽图；`shm_dir.total_bytes` 仍是台账存储组里的内联
+ * sparkline。`cpu.load_average.one`（#435）、`swap.used_ratio`（#445：交换只有数字格，没有趋势）
+ * 已从本清单移除——没有消费方的历史查询不留在每次进页面的请求里（历史视图仍能按需查这些指标）。
  */
 export const SYSMON_TREND_METRIC_KEYS = [
   'cpu.usage_ratio',
+  'memory.used_ratio',
   'shm_dir.total_bytes',
 ] as const
 
@@ -76,7 +77,7 @@ const EMPTY_STATE: TrendSeriesState = {
  * （契约 sysmon §6.1），不新增帧、不新增 REST、不改快照形状。
  *
  * **末点 == 旁边的当前值**是结构性的：推进点取的是与页面数字**同一个** store computed
- * （`cpuUsageRatio` / `memoryInfo.used_ratio` / …），不是另一次采样；且 `upsertLiveSparklinePoint`
+ * （`cpuUsageRatio` / `memoryInfo.used_ratio` / `shmDirInfo.total_bytes`），不是另一次采样；且 `upsertLiveSparklinePoint`
  * 在「历史末桶比实时桶更靠右」时仍把末点值更新为当前值，任何时序下都成立。
  *
  * **静默降级**：历史库从未可用（`available=false`，含历史被关闭的 `not_found`）或**首次**补拉
@@ -98,6 +99,7 @@ export const useSysmonTrendStore = defineStore('sysmonTrend', () => {
    */
   const readers: Record<SysmonTrendMetricKey, () => number | null> = {
     'cpu.usage_ratio': () => sysmon.cpuUsageRatio,
+    'memory.used_ratio': () => sysmon.memoryInfo?.used_ratio ?? null,
     'shm_dir.total_bytes': () => sysmon.shmDirInfo?.total_bytes ?? null,
   }
 

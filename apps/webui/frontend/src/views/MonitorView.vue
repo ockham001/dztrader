@@ -10,13 +10,24 @@ import SysmonSparkline from '@/components/sysmon/SysmonSparkline.vue'
 import { PENDING_TIMEOUT } from '@/composables/usePending'
 import {
   NO_THRESHOLD_TEXT,
-  buildMemoryComposition,
   buildMonitorLedger,
   unavailableReasonText,
   type LedgerGroup,
   type LedgerRow,
-  type MemoryCompositionSegment,
 } from '@/composables/monitorLedger'
+import {
+  MEMORY_DEFAULT_USED_PCT,
+  SWAP_DEFAULT_USED_PCT,
+  buildMemoryComposition,
+  memoryFacts,
+  memorySegmentPercent,
+  resolveThresholdPct,
+  resourceHeadroomText,
+  swapFacts,
+  swapLabel,
+  swapPlatformNote,
+  type MemoryCompositionSegment,
+} from '@/composables/monitorMemory'
 import {
   PERCENT_TREND_GRIDLINE_YS,
   coreBarColumns,
@@ -86,9 +97,10 @@ import { useToastStore } from '@/stores/toast'
 
 // 资源监控页：主机条（#430：主机 / 系统 / 内核 / 已运行 + 右端数据龄状态槽；CPU 型号 · 逻辑核数
 // 已移出，归 CPU 块）、CPU 块（#435：标题 + 右上型号 / 四数字 / 固定 0–100% 单曲线 / 自适应每核
-// 条形）、指标台账（#363；三组：内存 / 存储 / 网络与时钟，后续块按参考布局逐块替换）。
+// 条形）、指标台账（#363；#435 删 CPU 组、#445 删内存组后只剩两组：存储 / 网络与时钟；
+// 后续块按参考布局逐块替换）。
 //
-// 台账是**纯渲染层**：三组（内存 / 存储 / 网络与时钟）× 七列（状态点 · 指标名 + 契约键 ·
+// 台账是**纯渲染层**：两组（存储 / 网络与时钟）× 七列（状态点 · 指标名 + 契约键 ·
 // 量程轨道 · 当前值 · 明细 · 阈值 · 余量）的行数据全部来自 `@/composables/monitorLedger` 的
 // `buildMonitorLedger`——本组件不判断「该不该显示这一行」「空态是哪一类」「阈值是多少」。
 // 行的四类空态（不可用 / 暂无数据 / 已在配置中关闭 / 无此维度）与阈值、余量都在纯函数层决定，
@@ -100,7 +112,7 @@ import { useToastStore } from '@/stores/toast'
 //   必须派生（`buildMemoryComposition`）；缓存或缓冲为 null 时组成带只画可得的两段并标注，不补 0。
 //
 // 轨道缺口只在**有契约阈值**的行上出现，位置取 `useResourceLevel` 的两个展示分档常量（70 / 90）：
-// 那是显示规则（ADR 0034），与「阈值」列的契约值（`memory_used_pct` 等）是两个不同的东西。
+// 那是显示规则（ADR 0034），与「阈值」列的契约值（如 `volume_free_pct`）是两个不同的东西。
 // 磁盘 `disk_io.utilization` 有填充但无缺口——它没有契约阈值，且它是设备忙时间占比，
 // 中文一律叫「忙碌占比」不叫「利用率」。
 // 网络：可用但数组为空 = 发送方按 hide_virtual 滤掉了全部虚拟网卡（契约 §2.5 明文，
@@ -110,7 +122,7 @@ import { useToastStore } from '@/stores/toast'
 // 因此 WS 连接与实时快照推送完全不受影响（契约 sysmon §8：历史视图不订阅 WS）。
 // 配置视图（#81）：展示生效配置镜像（WS sysmon_config，首次挂载经 GET /api/sysmon/config 补拉）；
 // admin 可编辑并只下发与原镜像的差异，非 admin 只读（编辑仅 admin，与系统设置页一致）。
-// 内联趋势（#127）：内存 / 交换 / 共享内存目录等标量指标旁有最近 15 分钟 sparkline（历史 REST
+// 内联趋势（#127）：台账里只剩共享内存目录这类标量行旁有最近 15 分钟 sparkline（历史 REST
 // 补齐 + WS 增量推进，末点即旁边的当前值）；历史不可用时静默不渲染。CPU 使用率是 CPU 块内的固定
 // 0–100% 宽图（#435），负载从 #435 起不再有迷你趋势（用户拍板：只保留数字与 5/15 分小字）。
 // 时间窗按实际覆盖标注（#142）：只有覆盖满 15 分钟才写「最近 15 分钟」，历史范围内无桶 /
@@ -123,7 +135,8 @@ import { useToastStore } from '@/stores/toast'
 // 温度传感器明细仍是卡片级折叠（#127 的既有语义）。
 // 卡片折叠（#127）：每传感器明细默认收起、展开显示全部；
 // 折叠状态不持久化；可用性空态不进折叠。实时视图为「页头 + 通栏主机条（#430）+ 单列网格」：
-// 网格内 CPU 块 / 指标台账跨满整行，列数不再是版面变量；图表用容器自适应重排（沿用既有断点，
+// 每个子系统一条通栏块（CPU / 内存 / 台账；磁盘 / 网络 / 时钟后续块），块与块不并排——
+// 高度随条目数变化的块并排必然留空洞；图表用容器自适应重排（沿用既有断点，
 // 不使用容器查询）。
 // 时间卡片（#302，契约 sysmon §2.9 / §2.8）：主数值为带符号偏差（1 位毫秒、正 = 本地快），
 // 副信息为误差界 / 来源服务器 / stratum / 上次探测相对时间 / 偏差方向说明（#326：正 = 本地快于
@@ -317,26 +330,27 @@ const cpuEmptyDesc = computed(() => cpuAvailable.value
 
 // ---- CPU 区块补全（#72）：每核 / 系统负载 / 每核频率 / 温度（上下文切换与中断已随 #435 移出实时页） ----
 // 只按 availability.metrics 与数据语义渲染，不按 platform.family 分支。
-const cpuCoresAvailable = computed(() => isAvailable('cpu.cores'))
 const cpuCores = computed(() => sysmon.cpuCores)
-
 /**
- * 每核条形空态（#435 从台账 CPU 行迁入）：三档不混淆——可用但本帧无数据 / 配置关闭 /
- * 能力不可用。`disabled_by_config` 是唯一可自助恢复的一类，不能并进「不可用」；
- * 恢复提示指向配置页（CPU 指标组开关），与契约 sysmon §3.1.1 的 `sampling.groups.cpu` 对应。
+ * 能力型空态的标题：可用但本帧无数据 → 「暂无数据」；配置关闭 → 「已在配置中关闭」；
+ * 其余不可用 → 「不可用」。CPU 每核 / 内存卡共用这一份判定（review §2.4 同形函数收敛）。
  */
-function coresUnavailableReason(): string | undefined {
-  return sysmon.availabilityOf('cpu.cores')?.reason
+function metricEmptyTitle(metric: string, emptyTitle: string): string {
+  if (isAvailable(metric)) return emptyTitle
+  return sysmon.availabilityOf(metric)?.reason === 'disabled_by_config' ? DISABLED_BY_CONFIG_TEXT : UNAVAILABLE_TEXT
 }
-const coresEmptyTitle = computed(() => {
-  if (cpuCoresAvailable.value) return '暂无每核数据'
-  return coresUnavailableReason() === 'disabled_by_config' ? DISABLED_BY_CONFIG_TEXT : UNAVAILABLE_TEXT
-})
-const coresEmptyDesc = computed(() => {
-  if (cpuCoresAvailable.value) return '当前快照未提供每核数据'
-  if (coresUnavailableReason() === 'disabled_by_config') return '可在「配置」页重新启用 CPU 指标组'
-  return unavailableDesc('cpu.cores')
-})
+
+/** 能力型空态的说明：可用 → 本帧无数据；配置关闭 → 指路配置页；其余 → 契约 reason 文案 */
+function metricEmptyDesc(metric: string, emptyDesc: string, reenableDesc: string): string {
+  if (isAvailable(metric)) return emptyDesc
+  if (sysmon.availabilityOf(metric)?.reason === 'disabled_by_config') return reenableDesc
+  return unavailableDesc(metric)
+}
+
+const coresEmptyTitle = computed(() => metricEmptyTitle('cpu.cores', '暂无每核数据'))
+const coresEmptyDesc = computed(() =>
+  metricEmptyDesc('cpu.cores', '当前快照未提供每核数据', '可在「配置」页重新启用 CPU 指标组'),
+)
 
 const loadAvailable = computed(() => isAvailable('cpu.load_average'))
 const loadAverage = computed(() => sysmon.cpuLoadAverage)
@@ -364,7 +378,7 @@ const temperatureGroups = computed(() =>
 const frequencyAvailable = computed(() => isAvailable('cpu.frequency'))
 const coreFrequencies = computed(() => sysmon.coreFrequencies)
 
-// ---- 指标台账（#363）：三组、每行七列，行数据全部来自 `buildMonitorLedger` ----
+// ---- 指标台账（#363）：两组、每行七列，行数据全部来自 `buildMonitorLedger` ----
 // 视图**不写任何「该不该显示」的判断**：行是否存在、空态是哪一类、阈值与余量写什么、
 // 数值能不能点跳历史，全部由 `@/composables/monitorLedger` 决定（纯函数，可单测）。
 // 这里只把 store 已净化的 computed 与生效配置交给它，并把结果摆成七列。
@@ -396,7 +410,7 @@ const ledger = computed<LedgerGroup[]>(() => buildMonitorLedger({
   networkFilteredAll: sysmon.networkFilteredAll && sysmon.hideVirtual,
 }))
 
-// ---- 内存块（#445）：照主机面板插件内存卡（半宽、Meter + 组成带 + 交换子条） ----
+// ---- 内存块（#445，第三轮通栏定稿）：四数字 + 15 分钟曲线 + 组成带 + 阈值余量小字 ----
 
 /** 内存快照与能力（契约 sysmon §2.4；可用性按映射判，不按平台名分支） */
 const memoryInfo = computed(() => sysmon.memoryInfo)
@@ -404,17 +418,12 @@ const memoryAvailable = computed(() => isAvailable('memory'))
 const memoryUsedRatio = computed(() => memoryInfo.value?.used_ratio ?? null)
 /** 内存已用率的展示等级：与顶栏 MEM 徽章共用 70 / 90 分档（ADR 0034，色标不是越限判定） */
 const memoryLevel = computed(() => (memoryUsedRatio.value === null ? null : resourceLevel(memoryUsedRatio.value)))
-const memoryEmptyTitle = computed(() => {
-  if (memoryAvailable.value) return '暂无数据'
-  return sysmon.availabilityOf('memory')?.reason === 'disabled_by_config' ? DISABLED_BY_CONFIG_TEXT : UNAVAILABLE_TEXT
-})
-const memoryEmptyDesc = computed(() => {
-  if (memoryAvailable.value) return '当前快照未提供内存数据'
-  if (sysmon.availabilityOf('memory')?.reason === 'disabled_by_config') return '可在「配置」页重新启用内存指标组'
-  return unavailableDesc('memory')
-})
+const memoryEmptyTitle = computed(() => metricEmptyTitle('memory', '暂无数据'))
+const memoryEmptyDesc = computed(() =>
+  metricEmptyDesc('memory', '当前快照未提供内存数据', '可在「配置」页重新启用内存指标组'),
+)
 
-/** 内存组成带（#363）：四段 + 图例；缓存/缓冲不可得时退化为两段并标注（不补 0） */
+/** 内存组成带（#363，自台账迁入）：四段 + 图例；缓存/缓冲不可得时退化为两段并标注（不补 0） */
 const memoryComposition = computed(() => buildMemoryComposition(sysmon.memoryInfo))
 
 /** 交换分区（契约 sysmon §2.4：Windows = 页面文件支撑的提交上限口径；无交换为 unsupported） */
@@ -427,28 +436,105 @@ const swapLevel = computed(() => (swapUsedRatio.value === null ? null : resource
 const swapHasData = computed(
   () => swapAvailable.value && swapInfo.value !== null && swapInfo.value.total_bytes > 0,
 )
-/** 交换子区的空态文案：无交换 / 配置关闭 / 不可用 / 暂无数据，四档不混淆 */
-const swapEmptyText = computed(() => {
-  if (!swapAvailable.value) {
-    const reason = sysmon.availabilityOf('swap')?.reason
-    if (reason === 'unsupported') return '本机无交换分区/页面文件'
-    if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
-    return `${UNAVAILABLE_TEXT} · ${unavailableDesc('swap')}`
-  }
-  // 可用但总量 0：与 unsupported 同一平台事实（契约 §2.4：无交换时 total_bytes=0），不是 0%
-  if (swapInfo.value !== null && swapInfo.value.total_bytes === 0) return '本机无交换分区/页面文件'
-  return '暂无数据：本帧未采集到交换分区'
+/** 平台族：只用于文案口径（Windows 的 swap 是页面文件支撑的提交上限；可用性判定仍按能力映射） */
+const platformFamily = computed(() => snapshot.value?.platform?.family ?? null)
+/** 交换区的展示标签（Windows「页面文件」/ 其它「交换分区」） */
+const swapStatLabel = computed(() => swapLabel(platformFamily.value))
+/** 「本机没有交换/页面文件」的同一句事实文案（unsupported 与 total_bytes=0 两种入口共用） */
+const NO_SWAP_TEXT = '本机无交换分区/页面文件'
+
+/** 阈值（契约 §3.1；配置镜像未到达时回退默认值，不跳变） */
+const memoryThresholdPct = computed(() =>
+  resolveThresholdPct(sysmon.config?.thresholds?.memory_used_pct, MEMORY_DEFAULT_USED_PCT),
+)
+const swapThresholdPct = computed(() =>
+  resolveThresholdPct(sysmon.config?.thresholds?.swap_used_pct, SWAP_DEFAULT_USED_PCT),
+)
+
+/** 组成带「空闲」的字节文本；退化形态下 free 段其实是 available，不能拿来冒充空闲 */
+const memoryFreeText = computed(() => {
+  const composition = memoryComposition.value
+  if (composition === null || composition.degraded) return null
+  return composition.segments.find(segment => segment.id === 'free')?.text ?? null
 })
 
-/**
- * Meter 填充比例 → CSS 变量（与 CPU 每核柱的 `--core-fill` 同一形态：值逐帧不同，只能运行时注入）。
- * `ratio === null` 不注入变量 → 轨道空着；与「真的 0%」的区别由数值文字承担（空读数写「不可用」）。
- */
-function meterFillStyle(ratio: number | null): Record<string, string> {
-  if (ratio === null) return {}
-  const clamped = Math.min(1, Math.max(0, ratio))
-  return { '--meter-fill': formatPercent(clamped) }
-}
+/** 内存数字格的悬停 / 读屏事实串（B1 + B2：可用口径、空闲、阈值、余量） */
+const memoryFactsText = computed(() => (memoryInfo.value === null
+  ? ''
+  : memoryFacts(memoryInfo.value, memoryThresholdPct.value, memoryFreeText.value)))
+/** 缓存 / 缓冲的可见文本（缓冲在 Windows 恒不可得：保留「不可得」而不是 0） */
+const memoryCachedText = computed(() => {
+  const cached = memoryInfo.value?.cached_bytes
+  return typeof cached === 'number' ? formatBytes(cached) : '不可得'
+})
+const memoryBuffersText = computed(() => {
+  const buffers = memoryInfo.value?.buffers_bytes
+  return typeof buffers === 'number' ? formatBytes(buffers) : '不可得'
+})
+
+/** 阈值 / 余量可见行（B2 + B3）：契约阈值与字节余量同源；交换有数据时才追加交换一段 */
+const memoryThresholdLine = computed(() => {
+  if (memoryInfo.value === null) return ''
+  const parts = [
+    `内存阈值 ${memoryThresholdPct.value}% · 余量 ${resourceHeadroomText(memoryInfo.value.total_bytes, memoryInfo.value.used_bytes, memoryThresholdPct.value)}`,
+  ]
+  if (swapHasData.value && swapInfo.value !== null) {
+    parts.push(
+      `${swapStatLabel.value}阈值 ${swapThresholdPct.value}% · 余量 ${resourceHeadroomText(swapInfo.value.total_bytes, swapInfo.value.used_bytes, swapThresholdPct.value)}`,
+    )
+  }
+  return parts.join(' · ')
+})
+
+/** 内存空态时仍展示的交换一行（带主语；有数据给百分比 + 已用/总量） */
+const swapFallbackText = computed(() => {
+  if (swapHasData.value && swapInfo.value !== null && swapUsedRatio.value !== null) {
+    return `${swapStatLabel.value} · ${formatPercent(swapUsedRatio.value)} · 已用 ${formatBytes(swapInfo.value.used_bytes)} / 共 ${formatBytes(swapInfo.value.total_bytes)}`
+  }
+  return `${swapStatLabel.value} · ${swapStatContextText.value}`
+})
+
+/** 交换数字格的悬停 / 读屏事实串（B3 + B4 + B6） */
+const swapFactsText = computed(() => (swapInfo.value === null
+  ? ''
+  : `${swapFacts(swapInfo.value, swapThresholdPct.value)}${swapPlatformNote(platformFamily.value)}`))
+
+/** 内存百分比按钮的 title / aria：事实串 + 既有历史入口口径（#325） */
+const memoryPercentTitle = computed(() => `${memoryFactsText.value}；${historyTitle('memory.used_ratio')}`)
+const memoryPercentAriaLabel = computed(
+  () => `${historyAriaLabel('memory.used_ratio', formatPercent(memoryUsedRatio.value))}；${memoryFactsText.value}`,
+)
+const swapPercentTitle = computed(() => `${swapFactsText.value}；${historyTitle('swap.used_ratio')}`)
+const swapPercentAriaLabel = computed(
+  () => `${historyAriaLabel('swap.used_ratio', formatPercent(swapUsedRatio.value))}；${swapFactsText.value}`,
+)
+
+/** 交换数字格的非数值文案：无交换 / 配置关闭 / 不可用 / 暂无数据（四档不混淆，永远带主语） */
+const swapStatValueText = computed(() => {
+  if (!swapAvailable.value) {
+    const reason = sysmon.availabilityOf('swap')?.reason
+    if (reason === 'unsupported') return '无交换'
+    if (reason === 'disabled_by_config') return '已关闭'
+    return UNAVAILABLE_TEXT
+  }
+  if (swapInfo.value !== null && swapInfo.value.total_bytes === 0) return '无交换'
+  return '暂无数据'
+})
+/** 交换数字格的小字上下文：有读数给已用/总量；无读数给原因（带「交换/页面文件」主语） */
+const swapStatContextText = computed(() => {
+  if (swapHasData.value && swapInfo.value !== null) {
+    return `已用 ${formatBytes(swapInfo.value.used_bytes)} / 共 ${formatBytes(swapInfo.value.total_bytes)}`
+  }
+  if (!swapAvailable.value) {
+    const reason = sysmon.availabilityOf('swap')?.reason
+    if (reason === 'unsupported') return NO_SWAP_TEXT
+    if (reason === 'disabled_by_config') return DISABLED_BY_CONFIG_TEXT
+    return unavailableDesc('swap')
+  }
+  // 可用但总量 0：与 unsupported 同一平台事实（契约 §2.4），不是 0%
+  if (swapInfo.value !== null && swapInfo.value.total_bytes === 0) return NO_SWAP_TEXT
+  return '本帧未采集到交换分区'
+})
 
 /**
  * 轨道填充比例 → CSS 变量（与 CPU 每核柱的 `--core-fill` 同一形态：值逐行不同，只能运行时注入）。
@@ -464,9 +550,27 @@ function trackFillStyle(row: LedgerRow): Record<string, string> {
 
 /** 组成带某段占总量比例 → CSS 变量（`flex-basis`），不可得的段不画（不注入变量） */
 function memorySegmentStyle(segment: MemoryCompositionSegment): Record<string, string> {
-  if (segment.ratio === null) return {}
-  return { '--memory-seg': formatPercent(Math.min(1, Math.max(0, segment.ratio))) }
+  const percent = memorySegmentPercent(segment)
+  return percent === null ? {} : { '--memory-seg': percent }
 }
+
+// ---- 内存 15 分钟趋势（#445 第三轮：通栏后用曲线填满；数据是既有 history，不改帧结构）----
+const memorySeries = computed(() => trend.seriesOf('memory.used_ratio'))
+const memoryWindow = computed(() => trend.windowOf('memory.used_ratio'))
+const memoryGeometry = computed(() => percentTrendGeometry(memorySeries.value))
+const memoryWindowComplete = computed(() => sparklineWindowComplete(memoryWindow.value))
+const memoryTrendStartText = computed(() => trendAxisClock(memoryGeometry.value?.firstTs))
+const memoryTrendEndText = computed(() => trendAxisClock(memoryGeometry.value?.lastTs))
+const memoryTrendCaption = computed(() => sparklineWindowText(memoryWindow.value))
+const memoryTrendTitle = computed(
+  () => `${sparklineTitle(trendMetricLabel('memory.used_ratio'), memoryWindow.value)} · 纵轴固定 0–100%`,
+)
+const memoryTrendAriaLabel = computed(() => {
+  const range = memoryTrendStartText.value !== '' && memoryTrendEndText.value !== ''
+    ? `，从 ${memoryTrendStartText.value} 到 ${memoryTrendEndText.value}`
+    : ''
+  return `${sparklineAriaLabel(trendMetricLabel('memory.used_ratio'), memoryWindow.value)}，纵轴固定 0–100%${range}`
+})
 
 /**
  * 轨道缺口位置 → CSS 变量。两个位置来自**展示分档常量**（`RESOURCE_WARN_RATIO` /
@@ -487,17 +591,13 @@ function rowTestId(row: LedgerRow): string {
   if (row.id.startsWith('volume:')) return 'monitor-disk-volume'
   if (row.id.startsWith('disk:')) return 'monitor-disk-io-row'
   if (row.id.startsWith('nic:')) return 'monitor-network-row'
-  if (row.id === 'memory') return 'monitor-memory-row'
-  if (row.id === 'swap') return 'monitor-swap-row'
   if (row.id === 'shm_dir') return 'monitor-shm-row'
   if (row.id === 'clock') return 'monitor-clock'
   return `ledger-row-${row.id}`
 }
 
-/** 标量行的数值 data-test：四个既有可点标量沿用原选择器（#325 的入口不掉），其余行通用 */
+/** 标量行的数值 data-test：既有可点标量沿用原选择器（#325 的入口不掉），其余行通用 */
 function rowValueTestId(row: LedgerRow): string {
-  if (row.id === 'memory') return 'monitor-memory-value'
-  if (row.id === 'swap') return 'monitor-memory-swap-usage'
   if (row.id === 'shm_dir') return 'monitor-shm-total'
   if (row.id === 'clock') return 'monitor-clock-offset'
   return 'ledger-value'
@@ -533,10 +633,8 @@ function rowSparklinePoints(row: LedgerRow): SparklinePoint[] {
   return row.historyKey === null ? [] : trend.seriesOf(row.historyKey)
 }
 
-/** 趋势 sparkline 的 data-test 后缀：沿用 #127 的既有选择器名（memory / swap / shm） */
+/** 趋势 sparkline 的 data-test 后缀：沿用 #127 的既有选择器名（shm） */
 function rowSparklineTestSuffix(row: LedgerRow): string {
-  if (row.id === 'memory') return 'memory'
-  if (row.id === 'swap') return 'swap'
   if (row.id === 'shm_dir') return 'shm'
   return row.id
 }
@@ -1253,49 +1351,120 @@ const cpuTrendAriaLabel = computed(() => {
         </div>
       </section>
 
-      <!-- 内存块（#445）：照主机面板插件的内存卡——标题 + 右端总量、已用率 Meter、
-           四段组成带 + 图例、交换子 Meter。与插件一致只占半宽（插件那半是 GPU；本机无 GPU，
-           右列暂空，后续块再占用）；不做 15 分钟曲线（插件内存卡无图）。 -->
+      <!-- 内存块（#445，第三轮按用户拍板改为通栏）：标题 + 总量 → 四数字（已用 / 可用 / 缓存 / 交换）
+           → 15 分钟内存使用率曲线（固定 0–100%，数据来自既有 history）→ 四段组成带 + 图例
+           → 阈值 / 余量小字。块序：CPU → 内存 → 磁盘 → 网络 → 时钟（后两块后续票）。 -->
       <section class="ds-card monitor-view__card monitor-view__memory" data-test="monitor-memory">
         <div class="monitor-view__block-head">
           <h2 class="ds-card__title monitor-view__card-title">
-            <span class="monitor-view__card-icon"><Icon name="memory" :size="14" /></span>内存
+            <span class="monitor-view__card-icon"><Icon name="memory-module" :size="14" /></span>内存
           </h2>
           <p
             v-if="memoryAvailable && memoryInfo"
             class="monitor-view__memory-total"
             data-test="monitor-memory-total"
-          >{{ formatBytes(memoryInfo.total_bytes) }}</p>
+          >总量 {{ formatBytes(memoryInfo.total_bytes) }}</p>
         </div>
 
         <template v-if="memoryAvailable && memoryInfo">
-          <div class="monitor-view__meter" data-test="monitor-memory-meter">
-            <div class="monitor-view__meter-head">
-              <span class="monitor-view__meter-label">已用</span>
+          <div class="monitor-view__stats">
+            <!-- 已用：百分比可点跳历史；颜色只是按等级的冗余信号（与顶栏 MEM 徽章同判据） -->
+            <div class="monitor-view__stat">
+              <p class="monitor-view__stat-label">已用</p>
               <button
                 v-if="memoryUsedRatio !== null"
                 type="button"
-                class="monitor-view__value-btn monitor-view__meter-value"
+                class="monitor-view__metric monitor-view__value-btn monitor-view__cpu-usage"
                 :data-level="memoryLevel"
                 data-test="monitor-memory-percent"
-                :title="historyTitle('memory.used_ratio')"
-                :aria-label="historyAriaLabel('memory.used_ratio', formatPercent(memoryUsedRatio))"
+                :title="memoryPercentTitle"
+                :aria-label="memoryPercentAriaLabel"
                 @click="openHistory('memory.used_ratio')"
               >{{ formatPercent(memoryUsedRatio) }}</button>
-              <span v-else class="monitor-view__meter-value" data-test="monitor-memory-percent">{{ UNAVAILABLE_TEXT }}</span>
+              <span v-else class="monitor-view__metric" data-test="monitor-memory-percent">{{ UNAVAILABLE_TEXT }}</span>
+              <p class="monitor-view__stat-context" data-test="monitor-memory-used-context">
+                已用 {{ formatBytes(memoryInfo.used_bytes) }} / 共 {{ formatBytes(memoryInfo.total_bytes) }}
+              </p>
             </div>
-            <div class="monitor-view__meter-track" aria-hidden="true">
-              <span class="monitor-view__meter-fill" :data-level="memoryLevel" :style="meterFillStyle(memoryUsedRatio)"></span>
+
+            <!-- 可用（B1）：契约唯一「可用」口径，含可回收缓存/缓冲，与组成带的「空闲」不是一个量 -->
+            <div class="monitor-view__stat">
+              <p class="monitor-view__stat-label">可用</p>
+              <div class="monitor-view__metric" data-test="monitor-memory-available">{{ formatBytes(memoryInfo.available_bytes) }}</div>
+              <p class="monitor-view__stat-context">含可回收缓存/缓冲</p>
             </div>
-            <p class="monitor-view__meter-caption" data-test="monitor-memory-caption">
-              {{ formatBytes(memoryInfo.used_bytes) }} · 共 {{ formatBytes(memoryInfo.total_bytes) }}
+
+            <!-- 缓存（可回收）+ 缓冲（内核元数据；Windows 恒不可得） -->
+            <div class="monitor-view__stat">
+              <p class="monitor-view__stat-label">缓存</p>
+              <div class="monitor-view__metric" data-test="monitor-memory-cached">{{ memoryCachedText }}</div>
+              <p class="monitor-view__stat-context" data-test="monitor-memory-buffers-context">缓冲 {{ memoryBuffersText }}</p>
+            </div>
+
+            <!-- 交换（Windows 为「页面文件」）：数据可用时百分比可点；否则只给带主语的短文案 -->
+            <div class="monitor-view__stat" data-test="monitor-swap-stat">
+              <p class="monitor-view__stat-label">{{ swapStatLabel }}</p>
+              <button
+                v-if="swapHasData && swapUsedRatio !== null"
+                type="button"
+                class="monitor-view__metric monitor-view__value-btn monitor-view__cpu-usage"
+                :data-level="swapLevel"
+                data-test="monitor-swap-percent"
+                :title="swapPercentTitle"
+                :aria-label="swapPercentAriaLabel"
+                @click="openHistory('swap.used_ratio')"
+              >{{ formatPercent(swapUsedRatio) }}</button>
+              <span v-else class="monitor-view__metric monitor-view__metric--empty" data-test="monitor-swap-percent">{{ swapStatValueText }}</span>
+              <p class="monitor-view__stat-context" data-test="monitor-swap-context">{{ swapStatContextText }}</p>
+            </div>
+          </div>
+
+          <!-- 15 分钟内存使用率曲线：与 CPU 块同一几何/样式（固定 0–100%、网格线、横轴两端真实时刻） -->
+          <div v-if="memoryGeometry" class="monitor-view__trend" data-test="monitor-memory-trend">
+            <button
+              type="button"
+              class="monitor-view__chart monitor-view__value-btn"
+              :title="memoryTrendTitle"
+              :aria-label="memoryTrendAriaLabel"
+              :data-last-value="memoryGeometry.lastValue"
+              :data-window-complete="memoryWindowComplete"
+              :data-window-truncated="memoryWindow.truncated"
+              :data-window-stale="memoryWindow.stale"
+              data-test="monitor-sparkline-memory"
+              @click="openHistory('memory.used_ratio')"
+            >
+              <svg
+                class="monitor-view__chart-svg"
+                viewBox="0 0 100 34"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <line
+                  v-for="y in PERCENT_TREND_GRIDLINE_YS"
+                  :key="y"
+                  class="monitor-view__chart-gridline"
+                  x1="0"
+                  x2="100"
+                  :y1="y"
+                  :y2="y"
+                  vector-effect="non-scaling-stroke"
+                />
+                <polyline class="monitor-view__chart-line" :points="memoryGeometry.points" vector-effect="non-scaling-stroke" />
+              </svg>
+            </button>
+            <div class="monitor-view__chart-axis-row" aria-hidden="true">
+              <span class="monitor-view__chart-axis-end" data-test="monitor-memory-trend-start">{{ memoryTrendStartText }}</span>
+              <span class="monitor-view__chart-axis-end" data-test="monitor-memory-trend-end">{{ memoryTrendEndText }}</span>
+            </div>
+            <p class="monitor-view__meta monitor-view__chart-caption" data-test="monitor-memory-trend-caption">
+              {{ memoryTrendCaption }}
             </p>
           </div>
 
-          <!-- 组成带（#363 口径，迁入内存块）：主数值是「用量比率」，组成带是「总量分解」，
-               两者各自标注分母；缓存/缓冲不可得时退化为两段并注记（不补 0）。 -->
+          <!-- 组成带（#363 口径）：主数值是「用量比率」，组成带是「总量分解」，各自标注分母 -->
           <div v-if="memoryComposition" class="monitor-view__memory-composition" data-test="monitor-memory-composition">
-            <div class="monitor-view__memory-band">
+            <div class="monitor-view__memory-band" aria-hidden="true">
               <span
                 v-for="segment in memoryComposition.segments"
                 :key="segment.id"
@@ -1325,40 +1494,24 @@ const cpuTrendAriaLabel = computed(() => {
             >{{ memoryComposition.degradedText }}</p>
           </div>
 
+          <!-- 阈值 / 余量（B2 / B3）：契约 §3.1 的阈值 + 字节余量，一行小字可见 -->
+          <p class="monitor-view__memory-facts" data-test="monitor-memory-facts">{{ memoryThresholdLine }}</p>
         </template>
+
         <div v-else class="ds-empty monitor-view__empty" data-test="monitor-memory-empty">
           <div class="ds-empty__title">{{ memoryEmptyTitle }}</div>
           <div class="ds-empty__desc">{{ memoryEmptyDesc }}</div>
         </div>
 
-        <!-- 交换子 Meter（插件式）：有交换分区才画条；无交换/关闭/不可用/暂无数据只给一句文案。
-             交换可用性独立于内存：内存空态不影响交换读数。 -->
-        <div v-if="swapHasData" class="monitor-view__meter monitor-view__meter--compact" data-test="monitor-swap">
-            <div class="monitor-view__meter-head">
-              <span class="monitor-view__meter-label">交换分区</span>
-              <button
-                v-if="swapUsedRatio !== null"
-                type="button"
-                class="monitor-view__value-btn monitor-view__meter-value"
-                :data-level="swapLevel"
-                data-test="monitor-swap-percent"
-                :title="historyTitle('swap.used_ratio')"
-                :aria-label="historyAriaLabel('swap.used_ratio', formatPercent(swapUsedRatio))"
-                @click="openHistory('swap.used_ratio')"
-              >{{ formatPercent(swapUsedRatio) }}</button>
-              <span v-else class="monitor-view__meter-value" data-test="monitor-swap-percent">{{ UNAVAILABLE_TEXT }}</span>
-            </div>
-            <div class="monitor-view__meter-track monitor-view__meter-track--compact" aria-hidden="true">
-              <span class="monitor-view__meter-fill" :data-level="swapLevel" :style="meterFillStyle(swapUsedRatio)"></span>
-            </div>
-            <p class="monitor-view__meter-caption" data-test="monitor-swap-caption">
-              {{ formatBytes(swapInfo!.used_bytes) }} · 共 {{ formatBytes(swapInfo!.total_bytes) }}
-            </p>
-        </div>
-        <p v-else class="monitor-view__memory-muted" data-test="monitor-swap-empty">{{ swapEmptyText }}</p>
+        <!-- 交换可用性独立于内存：内存空态时仍给一行交换事实（带「交换/页面文件」主语） -->
+        <p
+          v-if="!(memoryAvailable && memoryInfo)"
+          class="monitor-view__memory-muted"
+          data-test="monitor-swap-fallback"
+        >{{ swapFallbackText }}</p>
       </section>
 
-      <!-- 指标台账（#363；#435 起 CPU 组移入 CPU 块，只剩三组 内存 → 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
+      <!-- 指标台账（#363；#435 起 CPU 组移入 CPU 块、#445 起内存组移入内存块，只剩两组 存储 → 网络与时钟）、每行七列，行数据全部来自 `buildMonitorLedger`。
            组件不写任何「该不该显示」的判断——行的存在、空态类别、阈值与余量、能否点跳历史
            全部由 `@/composables/monitorLedger` 决定。七列共用一条列基线（每行同一套
            `grid-template-columns`），因此任意一列可纵向读下来。 -->
@@ -1809,7 +1962,7 @@ const cpuTrendAriaLabel = computed(() => {
 }
 
 /* 实时视图的网格是单列纵向（#363）：CPU 块 / 指标台账跨满整行（主机条在网格之外，
-   是页头下方的通栏一条，#430）。列数不再是版面变量——台账自身的七列（≥1024）/ 三行堆叠
+   是页头下方的通栏一条，#430）。页面块序是单列通栏——台账自身的七列（≥1024）/ 三行堆叠
    （<1024）才是分段的那一层。
    沿用既有断点体系（xl=1280，#127 明确不使用容器查询），图表用容器自适应重排。
    卡片高度按内容：grid 默认 `align-items: stretch` 会把同一行的卡片拉到最高者高度，
@@ -1821,15 +1974,9 @@ const cpuTrendAriaLabel = computed(() => {
   gap: var(--spacer-16);
 }
 
-/* #445：≥lg 两列——宽块（CPU / 台账）跨满整行，半宽块（内存，后续还有别的）各占一列。
-   与主机面板插件一致（它也是两列网格 + CPU/磁盘通栏，内存与 GPU 各半宽）；
-   <lg 单列，内存卡自然变全宽。 */
-@media (min-width: 1024px) {
-  .monitor-view__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: var(--spacer-10);
-  }
-}
+/* #445 第三轮：块与块**不并排**——磁盘 / 网络块的高度随卷 / 网卡数量变化，并排必然留空洞；
+   主流监控（任务管理器 / 系统「资源」/ 活动监视器）都是每个子系统一条通栏块。
+   一块内部需要分栏时，在块内用 grid 解决（例如后续网络块的网卡网格），不靠外层两列。 */
 
 .monitor-view__card--wide {
   grid-column: 1 / -1;
@@ -2226,7 +2373,7 @@ const cpuTrendAriaLabel = computed(() => {
   padding: var(--spacer-20) var(--spacer-12);
 }
 
-/* ---- 指标台账（#363）：三组、每行七列、共用一条列基线 ----
+/* ---- 指标台账（#363）：两组、每行七列、共用一条列基线 ----
    列宽由 `--ledger-*` token 定义（列宽是版面几何量，不是间距，故不进 spacer 步进）。
    七列在同一套 `grid-template-columns` 里定义：任意一列可纵向读下来比较，列永不随内容漂移。 */
 .monitor-view__ledger-group {
@@ -2537,9 +2684,9 @@ const cpuTrendAriaLabel = computed(() => {
   white-space: nowrap;
 }
 
-/* ---- 内存块（#445）：照主机面板插件内存卡——半宽卡片（≥lg 占一列，<lg 全宽）----
-   组成带沿用 #363 的中性色阶（DESIGN：只有状态才有颜色；不搬插件的紫/绿分段色），
-   Meter 填充仍走状态色 + 70 / 90 分档（与顶栏 MEM 徽章同判据）。 */
+/* ---- 内存块（#445，第三轮通栏定稿）：四数字 + 15 分钟曲线 + 组成带 + 阈值余量小字 ----
+   块与块不并排（外层单列通栏）；组成带沿用 #363 的中性色阶（DESIGN：只有状态才有颜色），
+   数字的颜色走状态色 + 70 / 90 分档（与顶栏 MEM 徽章同判据）。 */
 .monitor-view__memory {
   min-width: 0;
 }
@@ -2555,81 +2702,18 @@ const cpuTrendAriaLabel = computed(() => {
   white-space: nowrap;
 }
 
-/* Meter：标签 + 百分比同一行两端对齐，轨道在下面，字节小字在最下（插件同款三段结构） */
-.monitor-view__meter {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacer-4);
-  min-width: 0;
-}
-
-.monitor-view__meter--compact {
-  margin-top: var(--spacer-8);
-}
-
-.monitor-view__meter-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--spacer-8);
-  min-width: 0;
-}
-
-.monitor-view__meter-label {
-  overflow: hidden;
+.monitor-view__metric--empty {
   color: var(--text-secondary);
-  font-size: var(--body-sm-font-size);
-  line-height: var(--body-sm-line-height);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.monitor-view__meter-value {
-  flex: none;
-  color: var(--text-default);
-  font-family: var(--font-family-metric);
   font-size: var(--body-sm-font-size);
   line-height: var(--body-sm-line-height);
   font-weight: var(--body-sm-strong-font-weight);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
-.monitor-view__meter-track {
-  width: 100%;
-  height: var(--ledger-track-height);
-  overflow: hidden;
-  border-radius: var(--radius-full);
-  background: var(--bg-overlay-l2);
-}
-
-.monitor-view__meter-track--compact {
-  height: var(--spacer-4);
-}
-
-.monitor-view__meter-fill {
-  display: block;
-  width: var(--meter-fill, 0%);
-  height: 100%;
-  border-radius: var(--radius-full);
-  background: var(--status-success-default);
-}
-
-/* 等级色只给填充条（实体色档）；数值文字保持主色——插件同款。 */
-.monitor-view__meter-fill[data-level='warn'] {
-  background: var(--status-alert-default);
-}
-
-.monitor-view__meter-fill[data-level='danger'] {
-  background: var(--status-error-default);
-}
-
-.monitor-view__meter-caption {
-  margin: 0;
+.monitor-view__memory-facts {
+  margin: var(--spacer-6) 0 0;
   color: var(--text-secondary);
   font-size: var(--body-xs-font-size);
   line-height: var(--body-xs-line-height);
-  font-variant-numeric: tabular-nums;
 }
 
 .monitor-view__memory-muted {

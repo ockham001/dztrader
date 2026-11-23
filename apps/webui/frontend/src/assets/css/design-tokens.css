@@ -428,6 +428,7 @@
      故不进 spacer 步进；每核条形的列数由视图实测容器宽度后计算（`composables/monitorCpu.ts`）。 */
   --chart-height-trend: 72px;     /* 趋势图绘图区高度（固定 0–100% 轴，72px 足够分辨日常波动） */
   --core-bar-height: 54px;        /* 每核条形轨道高度（参考主机面板的 54px，不再撑高整卡） */
+  --memory-band-height: 10px;     /* 内存组成带高度：四段颜色可辨的最小高度（#363 口径，#445 迁入内存卡） */
   --card-stat-value-font-size: 19px;   /* 四数字主值字号（参考主机面板的 19px/600；CPU / 内存块共用） */
   --card-stat-value-line-height: 22px; /* 四数字主值行高（19px × 1.15 取整到 22px） */
   --stat-cell-min-width: 140px;   /* 四数字的最小格宽：约等于「18.7% + 一行上下文小字」不折行的宽度 */
@@ -469,7 +470,6 @@
   --ledger-col-headroom-md: 88px;
   --ledger-dot-size: 6px;          /* 状态点直径：与顶栏快照状态点同一视觉尺寸 */
   --ledger-track-height: 6px;      /* 量程轨道高度：容纳 1px 缺口线且不遮住读数 */
-  --memory-band-height: 10px;      /* 内存组成带高度：四段颜色可辨的最小高度（#363 迁入内存卡，#445） */
   --ledger-field-min-width: 160px; /* 展开明细的两列网格下限 */
   --font-size-9: 9px;         /* 微标签/徽标字号 */
   --font-size-10: 10px;
