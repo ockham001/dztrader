@@ -15,7 +15,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 认证：除 `POST /api/login`、`GET /health`、`GET /api/system/info` 外，全部 `/api/*` 需要 JWT（`Authorization: Bearer <jwt>`）；失败回 401 `{"error":"unauthorized"}`（token 缺失）或 `{"error":"invalid_token"}`（校验失败）。这两个值是**历史遗留的固定标识**（前端不据此分支——非登录接口的 401 一律按会话失效处理），属下条列出的已知例外，不适用 `code` 规则。
 - 响应：JSON（`application/json`）。
 - 错误：`{"error": message}` + 对应 HTTP 状态码；404 为 `{"error":"not found"}`。`error` 承载**人类可读消息**（小写英文开头、无句号），前端可直接兜底展示——**登录失败除外**（下条：其文案由 `code` 映射中文，不得展示 `error`）。
-- 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。**当前登记的 `code` 清单**：登录失败（`invalid_credentials` / `account_disabled` / `ip_banned` / `account_locked`，见下条与 §2.1）、口令强度（`password_too_weak`，400）、自助改密旧密码错误（`invalid_old_password`，400）、强制改密门禁（`password_change_required`，403）——后三者见 §1「密码策略」「自助改密 vs 管理员重置」「强制改密」；交易账户配置写（§2.9.7）新增 admin_required / invalid_gateway / gateway_not_running / account_exists / account_not_found（状态码见该节）。将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
+- 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。**当前登记的 `code` 清单**：登录失败（`invalid_credentials` / `account_disabled` / `ip_banned` / `account_locked`，见下条与 §2.1）、口令强度（`password_too_weak`，400）、自助改密旧密码错误（`invalid_old_password`，400）、强制改密门禁（`password_change_required`，403）——后三者见 §1「密码策略」「自助改密 vs 管理员重置」「强制改密」；交易账户配置写（§2.9.7）新增 admin_required / invalid_gateway / gateway_not_running / account_exists / account_not_found（状态码见该节）；资金刷新（§2.9.11）复用 account_not_found / gateway_not_running，新增 account_offline。将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
 - 登录失败错误体（`POST /api/login` 专用）：`{"error": <human message>, "code": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）。请求体必须为 JSON 对象且 `username`/`password` 均为 string；请求体缺失/非法 JSON/非对象/字段类型错/缺用户名或密码时回 400 `{"error":"bad request"}`（**无 `code`**，前端按通用失败处理）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。前端把 `code` 映射中文文案（单一真相源 `composables/loginErrors.ts`），**绝不把 `code` 或英文 `error` 回显给用户**；未知/缺失 `code` 统一回落「登录失败」。
 - 权限：管理类端点需 admin 角色（服务端校验，非前端隐藏）。
 - **交易数据端点通用规则**（§2.9）：
@@ -121,7 +121,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ### 2.9 交易数据
 
-交易数据端点直查交易库（`$DZTRADER_HOME/db/trade.db`，ADR 0041/0043）：每请求独立只读连接、`busy_timeout` 200ms，游标分页、禁止 OFFSET 深翻页；dzweb 不保留委托/成交/持仓/资金记录镜像。端点分三类：只读直查（委托/成交/持仓/资金）、内存计数器（统计）、账户配置写（转发 SHM 帧）；不读任何记录镜像。
+交易数据端点直查交易库（`$DZTRADER_HOME/db/trade.db`，ADR 0041/0043）：每请求独立只读连接、`busy_timeout` 200ms，游标分页、禁止 OFFSET 深翻页；dzweb 不保留委托/成交/持仓/资金记录镜像。端点分四类：只读直查（委托/成交/持仓/资金）、内存计数器（统计）、账户配置写、交易数据刷新（后两类转发 SHM 帧）；不读任何记录镜像。
 
 | 方法/路径 | 语义 | 帧/镜像联动 |
 |---|---|---|
@@ -129,6 +129,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | GET `/api/td/trades` | 当日成交列表（在线账户 + 当前交易日，游标分页） | 直查交易库 |
 | GET `/api/td/positions` | 持仓列表（全部已登记账户，各账户锚点日，游标分页） | 直查交易库 |
 | GET `/api/td/trading_accounts` | 资金列表（全部已登记账户，各账户锚点日，不分页） | 直查交易库 |
+| POST `/api/td/trading_accounts/{account_id}/refresh` | 手动刷新单账户资金快照（任意已认证用户；fire-and-forget） | → `DZ_FRAME_TD_REFRESH_REQ`（契约 td-refresh）；生效信号 = WS `td_trading_account` |
 | GET `/api/td/stats` | 当日「未成交/总」统计（在线账户 + 当前交易日） | dzweb 统计计数器（§2.9.5） |
 | GET `/api/td/accounts` | 账户注册表：`account_id → gateway` 全集（账户配置页的唯一性预检与网关解析） | dzweb 账户注册表（契约 td-config §5），内存优先 |
 | POST `/api/td/accounts` | 添加交易账户配置（admin） | → `TD_REQ_MODIFY_CONFIG{AddAccount}`（契约 td-config §2.1/§3）；生效信号 = `RTN_TD_CONFIG` |
@@ -525,7 +526,9 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 #### 2.9.11 资金刷新
 
-写端点，请求目标交易网关对指定账户做一次 CTP 资金查询（`TD_REFRESH_REQ`，契约 td-refresh）。与 §2.9.10 同属「写帧 + 生效信号」的 fire-and-forget 形态：响应只表示已写入事件通道。
+> **实现状态（未接线）**：本端点随 [#455](https://github.com/ockham001/dztrader/issues/455) 子票 3 落地；当前前端无入口、dzweb 无发送方。
+
+写端点，请求目标交易网关对指定账户做一次 CTP 资金查询（`DZ_FRAME_TD_REFRESH_REQ`，契约 td-refresh）。与 §2.9.10 同属「写帧 + 生效信号」的 fire-and-forget 形态：响应只表示已写入事件通道。
 
 | 方法/路径 | 语义 | 帧/生效信号 |
 |---|---|---|
@@ -544,6 +547,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 **约束**：
 
 - 不返回新鲜资金数据、不等待查询完成（避免 REST 长挂）；前端 pending 清除 = 同账户资金事件新 `seq` 到达，超时兜底 3s（契约 webui-ws §5）。
+- dzweb 写帧时生成 `request_id`（当前固定 0 = 不追踪，仅日志预留字段）。
 - 查询失败不产生 RTN：td 记日志 + 限频 ERROR 通知；UI 侧展示超时提示「刷新超时，稍后自动更新」。
 - 本端点不改变账户配置、不读交易库、不受 §2.9.8 降级影响；重复点击 / 多客户端并发在 td 侧按最小间隔合并，不放大查询次数。
 - 每行一个刷新入口，不做「全部账户刷新」；账户行是否可点由在线状态决定（前端义务，契约 webui-ws §5）。

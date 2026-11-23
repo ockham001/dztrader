@@ -92,7 +92,7 @@ domain 清单与挂载实例：
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。
-- 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）。转发条件与补发容量见《帧契约：TD 数据同步》§8；WS 时序与合并语义见 §2.5、§5。资金手动刷新（契约 rest §2.9.11）**不产生新消息**：td 处理 `TD_REFRESH_REQ` 后照常推 `TRADING_ACCOUNT` 帧，前端按同账户新 `seq` 清除该行 pending（§5）。
+- 四类交易事件（td_*）是**帧转发而非镜像域**：不写 `MirrorStore`、不进 `snapshot`；payload 与 REST 行同 schema（唯一真相源：契约 rest §2.9.3 与契约 rest §2.9.4）。转发条件与补发容量见《帧契约：TD 数据同步》§8；WS 时序与合并语义见 §2.5、§5。
 - 账户配置与细状态（`td_rtn_config` / `td_rtn_status`）**是镜像域**（`td_config` / `td_status`，进 `snapshot`）：它们与 md 侧的 `md_rtn_config` / `md_rtn_status` 同型——全量覆盖、后到覆盖先到、不进 `td_recent` 补发环。前端基线由 `snapshot` + 增量推送构成，不需要额外的 REST 基线拉取（与交易记录相反：记录不进镜像，配置/状态进镜像）。
 
 ### 2.3 控制消息（`payload` 键）
@@ -130,6 +130,7 @@ domain 清单与挂载实例：
 - **payload 即行对象**：消息载荷（`data`）= 契约 rest §2.9.3 与契约 rest §2.9.4 定义的同一行 schema（含 seq、price_decimals、sort_key 等派生字段）；`instance_id` 为空（account_id 在 payload 内）。
 - **转发与容量**：转发条件、在线账户过滤、Offline 清环与每账户补发容量见《帧契约：TD 数据同步》§8；dzweb 不维护记录镜像，前端记录基线由 REST 拉取（契约 rest §2.9）。
 - **合并**：前端按业务键去重、同键 seq 大者胜（§5）；委托/成交按 sort_key 降序插入，持仓/资金按业务键覆盖。
+- **手动刷新**：资金行刷新（契约 rest §2.9.11）**不产生新消息**——td 处理 `DZ_FRAME_TD_REFRESH_REQ` 后照常推 `TRADING_ACCOUNT` 帧；前端按同账户新 `seq` 清除该行 pending（§5）。
 
 **td_recent（建连补发）**：
 

@@ -9,7 +9,7 @@ Supersedes（精确到句；未列出的决策与句子全部保留）：
 - [ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 6 中「资金本轮不做周期查询（`qry_account_interval_s` 保留但未接入），资金行只在登录 / 失败补查链更新，盘中资金停在最近一次查询（已知限制；后续接入周期查询时必须保持"持仓成功后再写资金"的顺序）」——**整句废止**，改为「资金刷新由事件 / UI 手动触发的按需查询承载，经账户级查询通道串行限速；仍无周期查询；『资金行只在持仓成功后写入』的顺序约束保留」；
 - [ADR 0049](0049-position-pure-incremental-no-periodic-query.md) Consequences 中「资金仍无周期查询（ADR 0045 决策 6 保留），**盘中资金停在最近一次查询**」——后半句废止（仍无周期查询，但事件 / 手动触发会刷新资金快照）。ADR 0049 其余决策（持仓纯增量、无周期查询、无自愈）全部保留。
 
-契约同步：《帧契约：TD 数据同步》§4 查询链路与新增 §4.1、§7 边界表；《帧契约：交易网关配置》§2.1 / §2.4 / §3 / §6；《帧契约：TD 刷新请求》（新增）；《帧契约：REST API》§2.9.11；《帧契约：WebSocket 协议》§2.5 / §5；`docs/components/dztd_ctp.md` / `docs/components/dzweb.md`；`GLOSSARY` 新增「查询通道」「资金刷新」。ADR 0045 / 0049 正文不改，只在各自 Status 段加引用注记。代码侧实现见 #455 的子票（本 ADR 与契约先于实现，契约条款标注实现状态由总则 §11.3 checklist 跟踪）。
+契约同步：《帧契约：TD 数据同步》§4 查询链路与新增 §4.1、§7 边界表；《帧契约：交易网关配置》§2.1 / §2.4 / §3 / §6；《帧契约：TD 刷新请求》（新增）；契约 rest §2.9.11；契约 webui-ws §2.5 / §5；`docs/components/dztd_ctp.md` / `docs/components/dzweb.md`；`GLOSSARY` 新增「查询通道」「资金刷新」。ADR 0045 / 0049 正文不改，只在各自 Status 段加引用注记。代码侧实现见 #455 的子票（本 ADR 与契约先于实现；计划符号标注见总则 §11.4，变更 checklist 见总则 §11.3）。
 
 ## Context
 
@@ -24,10 +24,10 @@ Supersedes（精确到句；未列出的决策与句子全部保留）：
 
 - 全仓 `ReqQry*` 只有三个调用点，全部在登录链：`ReqQryInstrument`（结算确认成功后）、`ReqQryInvestorPosition`（合约加载完成后）、`ReqQryTradingAccount`（持仓查询 `is_last` 后）。持仓 / 合约在运行期不再查询（ADR 0014 定向刷新已退役、ADR 0049 取消周期查询）。
 - 登录链已保证查询串行（状态机推进），但**三笔之间没有主动间隔**；现有规避手段是 `-3` 时定时重试（合约 / 资金 1.5s、持仓计入 3 次重试预算 / 间隔 3s）。
-- `OnRspError` 被 `td_spi` 推入事件队列，但 `TdApi::handle_frame` **没有 dispatch**，前置查询流控拒绝只能等 5 分钟超时兜底；`OnRspQryTradingAccount` 也不校验 `nRequestID`。
+- `OnRspError` 目前只由 `td_spi` 记 ERROR、**不入事件队列**（`td_spi.cpp` 注释：通用错误仅日志），`TdApi` 无对应事件类型与 dispatch，前置查询流控拒绝只能等登录链 5 分钟超时兜底；`OnRspQryTradingAccount` 也不校验 `nRequestID`。
 - 两个配置字段 `qry_account_interval_s`（5s）与 `qry_flush_interval_ms`（1500ms）从初始提交起**没有任何消费者**（只有配置读写与变更日志）；契约 `td-config §6`「查询间隔修改立即生效（热更新资金查询间隔 / 流控调度）」与组件文档「需排队调度」均与代码不符。
 
-**旧版参考**（`shared/DzTrader3改用共享内存之前实盘版本20230813`，`mainGateWay::timerReqQryLater()`）：每账户一组脏标记（资金 / 费率），事件置脏后武装 3~5s 的 asio 定时器；到点后每个账户每次只发一笔待办查询（清标记），仍有积压则再武装 3s。即「事件置脏 → 合并 → 串行 + 间隔发送」，不丢（脏标记保留）、不超限（远低于 1s 限制）。本 ADR 沿用其置脏合并思想，但改为**事件驱动 + 最早合法时刻发送**（不做固定 3~5s 批量延迟），并复用平台现有 `TimerQueue`（绝对时间 `schedule_at` + 主循环 `next_timeout`，无轮询线程 / 无 sleep）。
+**旧版参考**（仓外副本 DzTrader3 改用共享内存之前实盘版本 20230813，其 `mainGateWay::timerReqQryLater` 实现；不在本仓版本控制内）：每账户一组脏标记（资金 / 费率），事件置脏后武装 3~5s 的 asio 定时器；到点后每个账户每次只发一笔待办查询（清标记），仍有积压则再武装 3s。即「事件置脏 → 合并 → 串行 + 间隔发送」，不丢（脏标记保留）、不超限（远低于 1s 限制）。本 ADR 沿用其置脏合并思想，但改为**事件驱动 + 最早合法时刻发送**（不做固定 3~5s 批量延迟），并复用平台现有 `TimerQueue`（绝对时间 `schedule_at` + 主循环 `next_timeout`，无轮询线程 / 无 sleep）。
 
 **用户需求**：资金查询在登录后查询、委托 / 成交 / 出入金变化后查询、前端 UI 主动刷新按钮查询，且查询时避开 CTP 查询流控、不得用轮询。
 
@@ -41,10 +41,10 @@ Supersedes（精确到句；未列出的决策与句子全部保留）：
 2. **运行期调度（`QueryLane`）**：每账户一个纯逻辑调度器，事件只置脏（不直接发查询）；空闲且距上次发送 ≥ `min_gap` 时发一笔，窗口内的多事件合并为一笔；发送之后到达的事件在本次响应收口后再补一笔（不丢）；断线 / 离开 Ready 时 reset（取消定时器、清脏、取消在途，迟到响应按 generation + `nRequestID` 丢弃）。**无周期查询、无轮询**：只有事件置脏与绝对时间定时器。
 3. **资金刷新触发集合**（Ready 后）：`OnRtnOrder`（任意状态：未知 / 未成交 / 部成 / 全成 / 已撤 / 拒单终态，外部终端单同路径）、`OnRtnTrade`、出入金 `OnRsp` / `OnRtnFromBankToFutureByFuture`；登录重放（`replaying_`）与 `LoadingInstruments` 缓冲期回报**不置脏**（登录链自己的资金查询已覆盖）；非 Ready 不置脏。
 4. **写入语义**：仍走 `on_rsp_qry_trading_account` **唯一写入点**。登录阶段（finalizer `kQueryAccount`）保持现有收尾逻辑；运行期（Ready）在持仓基准就绪守卫通过后写当日行 upsert（`(account_id, date)` 一行覆盖、历史行不动）、分配新 `seq`、推 `TRADING_ACCOUNT` 帧。锚点日不前进。**不做「值未变不写」优化**：每次成功查询都是新的绝对态快照，照常取号推送（可观测、合并规则简单）。
-5. **UI 主动刷新**：新增帧 `TD_REFRESH_REQ`（1043，JSON ext 帧、无 `instance_id`、payload `{account_id, request_id}`、形态 3 单向下行无 RTN）+ REST 端点 `POST /api/td/trading_accounts/{account_id}/refresh`（任意已登录用户）。语义 = 对该账户置脏一次；结果经既有 `TRADING_ACCOUNT` 帧 → WS `td_trading_account` 推送；**不新增 ack 帧**，前端 pending 由同账户新 `seq` 清除、3s 超时提示兜底。前端资金面板每行一个刷新图标（离线行禁用），不做「全部刷新」。
-6. **失败语义**：发送返回 `-1/-2/-3`、`OnRspError`、响应 `ErrorID != 0`、或查询超时 → 一次失败，退避重试（第 n 次等待 `min_gap × 2^(n-1)` 封顶 5s，最多 3 次）；耗尽后丢弃本次待查（下一事件 / 手动刷新可再次触发），**不改变账户状态**（不 Ready→Offline、不影响下单），WARN 日志 + 限频 ERROR 通知（每账户 5 分钟最多一条、`popup=false`）。登录窗口内失败保持现状语义（持仓失败 = 登录失败；资金失败降级收尾）。手动刷新的用户可见失败由前端超时提示承接。
-7. **补齐 `OnRspError` 与请求关联**：`TdApi` 增加 `OnRspError` dispatch；按在途查询的 `nRequestID` 结束对应查询并进入失败路径（登录窗口内的合约 / 持仓 / 资金分别走现有失败语义）。`OnRspQryTradingAccount` 增加 `nRequestID` 校验（迟到 / 重复响应丢弃）。
-8. **配置清理**：新增 `qry_min_interval_ms`（int，>0，默认 1100；`SetQryIntervals` 热更新，立即作用于后续调度）；删除从未接入的 `qry_account_interval_s` 与从未被消费的 `qry_flush_interval_ms`（配置结构、契约、前端类型 / schema、测试同步）。
+5. **UI 主动刷新**：新增帧 `DZ_FRAME_TD_REFRESH_REQ`（JSON ext 帧、无 `instance_id`、payload `{account_id, request_id}`、形态 3 单向下行无 RTN）+ REST 端点 `POST /api/td/trading_accounts/{account_id}/refresh`（任意已登录用户；预检含注册表解析失败 503，与契约 rest §2.9.10 同构）。语义 = 对该账户置脏一次；结果经既有 `TRADING_ACCOUNT` 帧 → WS `td_trading_account` 推送；**不新增 ack 帧**，前端 pending 由同账户新 `seq` 清除、3s 超时提示兜底。前端资金面板每行一个刷新图标（离线行禁用），不做「全部刷新」；不新增「最近查询时间 / 新鲜度」UI 标识（沿用现有数据日期列）。
+6. **失败语义**：发送返回 `-1/-2/-3`、`OnRspError`、响应 `ErrorID != 0`、或查询超时（10s）→ 一次失败，退避重试（第 n 次等待 `min_gap × 2^(n-1)` 封顶 5s，最多 3 次）；耗尽后丢弃本次待查（下一事件 / 手动刷新可再次触发），**不改变账户状态**（不 Ready→Offline、不影响下单），WARN 日志 + 限频 ERROR 通知（每账户 5 分钟最多一条、`popup=false`）。登录窗口内失败保持现状语义（持仓失败 = 登录失败；资金失败降级收尾）。手动刷新的用户可见失败由前端超时提示承接。
+7. **补齐 `OnRspError` 与请求关联**：`td_spi` 的 `OnRspError` 入队 + `TdApi` 增加对应事件类型与 dispatch；按在途查询的 `nRequestID` 结束对应查询并进入失败路径（登录窗口内的合约 / 持仓 / 资金分别走现有失败语义）。`OnRspQryTradingAccount` 增加 `nRequestID` 校验（迟到 / 重复响应丢弃）。
+8. **配置清理**：新增 `qry_min_interval_ms`（int，>0；默认值与语义见契约 td-config；`SetQryIntervals` 热更新，立即作用于后续调度）；删除从未接入的 `qry_account_interval_s` 与从未被消费的 `qry_flush_interval_ms`（配置结构、契约、前端类型 / schema、测试同步）。
 9. **范围边界**：本次只加**资金**运行期查询；持仓 / 合约在运行期永不重查（ADR 0049 纯增量模型不回退，UI 刷新也不查持仓）；不接线出入金发起链路（`TD_TRANSFER_REQ` 的 UI / dzweb / td 请求路径另开 issue，本次只在现有回调处置脏）；不做资金周期查询。
 
 **为什么不用其他方案**：
@@ -61,7 +61,7 @@ Supersedes（精确到句；未列出的决策与句子全部保留）：
 **正面**：
 
 - 资金快照在登录后最多约 `qry_min_interval_ms` + 查询延迟即可反映委托 / 成交 / 出入金变化；UI 可手动刷新单账户；不再有「盘中资金永远停在登录时刻」的限制。
-- 所有 `ReqQry*` 共用同一份「在途 1 笔 + 最小间隔」实现（`QueryPacer`），登录链不再裸打 `-3` 重试；新增任何查询只需接入同一闸门。
+- 所有 `ReqQry*` 共用同一份「在途 1 笔 + 最小间隔」实现（`QueryPacer`），登录链的 `-3` 重试路径同样经过 pacer、不再裸发（`-3` 特判保留为兜底）；新增任何查询只需接入同一闸门。
 - 无周期查询 / 无轮询：调度只在事件与"最早合法发送时刻"的绝对定时器上发生，空闲时零唤醒。
 - 补齐 `OnRspError` 与 `nRequestID` 关联，查询失败不再悬挂到 5 分钟超时。
 - 清理两个从未生效的配置字段，契约 `td-config` 的失真表述回到真实语义。
@@ -71,15 +71,15 @@ Supersedes（精确到句；未列出的决策与句子全部保留）：
 - 资金仍**不是逐笔实时**：最坏延迟 = `qry_min_interval_ms` + CTP 查询往返；持续活跃交易时每账户最多约 1 次/秒资金查询（合规，但柜台仍有查询压力；间隔可调大）。
 - **事件缺失无自愈**：私有流缺口 / 断线期间的资金变化不会触发刷新，资金停在最近一次成功查询，直到下一事件或下次登录（与 ADR 0049 「无自愈」同思路）。
 - **待实盘验证的时序假设**：成交回报到达后立即查询，柜台资金快照可能尚未完成结算（旧版 3~5s 批量延迟的隐含原因）。若仿真 / 实盘发现滞后，优先调大 `qry_min_interval_ms`；必要时追加「事件后跟一次补偿查询」的后续票。
-- 登录最多增加约 1.1s / 查询（延后到合法间隔）；登录不在热路径，可接受。
+- 登录最多增加约一个最小间隔（延后到合法时刻）；登录不在热路径，可接受。
 - 前置 `QryFreq` 的实际每秒配额由柜台配置决定；`OnRspError` 是否可靠回传 `nRequestID` 未实测，不可靠时由 10s 超时兜底。
 - 出入金只在现有「银行→期货」方向回调上触发；出入金发起链路未接线，期货→银行方向无回调（另票）。
 
-**契约影响**：见 Status 段「契约同步」列表；帧号 1043 从 ADR 0014 的弃用号回收给 `TD_REFRESH_REQ`（general §3 分配规则允许）。
+**契约影响**：见 Status 段「契约同步」列表；帧号按 general §3 从 ADR 0014 的弃用号回收（取段内下一个空闲号），分配给 `DZ_FRAME_TD_REFRESH_REQ`。
 
 ## References
 
-- 查询流控事实：CTP 6.7.13 API 接口说明——第 19 章「其他业务规则」（五层流控：前置 `QryFreq` / API 内置在途 1 笔 / `-2` / `-3`）、第 8 章「查询接口」（47 个 `ReqQry*` 的返回码与分页收口）。本机知识库副本位于 `.agents/skills/ctp-6713-api/`（不入版本控制，故不提供链接）。
+- 查询流控事实：CTP 6.7.13 API 接口说明——第 19 章「其他业务规则」（五层流控：前置 `QryFreq` / API 内置在途 1 笔 / `-2` / `-3`）、第 8 章「查询接口」（47 个 `ReqQry*` 的返回码与分页收口）。本机知识库副本在仓外（不在版本控制内），故不提供链接。
 - 被修订的决策：[ADR 0045](0045-trading-account-identity-lifecycle-and-accuracy.md) 决策 6、[ADR 0049](0049-position-pure-incremental-no-periodic-query.md) Consequences
-- 旧版参考实现：`shared/DzTrader3改用共享内存之前实盘版本20230813`（`mainGateWay::timerReqQryLater`，不在本仓版本控制内）
+- 旧版参考实现：仓外副本 DzTrader3 改用共享内存之前实盘版本 20230813（其 mainGateWay::timerReqQryLater 实现，不在本仓版本控制内）
 - spec 与实现票：[#455](https://github.com/ockham001/dztrader/issues/455)
