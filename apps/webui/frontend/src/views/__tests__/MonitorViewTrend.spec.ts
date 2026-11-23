@@ -578,10 +578,10 @@ describe('MonitorView 响应式布局（#127：列数断点 + 无容器查询）
     // 列数来源：视图用 ResizeObserver 实测容器宽度，交给纯函数 coreBarColumns
     // 列数来源与卸载清理由行为用例覆盖（MonitorView.spec：ResizeObserver 桩驱动列数 / 卸载 disconnect），
     // 这里只锁 CSS 契约，不断言私有实现表达式（unit-test-standard §1.2）
-    // 条形高度 / 四数字字号对齐参照（主机面板 54px / 19px）：都是几何量，走 token
+    // 条形高度 / 四数字字号（#445 密度压缩：46px / 17px）：都是几何量，走 token
     const tokens = tokenDeclarationsOf(parseCssFile(designTokensPath()), ':root', false)
-    expect(tokens.get('--core-bar-height')).toBe('54px')
-    expect(tokens.get('--card-stat-value-font-size')).toBe('19px')
+    expect(tokens.get('--core-bar-height')).toBe('46px')
+    expect(tokens.get('--card-stat-value-font-size')).toBe('17px')
   })
 
   it('占用率主数值按 resourceLevel 的 70/90 着色，文字用 -on-surface 配对档（#435 决策 7）', () => {

@@ -191,8 +191,8 @@ describe('coreBarColumns · 每核条形按容器宽度自适应且多行等分�
     const tokens = designTokens()
     // 间距：CSS 用 var(--spacer-3) 排格间距，JS 用同一个数值算列数
     expect(tokens.get('--spacer-3')).toBe(`${CORE_BAR_GAP}px`)
-    // 条形轨道高度对齐主机面板（54px）
-    expect(tokens.get('--core-bar-height')).toBe('54px')
+    // 条形轨道高度（#445 密度压缩：54→46px，仍能看清单核高低）
+    expect(tokens.get('--core-bar-height')).toBe('46px')
   })
 
   it('列数受最小格宽约束：1300px 下 64 核的每格宽度不窄于 CORE_BAR_MIN_WIDTH', () => {

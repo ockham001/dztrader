@@ -2022,7 +2022,8 @@ const cpuTrendAriaLabel = computed(() => {
   display: grid;
   align-items: start;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--spacer-16);
+  /* #445 密度压缩：块间距 18→14；仍明显大于块内元素间距，分组不被削弱 */
+  gap: var(--spacer-12);
 }
 
 /* #445 第三轮：块与块**不并排**——磁盘 / 网络块的高度随卷 / 网卡数量变化，并排必然留空洞；
@@ -2031,6 +2032,12 @@ const cpuTrendAriaLabel = computed(() => {
 
 .monitor-view__card--wide {
   grid-column: 1 / -1;
+}
+
+/* #445 密度压缩：ds-card 的 24px 是通用卡片口径；监控页是「面板」——
+   DESIGN 的面板内边距档位是 {0,1,4,6,10,14,18}，18px 让两块状态卡在一屏内多露出内容。 */
+.monitor-view__card {
+  padding: var(--spacer-16);
 }
 
 .monitor-view__card-title {
@@ -2173,6 +2180,9 @@ const cpuTrendAriaLabel = computed(() => {
 /* 卡片标题是行内 flex，作为 flex item 不参与收缩；型号吃掉剩余宽度 */
 .monitor-view__block-head .monitor-view__card-title {
   flex: none;
+  /* h2 的浏览器默认 margin-block（≈10.8px）与 ds-card__title 的 margin-bottom 叠加，
+     会把块头撑到 41px 高、白吃 ~21px 垂直空间（#445 密度压缩，用户「说不上来的浪费」）。 */
+  margin: 0;
 }
 
 /* 标题字号对齐参照（主机面板 13px）：CPU 块是「仪器读数组」，标题不该压过四数字 */
@@ -2931,6 +2941,9 @@ const cpuTrendAriaLabel = computed(() => {
 /* 图例里的百分比（#445 第四轮）：与字节数分开两段，比例一眼可见；颜色弱于标签 */
 .monitor-view__memory-legend-pct {
   color: var(--text-tertiary);
+  /* 必须显式给字号：li 是 16px 基准，不写会继承成 16px，与 11px 的标签/字节数混排（#445 验收反馈） */
+  font-size: var(--body-xs-font-size);
+  line-height: var(--body-xs-line-height);
   font-variant-numeric: tabular-nums;
 }
 
