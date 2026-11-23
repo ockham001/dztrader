@@ -59,7 +59,7 @@ Supersedes（**部分**）：[ADR 0048](0048-topbar-resource-badge-layout.md) �
 - **契约无 payload 变更**：§2.4 / §2.9 只改「顶栏如何展示」的措辞；快照 / 配置 / REST / WS / `generated.ts` 全部不动，dzweb 领域服务不需要动。
 - **文档同步**：README「资源监控」段、`docs/components/dzsysmon.md`、本 ADR；ADR 0048 顶部加 Superseded-in-part 引用（不改其 Decision 正文）。
 - **测试口径**：`Topbar.spec.ts` 重写（三枚图标徽章渲染 / 图标名 / 数值与档位 / `—` / 配置关闭不渲染 / title 与 aria / 无墙钟与秒级定时器 / 无媒体规则隐藏徽章 / 390 样式不变量）；新增 `topbarNtp.spec.ts` 纯函数单测；卷色标一致性用例此前已改为 CPU / 内存一致性（`ResourceLevelConsistency.spec.ts`）。四档墙钟 / 每秒 tick / visibility 用例随墙钟删除。
-- **风险**：12px 图标加 11px 数值的视觉密度需要真实浏览器验收（已用静态夹具在 390 / 768 / 1024 / 1440 实测不溢出）；图标名大小写敏感（`iconNames.spec` 机器校验 `CPU` / `memory-module` / `clock_time` 三个文件都存在）。
+- **风险**：12px 图标加 10px 数值的视觉密度需要真实浏览器验收（已用静态夹具在 390 / 768 / 1024 / 1440 实测不溢出）；图标名大小写敏感（`iconNames.spec` 机器校验 `CPU` / `memory-module` / `clock_time` 三个文件都存在）。
 
 ## References
 

@@ -336,7 +336,7 @@ body {
   line-height: 1.2;
 }
 .topbar__metric .res-value {
-  font-size: var(--body-xs-font-size);
+  font-size: var(--font-size-10);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;

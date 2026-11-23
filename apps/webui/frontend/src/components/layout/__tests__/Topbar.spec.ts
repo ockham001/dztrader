@@ -184,7 +184,7 @@ describe('Topbar 资源区三枚图标徽章（#452 / ADR 0054）', () => {
   it('数值带单位 + tabular-nums 由 layout.css 保证（固定宽度不随推送跳位）', () => {
     const valueRule = CSS_ROOT.toString().match(/\.topbar__metric \.res-value \{([^}]*)\}/)?.[1] ?? ''
     expect(valueRule).toContain('font-variant-numeric: tabular-nums')
-    expect(valueRule).toContain('font-size: var(--body-xs-font-size)')
+    expect(valueRule).toContain('font-size: var(--font-size-10)')
   })
 
   it('CPU 徽章绑定实时快照百分比；读屏名与 title 都是完整名称 + 读数', async () => {
