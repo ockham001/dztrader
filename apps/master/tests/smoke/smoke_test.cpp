@@ -7,6 +7,10 @@
  * (等 Running -> 写 UI_INPUT -> 读 OUTPUT_UI 断言 -> PROCESS_CONTROL 停止 -> Stopped)
  * -> 定向 SHUTDOWN (md/td/webui) -> 各进程 Stopped -> 终止 master -> 清理。
  *
+ * 另有交易接口生命周期 E2E (#440, `SmokeTdLifecycleTest`): dztd_ctp 未注册起步 ->
+ * POST start 动态注册 -> process_config + Running -> 加账户 RTN_TD_CONFIG/注册表 ->
+ * 带账户 DELETE 409 -> 删账户 -> DELETE 移除 -> master 重启不再拉起。
+ *
  * 注意:
  * - Windows NamedSemaphore 为机器全局命名空间 ("dz.sem.<name>"), 与并行测试/dev 栈互扰,
  *   故启动前检测 dz.sem.dzevent 占用: 默认 GTEST_SKIP, DZ_SMOKE_STRICT=1 时 FAIL (CI 使用)。
@@ -44,11 +48,13 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -106,6 +112,24 @@ bool event_channel_semaphore_exists() {
 }
 
 bool smoke_strict() { return env::get("DZ_SMOKE_STRICT") == "1"; }
+
+/// 写最小 webui.json（三处冒烟夹具共用；仅 listen / 日志级别 / JWT secret / 通知缓存
+/// 容量按夹具不同）。admin 口令固定为 `kSmokeAdminPassword`（非系统默认口令），
+/// 理由见该常量注释；写失败返回 false，调用方用 ASSERT_TRUE 给出上下文。
+bool write_webui_config(const std::filesystem::path& configs_dir,
+                        int port,
+                        std::string_view listen,
+                        std::string_view log_level,
+                        std::string_view jwt_secret,
+                        int notify_cache_size) {
+    std::ofstream ofs(configs_dir / "webui.json");
+    ofs << "{\"server\":{\"listen\":\"" << listen << "\",\"port\":" << port << "},"
+        << "\"log\":{\"level\":\"" << log_level << "\",\"flush_on\":\"" << log_level << "\"},"
+        << "\"auth\":{\"jwt_secret\":\"" << jwt_secret << "\",\"token_ttl_sec\":3600},"
+        << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword << "\"},"
+        << "\"notify\":{\"cache_size\":" << notify_cache_size << "}}";
+    return static_cast<bool>(ofs);
+}
 
 /// 按 pid 强杀 (等价于 run-dev -Stop 的 Stop-Process -Force)。
 /// 不用 ChildProcess::terminate: 外部强杀后其 async_wait 状态回调不触发, 判定不可靠。
@@ -290,6 +314,11 @@ public:
                       const std::string& body,
                       const std::string& bearer = {}) {
         return request("POST", path, body, bearer);
+    }
+
+    /// DELETE（无 body，忽略请求体：契约 rest §2.9.7 的账户删除 / §2.10 的接口移除）
+    HttpResponse del(const std::string& path, const std::string& bearer = {}) {
+        return request("DELETE", path, {}, bearer);
     }
 
 private:
@@ -509,198 +538,13 @@ private:
     std::string error_;
 };
 
-class SmokeTest : public ::testing::Test {
+/// 冒烟夹具共用基座：临时 home / master 句柄 + 事件通道 / 轮询等待 / REST 原语。
+///
+/// 抽出的目的（#440）：主冒烟用例与交易接口生命周期 E2E 共用同一套「打开事件通道 →
+/// 排空帧 → 轮询等待 → REST 登录 / 读端点」基础设施，不复制第二份实现。派生类负责
+/// SetUp/TearDown 与用例本体的断言。
+class SmokeFixtureBase : public ::testing::Test {
 protected:
-    void SetUp() override {
-        // 冲突检测 (NamedSemaphore 机器全局): 开发机跑着 dev 栈时 Skip 不误报;
-        // CI 设 DZ_SMOKE_STRICT=1, 冲突即失败 (防止冒烟被静默跳过造成假绿)
-        if (event_channel_semaphore_exists()) {
-            if (smoke_strict()) {
-                FAIL() << "dz.sem.dzevent already exists (dev stack running?) - DZ_SMOKE_STRICT=1";
-                return;
-            }
-            GTEST_SKIP() << "dz.sem.dzevent already exists (dev stack running?); "
-                            "set DZ_SMOKE_STRICT=1 to fail instead of skip";
-        }
-
-        home_ = std::filesystem::temp_directory_path() /
-                ("dz_smoke_" + std::to_string(this_process::pid()));
-        std::error_code ec;
-        std::filesystem::remove_all(home_, ec);
-        std::filesystem::create_directories(home_ / "configs", ec);
-        ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
-        orig_home_ = env::get("DZTRADER_HOME");
-        env::set("DZTRADER_HOME", home_.string());
-
-        // 测试 exe 在 <out>/tests/, master/网关/策略 exe 在 <out>/
-        out_dir_ = this_process::exe_dir().parent_path();
-
-        // 最小 dztraderd.json: 注册 dzmd_ctp + dztd_ctp + dzweb + 常驻策略 stg_demo
-        // (网关段模板与 ProcessControlFrameTest 一致; td/webui 段见 config.cpp parse_master_json)
-        // 不写 configs/dzmd_ctp.json: 顺带回归"配置缺失自愈"路径 (历史崩溃 bug, td 侧
-        // TdConfig::load 对缺失文件走 exists 短路, 冒烟由 md 覆盖共享模式即可)。
-        // auto_login 段同样缺失, 但仍有内置默认排程 (契约 auto-login): 调度不随配置缺失而
-        // 停摆, 08:55 / 20:55 的登录尝试在 no_current_broker 处被拒 (无经纪商配置), 不建
-        // 会话; 自动调度非用户发起, 故只留一条 WARN、不发 NOTIFY_UI。因此「无会话拒单」
-        // 闭环与测试恰好运行在哪个时刻无关 —— 不必为 md 写配置文件 (那会牺牲整文件缺失的
-        // 覆盖)。注意 AutoLoginConfig::load 在 md 构造里最后执行, 会把归一后的默认表
-        // 材料化写回 dzmd_ctp.json: 文件在 md 启动后**会**出现, 但 md/log/shm 三个 section
-        // 的 load 都在它之前, 已经完整走过"整文件缺失"分支, 回归意图不受影响。
-        // 约束: 后续断言**不得**假设 dzmd_ctp.json 仍缺失 —— 材料化会在 md 启动后创建它。
-        // td 侧则必须显式关闭 (见下方 dztd_ctp.json): 其默认排程在 08:45 / 20:45 会走到
-        // no_frontends 拒绝并**无条件**发 NOTIFY_UI 错误通知, 与"从不连接"的前提表述冲突。
-        // 策略: exe 名即策略ID (stg_demo), 必须与 strategy[].name 一致; 常驻策略不传 args
-        // (不再有 CLI 模式), md_source 必填且 ready 后 master 才拉起策略
-        {
-            const auto strategy_exe = out_dir_ /
-                                      "stg_demo"
-#ifdef _WIN32
-                                      ".exe"
-#endif
-                ;
-            nlohmann::json cfg = {
-                {"log", nlohmann::json::object()},
-                {"master", nlohmann::json::object()},
-                {"shm",
-                 {{"meta_file_size", 1048576},
-                  {"event",
-                   {{"page_size_mb", 1},
-                    {"preload_points", nlohmann::json::object()},
-                    {"check_interval_min", 5},
-                    {"check_pages", 1},
-                    {"check_bytes", 0}}}}},
-                {"md",
-                 {{"dzmd_ctp",
-                   {{"args", nlohmann::json::array()},
-                    {"env", nlohmann::json::object()},
-                    {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
-                    {"display_name", "CTP行情"}}}}},
-                {"td",
-                 {{"dztd_ctp",
-                   {{"args", nlohmann::json::array()},
-                    {"env", nlohmann::json::object()},
-                    {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
-                    {"display_name", "CTP交易"}}}}},
-                {"webui",
-                 {{"args", nlohmann::json::array()},
-                  {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}}}},
-                {"strategy", nlohmann::json::array({{{"name", "stg_demo"},
-                                                     {"exe", strategy_exe.string()},
-                                                     {"md_source", "dzmd_ctp"}}})},
-            };
-            std::ofstream ofs(home_ / "configs" / "dztraderd.json");
-            ofs << cfg.dump();
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztraderd.json failed";
-        }
-
-        // dzweb 配置: 随机高位端口 (避免与 dev 栈/其他实例冲突; 机器全局端口空间)
-        webui_port_ = 20000 + (this_process::pid() % 30000);
-        // admin 口令**必须是 kSmokeAdminPassword（非系统默认口令）**，理由见该常量注释：
-        // 用默认的 88888888 会让 dzweb 启动即置 must_change_password=1，之后所有 /api/*
-        // 与 WS 都被 403 password_change_required 拦住（#253 实测）。别改回默认值。
-        {
-            std::ofstream ofs(home_ / "configs" / "webui.json");
-            ofs << "{\"server\":{\"listen\":\"0.0.0.0\",\"port\":" << webui_port_ << "},"
-                << "\"log\":{\"level\":\"info\",\"flush_on\":\"info\"},"
-                << "\"auth\":{\"jwt_secret\":\"smoke_test_secret\",\"token_ttl_sec\":3600},"
-                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
-                << "\"},"
-                << "\"notify\":{\"cache_size\":100}}";
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
-        }
-
-        // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接, 会话懒创建于 connect
-        // 不会发生; 下单走 no_session 拒单回报。
-        // auto_login 段**显式关闭** (#390-2): 网关内置默认排程装好即启用, 08:45 / 20:45
-        // 会自动 connect_account_by_id。本夹具的账户没有前置地址, 那条路径在
-        // no_frontends 处拒绝 (不建会话、不崩), 「无会话拒单」闭环本身仍成立, 但会多发
-        // 一条 NOTIFY_UI 错误通知, 且"从不连接"的表述依赖测试恰好不在登录时点运行 ——
-        // 显式关闭让闭环与运行时刻解耦。enabled=false 时调度器不触发任何动作。
-        // 形态不手写: 走 apps/ctp/tests/td_config_fixture.h（单一真相源 = TdConfig::to_json）。
-        // #251 把连接参数移入账户 ext 后，手写旧形态会让 dztd_ctp 启动即 CRITICAL 退出、
-        // 冒烟超时；夹具让形状变更在构造它的测试 target 编译期就红。
-        {
-            dztrader::test::TdConfigSeed seed;
-            seed.account_id = "CTP001";
-            seed.user_id = "SMOKE001";
-            seed.password = "";
-            // 夹具只产 {"td": ...} (td section 的真相源), auto_login 是文件外层 section,
-            // 在此合并。关闭自动登录只能靠 enabled=false —— 空表语义已改为「回落默认」
-            // (#390-2), 少写 enabled 就等于启用网关默认排程; schedules 显式给空数组只是
-            // 表达"不该有运维自定义时段", 网关加载时仍会归一为内置默认表并写回文件
-            // (契约 auto-login「持久化与默认值」), 不影响 enabled=false 的关闭效果。
-            auto cfg = dztrader::test::make_td_config_json(seed);
-            cfg["auto_login"] = {{"enabled", false}, {"schedules", nlohmann::json::array()}};
-            std::ofstream ofs(home_ / "configs" / "dztd_ctp.json");
-            ofs << cfg.dump();
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztd_ctp.json failed";
-        }
-
-        // master 可执行文件: 测试 exe 在 <out>/tests/, master 在 <out>/
-        master_exe_ = out_dir_ /
-                      "dztraderd"
-#ifdef _WIN32
-                      ".exe"
-#endif
-            ;
-
-        ProcessEntry entry;
-        entry.name = "dztraderd";
-        entry.category = Category::GatewayMd;  // 类别不影响 ChildProcess 行为 (仅日志/命名)
-        entry.exe = master_exe_;
-        master_ = ChildProcess::create(ioc_, std::move(entry));
-        boost::system::error_code spawn_ec;
-        ASSERT_TRUE(master_->start(spawn_ec))
-            << "master spawn failed | exe=" << master_exe_.string() << " error=\""
-            << spawn_ec.message() << "\"";
-    }
-
-    void TearDown() override {
-        // 断言提前失败时策略/网关可能仍在跑: 经事件通道补发定向 SHUTDOWN, 给 master
-        // 一个回收窗口, 避免常驻 stg_demo 成为占全局信号量的孤儿进程 (Windows 还会
-        // 阻塞临时 home 删除)。成功路径测试已自行停止策略, 不重复付出等待成本。
-        if (::testing::Test::HasFailure() && writer_ && master_ && master_->pid() != 0 &&
-            process_alive(static_cast<uint32_t>(master_->pid()))) {
-            for (const char* target : {"stg_demo", "dzmd_ctp", "dztd_ctp", "dzweb"}) {
-                platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, target);
-            }
-            writer_->notify_subscribers();
-            ioc_.run_for(1500ms);
-        }
-        reader_.reset();
-        writer_.reset();
-        // 兜底: 断言提前失败时 master 可能还活着 (A5 的强杀没走到), 按 liveness 清理
-        // pid 必须非 0: spawn 失败时 pid()==0, Linux 下 kill(0, SIGKILL) 会
-        // 误杀整个进程组 (含 ctest 自身), 只清理真实存活进程
-        if (master_ && master_->pid() != 0 &&
-            process_alive(static_cast<uint32_t>(master_->pid()))) {
-            force_kill_pid(static_cast<uint32_t>(master_->pid()));
-            ioc_.run_for(1s);
-        }
-        master_.reset();
-        if (::testing::Test::HasFailure()) {
-            std::fprintf(stderr, "--- smoke test: frames received ---\n");
-            for (const auto& s : frame_summary_) {
-                std::fprintf(stderr, "  %s\n", s.c_str());
-            }
-            std::fprintf(stderr, "--- smoke test: process logs ---\n");
-            dump_log_tail(home_ / "logs", "dztraderd_", 40);
-            dump_log_tail(home_ / "logs", "dzmd_ctp_", 40);
-        }
-        if (orig_home_) {
-            env::set("DZTRADER_HOME", *orig_home_);
-        } else {
-            env::unset("DZTRADER_HOME");
-        }
-        std::error_code ec;
-        if (env::get("DZ_SMOKE_KEEP_HOME") != "1") {
-            std::filesystem::remove_all(home_, ec);
-        } else {
-            std::fprintf(stderr, "--- smoke test: kept temp home for diagnosis: %s ---\n",
-                         home_.string().c_str());
-        }
-    }
-
     /// 打开事件通道 writer/reader (master 启动后创建通道)。
     /// 5ms 快速轮询: 通道在 master 初始化时创建、早于子进程 spawn, 因此成功打开通常
     /// 早于策略启动; 但"打开即保证早于策略启动"并非硬契约 —— 极端调度下仍可能错过
@@ -719,6 +563,20 @@ protected:
             }
         }
         return false;
+    }
+
+    /// 写 QUERY_FULL_SNAPSHOT：master 重推 process_config + 各进程状态，网关重推自身
+    /// 配置（契约 process / td-config 的"快照"响应），可作 wait_until 的周期性触发器。
+    void send_full_snapshot_query() {
+        if (!writer_) {
+            return;
+        }
+        // 刷新订阅者快照: writer 创建时的快照可能早于 master 注册订阅者
+        // (CI 负载下 master 拉起子进程更慢), 过期快照会漏唤醒目标进程
+        writer_->refresh_subscribers();
+        if (writer_->write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0)) {
+            writer_->notify_subscribers();
+        }
     }
 
     /// 排空 reader 当前可读的全部帧 (非阻塞), 并记录摘要用于失败诊断
@@ -816,6 +674,297 @@ protected:
         return out;
     }
 
+    /// 轮询 + 驱动 io_context 直到谓词满足或超时。
+    /// trigger 每 500ms 重发一次 (读者从通道尾部起步, 一次性启动帧可能早于
+    /// reader 打开而错过; 用快照/SET 类触发帧周期性重发保证至少一次落在打开之后)
+    template <typename Pred, typename Trigger>
+    bool wait_until(Pred pred, int timeout_ms, Trigger trigger, int interval_ms = 100) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        int ticks = 0;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (pred()) {
+                return true;
+            }
+            if (++ticks % 5 == 0) {
+                trigger();
+            }
+            ioc_.run_for(std::chrono::milliseconds(interval_ms));
+        }
+        return pred();
+    }
+
+    /// dzweb /health 探测: 裸 TCP GET, 200 即健康 (不引入 drogon HTTP 客户端依赖)
+    bool http_get_health() {
+        boost::system::error_code ec;
+        boost::asio::ip::tcp::resolver resolver(ioc_);
+        const auto results = resolver.resolve("127.0.0.1", std::to_string(webui_port_), ec);
+        if (ec || results.empty()) {
+            return false;
+        }
+        boost::asio::ip::tcp::socket sock(ioc_);
+        sock.connect(*results.begin(), ec);
+        if (ec) {
+            return false;
+        }
+        const std::string req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
+        boost::asio::write(sock, boost::asio::buffer(req), ec);
+        if (ec) {
+            return false;
+        }
+        std::string resp;
+        boost::asio::read_until(sock, boost::asio::dynamic_buffer(resp), "\r\n", ec);
+        // read_until 服务器先关连接时以 EOF 结束 (ec 非 0 但 resp 可能已有状态行)
+        return resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200");
+    }
+
+    /// REST 登录并缓存 token (`POST /api/login`)。成功返回 true 且设置 auth_token_。
+    /// 断言口径 (AC1-2): 200 且响应含非空 `token`。
+    bool login() {
+        HttpClient http(ioc_, webui_port_);
+        const nlohmann::json body = {{"username", "admin"}, {"password", kSmokeAdminPassword}};
+        const HttpResponse resp = http.post("/api/login", body.dump());
+        if (!resp.ok()) {
+            fprintf(stderr, "--- smoke: login failed | status=%d error=\"%s\" body=%s ---\n",
+                    resp.status, resp.error.c_str(), resp.body.c_str());
+            return false;
+        }
+        if (!resp.json_ok || !resp.json.contains("token") || !resp.json["token"].is_string() ||
+            resp.json["token"].get<std::string>().empty()) {
+            fprintf(stderr, "--- smoke: login response without token | body=%s ---\n",
+                    resp.body.c_str());
+            return false;
+        }
+        auth_token_ = resp.json["token"].get<std::string>();
+        return true;
+    }
+
+    /// 带 Bearer token 的 GET, 断言 200 且 body 是 JSON (失败信息带 path/status/body)。
+    std::optional<nlohmann::json> api_get_json(const std::string& path) {
+        HttpClient http(ioc_, webui_port_);
+        const HttpResponse resp = http.get(path, auth_token_);
+        if (!resp.ok()) {
+            fprintf(stderr, "--- smoke: GET %s failed | status=%d error=\"%s\" body=%s ---\n",
+                    path.c_str(), resp.status, resp.error.c_str(), resp.body.c_str());
+            return std::nullopt;
+        }
+        if (!resp.json_ok) {
+            fprintf(stderr, "--- smoke: GET %s non-json body=%s ---\n", path.c_str(),
+                    resp.body.c_str());
+            return std::nullopt;
+        }
+        return resp.json;
+    }
+
+    // ── 成员 ────────────────────────────────────────────────────────────
+
+    std::filesystem::path home_;
+    std::filesystem::path out_dir_;
+    std::filesystem::path master_exe_;
+    std::optional<std::string> orig_home_;
+    int webui_port_ = 0;
+    boost::asio::io_context ioc_;
+    std::shared_ptr<ChildProcess> master_;
+    std::unique_ptr<shm::Reader> reader_;
+    std::unique_ptr<shm::MultiWriter> writer_;
+    std::vector<std::string> frame_summary_;
+    /// 策略 OUTPUT_UI 帧与拆行后的文本 (UI E2E 断言用)
+    std::vector<std::string> ui_frames_;
+    std::vector<std::string> ui_lines_;
+    /// instance_id != stg_demo 的 OUTPUT_UI 帧数 (身份边界回归)
+    std::size_t unexpected_ui_instance_count_ = 0;
+    /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效,
+    /// 拷出)
+    std::vector<DzAccountStatus> account_status_frames_;
+    /// REST 登录后的 JWT (login() 填充; REST 读端点与 WS 建连共用)
+    std::string auth_token_;
+};
+
+class SmokeTest : public SmokeFixtureBase {
+protected:
+    void SetUp() override {
+        // 冲突检测 (NamedSemaphore 机器全局): 开发机跑着 dev 栈时 Skip 不误报;
+        // CI 设 DZ_SMOKE_STRICT=1, 冲突即失败 (防止冒烟被静默跳过造成假绿)
+        if (event_channel_semaphore_exists()) {
+            if (smoke_strict()) {
+                FAIL() << "dz.sem.dzevent already exists (dev stack running?) - DZ_SMOKE_STRICT=1";
+                return;
+            }
+            GTEST_SKIP() << "dz.sem.dzevent already exists (dev stack running?); "
+                            "set DZ_SMOKE_STRICT=1 to fail instead of skip";
+        }
+
+        home_ = std::filesystem::temp_directory_path() /
+                ("dz_smoke_" + std::to_string(this_process::pid()));
+        std::error_code ec;
+        std::filesystem::remove_all(home_, ec);
+        std::filesystem::create_directories(home_ / "configs", ec);
+        ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
+        orig_home_ = env::get("DZTRADER_HOME");
+        env::set("DZTRADER_HOME", home_.string());
+
+        // 测试 exe 在 <out>/tests/, master/网关/策略 exe 在 <out>/
+        out_dir_ = this_process::exe_dir().parent_path();
+
+        // 最小 dztraderd.json: 注册 dzmd_ctp + dztd_ctp + dzweb + 常驻策略 stg_demo
+        // (网关段模板与 ProcessControlFrameTest 一致; td/webui 段见 config.cpp parse_master_json)
+        // 不写 configs/dzmd_ctp.json: 顺带回归"配置缺失自愈"路径 (历史崩溃 bug, td 侧
+        // TdConfig::load 对缺失文件走 exists 短路, 冒烟由 md 覆盖共享模式即可)。
+        // auto_login 段同样缺失, 但仍有内置默认排程 (契约 auto-login): 调度不随配置缺失而
+        // 停摆, 08:55 / 20:55 的登录尝试在 no_current_broker 处被拒 (无经纪商配置), 不建
+        // 会话; 自动调度非用户发起, 故只留一条 WARN、不发 NOTIFY_UI。因此「无会话拒单」
+        // 闭环与测试恰好运行在哪个时刻无关 —— 不必为 md 写配置文件 (那会牺牲整文件缺失的
+        // 覆盖)。注意 AutoLoginConfig::load 在 md 构造里最后执行, 会把归一后的默认表
+        // 材料化写回 dzmd_ctp.json: 文件在 md 启动后**会**出现, 但 md/log/shm 三个 section
+        // 的 load 都在它之前, 已经完整走过"整文件缺失"分支, 回归意图不受影响。
+        // 约束: 后续断言**不得**假设 dzmd_ctp.json 仍缺失 —— 材料化会在 md 启动后创建它。
+        // td 侧则必须显式关闭 (见下方 dztd_ctp.json): 其默认排程在 08:45 / 20:45 会走到
+        // no_frontends 拒绝并**无条件**发 NOTIFY_UI 错误通知, 与"从不连接"的前提表述冲突。
+        // 策略: exe 名即策略ID (stg_demo), 必须与 strategy[].name 一致; 常驻策略不传 args
+        // (不再有 CLI 模式), md_source 必填且 ready 后 master 才拉起策略
+        {
+            const auto strategy_exe = out_dir_ /
+                                      "stg_demo"
+#ifdef _WIN32
+                                      ".exe"
+#endif
+                ;
+            nlohmann::json cfg = {
+                {"log", nlohmann::json::object()},
+                {"master", nlohmann::json::object()},
+                {"shm",
+                 {{"meta_file_size", 1048576},
+                  {"event",
+                   {{"page_size_mb", 1},
+                    {"preload_points", nlohmann::json::object()},
+                    {"check_interval_min", 5},
+                    {"check_pages", 1},
+                    {"check_bytes", 0}}}}},
+                {"md",
+                 {{"dzmd_ctp",
+                   {{"args", nlohmann::json::array()},
+                    {"env", nlohmann::json::object()},
+                    {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
+                    {"display_name", "CTP行情"}}}}},
+                {"td",
+                 {{"dztd_ctp",
+                   {{"args", nlohmann::json::array()},
+                    {"env", nlohmann::json::object()},
+                    {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}},
+                    {"display_name", "CTP交易"}}}}},
+                {"webui",
+                 {{"args", nlohmann::json::array()},
+                  {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}}}},
+                {"strategy", nlohmann::json::array({{{"name", "stg_demo"},
+                                                     {"exe", strategy_exe.string()},
+                                                     {"md_source", "dzmd_ctp"}}})},
+            };
+            std::ofstream ofs(home_ / "configs" / "dztraderd.json");
+            ofs << cfg.dump();
+            ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztraderd.json failed";
+        }
+
+        // dzweb 配置: 随机高位端口 (避免与 dev 栈/其他实例冲突; 机器全局端口空间)
+        webui_port_ = 20000 + (this_process::pid() % 30000);
+        // admin 口令**必须是 kSmokeAdminPassword（非系统默认口令）**，理由见该常量注释：
+        // 用默认的 88888888 会让 dzweb 启动即置 must_change_password=1，之后所有 /api/*
+        // 与 WS 都被 403 password_change_required 拦住（#253 实测）。别改回默认值。
+        ASSERT_TRUE(write_webui_config(home_ / "configs", webui_port_, "0.0.0.0", "info",
+                                       "smoke_test_secret", 100))
+            << "write webui.json failed";
+
+        // dztd_ctp 配置: 空账户闭环 — 配置账户 CTP001 但从不连接, 会话懒创建于 connect
+        // 不会发生; 下单走 no_session 拒单回报。
+        // auto_login 段**显式关闭** (#390-2): 网关内置默认排程装好即启用, 08:45 / 20:45
+        // 会自动 connect_account_by_id。本夹具的账户没有前置地址, 那条路径在
+        // no_frontends 处拒绝 (不建会话、不崩), 「无会话拒单」闭环本身仍成立, 但会多发
+        // 一条 NOTIFY_UI 错误通知, 且"从不连接"的表述依赖测试恰好不在登录时点运行 ——
+        // 显式关闭让闭环与运行时刻解耦。enabled=false 时调度器不触发任何动作。
+        // 形态不手写: 走 apps/ctp/tests/td_config_fixture.h（单一真相源 = TdConfig::to_json）。
+        // #251 把连接参数移入账户 ext 后，手写旧形态会让 dztd_ctp 启动即 CRITICAL 退出、
+        // 冒烟超时；夹具让形状变更在构造它的测试 target 编译期就红。
+        {
+            dztrader::test::TdConfigSeed seed;
+            seed.account_id = "CTP001";
+            seed.user_id = "SMOKE001";
+            seed.password = "";
+            // 夹具只产 {"td": ...} (td section 的真相源), auto_login 是文件外层 section,
+            // 在此合并。关闭自动登录只能靠 enabled=false —— 空表语义已改为「回落默认」
+            // (#390-2), 少写 enabled 就等于启用网关默认排程; schedules 显式给空数组只是
+            // 表达"不该有运维自定义时段", 网关加载时仍会归一为内置默认表并写回文件
+            // (契约 auto-login「持久化与默认值」), 不影响 enabled=false 的关闭效果。
+            auto cfg = dztrader::test::make_td_config_json(seed);
+            cfg["auto_login"] = {{"enabled", false}, {"schedules", nlohmann::json::array()}};
+            std::ofstream ofs(home_ / "configs" / "dztd_ctp.json");
+            ofs << cfg.dump();
+            ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztd_ctp.json failed";
+        }
+
+        // master 可执行文件: 测试 exe 在 <out>/tests/, master 在 <out>/
+        master_exe_ = out_dir_ /
+                      "dztraderd"
+#ifdef _WIN32
+                      ".exe"
+#endif
+            ;
+
+        ProcessEntry entry;
+        entry.name = "dztraderd";
+        entry.category = Category::GatewayMd;  // 类别不影响 ChildProcess 行为 (仅日志/命名)
+        entry.exe = master_exe_;
+        master_ = ChildProcess::create(ioc_, std::move(entry));
+        boost::system::error_code spawn_ec;
+        ASSERT_TRUE(master_->start(spawn_ec))
+            << "master spawn failed | exe=" << master_exe_.string() << " error=\""
+            << spawn_ec.message() << "\"";
+    }
+
+    void TearDown() override {
+        // 断言提前失败时策略/网关可能仍在跑: 经事件通道补发定向 SHUTDOWN, 给 master
+        // 一个回收窗口, 避免常驻 stg_demo 成为占全局信号量的孤儿进程 (Windows 还会
+        // 阻塞临时 home 删除)。成功路径测试已自行停止策略, 不重复付出等待成本。
+        if (::testing::Test::HasFailure() && writer_ && master_ && master_->pid() != 0 &&
+            process_alive(static_cast<uint32_t>(master_->pid()))) {
+            for (const char* target : {"stg_demo", "dzmd_ctp", "dztd_ctp", "dzweb"}) {
+                platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, target);
+            }
+            writer_->notify_subscribers();
+            ioc_.run_for(1500ms);
+        }
+        reader_.reset();
+        writer_.reset();
+        // 兜底: 断言提前失败时 master 可能还活着 (A5 的强杀没走到), 按 liveness 清理
+        // pid 必须非 0: spawn 失败时 pid()==0, Linux 下 kill(0, SIGKILL) 会
+        // 误杀整个进程组 (含 ctest 自身), 只清理真实存活进程
+        if (master_ && master_->pid() != 0 &&
+            process_alive(static_cast<uint32_t>(master_->pid()))) {
+            force_kill_pid(static_cast<uint32_t>(master_->pid()));
+            ioc_.run_for(1s);
+        }
+        master_.reset();
+        if (::testing::Test::HasFailure()) {
+            std::fprintf(stderr, "--- smoke test: frames received ---\n");
+            for (const auto& s : frame_summary_) {
+                std::fprintf(stderr, "  %s\n", s.c_str());
+            }
+            std::fprintf(stderr, "--- smoke test: process logs ---\n");
+            dump_log_tail(home_ / "logs", "dztraderd_", 40);
+            dump_log_tail(home_ / "logs", "dzmd_ctp_", 40);
+        }
+        if (orig_home_) {
+            env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            env::unset("DZTRADER_HOME");
+        }
+        std::error_code ec;
+        if (env::get("DZ_SMOKE_KEEP_HOME") != "1") {
+            std::filesystem::remove_all(home_, ec);
+        } else {
+            std::fprintf(stderr, "--- smoke test: kept temp home for diagnosis: %s ---\n",
+                         home_.string().c_str());
+        }
+    }
+
     /// 写 UI_INPUT 文本命令给策略 (定向帧, instance_id = 裸策略名)
     bool send_ui_input(std::string_view command, std::string_view strategy = "stg_demo") {
         writer_->refresh_subscribers();  // 防过期订阅者快照漏唤醒策略
@@ -893,90 +1042,6 @@ protected:
         return std::nullopt;
     }
 
-    /// 轮询 + 驱动 io_context 直到谓词满足或超时。
-    /// trigger 每 500ms 重发一次 (读者从通道尾部起步, 一次性启动帧可能早于
-    /// reader 打开而错过; 用快照/SET 类触发帧周期性重发保证至少一次落在打开之后)
-    template <typename Pred, typename Trigger>
-    bool wait_until(Pred pred, int timeout_ms, Trigger trigger, int interval_ms = 100) {
-        const auto deadline =
-            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-        int ticks = 0;
-        while (std::chrono::steady_clock::now() < deadline) {
-            if (pred()) {
-                return true;
-            }
-            if (++ticks % 5 == 0) {
-                trigger();
-            }
-            ioc_.run_for(std::chrono::milliseconds(interval_ms));
-        }
-        return pred();
-    }
-
-    /// dzweb /health 探测: 裸 TCP GET, 200 即健康 (不引入 drogon HTTP 客户端依赖)
-    bool http_get_health() {
-        boost::system::error_code ec;
-        boost::asio::ip::tcp::resolver resolver(ioc_);
-        const auto results = resolver.resolve("127.0.0.1", std::to_string(webui_port_), ec);
-        if (ec || results.empty()) {
-            return false;
-        }
-        boost::asio::ip::tcp::socket sock(ioc_);
-        sock.connect(*results.begin(), ec);
-        if (ec) {
-            return false;
-        }
-        const std::string req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
-        boost::asio::write(sock, boost::asio::buffer(req), ec);
-        if (ec) {
-            return false;
-        }
-        std::string resp;
-        boost::asio::read_until(sock, boost::asio::dynamic_buffer(resp), "\r\n", ec);
-        // read_until 服务器先关连接时以 EOF 结束 (ec 非 0 但 resp 可能已有状态行)
-        return resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200");
-    }
-
-    // ── REST / WS / 交易库 断言辅助 (AC1) ─────────────────────────────────
-
-    /// REST 登录并缓存 token (`POST /api/login`)。成功返回 true 且设置 auth_token_。
-    /// 断言口径 (AC1-2): 200 且响应含非空 `token`。
-    bool login() {
-        HttpClient http(ioc_, webui_port_);
-        const nlohmann::json body = {{"username", "admin"}, {"password", kSmokeAdminPassword}};
-        const HttpResponse resp = http.post("/api/login", body.dump());
-        if (!resp.ok()) {
-            fprintf(stderr, "--- smoke: login failed | status=%d error=\"%s\" body=%s ---\n",
-                    resp.status, resp.error.c_str(), resp.body.c_str());
-            return false;
-        }
-        if (!resp.json_ok || !resp.json.contains("token") || !resp.json["token"].is_string() ||
-            resp.json["token"].get<std::string>().empty()) {
-            fprintf(stderr, "--- smoke: login response without token | body=%s ---\n",
-                    resp.body.c_str());
-            return false;
-        }
-        auth_token_ = resp.json["token"].get<std::string>();
-        return true;
-    }
-
-    /// 带 Bearer token 的 GET, 断言 200 且 body 是 JSON (失败信息带 path/status/body)。
-    std::optional<nlohmann::json> api_get_json(const std::string& path) {
-        HttpClient http(ioc_, webui_port_);
-        const HttpResponse resp = http.get(path, auth_token_);
-        if (!resp.ok()) {
-            fprintf(stderr, "--- smoke: GET %s failed | status=%d error=\"%s\" body=%s ---\n",
-                    path.c_str(), resp.status, resp.error.c_str(), resp.body.c_str());
-            return std::nullopt;
-        }
-        if (!resp.json_ok) {
-            fprintf(stderr, "--- smoke: GET %s non-json body=%s ---\n", path.c_str(),
-                    resp.body.c_str());
-            return std::nullopt;
-        }
-        return resp.json;
-    }
-
     /// AC1-1 建库断言: 库文件存在、`PRAGMA user_version == kTdSchemaVersion`、
     /// schema 声明的全部表齐全, 且库路径与 `paths::trade_db()` 单一真相源一致。
     /// 返回空串 = 通过, 否则为失败描述 (便于 ASSERT_TRUE 输出)。
@@ -1048,29 +1113,6 @@ protected:
         }
         return {};
     }
-
-    // ── 成员 ────────────────────────────────────────────────────────────
-
-    std::filesystem::path home_;
-    std::filesystem::path out_dir_;
-    std::filesystem::path master_exe_;
-    std::optional<std::string> orig_home_;
-    int webui_port_ = 0;
-    boost::asio::io_context ioc_;
-    std::shared_ptr<ChildProcess> master_;
-    std::unique_ptr<shm::Reader> reader_;
-    std::unique_ptr<shm::MultiWriter> writer_;
-    std::vector<std::string> frame_summary_;
-    /// 策略 OUTPUT_UI 帧与拆行后的文本 (UI E2E 断言用)
-    std::vector<std::string> ui_frames_;
-    std::vector<std::string> ui_lines_;
-    /// instance_id != stg_demo 的 OUTPUT_UI 帧数 (身份边界回归)
-    std::size_t unexpected_ui_instance_count_ = 0;
-    /// 契约 account-status: 排空中捕获的 DZ_FRAME_ACCOUNT_STATUS 账户状态帧 payload (帧指针会失效,
-    /// 拷出)
-    std::vector<DzAccountStatus> account_status_frames_;
-    /// REST 登录后的 JWT (login() 填充; REST 读端点与 WS 建连共用)
-    std::string auth_token_;
 };
 
 /// 核心冒烟路径: 组合验证 4 条断言 (见设计 §3)
@@ -1078,13 +1120,9 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
     ASSERT_TRUE(open_event_channel()) << "event channel not created by master within 20s";
 
     auto send_query_snapshot = [&] {
-        // 刷新订阅者快照: writer 创建时的快照可能早于 master 注册 md 订阅者
-        // (CI 负载下 master 拉起 md 更慢), 过期快照会漏唤醒 md (真实进程靠
-        // DZ_FRAME_UPDATE_SHM_EVENT_SUBSCRIBER 帧刷新)
-        writer_->refresh_subscribers();
-        if (writer_->write_ext_frame(DZ_FRAME_QUERY_FULL_SNAPSHOT, nullptr, 0)) {
-            writer_->notify_subscribers();
-        }
+        // 刷新订阅者快照 + 写 QUERY_FULL_SNAPSHOT 的唯一实现见
+        // SmokeFixtureBase::send_full_snapshot_query（交易接口生命周期 E2E 共用同一份）。
+        send_full_snapshot_query();
     };
 
     // 1. master 成功拉起真实子进程: 快照驱动查询, master 对每个注册进程回一条
@@ -1510,24 +1548,52 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
             writer_->notify_subscribers();
         }
     };
-    const auto saw_stopped = [&](const std::string& name) {
+    // 回归守卫（#440 实测）：td 进程曾在 spdlog::shutdown() 之后才析构 TdApi，
+    // ~TdApi 的 PersistWriter::stop() 打日志时 default logger 已是 null → SIGSEGV
+    // （退出码 11）→ master 上报 Crashed。快照兜底的 Stopped 会掩盖该失败，故必须在
+    // **每一次 drain** 里记录 Crashed：Crashed 由 on_child_exit 写出，而快照兜底的
+    // Stopped 由 report_full_snapshot 写出——master 是单线程 io_context，on_child_exit
+    // 写帧完成后快照才可能被处理，因此 Crashed 先于快照 Stopped，会被其之前/同一轮的
+    // drain 消费；只在 Stopped 之后单独开窗会因 Crashed 已消费而恒真（审查 P1 指出的
+    // 空守卫）。守卫实现不依赖该先后（逐轮记录），并在收尾留 1s 晚到观察窗；
+    // 修复见 apps/ctp/td/td_main.cpp。
+    bool saw_td_crashed = false;
+    const auto drain_status = [&](std::string_view wait_stopped_for) {
+        bool stopped = false;
         for (auto& f : drain_available(*reader_)) {
-            if (f.type == DZ_FRAME_RTN_PROCESS_STATUS && f.payload.value("name", "") == name &&
-                f.payload.value("state", "") == "Stopped") {
-                return true;
+            if (!f.has_payload || f.type != DZ_FRAME_RTN_PROCESS_STATUS) {
+                continue;
+            }
+            const std::string frame_name = f.payload.value("name", "");
+            const std::string state = f.payload.value("state", "");
+            if (frame_name == "dztd_ctp" && state == "Crashed") {
+                saw_td_crashed = true;
+            }
+            if (!wait_stopped_for.empty() && frame_name == wait_stopped_for && state == "Stopped") {
+                stopped = true;
             }
         }
-        return false;
+        return stopped;
     };
     const bool md_stopped =
-        wait_until([&] { return saw_stopped("dzmd_ctp"); }, 15000, send_shutdown_and_snapshot);
+        wait_until([&] { return drain_status("dzmd_ctp"); }, 15000, send_shutdown_and_snapshot);
     ASSERT_TRUE(md_stopped) << "dzmd_ctp did not stop within 15s after directed SHUTDOWN";
     const bool td_stopped =
-        wait_until([&] { return saw_stopped("dztd_ctp"); }, 15000, send_shutdown_and_snapshot);
+        wait_until([&] { return drain_status("dztd_ctp"); }, 15000, send_shutdown_and_snapshot);
     ASSERT_TRUE(td_stopped) << "dztd_ctp did not stop within 15s after directed SHUTDOWN";
     const bool webui_stopped =
-        wait_until([&] { return saw_stopped("dzweb"); }, 15000, send_shutdown_and_snapshot);
+        wait_until([&] { return drain_status("dzweb"); }, 15000, send_shutdown_and_snapshot);
     ASSERT_TRUE(webui_stopped) << "dzweb did not stop within 15s after directed SHUTDOWN";
+    // 收尾观察窗（1s）：覆盖「Crashed 晚于 Stopped 到达」的异步交错；窗口内一旦记录到
+    // Crashed 即断言失败（三个子进程都已退出，窗口后不会再出现该进程的状态帧）。
+    EXPECT_FALSE(wait_until(
+        [&] {
+            (void)drain_status("");
+            return saw_td_crashed;
+        },
+        1000, send_shutdown_and_snapshot))
+        << "dztd_ctp reported Crashed on graceful SHUTDOWN (must exit 0; check td_main "
+           "spdlog::shutdown ordering)";
 
     // 5. 终止 master (master 常驻无自退出协议, 与 run-dev -Stop 同策略: 强杀)
     //    双轨判定: ChildProcess 状态回调 + 进程级 liveness (async_wait 在外部强杀后不触发)
@@ -1576,16 +1642,9 @@ protected:
         // 刻意**不建 db/ 目录**：读端点必须走 not_found 降级。
         // admin 口令同样必须非默认（否则 403 password_change_required 挡住 REST），
         // 理由见 SmokeTest 的 kSmokeAdminPassword 注释。
-        {
-            std::ofstream ofs(home_ / "configs" / "webui.json");
-            ofs << "{\"server\":{\"listen\":\"127.0.0.1\",\"port\":" << port_ << "},"
-                << "\"log\":{\"level\":\"warn\",\"flush_on\":\"warn\"},"
-                << "\"auth\":{\"jwt_secret\":\"smoke_degraded_secret\",\"token_ttl_sec\":3600},"
-                << "\"admin\":{\"username\":\"admin\",\"password\":\"" << kSmokeAdminPassword
-                << "\"},"
-                << "\"notify\":{\"cache_size\":10}}";
-            ASSERT_TRUE(static_cast<bool>(ofs)) << "write webui.json failed";
-        }
+        ASSERT_TRUE(write_webui_config(home_ / "configs", port_, "127.0.0.1", "warn",
+                                       "smoke_degraded_secret", 10))
+            << "write webui.json failed";
 
         const auto webui_exe = out_dir_ /
                                "dzweb"
@@ -1682,6 +1741,628 @@ TEST_F(SmokeDegradedTest, TradeReadEndpointsDegradeToAvailableFalse) {
         ASSERT_FALSE(body.contains("next_cursor"))
             << path << ": degraded body must not carry next_cursor";
     }
+}
+
+/// 交易接口生命周期 E2E（#440；契约 rest §2.10 / ADR 0053）。
+///
+/// 从「dztd_ctp 未注册」的干净 home 起步，验证页面级生命周期端点的跨进程语义：
+///   GET available（未注册：added=false / running=false / display_name 回退进程名）
+///   → POST start（带 display_name）→ process_config 条目出现 + process_status Running
+///   → dztraderd.json td 段持久化 → 加账户 → RTN_TD_CONFIG + 账户注册表可见
+///   → 带账户 DELETE 回 409 gateway_has_accounts → 删账户 → DELETE 移除
+///   → process_config 条目消失 + 进程停止 + dztraderd.json td 段删除
+///   → master 重启后 available 仍 added=false / running=false（不再拉起）。
+///
+/// 为什么独立 fixture：动态注册的前提是 dztd_ctp **不在** 启动配置里，而主冒烟用例的
+/// home 预注册了 dztd_ctp（且带 CTP001 账户），两个前提互斥。本用例只需要 master +
+/// dzweb（无 md / 策略），restart 的成本与干扰面都可控。
+class SmokeTdLifecycleTest : public SmokeFixtureBase {
+protected:
+    void SetUp() override {
+        // 冲突检测 (NamedSemaphore 机器全局): 与主冒烟用例同款口径 (CI 用 DZ_SMOKE_STRICT=1)
+        if (event_channel_semaphore_exists()) {
+            if (smoke_strict()) {
+                FAIL() << "dz.sem.dzevent already exists (dev stack running?) - DZ_SMOKE_STRICT=1";
+                return;
+            }
+            GTEST_SKIP() << "dz.sem.dzevent already exists (dev stack running?); "
+                            "set DZ_SMOKE_STRICT=1 to fail instead of skip";
+        }
+
+        home_ = std::filesystem::temp_directory_path() /
+                ("dz_smoke_td_lifecycle_" + std::to_string(this_process::pid()));
+        std::error_code ec;
+        std::filesystem::remove_all(home_, ec);
+        std::filesystem::create_directories(home_ / "configs", ec);
+        ASSERT_FALSE(ec) << "create temp home failed: " << ec.message();
+        orig_home_ = env::get("DZTRADER_HOME");
+        env::set("DZTRADER_HOME", home_.string());
+
+        out_dir_ = this_process::exe_dir().parent_path();
+        webui_port_ = 20000 + ((this_process::pid() + 11) % 30000);
+
+        // dztraderd.json 只注册 dzweb：**刻意没有 td 段** —— 这是 POST start 走 master
+        // 动态注册路径的前提（主冒烟用例的 home 预注册 dztd_ctp，不能复用那个夹具）。
+        {
+            const nlohmann::json cfg = {
+                {"log", nlohmann::json::object()},
+                {"master", nlohmann::json::object()},
+                {"shm",
+                 {{"meta_file_size", 1048576},
+                  {"event",
+                   {{"page_size_mb", 1},
+                    {"preload_points", nlohmann::json::object()},
+                    {"check_interval_min", 5},
+                    {"check_pages", 1},
+                    {"check_bytes", 0}}}}},
+                {"webui",
+                 {{"args", nlohmann::json::array()},
+                  {"restart", {{"enabled", false}, {"max_attempts", 0}, {"backoff_sec", 5}}}}},
+            };
+            std::ofstream ofs(home_ / "configs" / "dztraderd.json");
+            ofs << cfg.dump();
+            ASSERT_TRUE(static_cast<bool>(ofs)) << "write dztraderd.json failed";
+        }
+        // 不写 configs/dztd_ctp.json：启动路径同时回归「配置文件缺失自愈 + 零账户运行」
+        // （契约 td-config §6 / ADR 0053）。
+        ASSERT_TRUE(write_webui_config(home_ / "configs", webui_port_, "0.0.0.0", "info",
+                                       "smoke_td_lifecycle_secret", 100))
+            << "write webui.json failed";
+
+        master_exe_ = out_dir_ /
+                      "dztraderd"
+#ifdef _WIN32
+                      ".exe"
+#endif
+            ;
+        ASSERT_TRUE(start_master()) << "master spawn failed";
+    }
+
+    void TearDown() override {
+        // 断言提前失败时的兜底：先经事件通道定向 SHUTDOWN（与主用例同款），再按记录
+        // 的 pid 清理 —— master 被强杀不会回收子进程，孤儿会占机器全局信号量/端口。
+        if (::testing::Test::HasFailure() && writer_ && master_ && master_->pid() != 0 &&
+            process_alive(static_cast<uint32_t>(master_->pid()))) {
+            for (const char* target : {"dztd_ctp", "dzweb"}) {
+                platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, target);
+            }
+            writer_->notify_subscribers();
+            ioc_.run_for(1500ms);
+        }
+        reader_.reset();
+        writer_.reset();
+        for (const auto& pid : {dztd_pid_, dzweb_pid_}) {
+            if (pid.has_value() && process_alive(*pid)) {
+                force_kill_pid(*pid);
+            }
+        }
+        if (master_ && master_->pid() != 0 &&
+            process_alive(static_cast<uint32_t>(master_->pid()))) {
+            force_kill_pid(static_cast<uint32_t>(master_->pid()));
+        }
+        ioc_.run_for(1s);
+        master_.reset();
+        if (::testing::Test::HasFailure()) {
+            dump_log_tail(home_ / "logs", "dztraderd_", 120);
+            dump_log_tail(home_ / "logs", "dzweb_", 200);
+            dump_log_tail(home_ / "logs", "dztd_ctp_", 120);
+        }
+        if (orig_home_) {
+            env::set("DZTRADER_HOME", *orig_home_);
+        } else {
+            env::unset("DZTRADER_HOME");
+        }
+        std::error_code ec;
+        if (env::get("DZ_SMOKE_KEEP_HOME") != "1") {
+            std::filesystem::remove_all(home_, ec);
+        } else {
+            std::fprintf(stderr, "--- smoke test: kept temp home for diagnosis: %s ---\n",
+                         home_.string().c_str());
+        }
+    }
+
+    /// 启动（或重启）master：restart 复用同一 home / 配置文件 —— 这正是「重启后是否
+    /// 再拉起」的验证方式（master 启动时按 dztraderd.json 无差别拉起）。
+    bool start_master() {
+        master_.reset();
+        ProcessEntry entry;
+        entry.name = "dztraderd";
+        entry.category = Category::GatewayMd;  // 类别不影响 ChildProcess 行为 (仅日志/命名)
+        entry.exe = master_exe_;
+        master_ = ChildProcess::create(ioc_, std::move(entry));
+        boost::system::error_code spawn_ec;
+        if (!master_->start(spawn_ec)) {
+            std::fprintf(stderr, "--- smoke: master spawn failed | exe=%s error=\"%s\" ---\n",
+                         master_exe_.string().c_str(), spawn_ec.message().c_str());
+            return false;
+        }
+        return true;
+    }
+
+    /// 轮询 /health 直到 dzweb 起来（首次启动与 restart 之后共用）。
+    bool wait_health(int timeout_ms) {
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (http_get_health()) {
+                return true;
+            }
+            ioc_.run_for(100ms);
+        }
+        return http_get_health();
+    }
+
+    // ── 帧投影：契约 §2.10 的三类生效信号 ───────────────────────────────
+
+    /// 排空事件通道，并把本用例关心的三类帧投影为「最新状态」：
+    /// - RTN_PROCESS_CONFIG 全量映射：条目增删的权威信号（契约 process）
+    /// - RTN_PROCESS_STATUS：进程状态翻转（Running / Stopped + event）
+    /// - RTN_TD_CONFIG：网关脱敏配置，accounts[] = 账户注册表 reconcile 的来源
+    void pump_frames() {
+        for (auto& f : drain_available(*reader_)) {
+            if (!f.has_payload) {
+                continue;
+            }
+            if (f.type == DZ_FRAME_RTN_PROCESS_CONFIG) {
+                latest_process_config_ = f.payload;
+            } else if (f.type == DZ_FRAME_RTN_PROCESS_STATUS) {
+                latest_statuses_[f.payload.value("name", "")] = f.payload;
+            } else if (f.type == DZ_FRAME_TD_RTN_CONFIG) {
+                latest_td_configs_[f.instance_id] = f.payload;
+            }
+        }
+    }
+
+    /// 最新 RTN_PROCESS_CONFIG 中某进程的配置条目（尚无帧/条目不存在 = nullopt）。
+    std::optional<nlohmann::json> process_config_entry(const std::string& name) const {
+        if (!latest_process_config_ || !latest_process_config_->is_object() ||
+            !latest_process_config_->contains(name)) {
+            return std::nullopt;
+        }
+        return (*latest_process_config_)[name];
+    }
+
+    /// 最新 RTN_PROCESS_STATUS 中某进程的状态载荷。
+    std::optional<nlohmann::json> process_status_of(const std::string& name) const {
+        const auto it = latest_statuses_.find(name);
+        if (it == latest_statuses_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    bool process_state_is(const std::string& name, const std::string& state) const {
+        const auto status = process_status_of(name);
+        return status.has_value() && status->value("state", "") == state;
+    }
+
+    std::optional<std::uint32_t> process_pid_of(const std::string& name) const {
+        const auto status = process_status_of(name);
+        if (!status.has_value()) {
+            return std::nullopt;
+        }
+        const int pid = status->value("pid", 0);
+        if (pid <= 0) {
+            return std::nullopt;
+        }
+        return static_cast<std::uint32_t>(pid);
+    }
+
+    /// 最新 RTN_TD_CONFIG 中该网关的 account_id 集合（账户注册表 reconcile 的输入）。
+    std::set<std::string> td_config_account_ids(const std::string& gateway) const {
+        std::set<std::string> ids;
+        const auto it = latest_td_configs_.find(gateway);
+        if (it == latest_td_configs_.end() || !it->second.is_object() ||
+            !it->second.contains("accounts") || !it->second["accounts"].is_array()) {
+            return ids;
+        }
+        for (const auto& account : it->second["accounts"]) {
+            if (account.is_object() && account.contains("account_id") &&
+                account["account_id"].is_string()) {
+                ids.insert(account["account_id"].get<std::string>());
+            }
+        }
+        return ids;
+    }
+
+    // ── REST 投影 ───────────────────────────────────────────────────────
+
+    /// GET /api/td/gateways/available 中查一条（按 name）；请求失败或没有该条 = nullopt。
+    std::optional<nlohmann::json> available_gateway(const std::string& name) {
+        const auto body = api_get_json("/api/td/gateways/available");
+        if (!body || !body->is_array()) {
+            return std::nullopt;
+        }
+        for (const auto& item : *body) {
+            if (item.is_object() && item.value("name", "") == name) {
+                return item;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// GET /api/td/accounts（账户注册表投影）中是否有该账户。
+    bool registry_has_account(const std::string& account_id) {
+        const auto body = api_get_json("/api/td/accounts");
+        if (!body || !body->is_object() || !body->value("available", false) ||
+            !body->contains("accounts") || !(*body)["accounts"].is_array()) {
+            return false;
+        }
+        for (const auto& account : (*body)["accounts"]) {
+            if (account.is_object() && account.value("account_id", "") == account_id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// GET /api/processes（进程镜像投影）中某进程的状态条目。
+    std::optional<nlohmann::json> rest_process_entry(const std::string& name) {
+        const auto body = api_get_json("/api/processes");
+        if (!body || !body->is_object() || !body->contains("processes") ||
+            !(*body)["processes"].is_array()) {
+            return std::nullopt;
+        }
+        for (const auto& process : (*body)["processes"]) {
+            if (process.is_object() && process.value("name", "") == name) {
+                return process;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// 进程名集合（用于「重启后未复活」断言：新 master 的镜像只含它注册的进程）。
+    std::set<std::string> rest_process_names() {
+        std::set<std::string> names;
+        const auto body = api_get_json("/api/processes");
+        if (!body || !body->is_object() || !body->contains("processes") ||
+            !(*body)["processes"].is_array()) {
+            return names;
+        }
+        for (const auto& process : (*body)["processes"]) {
+            if (process.is_object()) {
+                names.insert(process.value("name", ""));
+            }
+        }
+        return names;
+    }
+
+    // ── 配置文件投影（dztraderd.json 的 td 段 = 进程存在性真相源）───────────
+
+    /// 读 dztraderd.json 中 td 段的条目映射（文件/段缺失 = 空 object）。
+    nlohmann::json master_config_td_entries() const {
+        std::ifstream ifs(home_ / "configs" / "dztraderd.json");
+        if (!ifs) {
+            return nlohmann::json::object();
+        }
+        nlohmann::json cfg;
+        try {
+            ifs >> cfg;
+        } catch (const std::exception&) {
+            return nlohmann::json::object();  // 原子写的中间态：调用方用 wait_until 重试
+        }
+        if (!cfg.is_object() || !cfg.contains("td") || !cfg["td"].is_object()) {
+            return nlohmann::json::object();
+        }
+        return cfg["td"];
+    }
+
+    std::set<std::string> master_config_td_gateways() const {
+        std::set<std::string> names;
+        const auto entries = master_config_td_entries();
+        for (auto it = entries.begin(); it != entries.end(); ++it) {
+            names.insert(it.key());
+        }
+        return names;
+    }
+
+    std::optional<nlohmann::json> master_config_td_entry(const std::string& name) const {
+        const auto entries = master_config_td_entries();
+        if (!entries.is_object() || !entries.contains(name)) {
+            return std::nullopt;
+        }
+        return entries[name];
+    }
+
+    /// 失败诊断: 在 home/logs 下某前缀日志里找 needle，返回最多 max_lines 条匹配行。
+    std::string grep_log(const std::string& prefix,
+                         const std::string& needle,
+                         int max_lines = 5) const {
+        std::string out;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(home_ / "logs", ec), end; !ec && it != end;
+             it.increment(ec)) {
+            if (!it->path().filename().string().starts_with(prefix)) {
+                continue;
+            }
+            std::ifstream ifs(it->path());
+            std::string line;
+            int found = 0;
+            while (found < max_lines && std::getline(ifs, line)) {
+                if (line.find(needle) != std::string::npos) {
+                    out += "  " + line + "\n";
+                    ++found;
+                }
+            }
+        }
+        return out.empty() ? std::string("  <no matching line>\n") : out;
+    }
+
+    // ── 成员 ────────────────────────────────────────────────────────────
+
+    /// 最新全量 RTN_PROCESS_CONFIG（尚无帧 = nullopt）
+    std::optional<nlohmann::json> latest_process_config_;
+    std::map<std::string, nlohmann::json> latest_statuses_;
+    std::map<std::string, nlohmann::json> latest_td_configs_;
+    /// 供 TearDown 兜底清理的 pid（master 被强杀不会回收子进程）
+    std::optional<std::uint32_t> dztd_pid_;
+    std::optional<std::uint32_t> dzweb_pid_;
+};
+
+TEST_F(SmokeTdLifecycleTest, GatewayStartAccountGuardRemoveAndMasterRestart) {
+    // 1. 基础设施就绪：webui 健康 → 事件通道 → REST 登录（与主冒烟用例同一套原语）
+    ASSERT_TRUE(wait_health(30000))
+        << "dzweb /health not 200 within 30s (port=" << webui_port_ << ")";
+    ASSERT_TRUE(open_event_channel()) << "event channel not created by master within 20s";
+    ASSERT_TRUE(wait_until([&] { return login(); }, 15000, [] {}))
+        << "POST /api/login did not return 200 with token within 15s";
+
+    // 2. 基线：dztd_ctp 在 App Root 可扫描但**未注册**（added=false / running=false，
+    //    display_name 回退进程名）。start 之后 added/running 的翻转以这条为前提。
+    {
+        const auto gateway = available_gateway("dztd_ctp");
+        ASSERT_TRUE(gateway.has_value()) << "GET /api/td/gateways/available missing dztd_ctp";
+        EXPECT_EQ(gateway->value("display_name", ""), "dztd_ctp")
+            << "unregistered gateway display_name must fall back to name | gateway="
+            << gateway->dump();
+        EXPECT_FALSE(gateway->value("added", true))
+            << "dztd_ctp unexpectedly registered before start | gateway=" << gateway->dump();
+        EXPECT_FALSE(gateway->value("running", true))
+            << "dztd_ctp unexpectedly running before start | gateway=" << gateway->dump();
+    }
+
+    // 3. POST start（带 display_name）：master 动态注册 + 拉起。REST 200 只表示帧已写入，
+    //    生效以 process_config / process_status 为准（契约 rest §2.10）。
+    {
+        HttpClient http(ioc_, webui_port_);
+        const nlohmann::json body = {{"display_name", "CTP交易"}};
+        const HttpResponse resp =
+            http.post("/api/td/gateways/dztd_ctp/start", body.dump(), auth_token_);
+        ASSERT_TRUE(resp.ok()) << "POST /api/td/gateways/dztd_ctp/start failed | status="
+                               << resp.status << " body=" << resp.body << " error=" << resp.error;
+        ASSERT_TRUE(resp.json_ok && resp.json.value("ok", false))
+            << "start response is not {\"ok\":true} | body=" << resp.body;
+    }
+    const auto saw_started = [&] {
+        pump_frames();
+        const auto entry = process_config_entry("dztd_ctp");
+        return entry.has_value() && entry->value("display_name", "") == "CTP交易" &&
+               process_state_is("dztd_ctp", "Running");
+    };
+    ASSERT_TRUE(wait_until(saw_started, 30000, [&] { send_full_snapshot_query(); }))
+        << "dynamic start did not yield process_config entry + Running within 30s | status="
+        << (process_status_of("dztd_ctp") ? process_status_of("dztd_ctp")->dump()
+                                          : std::string("<no RTN_PROCESS_STATUS>"));
+    dztd_pid_ = process_pid_of("dztd_ctp");
+    ASSERT_TRUE(dztd_pid_.has_value()) << "Running status carries no pid";
+
+    // 3b. 持久化语义：dztraderd.json 的 td 段出现该条目（master 重启的输入 = 配置）。
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const auto entry = master_config_td_entry("dztd_ctp");
+            return entry.has_value() && entry->contains("display_name") &&
+                   (*entry)["display_name"] == "CTP交易";
+        },
+        10000, [] {}))
+        << "dztraderd.json td.dztd_ctp missing after dynamic registration";
+    // 3c. available 翻转（REST 投影与 process_config / process_status 同源）
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const auto gateway = available_gateway("dztd_ctp");
+            return gateway.has_value() && gateway->value("added", false) &&
+                   gateway->value("running", false) &&
+                   gateway->value("display_name", "") == "CTP交易";
+        },
+        10000, [] {}));
+
+    // 4. 加账户：POST /api/td/accounts → RTN_TD_CONFIG → 账户注册表可见（#438 端点 +
+    //    #251 注册表 reconcile 的跨进程全链路）。
+    //    POST 预检要求 dzweb 镜像里网关已 Running；它与上一步的帧异步，故失败时靠
+    //    wait_until 重试（镜像后到，重试是幂等的：成功的第一次直接返回 true）。
+    const nlohmann::json add_body = {{"gateway", "dztd_ctp"},
+                                     {"account",
+                                      {{"account_id", "SMOKE440"},
+                                       {"enabled", true},
+                                       {"risk_control_enabled", false},
+                                       {"currency_id", "CNY"},
+                                       {"ext",
+                                        {{"broker_id", "9999"},
+                                         {"user_id", "SMOKE440"},
+                                         {"password", ""},
+                                         {"product_info", ""},
+                                         {"frontends", nlohmann::json::array()},
+                                         {"auth_code", ""},
+                                         {"app_id", ""},
+                                         {"flow_dir", ""}}}}}};
+    const std::string account_id = add_body["account"]["account_id"].get<std::string>();
+    std::string add_account_error = "<not attempted>";
+    const auto add_account = [&] {
+        HttpClient http(ioc_, webui_port_);
+        const HttpResponse resp = http.post("/api/td/accounts", add_body.dump(), auth_token_);
+        add_account_error = "status=" + std::to_string(resp.status) + " body=" + resp.body;
+        return resp.ok();
+    };
+    ASSERT_TRUE(wait_until(add_account, 15000, [] {}))
+        << "POST /api/td/accounts failed | " << add_account_error;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            pump_frames();
+            return td_config_account_ids("dztd_ctp").contains(account_id);
+        },
+        20000, [&] { send_full_snapshot_query(); }))
+        << "RTN_TD_CONFIG does not carry the added account | td_config="
+        << (latest_td_configs_.count("dztd_ctp") ? latest_td_configs_["dztd_ctp"].dump()
+                                                 : std::string("<no RTN_TD_CONFIG>"))
+        << " | last_account_post=" << add_account_error << " | dzweb dispatch log:\n"
+        << grep_log("dzweb_", "td account config") << " | td modify log:\n"
+        << grep_log("dztd_ctp_", "modify config");
+    ASSERT_TRUE(wait_until([&] { return registry_has_account(account_id); }, 15000, [] {}))
+        << "account registry does not expose the added account after RTN_TD_CONFIG";
+
+    // 5. 带账户 DELETE：服务端 guard 回 409 gateway_has_accounts，且**不写 Remove 帧**
+    //    （接口仍在 process_config 中、仍 Running）。拒绝是同步的，但「未写帧」的检查
+    //    不能只看拒绝瞬间：若服务端误写 Remove 帧，进程状态/配置镜像会在随后 1s 内翻转，
+    //    故用观察窗（快照查询触发收敛），窗口内任一条目消失或非 Running 即视为违规。
+    {
+        HttpClient http(ioc_, webui_port_);
+        const HttpResponse resp = http.del("/api/td/gateways/dztd_ctp", auth_token_);
+        ASSERT_EQ(resp.status, 409) << "DELETE with accounts must be rejected | body=" << resp.body;
+        ASSERT_TRUE(resp.json_ok) << "409 body is not json | body=" << resp.body;
+        EXPECT_EQ(resp.json.value("code", ""), "gateway_has_accounts") << "body=" << resp.body;
+        const auto guard_violated = [&] {
+            pump_frames();
+            return !process_config_entry("dztd_ctp").has_value() ||
+                   !process_state_is("dztd_ctp", "Running");
+        };
+        EXPECT_FALSE(wait_until(guard_violated, 1000, [&] { send_full_snapshot_query(); }))
+            << "guard rejection must not write Remove frame / stop the gateway (1s window)";
+    }
+
+    // 6. 删账户：RTN_TD_CONFIG 去掉该账户 + 注册表不再可见。
+    {
+        HttpClient http(ioc_, webui_port_);
+        const HttpResponse resp = http.del("/api/td/accounts/" + account_id, auth_token_);
+        ASSERT_TRUE(resp.ok()) << "DELETE account failed | status=" << resp.status
+                               << " body=" << resp.body;
+    }
+    ASSERT_TRUE(wait_until(
+        [&] {
+            pump_frames();
+            return !td_config_account_ids("dztd_ctp").contains(account_id);
+        },
+        20000, [&] { send_full_snapshot_query(); }))
+        << "RTN_TD_CONFIG still carries the removed account";
+    ASSERT_TRUE(wait_until([&] { return !registry_has_account(account_id); }, 15000, [] {}))
+        << "account registry still exposes the removed account";
+
+    // 7. DELETE 移除接口：process_config 条目消失（移除完成的权威信号）+ 进程停止 +
+    //    dztraderd.json td 段条目删除（master 重启的输入）。
+    {
+        HttpClient http(ioc_, webui_port_);
+        const HttpResponse resp = http.del("/api/td/gateways/dztd_ctp", auth_token_);
+        ASSERT_TRUE(resp.ok()) << "DELETE gateway failed | status=" << resp.status
+                               << " body=" << resp.body << " error=" << resp.error;
+    }
+    ASSERT_TRUE(wait_until(
+        [&] {
+            pump_frames();
+            return !process_config_entry("dztd_ctp").has_value();
+        },
+        20000, [&] { send_full_snapshot_query(); }))
+        << "process_config entry did not disappear after DELETE";
+    ASSERT_TRUE(wait_until(
+        [&] {
+            pump_frames();
+            return process_state_is("dztd_ctp", "Stopped");
+        },
+        20000, [] {}))
+        << "dztd_ctp did not reach Stopped after DELETE";
+    const auto dztd_pid = dztd_pid_;
+    ASSERT_TRUE(dztd_pid.has_value());
+    ASSERT_TRUE(wait_until([&] { return !process_alive(*dztd_pid); }, 10000, [] {}))
+        << "dztd_ctp process still alive after DELETE";
+    ASSERT_TRUE(
+        wait_until([&] { return !master_config_td_gateways().contains("dztd_ctp"); }, 10000, [] {}))
+        << "dztraderd.json td section still contains dztd_ctp after DELETE";
+    ASSERT_TRUE(wait_until(
+        [&] {
+            const auto gateway = available_gateway("dztd_ctp");
+            return gateway.has_value() && !gateway->value("added", true) &&
+                   !gateway->value("running", true);
+        },
+        10000, [] {}))
+        << "available did not fall back to added=false/running=false after DELETE";
+
+    // 8. master 重启后不再拉起（Remove 持久化语义）：先停 dzweb（定向 SHUTDOWN，避免重启
+    //    窗口端口冲突），再强杀 master，用同一 home / 配置文件重新 spawn。
+    const auto dzweb_status = rest_process_entry("dzweb");
+    ASSERT_TRUE(dzweb_status.has_value()) << "GET /api/processes missing dzweb";
+    const int dzweb_pid_value = dzweb_status->value("pid", 0);
+    ASSERT_GT(dzweb_pid_value, 0) << "dzweb status carries no pid";
+    dzweb_pid_ = static_cast<std::uint32_t>(dzweb_pid_value);
+    const auto send_webui_shutdown = [&] {
+        writer_->refresh_subscribers();
+        platform::write_ext_inst_raw(*writer_, DZ_FRAME_SHUTDOWN, "dzweb");
+        writer_->notify_subscribers();
+    };
+    send_webui_shutdown();
+    ASSERT_TRUE(wait_until([&] { return !process_alive(*dzweb_pid_); }, 15000, send_webui_shutdown))
+        << "dzweb did not exit after directed SHUTDOWN within 15s";
+    const auto master_pid = static_cast<std::uint32_t>(master_->pid());
+    ASSERT_NE(master_pid, 0U);
+    force_kill_pid(master_pid);
+    ASSERT_TRUE(wait_until([&] { return !process_alive(master_pid); }, 10000, [] {}))
+        << "master did not exit within 10s after force kill";
+
+    // 重启前丢弃旧通道句柄与旧帧投影：新 master 的镜像必须从零观察。
+    reader_.reset();
+    writer_.reset();
+    latest_process_config_.reset();
+    latest_statuses_.clear();
+    latest_td_configs_.clear();
+
+    ASSERT_TRUE(start_master()) << "master restart failed";
+    ASSERT_TRUE(wait_health(30000))
+        << "dzweb /health not 200 within 30s after master restart (port=" << webui_port_ << ")";
+    // 重开事件通道：TearDown 的失败兜底要靠 writer_ 定向 SHUTDOWN 新 dzweb。新 master
+    // 的 child pid 在断言提前失败时可能还来不及从 /api/processes 记录，而旧 writer_ 指向
+    // 被杀 master 的通道句柄也不可靠——故 restart 成功后立即重建 writer/reader 句柄。
+    ASSERT_TRUE(open_event_channel()) << "event channel not reopened after master restart";
+    auth_token_.clear();
+    ASSERT_TRUE(wait_until([&] { return login(); }, 15000, [] {}))
+        << "login after master restart failed";
+    // 尽早（best-effort）记录重启后的 dzweb pid 供 TearDown 兜底清理：/api/processes
+    // 镜像可能尚未填充，轮询 5s 收窄窗口；尾部在镜像确认填充后会再取一次并硬断言。
+    (void)wait_until(
+        [&] {
+            const auto webui = rest_process_entry("dzweb");
+            if (!webui.has_value()) {
+                return false;
+            }
+            const int pid = webui->value("pid", 0);
+            if (pid <= 0) {
+                return false;
+            }
+            dzweb_pid_ = static_cast<std::uint32_t>(pid);
+            return true;
+        },
+        5000, [] {});
+    // 新 master 的进程镜像必须先被观察到（dzweb 在新 master 的配置条目里），否则
+    // 「没有 dztd_ctp」可能只是镜像尚未填充 —— 先等 dzweb 出现，再断言它不存在。
+    ASSERT_TRUE(wait_until([&] { return rest_process_names().contains("dzweb"); }, 30000, [] {}))
+        << "GET /api/processes does not expose dzweb after restart (mirror not populated)";
+    const auto names_after_restart = rest_process_names();
+    ASSERT_TRUE(names_after_restart.contains("dzweb")) << "process mirror flapped after restart";
+    EXPECT_FALSE(names_after_restart.contains("dztd_ctp"))
+        << "dztd_ctp resurrected after master restart (Remove was not persisted)";
+    {
+        const auto gateway = available_gateway("dztd_ctp");
+        ASSERT_TRUE(gateway.has_value()) << "GET /api/td/gateways/available missing dztd_ctp";
+        EXPECT_FALSE(gateway->value("added", true))
+            << "dztd_ctp registered again after master restart | gateway=" << gateway->dump();
+        EXPECT_FALSE(gateway->value("running", true))
+            << "dztd_ctp running after master restart | gateway=" << gateway->dump();
+        EXPECT_EQ(gateway->value("display_name", ""), "dztd_ctp")
+            << "after restart display_name must fall back to name | gateway=" << gateway->dump();
+    }
+    EXPECT_FALSE(master_config_td_gateways().contains("dztd_ctp"))
+        << "dztraderd.json td section resurrected dztd_ctp after master restart";
+    // 镜像此时必然已填充（上一等待成功）：记录重启后的 dzweb pid 供 TearDown 兜底清理。
+    const auto new_webui = rest_process_entry("dzweb");
+    ASSERT_TRUE(new_webui.has_value());
+    const int new_webui_pid = new_webui->value("pid", 0);
+    ASSERT_GT(new_webui_pid, 0) << "restarted dzweb status carries no pid";
+    dzweb_pid_ = static_cast<std::uint32_t>(new_webui_pid);
 }
 
 }  // namespace

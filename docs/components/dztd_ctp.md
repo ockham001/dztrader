@@ -41,6 +41,7 @@
 ### 多账户会话模型
 
 - **零账户运行**：账户是交易接口内部的配置项（持久化在本进程配置文件，契约 td-config §6）；接口生命周期由交易账户页显式管理（动态创建 / 启动 / 移除，ADR 0053），进程可在没有任何账户时启动与运行，等待后续添加账户。
+- **生命周期的平台侧归属**：动态注册 / 移除由 master 的进程配置驱动（契约 process / rest §2.10），本进程不感知自己是被 REST「添加交易接口」动态创建，还是由 `dztraderd.json` 预注册——两条路径的启动行为一致（配置文件缺失 → 默认值自愈；首帧 `report_full_snapshot` 提供零账户配置快照）。移除接口前平台要求账户已清空（`gateway_has_accounts`），本进程只按 `RemoveAccount` 删除自身配置条目。
 - 一进程多账户：每账户一个 CTP Trader API + SPI + `AccountSession`（持有 `TdStateMachine` 独立状态机实例与 `account_id`）。
 - **账户隔离**：账户级 `instance_id` = 账户 ID（全局唯一，跨全部接口类型，总则 §5），不携带进程名；状态、进度、回报按账户隔离，单账户失败不影响其他账户。
 - 主线程集中管理全部账户会话，状态机不依赖 CTP SDK、可独立测试。
@@ -215,6 +216,7 @@
 ### 退出与已知限制
 
 - `stop()`：通知 Writer 停止，对失败批做最后一次立即重试；成功则继续排空队列后退出；仍失败只记 ERROR 并退出——未提交的内存积压丢弃，登记为已知限制（ADR 0042 决策 6）。等待 Writer 退出设 30s 上限（大事务 fsync 兜底；超时则快速退出进程、跳过析构）；正常路径必须显式 `stop()`，析构仅作 best-effort 兜底。
+- **关停时必须先析构 `TdApi` 再 `spdlog::shutdown()`**（`td_main.cpp` 显式 `api.reset()`）：`~TdApi` → `PersistWriter::stop()` 在"已经停止"的确认路径上会打 info 日志，而 shutdown 之后 default logger 为 null → SIGSEGV（退出码 11）。后果是 master 把正常关停上报成 `Crashed` 并弹「child crashed」错误通知（#440 E2E 实测；`SmokeTest` 已加 Crashed 回归断言：逐轮 drain 记录 Crashed、不依赖与快照兜底 Stopped 的先后，并在收尾留 1s 晚到观察窗）。md 侧正常路径静默，但异常路径仍会打日志、且 `md_main.cpp` 同样是 shutdown 先于 `MdApi` 析构——同型潜在风险由另票跟踪 #449（`apps/ctp/md` 生产锁定）。
 - 坏库重建后历史查询缺口由备份 / 归档兜底（本轮不实现，ADR 0042）。
 - 跨进程旧会话已入队未提交的任务可能晚于新会话的整组替换落地：当日持仓回到旧值后**无自愈路径**，需等下一次完整成功查询（下一次登录 / 重连）替换，不丢行、不产生键冲突（《帧契约：TD 数据同步》§7；ADR 0049）。
 
