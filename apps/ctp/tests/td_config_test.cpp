@@ -440,7 +440,7 @@ TEST_F(TdConfigTest, ValidateRejectsAccountIdWithSpace) {
     cfg.accounts.push_back(make_valid_account("000 01"));
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+    EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
 }
 
 /// 契约 td-config §2.2：account_id 禁 `:`（与 REST 路径 / 账户级 instance_id 约定一致）。
@@ -449,7 +449,7 @@ TEST_F(TdConfigTest, ValidateRejectsAccountIdWithColon) {
     cfg.accounts.push_back(make_valid_account("000:01"));
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+    EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
 }
 
 TEST_F(TdConfigTest, ValidateRejectsNonAsciiAccountId) {
@@ -457,7 +457,7 @@ TEST_F(TdConfigTest, ValidateRejectsNonAsciiAccountId) {
     cfg.accounts.push_back(make_valid_account("00001账户"));
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+    EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
 }
 
 /// 契约 td-config §2.3：broker_id 非空（连接参数是必填项）。
@@ -605,7 +605,18 @@ TEST_F(TdConfigTest, LoadThenValidateRejectsOverlongAccountId) {
     auto cfg = TdConfig::load(path_, "td");  // 解码本身不报错
     auto err = validate(cfg);                // td_main 的启动校验据此致命退出
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+    EXPECT_NE(err->find("too long"), std::string::npos) << *err;
+}
+
+/// 旧配置检测要扫完整个账户数组：`ext.user_id` 出现在第二个账户同样致命。
+TEST_F(TdConfigTest, LoadLegacyExtUserIdInLaterAccountIsFatal) {
+    write_json(R"json({
+  "accounts": [
+    {"account_id": "00001", "ext": {"broker_id": "9999", "password": "123456"}},
+    {"account_id": "00002", "ext": {"broker_id": "9999", "user_id": "00002"}}
+  ]
+})json");
+    EXPECT_THROW((void)TdConfig::load(path_, "td"), std::runtime_error);
 }
 
 /// AC4：account_name 留空存空串（不做写入时规范化 / 不回落成 id 再存）。

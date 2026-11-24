@@ -38,16 +38,12 @@ struct OrderBuildContext {
 // 账户身份字段 (ADR 0056)
 // ============================================================================
 // CTP 的 UserID（认证 / 登录）与 InvestorID（下单 / 撤单 / 结算确认）都取同一个账户 ID
-// （柜台真实投资者代码），不再有独立的用户代码字段。集中成两个填充函数，避免将来又拆出
+// （柜台真实投资者代码），不再有独立的用户代码字段。集中成唯一填充入口，避免将来又拆出
 // 第二个来源；超长由配置校验（≤12 字节）保证，填充层非截断模式兜底。
 
-/// 把账户 ID 写入 CTP `UserID` 字段（认证 / 登录请求）。
-void fill_user_id(char* user_id, std::size_t capacity, const std::string& account_id) noexcept;
-
-/// 把账户 ID 写入 CTP `InvestorID` 字段（撤单 / 结算确认请求）。
-void fill_investor_id(char* investor_id,
-                      std::size_t capacity,
-                      const std::string& account_id) noexcept;
+/// 把账户 ID 写入 CTP 身份字段（`UserID` 或 `InvestorID`）。
+/// 调用点：认证 / 登录请求填 `UserID`；撤单 / 结算确认请求填 `InvestorID`。
+void fill_account_id(char* field, std::size_t capacity, const std::string& account_id) noexcept;
 
 // ============================================================================
 // 纯函数: 时间/日期解析

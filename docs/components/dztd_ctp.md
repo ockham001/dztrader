@@ -155,7 +155,7 @@ CTP 的 `ReqQry*` 在同一 API 实例上共用查询流控：同时至多 1 笔
 - **启动加载两级语义**（契约 td-config §6）：文件 / `td` section **缺失** → 用默认值 + 原子修复文件（自愈，首次启动的正常形态，写失败只记 ERROR 不阻断）；内容**非法**（JSON 解析失败 / section 类型不符 / 含已删除的 `ext.user_id` / CTP `account_id` 超 12 字节）→ 记 CRITICAL 后**退出非零码**，不回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法与"本来就空"区分。旧扁平格式因未知字段被忽略（总则 §8）不会触发解码失败，但账户 `ext` 为空 → `validate()` 以 `broker_id empty` 拒绝 → 同样致命退出；含 `ext.user_id` 的旧配置在 `load()` 阶段即按内容非法拒绝（ADR 0056 硬切，删 `td` section 自愈重生成后重新添加账户）。
 - **启动主动推一次**：`run()` 首次进入即 `report_full_snapshot()`（首帧 `report_config()`），供 dzweb 账户注册表启动快照（契约 td-config §4 场景 2）。配置在 `td_main` 中先于 `TdApi` 构造加载，推的是已加载的当前值。
 - **op 收敛**：进程级柜台特有配置统一走 `SetExt`（字段级补丁），旧 `SetLockMode` 已删除，不留双实现；`ext.enable_lock_mode` 是本进程唯一形态。账户级 op（`AddAccount` / `UpdateAccount` / `SetAccountEnabled` / `SetAccountRiskControl` / `SetAccountCurrency`）与 `SetQryIntervals` 语义见契约 §2.1。
-- **状态保护**（契约 td-config §2.1）：`UpdateAccount` 仅当请求触及连接参数（`ext` 内任何键）时拒绝——只改 `account_name` 等通用层字段任意会话状态可改（ADR 0056 决策 3）；`RemoveAccount` 在账户有活跃会话时拒绝（连接参数不可热改；不删交易数据，ADR 0045）。其余 op 不受状态保护。
+- **状态保护**（契约 td-config §2.1）：`UpdateAccount` 仅当请求触及连接参数（`ext` 内任何键）时拒绝——只改 `account_name` 等通用层字段任意会话状态可改（ADR 0056 决策 3）；`RemoveAccount` 在账户有活跃会话时拒绝（连接参数不可热改；不删交易数据，ADR 0045）。其余 op 不受状态保护。注意：契约 §2.1 对 `RemoveAccount` 的要求是「不受状态保护、执行时销毁会话并推 Offline」，与当前实现不一致（既存漂移，本票不改），已单独开票跟进（#474）。
 - **失败四件套**（总则 §8）：回滚旧值 + 日志 + `NOTIFY_UI` 错误弹窗 + 回 `RTN_TD_CONFIG` 旧值，清前端 pending。
 - **唯一性边界**：本进程只查自身配置文件内 `account_id` 重复与 `account_name` 的展平唯一（与 `account_id` 同一命名空间、NFC 比较），**不是**跨网关防线——跨网关唯一性由 dzweb 权威校验（契约 td-config §5 / §7，ADR 0045 / ADR 0056）。
 

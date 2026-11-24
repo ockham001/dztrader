@@ -325,7 +325,7 @@ TEST(ApplyConfigOpTest, AddAccountOverlongIdRejectedByValidate) {
     apply_config_op(cfg, req);
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+    EXPECT_NE(err->find("too long"), std::string::npos) << *err;
 }
 
 /// 契约 td-config §2.2 / AC3：UpdateAccount 改名撞别的账户 id 时由 validate 拒绝。
@@ -539,6 +539,14 @@ TEST(RequiresIdleTest, UpdateAccountTouchingExtRequiresIdle) {
                               {{"account_id", "a1"}, {"ext", {{"password", "x"}}}}));
     EXPECT_TRUE(requires_idle(TdConfigOp::UpdateAccount,
                               {{"account_id", "a1"}, {"ext", {{"broker_id", "9999"}}}}));
+}
+
+/// `ext` 类型非法（非对象）按「触及连接参数」保守处理——真正的类型错误由 apply_config_op 报出，
+/// 但状态保护必须先按最严处理，不能因解码失败前的形状问题放过热改连接参数。
+TEST(RequiresIdleTest, UpdateAccountNonObjectExtRequiresIdle) {
+    EXPECT_TRUE(
+        requires_idle(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"ext", "not-an-object"}}));
+    EXPECT_TRUE(requires_idle(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"ext", nullptr}}));
 }
 
 TEST(RequiresIdleTest, OtherOpsDoNotRequireIdle) {

@@ -40,8 +40,8 @@ enum class TdConfigOp {
 DZ_JSON_ENUM(TdConfigOp)
 
 /// 判断 op 是否要求目标账户处于 Idle（契约 td-config §2.1 状态保护）。
-/// - `RemoveAccount`：沿用既有 Idle 保护（本票不改；契约 §2.1 的「删除时销毁会话并推
-///   Offline」与现状的差异不在 ADR 0056 范围内）。
+/// - `RemoveAccount`：沿用既有 Idle 保护——契约 §2.1 要求「删除时销毁会话并推 Offline」，
+///   与现状的差异是既存漂移，不在 ADR 0056 范围内，已单独开票跟进（#474）。
 /// - `UpdateAccount`：仅当请求触及连接参数（`ext` 内任何键）时要求 Idle；只改通用层字段
 ///   （如 `account_name`）任意会话状态可改——展示名不是连接参数（ADR 0056 决策 3）。
 /// switch 覆盖所有枚举值, 新增枚举时编译器 (-Wswitch) 会警告。

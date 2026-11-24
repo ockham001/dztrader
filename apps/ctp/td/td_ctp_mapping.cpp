@@ -23,26 +23,16 @@ void copy_to_dz(char (&dest)[N], const char* src) noexcept {
     copy_string(dest, src, /*truncate=*/true);
 }
 
-/// 账户 ID -> CTP 身份字段（非截断模式）: 容量由配置校验保证；万一越界写空串让柜台
-/// 拒绝登录 / 撤单，而不是截断成一个可能存在的其他账户（ADR 0056 / 契约 td-config §2.3）。
-void copy_account_id(char* field, std::size_t capacity, const std::string& account_id) noexcept {
-    (void)copy_string(field, capacity, account_id.c_str(), /*truncate=*/false);
-}
-
 }  // namespace
 
 // ============================================================================
 // 账户身份字段 (ADR 0056)
 // ============================================================================
 
-void fill_user_id(char* user_id, std::size_t capacity, const std::string& account_id) noexcept {
-    copy_account_id(user_id, capacity, account_id);
-}
-
-void fill_investor_id(char* investor_id,
-                      std::size_t capacity,
-                      const std::string& account_id) noexcept {
-    copy_account_id(investor_id, capacity, account_id);
+void fill_account_id(char* field, std::size_t capacity, const std::string& account_id) noexcept {
+    // 非截断模式：容量由配置校验（account_id ≤12 字节）保证；万一越界写空串让柜台拒绝
+    // 登录 / 撤单，而不是截断成一个可能存在的其他账户（ADR 0056 / 契约 td-config §2.3）。
+    (void)copy_string(field, capacity, account_id.c_str(), /*truncate=*/false);
 }
 
 // ============================================================================
@@ -188,8 +178,8 @@ std::optional<CThostFtdcInputOrderField> to_input_order_field(
     const DzOrderReq& req, const OrderBuildContext& ctx) noexcept {
     CThostFtdcInputOrderField f{};
 
-    // 标识字段
-    copy_to_dz(f.InvestorID, ctx.account_id.c_str());
+    // 标识字段（InvestorID 与 UserID 同源，统一走 fill_account_id，见文件顶部账户身份段）
+    fill_account_id(f.InvestorID, sizeof(f.InvestorID), ctx.account_id);
     copy_to_dz(f.InstrumentID, req.instrument_id);
     copy_to_dz(f.ExchangeID, ctx.exchange_id.c_str());
 

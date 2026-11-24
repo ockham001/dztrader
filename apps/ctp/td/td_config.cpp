@@ -63,34 +63,33 @@ bool contains_control_chars(std::string_view text) {
     return false;
 }
 
-/// 账户展示名的唯一性比较键：`trim` 后 NFC 规范化；留空回落 `account_id`
-/// （契约 §2.2 / ADR 0056 决策 4）。
-/// @return false = 名字非法（超长 / 含控制字符 / 非 UTF-8），原因写 `error`
-bool account_name_key(const AccountConfig& acct, std::string* key, std::string* error) {
+/// `account_name` 校验结果：成功给唯一性比较键，失败给原因（错误串形态见契约 §7）。
+struct AccountNameValidation {
+    std::optional<std::string> key{};  ///< 成功 = NFC(trim(name))；留空时回落 account_id
+    std::string error{};               ///< key 为空时的原因（超长 / 控制字符 / 非 UTF-8）
+};
+
+/// 校验 `account_name` 并生成唯一性比较键（契约 §2.2 / ADR 0056 决策 4）。
+AccountNameValidation validate_account_name(const AccountConfig& acct) {
     const std::string_view trimmed = trim_ascii_whitespace(acct.account_name);
     if (trimmed.empty()) {
-        *key = acct.account_id;  // 留空按 account_id 参与唯一性判定
-        return true;
+        return {.key = acct.account_id};  // 留空按 account_id 参与唯一性判定
     }
     if (trimmed.size() > kAccountNameMaxBytes) {
-        *error =
-            std::format("account_name too long | account_id=\"{}\" max_bytes={} actual_bytes={}",
-                        acct.account_id, kAccountNameMaxBytes, trimmed.size());
-        return false;
+        return {.error = std::format("account_name too long | account_id=\"{}\" max_bytes={} "
+                                     "actual_bytes={}",
+                                     acct.account_id, kAccountNameMaxBytes, trimmed.size())};
     }
     if (contains_control_chars(trimmed)) {
-        *error = std::format("account_name invalid | account_id=\"{}\" reason=control_char",
-                             acct.account_id);
-        return false;
+        return {.error = std::format("account_name invalid | account_id=\"{}\" reason=control_char",
+                                     acct.account_id)};
     }
     auto normalized = utf8_nfc(trimmed);
     if (!normalized.has_value()) {
-        *error = std::format("account_name invalid | account_id=\"{}\" reason=invalid_utf8",
-                             acct.account_id);
-        return false;
+        return {.error = std::format("account_name invalid | account_id=\"{}\" reason=invalid_utf8",
+                                     acct.account_id)};
     }
-    *key = std::move(*normalized);
-    return true;
+    return {.key = std::move(*normalized)};
 }
 
 /// 检测旧配置里已删除的 `ext.user_id`（ADR 0056 硬切）：返回首个命中账户的 account_id。
@@ -229,12 +228,11 @@ std::optional<std::string> validate(const TdConfig& cfg) {
         if (!is_valid_account_id_charset(acct.account_id)) {
             return std::format("account_id charset invalid | account_id=\"{}\"", acct.account_id);
         }
-        std::string name_key;
-        std::string error;
-        if (!account_name_key(acct, &name_key, &error)) {
-            return error;
+        auto name = validate_account_name(acct);
+        if (!name.key.has_value()) {
+            return name.error;
         }
-        name_keys.push_back(std::move(name_key));
+        name_keys.push_back(std::move(*name.key));
 
         // Global Constraints: 账户 ext 的连接参数非空
         if (acct.ext.broker_id.empty()) {

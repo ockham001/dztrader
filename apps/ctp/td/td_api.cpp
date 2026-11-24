@@ -340,8 +340,9 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
     }
 
     // 2. 含 instance_id 帧: 入站定向帧全部是进程级（instance_id == name_）。账户级帧
-    //    （TD_RTN_STATUS / RTN_PROGRESS / NOTIFY_TD_*）的 instance_id = account_id，由本进程
-    //    发出，不存在「网关名:账户ID」复合键（总则 §5 / ADR 0056）。
+    //    （TD_RTN_STATUS / RTN_PROGRESS / NOTIFY_TD_CONNECTED / NOTIFY_TD_DISCONNECTED）的
+    //    instance_id = account_id，由本进程发出，不存在「网关名:账户ID」复合键
+    //    （总则 §5 / ADR 0056）。
     //    (TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 属 basic 广播帧, 已在第 1 层处理, 见契约 td-order)
     std::string_view inst(view.ext_inst_id());
     if (inst != name_) {
@@ -648,6 +649,8 @@ void TdApi::connect_account_by_id(const std::string& account_id, bool user_initi
     }
 
     // 4. flow_dir: cfg->ext.flow_dir 优先 (用户指定), 否则用 flow_dir_ / account_id (每账户独立)
+    //    account_id 现为用户输入的柜台账户号，契约字符集允许 `/` 与 `.` —— 直接作目录名会有
+    //    路径穿越/目录碰撞风险，目录名转义/字符集收窄见 #475（本票不改路径构造）。
     std::filesystem::path session_flow_dir;
     if (!cfg->ext.flow_dir.empty()) {
         session_flow_dir = cfg->ext.flow_dir;

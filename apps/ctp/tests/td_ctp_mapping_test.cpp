@@ -1040,8 +1040,9 @@ TEST(ToDzPositionTest, KnownDirectionsHaveNoUnknownEvidence) {
 // 账户身份字段 (ADR 0056): CTP 的 UserID 与 InvestorID 都取 account_id
 // ============================================================================
 
-/// 契约 td-config §2.3 / ADR 0056 决策 1-2：构造配置 → 账户 ID 填进认证 / 登录（UserID）
-/// 与撤单 / 结算确认（InvestorID），证明两处同源（不再有独立的 user_id 字段）。
+/// 契约 td-config §2.3 / ADR 0056 决策 1-2：构造配置 → 账户 ID 经唯一填充入口
+/// `fill_account_id` 填进认证 / 登录（UserID）与撤单 / 结算确认（InvestorID），证明两处
+/// 同源（不再有独立的 user_id 字段）；下单路径的 InvestorID 同为该入口（ToInputOrderField）。
 TEST(TdAccountIdentityTest, UserIdAndInvestorIdBothUseAccountId) {
     TdConfig cfg;
     AccountConfig acct;
@@ -1053,10 +1054,10 @@ TEST(TdAccountIdentityTest, UserIdAndInvestorIdBothUseAccountId) {
     CThostFtdcReqUserLoginField login{};
     CThostFtdcInputOrderActionField action{};
     CThostFtdcSettlementInfoConfirmField settle{};
-    fill_user_id(auth.UserID, sizeof(auth.UserID), account_id);
-    fill_user_id(login.UserID, sizeof(login.UserID), account_id);
-    fill_investor_id(action.InvestorID, sizeof(action.InvestorID), account_id);
-    fill_investor_id(settle.InvestorID, sizeof(settle.InvestorID), account_id);
+    fill_account_id(auth.UserID, sizeof(auth.UserID), account_id);
+    fill_account_id(login.UserID, sizeof(login.UserID), account_id);
+    fill_account_id(action.InvestorID, sizeof(action.InvestorID), account_id);
+    fill_account_id(settle.InvestorID, sizeof(settle.InvestorID), account_id);
 
     EXPECT_STREQ(auth.UserID, "00001");
     EXPECT_STREQ(login.UserID, "00001");
@@ -1068,6 +1069,6 @@ TEST(TdAccountIdentityTest, UserIdAndInvestorIdBothUseAccountId) {
 /// 绝不截断成一个可能存在的其他账户。
 TEST(TdAccountIdentityTest, OverlongAccountIdFillsEmptyInsteadOfTruncating) {
     CThostFtdcInputOrderActionField action{};
-    fill_investor_id(action.InvestorID, sizeof(action.InvestorID), "1234567890123");  // 13 字节
+    fill_account_id(action.InvestorID, sizeof(action.InvestorID), "1234567890123");  // 13 字节
     EXPECT_STREQ(action.InvestorID, "");
 }
