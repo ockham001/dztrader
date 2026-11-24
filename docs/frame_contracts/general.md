@@ -158,8 +158,9 @@
 
 - 逻辑实例分两级：**进程级** = 进程名（如 `dzmd_ctp`、`dztd_ctp`）；**账户级** = 账户 ID（交易多账户场景）。
 - 进程名由命名规则约束（`dzmd_*`/`dztd_*`/`stg.*` 等）。
-- 账户 ID **全局唯一**（跨全部接口类型，如 CTP / XTP 不冲突），作为账户级实例的唯一标识，不携带进程名；账户归属进程由业务配置 / 路由推断，不由 `instance_id` 承载。
-- **例外（交易账户级状态帧）**：`TD_RTN_STATUS`（契约 td-status）等按账户上报的交易帧使用 `网关名:账户ID` 复合 `instance_id`（如 `dztd_ctp:account_001`）——复合键仅用于帧路由与 dzweb 镜像 key（镜像按来源网关分区），**账户身份仍是 `account_id`**，`gateway` 只是审计列（ADR 0045）。
+- **账户 ID = 柜台真实投资者代码**（[ADR 0056](../adr/0056-td-account-identity-investor-code-and-display-name.md)），**全局唯一**（跨全部接口类型，如 CTP / XTP 不冲突），作为账户级实例的唯一标识，**不携带进程名**；账户归属进程由业务配置 / 路由推断，不由 `instance_id` 承载。
+- **账户级帧的 `instance_id` 就是账户 ID 本身**（如 `"00001"`），**不使用 `网关名:账户ID` 复合键**：网关名是运行期可变的进程实例名，不能作账户身份（ADR 0045）；账户级 `instance_id` 不随网关改名 / 换实例漂移。帧类型决定 `instance_id` 的级别——**一个帧类型要么是进程级、要么是账户级，不存在需要推断的情况**（消费方按帧类型静态确定，不做运行时猜测）。分级清单见各帧契约（`td-status`、`progress`、`td-config`、`td-connection`、`td-account-ops`、`td-data-sync`、`td-order`）。
+- **共享键空间约束**：账户级与进程级 `instance_id` 共用同一份镜像顶层键空间与同一份订阅者命名空间，因此账户 ID 不得等于任何已注册进程名（`dztraderd` / `dzsysmon` / `dzmd_*` / `dztd_*` / `stg.*`）；该约束由平台入口校验（契约 td-config §7）。
 - 策略实例 ID = `stg.<name>`（无 pid 后缀，重启复用同名；master 与策略 SDK 必须构造同名）。
 - 订阅者（读者）身份 = 进程 instance_id（策略 `stg.<name>`，其余进程为进程名），与该进程的事件通道信号量名一致（见契约 shm）。
 - **身份边界**：`stg.<name>` 前缀**仅用于内存中的订阅者/信号量/reader/md 订阅者身份**（区分策略与系统组件，同一事件通道命名空间防冲突）。策略帧的帧头 `instance_id`、payload 内嵌 `strategy_id` 字段、展示层与 SDK 接口一律用**裸策略名**（策略名在全部策略中唯一，如 `stg_demo`；本目录《帧契约：策略》《帧契约：UI 通知》按此执行）。
@@ -218,6 +219,8 @@
 
 - dzweb 为每个实例维护镜像（key = `instance_id`，无 `instance_id` 帧挂固定 `dztraderd`）；收到 RTN 更新对应 domain 并 WS 推送。
   - 例外：发送方为**唯一固定内部进程**的无 `instance_id` 帧，由对应契约声明固定挂载实例（如契约 sysmon 的快照帧固定挂 `dzsysmon`）。
+- **键空间是共用的一维空间**：进程级（进程名）与账户级（账户 ID）条目在同一层，因此账户 ID 不得等于任何已注册进程名（§5）。
+- **账户级镜像的清理不由投递方路径承担**：账户级条目的 key 不含进程名，进程停止 / 崩溃 / 被移除时**不能**按进程名清（那是进程级清理路径）。dzweb 按**账户注册表**反查该网关的账户集，逐个清 `td_status` / `progress` 并广播；注册表降级时放弃清理（宁残留不猜）。账户从配置帧消失时同样清掉。
 - RTN 全量覆盖：前端直接整体覆盖本地镜像，覆盖天然含删除。
 - 镜像 domain 名与 WS 消息的映射见契约 webui-ws；镜像不进"高频数据"。
 - 仅查询响应（如订阅详情）不进镜像，dzweb 透传广播。
@@ -228,7 +231,7 @@
 
 - 本目录当前覆盖事件通道的低频控制/配置/通知帧。
 - **已覆盖**：策略帧（`DZ_FRAME_UI_INPUT`/`DZ_FRAME_OUTPUT_UI`/`DZ_FRAME_SET_LOGICAL_POSITION`，见《帧契约：策略》）；TD 数据同步（TD 推送 `DZ_FRAME_ORDER_REPORT`/`DZ_FRAME_TRADE_REPORT`/`DZ_FRAME_POSITION_INFO`/`DZ_FRAME_TRADING_ACCOUNT` 的账户级 seq/登录日装载/回补/重置/登录完成协议，见《帧契约：TD 数据同步》）；交易网关配置与状态（`DZ_FRAME_TD_REQ_MODIFY_CONFIG`/`DZ_FRAME_TD_RTN_CONFIG`/`DZ_FRAME_TD_RTN_STATUS`，见《帧契约：交易网关配置》《帧契约：交易网关状态》）；交易账户连接控制（`DZ_FRAME_TD_CONNECT`/`DZ_FRAME_TD_DISCONNECT`，见《帧契约：交易账户连接控制》）。完整清单见 [README](README.md) 目录地图。
-- **未覆盖**（后续独立契约，本目录暂不收录）：交易帧的其余部分——生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`/`DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`；行情/交易数据帧（`TICK`，struct payload）。
+- **未覆盖**（后续独立契约，本目录暂不收录）：生命周期通知 `DZ_FRAME_NOTIFY_TD_STARTED`/`DZ_FRAME_NOTIFY_TD_STOPPED`（进程级）与 `DZ_FRAME_NOTIFY_TD_CONNECTED`/`DZ_FRAME_NOTIFY_TD_DISCONNECTED`（**账户级**，`instance_id` = 账户 ID，空 payload——写端见 `apps/ctp/td/td_api.cpp`，当前无消费者）；行情/交易数据帧（`TICK`，struct payload）。
 - `DZ_FRAME_SYS_SCHED`：该帧与其 payload（`DzSysSched`）已于 2026-08 随"系统调度域废弃"**从公开头移除**（此前无任何进程消费，md 已于 2026-07 移除处理），定义行一并删除、不再占号。策略侧定时需求由 `dz_schedule_*` 定时器接口承担（见《帧契约：策略》）。
 
 ---

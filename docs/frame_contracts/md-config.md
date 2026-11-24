@@ -53,9 +53,9 @@
 
 | 值 | params 字段 | 状态保护 | 说明 |
 |---|---|---|---|
-| `AddBroker` | `name`\*, `broker_id`, `user_id`, `password`, `product_info` | 否 | 追加经纪商，`name` 不可与现有重复，不改当前连接。`frontends` 默认为空数组，需后续通过 `SetFrontends` 设置 |
+| `AddBroker` | `name`\*, `broker_id`, `account_id`, `password`, `product_info` | 否 | 追加经纪商，`name` 不可与现有重复，不改当前连接。`frontends` 默认为空数组，需后续通过 `SetFrontends` 设置 |
 | `RemoveBroker` | `name`\* | 是 | 删除经纪商，子进程自动清空无效选中 |
-| `UpdateBroker` | `name`\*, `broker_id`, `user_id`, `password`, `product_info` | 是 | 更新经纪商字段；缺失字段保留旧值；`password` 缺失/空/`"****"` 均保留旧值 |
+| `UpdateBroker` | `name`\*, `broker_id`, `account_id`, `password`, `product_info` | 是 | 更新经纪商字段；缺失字段保留旧值；`password` 缺失/空/`"****"` 均保留旧值 |
 | `SetFrontends` | `name`\*, `frontends[]`\* | 是 | 整体替换前置地址列表；空数组 `[]` 合法（清空） |
 | `SetCurrentBroker` | `name` | 是 | 设置当前选中经纪商；`name` 缺失或为空字符串均表示清空选中；非空时必须指向已存在的经纪商 |
 | `SetSubscribeParams` | `subscribe_batch_size`, `subscribe_batch_delay_ms`, `sub_check_interval_ms`, `sub_max_retry` | 否 | 修改订阅参数；缺失字段保留旧值 |
@@ -82,7 +82,7 @@
 |---|---|---|
 | `name` | string | 不可变 key（仅创建时设置） |
 | `broker_id` | string | 经纪公司代码 |
-| `user_id` | string | 用户代码 |
+| `account_id` | string | 账户 ID（柜台真实账户号，登录行情会话用）。**纯配置字段**：不参与任何唯一性判定（行情不按账户路由，md 的业务键仍是 `name`），命名与 td 侧统一（ADR 0056） |
 | `password` | string | 登录密码 |
 | `product_info` | string | 产品信息 |
 | `frontends` | array\<BrokerFrontend\> | 前置地址列表 |
@@ -114,10 +114,10 @@ MD 网关配置（全量结构，RTN payload 用）。
 | `params` | object | 是 | 操作参数，字段随 `op` 变化（见 MdConfigOp 表） |
 
 ```json
-{"op": "AddBroker", "params": {"name": "simnow", "broker_id": "9999", "user_id": "00001", "password": "123456", "product_info": ""}}
+{"op": "AddBroker", "params": {"name": "simnow", "broker_id": "9999", "account_id": "00001", "password": "123456", "product_info": ""}}
 {"op": "SetCurrentBroker", "params": {"name": "simnow"}}
 {"op": "SetFrontends", "params": {"name": "simnow", "frontends": [{"address": "tcp://180.168.146.187:10131", "label": "电信", "enabled": true}]}}
-{"op": "UpdateBroker", "params": {"name": "simnow", "user_id": "00002", "password": "****"}}
+{"op": "UpdateBroker", "params": {"name": "simnow", "account_id": "00002", "password": "****"}}
 {"op": "SetSubscribeParams", "params": {"subscribe_batch_size": 500}}
 ```
 
@@ -143,7 +143,7 @@ payload 为上方 MdConfig schema 的脱敏 JSON（`password` → `"****"`）。
 ```json
 {
   "brokers": [{
-    "name": "simnow", "broker_id": "9999", "user_id": "00001",
+    "name": "simnow", "broker_id": "9999", "account_id": "00001",
     "password": "****", "product_info": "",
     "frontends": [{"address": "tcp://180.168.146.187:10131", "label": "电信", "enabled": true}]
   }],

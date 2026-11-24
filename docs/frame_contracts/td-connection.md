@@ -2,7 +2,9 @@
 
 本文件覆盖 `DZ_FRAME_TD_CONNECT`、`DZ_FRAME_TD_DISCONNECT` 两个帧。总则见《帧契约：通用规则》。
 
-两帧均使用 `DzExtInstFrameHeader` 扩展头，`instance_id` = 目标交易网关进程名（如 `"dztd_ctp"`）；账户身份在 payload `account_id`（账户 ID 全局唯一，总则 §5），帧头不承载账户。事件通道广播；目标交易网关按 `instance_id` 取帧后按 payload 账户处理。
+两帧均使用 `DzExtInstFrameHeader` 扩展头，**进程级帧**：`instance_id` = 目标交易网关进程名（如 `"dztd_ctp"`）；账户身份在 payload `account_id`（账户 ID = 柜台真实投资者代码，全局唯一，总则 §5），帧头不承载账户。事件通道广播；目标交易网关按 `instance_id` 取帧后按 payload 账户处理。
+
+> 为什么登录 / 登出指令是**进程级**而不是账户级：指令必须能路由到一个具体进程（谁去连柜台），而账户的归属网关只有注册表知道；用账户 ID 作 `instance_id` 会失去投递目标。**状态 / 进度**（谁现在是什么状态）才是账户级（契约 td-status / progress）。
 
 **命名（ADR 0051）**：用户/前端动作名为「登录 / 登出」（REST 路径与按钮用词）；本组帧是传输层命令名，与动作一一对应：登录 → `DZ_FRAME_TD_CONNECT`，登出 → `DZ_FRAME_TD_DISCONNECT`。「连接 / 断开」只描述帧内部的传输阶段，不作动作名。
 
@@ -18,10 +20,10 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `account_id` | string | 是 | 目标交易账户 ID，非空；账户 ID 全局唯一（ADR 0045） |
+| `account_id` | string | 是 | 目标交易账户 ID（柜台真实投资者代码），非空；全局唯一（ADR 0045 / ADR 0056） |
 
 ```json
-{"account_id": "account_001"}
+{"account_id": "00001"}
 ```
 
 ---
@@ -30,7 +32,7 @@
 
 **语义**：建立指定账户的网关会话（登录）：为目标账户创建会话并重走完整登录链（连接 → 认证 → 登录 → 结算确认 → 合约加载 → 初始查询 → `Ready`）。
 
-**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标交易网关；前端入口 `POST /api/td/accounts/{account_id}/login`（契约 rest §2.9.10）与 WS `td_connect`（契约 webui-ws §3，两路等效）；无 RTN，结果经该账户的 `RTN_PROGRESS`（契约 progress，`instance_id` = `网关名:账户ID`）与 `RTN_TD_STATUS`（契约 td-status）体现（ack 仅表示已写通道）。目标网关在任意状态字段变化时主动推送这两帧（契约 td-status §3 触发场景 1），不是只在快照/配置变更时推送。
+**数据流**：形态 3（总则 §4.2）——UI → dzweb → 目标交易网关；前端入口 `POST /api/td/accounts/{account_id}/login`（契约 rest §2.9.10）与 WS `td_connect`（契约 webui-ws §3，两路等效）；无 RTN，结果经该账户的 `RTN_PROGRESS`（契约 progress，`instance_id` = 账户 ID）与 `RTN_TD_STATUS`（契约 td-status）体现（ack 仅表示已写通道）。目标网关在任意状态字段变化时主动推送这两帧（契约 td-status §3 触发场景 1），不是只在快照/配置变更时推送。
 
 **Payload**：JSON（AccountSessionReq）
 
@@ -82,7 +84,7 @@
 
 ## 镜像
 
-- 不新增镜像域：`progress`（key = `网关名:账户ID`，契约 progress）与 `td_status`（同 key，契约 td-status）已覆盖会话状态；dzweb 不缓存会话控制请求的结果。
+- 不新增镜像域：`progress`（key = 账户 ID，契约 progress）与 `td_status`（同 key，契约 td-status）已覆盖会话状态；dzweb 不缓存会话控制请求的结果。
 - 账户集合与启用状态以账户注册表 / `td_config` 镜像为准（契约 td-config §5），本组帧不改变配置。
 
 ---

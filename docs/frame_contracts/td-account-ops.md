@@ -2,7 +2,7 @@
 
 本文件覆盖 `DZ_FRAME_TD_TRANSFER_REQ`、`DZ_FRAME_TD_TRANSFER_RSP`、`DZ_FRAME_TD_TRANSFER_RTN`、`DZ_FRAME_TD_PASSWORD_UPDATE_REQ`、`DZ_FRAME_TD_PASSWORD_UPDATE_RSP` 五个帧。总则见《帧契约：通用规则》。
 
-五帧均使用 `DzExtFrameHeader` 扩展头（**无 `instance_id`**），事件通道广播；接收方按 payload `account_id` 过滤（账户 ID 全局唯一，总则 §5）。发送方身份/目标不在帧头承载。
+五帧均使用 `DzExtFrameHeader` 扩展头（**无 `instance_id`**），事件通道广播；接收方按 payload `account_id` 过滤（账户 ID = 柜台真实投资者代码，全局唯一，总则 §5）。发送方身份/目标不在帧头承载。
 
 类型层真相源：`libs/platform/include/dztrader/platform/td_account_ops.h`。
 
@@ -18,7 +18,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `account_id` | string | 是 | 目标交易账户 ID |
+| `account_id` | string | 是 | 目标交易账户 ID（柜台真实投资者代码） |
 | `trade_code` | string | 是 | CTP 交易代码：`"202001"`=银行→期货，`"202002"`=期货→银行，`"204002"`=查询 |
 | `bank_id` | string | 否 | 银行代码 |
 | `bank_account` | string | 否 | 银行账号 |
@@ -31,7 +31,7 @@
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "trade_code": "202001",
   "bank_id": "1",
   "bank_account": "6222020200112233",
@@ -50,7 +50,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `account_id` | string | 目标交易账户 ID |
+| `account_id` | string | 目标交易账户 ID（柜台真实投资者代码） |
 | `trade_code` | string | 原样回传请求的交易代码 |
 | `error_id` | int | 0=成功；非 0 为 CTP 错误码 |
 | `error_msg` | string | 错误描述（UTF-8；成功为空串） |
@@ -61,7 +61,7 @@
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "trade_code": "202001",
   "error_id": 0,
   "error_msg": "",
@@ -76,7 +76,7 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `account_id` | string | 是 | 目标交易账户 ID |
+| `account_id` | string | 是 | 目标交易账户 ID（柜台真实投资者代码） |
 | `password_type` | string | 是 | `"U"`=登录密码，`"A"`=资金密码 |
 | `old_password` | string | 是 | 旧密码（敏感，见"安全约束"） |
 | `new_password` | string | 是 | 新密码（敏感，见"安全约束"） |
@@ -84,7 +84,7 @@
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "password_type": "U",
   "old_password": "******",
   "new_password": "******",
@@ -96,7 +96,7 @@
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `account_id` | string | 目标交易账户 ID |
+| `account_id` | string | 目标交易账户 ID（柜台真实投资者代码） |
 | `password_type` | string | 原样回传：`"U"`=登录密码，`"A"`=资金密码 |
 | `error_id` | int | 0=成功；非 0 为 CTP 错误码 |
 | `error_msg` | string | 错误描述（UTF-8；成功为空串） |
@@ -104,7 +104,7 @@
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "password_type": "U",
   "error_id": 0,
   "error_msg": "",

@@ -27,7 +27,7 @@
 | `type` | 消息类型（见 §2/§3） |
 | `data` | 领域消息载荷（广播帧专用） |
 | `payload` | 控制消息载荷（C2S 请求、`*_ack`/`error`/`log_line`/`log_tail_unsubscribed`/`data_changed`/`default_password_warning`、td_recent） |
-| `instance_id` | 可选；领域消息的实例归属（`log_config`/`md_shm_config`/`auto_login`/`progress`）；为空时不携带该字段（`event_shm_config` 等挂 `dztraderd` 的消息为空，见 §2.2 表） |
+| `instance_id` | 可选；领域消息的实例归属（`log_config`/`md_shm_config`/`auto_login`/`progress`）；为空时不携带该字段（`event_shm_config` 等挂 `dztraderd` 的消息为空，见 §2.2 表）。**级别由消息类型决定**：进程级消息为进程名，账户级消息（`progress` 的 TD 账户、`td_rtn_status`）为**账户 ID**（总则 §5；不出现 `网关名:账户ID` 复合键，ADR 0056） |
 | `seq` | 可选；C2S 消息携带时由 `*_ack`/`error` 回填 |
 
 **`data` 与 `payload` 互斥**：领域消息用 `data`，控制消息用 `payload`，勿混用。
@@ -42,6 +42,8 @@
 **触发**：每次鉴权成功建连后。
 **载荷（`data`）**：`MirrorStore` 全量，结构 `{ [instance_id]: { [domain]: payload } }`。
 
+顶层 key 是**一维**的 `instance_id`，进程级与账户级共用同一个键空间（总则 §5）：进程级条目用进程名，账户级条目用**账户 ID**。因此账户 ID 不得等于任何已注册进程名（契约 td-config §7）——否则同名实例的 `progress` 域会互相覆盖。
+
 domain 清单与挂载实例：
 
 | domain | 挂载实例 | payload 结构（= 对应契约的 RTN payload） | 对应契约 |
@@ -52,7 +54,7 @@ domain 清单与挂载实例：
 | `process_config` | 固定 `dztraderd` | `{ [进程名]: config }` 全量映射 | process |
 | `process_status` | 各进程 | `{ name, state, pid, ... }` | process |
 | `auto_login` | 各行情进程 | `{ enabled, schedules }` | auto-login |
-| `progress` | 各进程（TD 为 `网关名:账户ID`） | `{ min, max, current, desc }` | progress |
+| `progress` | 各进程（TD 账户级为**账户 ID**） | `{ min, max, current, desc }` | progress |
 | `md_config` | 各行情进程 | 脱敏行情配置 | md-config |
 | `md_status` | 各行情进程 | 行情网关状态 | md-status |
 | `sysmon_snapshot` | 固定 `dzsysmon` | 系统监控快照 | sysmon |
@@ -88,7 +90,7 @@ domain 清单与挂载实例：
 | td_position_info | `POSITION_INFO` | 契约 rest §2.9.4 的持仓行 | 空（account_id 在 payload 内） | td-data-sync |
 | td_trading_account | `TRADING_ACCOUNT` | 契约 rest §2.9.4 的资金行 | 空（account_id 在 payload 内） | td-data-sync |
 | `td_rtn_config` | `RTN_TD_CONFIG` | 原 payload 整体透传（脱敏配置，契约 td-config §2.4） | **网关进程名**（如 `dztd_ctp`；镜像 domain `td_config` 的 key） | td-config |
-| `td_rtn_status` | `RTN_TD_STATUS` | 原 payload 整体透传（账户级细状态，契约 td-status §2.1） | **网关名:账户ID**（如 `dztd_ctp:account_001`；镜像 domain `td_status` 的 key） | td-status |
+| `td_rtn_status` | `RTN_TD_STATUS` | 原 payload 整体透传（账户级细状态，契约 td-status §2.1） | **账户 ID**（如 `00001`；镜像 domain `td_status` 的 key） | td-status |
 
 - 未被 `process_config` 注册的进程：`process_status` 镜像不写入，但广播仍无条件发出（前端可感知未知进程状态）。
 - `md_shm_config` 前端已有消费（展示与编辑，pending 由本消息清除）；`event_shm_config` 前端已消费（系统设置页展示，编辑 pending 由本消息清除，入口契约 rest §2.7 `PUT /api/settings/event-shm-config`）。

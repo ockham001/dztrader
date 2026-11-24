@@ -110,19 +110,29 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 | 项 | 帧 / WS | 镜像 domain 与 key | 对应契约 |
 |---|---|---|---|
 | 网关配置 | `TD_RTN_CONFIG` → WS `td_rtn_config` | `td_config`，key = 网关进程名（如 `dztd_ctp`），payload 整体透传（dzweb 不改写 `ext`） | td-config §2.4/§4/§8、webui-ws §2.1/§2.2 |
-| 账户细状态 | `TD_RTN_STATUS` → WS `td_rtn_status` | `td_status`，key = **网关名:账户ID**（如 `dztd_ctp:account_001`），一个帧一个账户 | td-status §2.1/§3、webui-ws §2.1/§2.2 |
+| 账户细状态 | `TD_RTN_STATUS` → WS `td_rtn_status` | `td_status`，key = **账户 ID**（如 `00001`），一个帧一个账户 | td-status §2.1/§3、webui-ws §2.1/§2.2 |
 
 - **领域服务**：`apps/webui/td_config_domain_service.h` / `td_status_domain_service.h`，形态与
   `md_config_domain_service.h` / `md_status_domain_service.h` 同型（镜像 + 广播，无额外状态）。
   md 侧把 `source` 内嵌在 payload 且 `instance_id` 为空；td 侧按契约用 `instance_id` 承载归属
-  （网关进程名 / 网关名:账户ID），payload 原样透传。
+  （配置 = 网关进程名，账户级状态 = **账户 ID**，ADR 0056），payload 原样透传。
+- **账户级镜像清理**（ADR 0056）：`td_status` 与账户级 `progress` 的 key 是账户 ID，**不含
+  进程名**，因此 `ProcessMirror::mark_stale(网关名)` 那类按进程名的清理路径覆盖不到它们。
+  网关停止 / 崩溃 / 被移除时，dzweb 用注册表反查该网关账户集，逐个 `mirror_.erase(account_id,
+  "td_status"/"progress")` 并广播；注册表降级时放弃清理（宁残留不猜）。账户从配置帧消失时
+  同样清掉。
+- **`interface_type` 派生**：账户级帧的 `instance_id` 是账户 ID，本身不含接口类型，必须先用
+  注册表解析出归属网关再派生（td-status §1）；注册表未命中时按已收到的 `ext` 原样透传，不猜。
 - **账户注册表**（`apps/webui/td_account_registry.{h,cpp}`，契约 td-config §5 / rest §2.9.9）：
-  `account_id → {gateway, enabled}` 的平台侧**投影**，`account_id` 全局唯一（跨网关，ADR 0045）。
-  - **内存优先 + platform.db 尽力持久化**（表 `td_account_registry`，只有 `account_id` /
-    `gateway` 两列）：写失败只记 ERROR、不抛、不阻塞账户操作；启动加载失败则从空开始、随各
-    网关配置回报重建（已知降级：最多少覆盖一个网关）。
+  `account_id → {gateway, account_name, enabled}` 的平台侧**投影**，`account_id` 全局唯一（跨网关，
+  ADR 0045 / ADR 0056）。它同时是**账户显示名的唯一来源**（`account_name` 不进交易推送帧、
+  不进交易库）。
+  - **内存优先 + platform.db 尽力持久化**（表 `td_account_registry`：`account_id` / `gateway` /
+    `account_name` 三列，`account_name` 由加列迁移补上）：写失败只记 ERROR、不抛、不阻塞账户
+    操作；启动加载失败则从空开始、随各网关配置回报重建（已知降级：最多少覆盖一个网关）。
+    DB 恢复的旧行 `account_name` 为空串，前端回落 `account_id`。
   - **帧为权威，整组 reconcile**：`RTN_TD_CONFIG` 到达即按网关整组替换（先清该网关旧条目再
-    重建），**只读通用层** `account_id` / `enabled`，不读 `ext`。配置帧 schema 异常（缺
+    重建），**只读通用层** `account_id` / `account_name` / `enabled`，不读 `ext`。帧 schema 异常（缺
     `accounts` 数组）只置「已收到过配置帧」标志、不 reconcile——用空集合 reconcile 会把该
     网关账户从 UI 抹掉。
   - **`enabled` 不持久化**（契约 rest §2.9.9 已知降级）：重启后从 DB 恢复的条目 `enabled`
@@ -142,8 +152,10 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
     **只表示已写入事件通道**，生效以 `RTN_TD_CONFIG` 为准（成功推新值、失败推回滚旧值）。
   - **预检与机器码**（错误体 `{"error","code"}`，契约 rest §1 形状）：
     - POST：admin(403 `admin_required`) → 网关是进程配置中的 `dztd_*`(400 `invalid_gateway`)
-      → Running(409 `gateway_not_running`) → `account_id` 非空且 ≤31 字节(400) →
-      注册表查重（**任何**网关含已禁用/离线）(409 `account_exists`)。
+      → Running(409 `gateway_not_running`) → 通用层字段校验（id 长度/字符集/进程名冲突
+      400 `invalid_account_id`；名称长度/控制字符 400 `invalid_account_name`）→
+      注册表查重（**任何**网关含已禁用/离线）(409 `account_exists`；名称展平冲突
+      409 `account_name_exists`)。
     - PUT/DELETE：admin(403 `admin_required`) → 注册表解析 `account_id → gateway`
       (404 `account_not_found`) → `dztd_*`(400 `invalid_gateway`) → Running(409
       `gateway_not_running`)。**顺序与 POST 不同是有意的**：PUT/DELETE 的 gateway 只能从注册表
