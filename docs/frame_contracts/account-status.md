@@ -60,7 +60,7 @@
 **约束**：
 
 - basic 广播帧，所有事件通道读者可见；策略侧由 SDK 全量透传（不按策略过滤，见《帧契约：策略》拦截总则）
-- 与 `TD_RTN_STATUS` 并行分工：后者面向 dzweb UI 全量细节（11 态细状态 + 登录信息 + 登录进度，`instance_id` = "网关名:账户ID"，见《帧契约：交易网关状态》），`ACCOUNT_STATUS` 面向策略/master 三态聚合
+- 与 `TD_RTN_STATUS` 并行分工：后者面向 dzweb UI 全量细节（11 态细状态 + 登录信息 + 登录进度，`instance_id` = 账户 ID，见《帧契约：交易网关状态》），`ACCOUNT_STATUS` 面向策略/master 三态聚合
 - master 兜底与 td 权威应答可能重复，消费方幂等取最新
 - 竞态窗口：td 启动快照未到时 master 可能假阴性 Offline（td 快照到达自愈）；td 崩溃到 master 补推之间策略可能已下单（Offline 仅通知，不改变订单路径）。td 退出后 `TD_QUERY_ACCOUNT_STATUS` 查询由 master 兜底回 Offline（`gateway_name` = ""）——不存在静默窗口
 

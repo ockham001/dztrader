@@ -8,6 +8,9 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 > **实现注记**：`TdDataService` 记录镜像已随 #246 删除；委托列表端点（`GET /api/td/orders`）与 WS 委托事件 / 建连补发已随 #246 落地；统计端点（`GET /api/td/stats`，§2.9.5）与 dzweb 统计计数器已随 #247 落地（`apps/webui/td_stats{,_query}.{h,cpp}`，重算查询与委托列表共用只读连接抽取 `td_read_db.{h,cpp}`）；成交列表端点（`GET /api/td/trades`）与 WS 成交事件已随 #248 落地（`apps/webui/td_trades_query.{h,cpp}`，列表参数 / 游标抽为 `apps/webui/td_list_query.{h,cpp}`、行形状与派生字段抽为 `apps/webui/td_row_json.{h,cpp}`，委托与成交共用同一份）。持仓列表端点（`GET /api/td/positions`，§2.9.4）、WS 持仓事件 `td_position_info` 与 `td_recent` 持仓事件已随 #249 落地（`apps/webui/td_positions_query.{h,cpp}`；账户全集与锚点日来源抽为 `apps/webui/td_account_scope.{h,cpp}`）。资金端点（`GET /api/td/trading_accounts`，§2.9.4）与 WS 资金事件 `td_trading_account`（含 `td_recent` 第四类事件）已随 #250 落地（`apps/webui/td_trading_accounts_query.{h,cpp}`，与持仓共用 `td_account_scope` / `td_row_json` / `td_read_db`；资金端点不分页，`limit`/`cursor` 被忽略）。账户注册表读端点（`GET /api/td/accounts`，§2.9.9）与账户配置写端点（§2.9.7）已随 #251 落地（`apps/webui/td_account_registry.{h,cpp}`；账户全集第三个来源接入 `td_account_scope`）。
 
+
+<!-- pending-symbol: account_name (#467) -->
+
 ---
 
 ## 1. 通用约定
@@ -15,7 +18,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 - 认证：除 `POST /api/login`、`GET /health`、`GET /api/system/info` 外，全部 `/api/*` 需要 JWT（`Authorization: Bearer <jwt>`）；失败回 401 `{"error":"unauthorized"}`（token 缺失）或 `{"error":"invalid_token"}`（校验失败）。这两个值是**历史遗留的固定标识**（前端不据此分支——非登录接口的 401 一律按会话失效处理），属下条列出的已知例外，不适用 `code` 规则。
 - 响应：JSON（`application/json`）。
 - 错误：`{"error": message}` + 对应 HTTP 状态码；404 为 `{"error":"not found"}`。`error` 承载**人类可读消息**（小写英文开头、无句号），前端可直接兜底展示——**登录失败除外**（下条：其文案由 `code` 映射中文，不得展示 `error`）。
-- 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。**当前登记的 `code` 清单**：登录失败（`invalid_credentials` / `account_disabled` / `ip_banned` / `account_locked`，见下条与 §2.1）、口令强度（`password_too_weak`，400）、自助改密旧密码错误（`invalid_old_password`，400）、强制改密门禁（`password_change_required`，403）——后三者见 §1「密码策略」「自助改密 vs 管理员重置」「强制改密」；交易账户配置写（§2.9.7）新增 admin_required / invalid_gateway / gateway_not_running / account_exists / account_not_found（状态码见该节）；资金刷新（§2.9.11）复用 account_not_found / gateway_not_running，新增 account_offline。将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
+- 需要**机器可判别**的失败额外携带 `code`（snake_case 机器码）：`{"error": <human message>, "code": <snake_case_code>}`。`code` 是机器判别的唯一手段——前端分支只认 `code`，不得解析 `error` 文本；未登记 `code` 的普通错误体按通用失败处理。**当前登记的 `code` 清单**：登录失败（`invalid_credentials` / `account_disabled` / `ip_banned` / `account_locked`，见下条与 §2.1）、口令强度（`password_too_weak`，400）、自助改密旧密码错误（`invalid_old_password`，400）、强制改密门禁（`password_change_required`，403）——后三者见 §1「密码策略」「自助改密 vs 管理员重置」「强制改密」；交易账户配置写（§2.9.7）新增 admin_required / invalid_gateway / gateway_not_running / account_exists / account_name_exists / account_not_found / invalid_account_id / invalid_account_name（状态码见该节）；资金刷新（§2.9.11）复用 account_not_found / gateway_not_running，新增 account_offline。将来需要机器判别时按本通用形状补 `code`。**已知的历史遗留例外**（不适用本形状、也不得再新增同类）：认证 401 的 `unauthorized`/`invalid_token`、以及若干端点把 `admin_only`/`no_user`/`update_failed` 之类的短标识放进 `error`——这些值是**既有实现**，清理需单独一票；新代码不得以它们为先例。
 - 登录失败错误体（`POST /api/login` 专用）：`{"error": <human message>, "code": <snake_case_code>}`，HTTP 状态码表达类别（401 凭据/状态/封禁类，423 锁定）。请求体必须为 JSON 对象且 `username`/`password` 均为 string；请求体缺失/非法 JSON/非对象/字段类型错/缺用户名或密码时回 400 `{"error":"bad request"}`（**无 `code`**，前端按通用失败处理）。`account_locked` 额外携带 `locked_until`（**绝对 Unix 秒级时间戳**，与 `GET /api/user*` 的 `locked_until` 同语义；前端按 `locked_until - now` 计算剩余分钟，不得按剩余秒数解释；`locked_until <= now` 表示无剩余时间信息，前端只显示锁定文案、不显示分钟）。前端把 `code` 映射中文文案（单一真相源 `composables/loginErrors.ts`），**绝不把 `code` 或英文 `error` 回显给用户**；未知/缺失 `code` 统一回落「登录失败」。
 - 权限：管理类端点需 admin 角色（服务端校验，非前端隐藏）。
 - **交易数据端点通用规则**（§2.9）：
@@ -165,7 +168,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 {
   "available": true,
   "trading_day": "20260808",
-  "online_accounts": ["account_001", "account_002"],
+  "online_accounts": ["00001", "00002"],
   "items": [],
   "next_cursor": null
 }
@@ -218,7 +221,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "date": "20260808",
   "order_id": 10231,
   "strategy_id": "stg_demo",
@@ -268,7 +271,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "date": "20260808",
   "trade_id": "00000000001",
   "order_id": 10231,
@@ -310,7 +313,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "date": "20260808",
   "instrument_id": "rb2601",
   "exchange_id": "SHFE",
@@ -344,7 +347,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "date": "20260808",
   "has_data": true,
   "balance": 100000.0,
@@ -384,7 +387,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 {
   "available": true,
   "trading_day": "20260808",
-  "online_accounts": ["account_001"],
+  "online_accounts": ["00001"],
   "stats": {
     "total_orders": 1240,
     "total_volume": 2480,
@@ -428,8 +431,8 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 **请求体**：
 
-- POST：`{"gateway": "dztd_ctp", "account": { ... }}`——`gateway` 为目标交易网关进程名；`account` 为契约 td-config §2.2 的账户配置（`account_id` 必填，`enabled`/`risk_control_enabled`/`currency_id`/`ext` 按该节默认与语义；`ext` 由目标网关按接口类型校验）。
-- PUT：body 为契约 td-config §2.1 `UpdateAccount` 的 params 子集（字段级 merge，缺失字段保留旧值）；**不得包含 account_id**（出现即 400 bad request，路径是唯一来源）。允许空对象 `{}`。dzweb 转发前以路径值**注入** `params.account_id` 后写帧（`{}` → `{"op":"UpdateAccount","params":{"account_id":<路径>}}`）。
+- POST：`{"gateway": "dztd_ctp", "account": { ... }}`——`gateway` 为目标交易网关进程名；`account` 为契约 td-config §2.2 的账户配置（`account_id` 必填 = 柜台真实投资者代码；`account_name` 选填 = 展示名；`enabled`/`risk_control_enabled`/`currency_id`/`ext` 按该节默认与语义；`ext` 由目标网关按接口类型校验）。
+- PUT：body 为契约 td-config §2.1 `UpdateAccount` 的 params 子集（字段级 merge，缺失字段保留旧值）；**不得包含 account_id**（出现即 400 bad request，路径是唯一来源）。允许空对象 `{}`。dzweb 转发前以路径值**注入** `params.account_id` 后写帧（`{}` → `{"op":"UpdateAccount","params":{"account_id":<路径>}}`）。改名（`account_name`）走这个端点；改名不要求账户 `Idle`（契约 td-config §2.1 状态保护只作用于连接参数）。
 - DELETE：无 body（忽略请求体）；dzweb 写 `{"op":"RemoveAccount","params":{"account_id":<路径>}}`。
 
 **预检**（失败时不写帧）：
@@ -437,11 +440,14 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 1. admin 角色；否则 403 `{"error":"admin required","code":"admin_required"}`。
 2. 目标网关（POST 来自 body 的 `gateway`；PUT/DELETE 来自注册表解析结果）必须是已注册的交易网关进程（进程配置中的 `dztd_*`）；否则 400 `{"error":"invalid gateway","code":"invalid_gateway"}`。
 3. 目标网关当前必须为 Running（`process_status`，契约 process）；否则 409 `{"error":"td gateway not running","code":"gateway_not_running"}`。
-4. POST：`account_id` 非空且 ≤ 31 字节（`DzAccountId` 容量）；否则 400 bad request。`account_id` 已在账户注册表中（**任何**网关，含已禁用/离线账户）→ 409 `{"error":"account already exists","code":"account_exists"}`。
-5. PUT / DELETE：`account_id` 由账户注册表解析网关（`account_id → gateway`）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`。
-6. 其余字段（含 `ext`）dzweb 不校验，透传给目标网关；业务校验失败由目标网关走四件套（契约 td-config §2、总则 §8）。
+4. **通用层字段校验**（POST 与 PUT 都做，规则真相源：契约 td-config §2.2 / §7）：
+   - `account_id` 非空、≤ 31 字节（`DzAccountId` 容量）、ASCII 可见字符 `0x21`–`0x7E`（禁空格 / 禁 `:` / 禁控制字符）、**不得等于任何已注册进程名**（`dztraderd`/`dzsysmon`/`dzmd_*`/`dztd_*`/`stg.*`）——否则 400 `{"error":"invalid account id","code":"invalid_account_id"}`。
+   - `account_name`（提供且非空时）：`trim` 后 ≤ 64 字节 UTF-8、无控制字符；否则 400 `{"error":"invalid account name","code":"invalid_account_name"}`。
+5. POST 唯一性：`account_id` 已在账户注册表中（**任何**网关，含已禁用/离线账户）→ 409 `{"error":"account already exists","code":"account_exists"}`。`account_name` 与任何已登记账户的 `account_id` 或 `account_name` 冲突（**展平判定**；留空的名字按 `account_id` 参与判定，NFC 规范化后字节比较）→ 409 `{"error":"account name already exists","code":"account_name_exists"}`。
+6. PUT / DELETE：`account_id` 由账户注册表解析网关（`account_id → gateway`）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`。PUT 改名的 `account_name` 唯一性同第 5 条（排除自身）。
+7. 其余字段（含 `ext`）dzweb 不校验，透传给目标网关；业务校验失败由目标网关走四件套（契约 td-config §2、总则 §8）。**CTP 特有的是 `account_id` ≤ 12 字节（`InvestorID` 容量）：dzweb 不解析 `ext` 因此不查这一条，超限由网关报**（走 `NOTIFY_UI` 弹窗，不是 REST 错误码）——这是分层的固有结果，不是遗漏。
 
-**预检顺序的端点差异**：POST 严格按 1→2→3→4（`gateway` 来自 body，可先行判定）。PUT / DELETE 的 `gateway` **只能从注册表解析**，因此顺序是 1→5→2→3（admin → 注册表解析 404 → `dztd_*` 校验 400 → Running 409）——契约 §2.9.7 的编号是语义清单，不是 PUT/DELETE 的机械执行序。
+**预检顺序的端点差异**：POST 严格按 1→2→3→4→5（`gateway` 来自 body，可先行判定）。PUT / DELETE 的 `gateway` **只能从注册表解析**，因此顺序是 1→6→2→3→4（admin → 注册表解析 404 → `dztd_*` 校验 400 → Running 409 → 字段与唯一性校验）；PUT 的字段校验（4）在 6 之后（需先定位账户才能排除自身）、DELETE 无字段校验。契约 §2.9.7 的编号是语义清单，不是 PUT/DELETE 的机械执行序。
 
 **响应**：200 `{"ok":true}`——仅表示已写入事件通道，**不代表业务已生效**（与 §1 设置类请求语义一致）。生效/失败以 `RTN_TD_CONFIG`（契约 td-config §4）为准：成功推新值，失败推回滚旧值并经 `NOTIFY_UI` 弹窗；前端 pending 以该回报清除（WS 映射见契约 webui-ws §2.2）。
 
@@ -468,14 +474,16 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 **为什么需要这个端点**：账户配置页要展示"跨网关"的账户全集并做唯一性预检（同一 `account_id` 不得属于两个网关，契约 td-config §5）。单网关的配置镜像（WS `td_rtn_config`）只有该网关自己的账户，拼不出全集；注册表是 dzweb 侧的权威投影（契约 td-config §5），必须能读。
 
+**同时是本端点的另一个职责**：它是**账户显示名的唯一来源**（契约 td-config §8、ADR 0056）——`account_name` 不进四类交易推送帧、不进交易库，前端用本端点（+ 配置镜像）建 `account_id → account_name` 映射，展示时回落 `account_id`。改名后重拉本端点即全站生效（含历史行）。
+
 **响应**：200
 
 ```json
 {
   "available": true,
   "accounts": [
-    { "account_id": "account_001", "gateway": "dztd_ctp", "enabled": true },
-    { "account_id": "account_002", "gateway": "dztd_ctp_2", "enabled": false }
+    { "account_id": "00001", "account_name": "我的主账户", "gateway": "dztd_ctp", "enabled": true },
+    { "account_id": "00002", "account_name": "", "gateway": "dztd_ctp_2", "enabled": false }
   ]
 }
 ```
@@ -484,7 +492,8 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 |---|---|---|
 | available | bool | true = 注册表可用；false = 降级（此时响应只有 available 与 reason） |
 | accounts | array\<object\> | 账户注册表条目，按 `account_id` 升序；空数组 = 无已知账户 |
-| accounts[].account_id | string | 账户标识（全局唯一） |
+| accounts[].account_id | string | 账户 ID（柜台真实投资者代码，全局唯一） |
+| accounts[].account_name | string | 展示名；**空串 = 未设置**，前端回落 `account_id`（不在服务端规范化） |
 | accounts[].gateway | string | 拥有该账户的交易网关进程名（`dztd_*`）；是**当前已知**归属，配置帧到达后被 reconcile 覆盖 |
 | accounts[].enabled | bool | 该账户当前是否启用。来自最近一次配置帧的通用层 `enabled`；注册表本身不持久化该字段（见下） |
 
@@ -496,7 +505,8 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 - 注册表是**投影**，真相源是各 td 网关配置文件（契约 td-config §6）；本端点不写任何东西。
 - `available:false` 时前端**不得**把账户列表当作空（否则用户会以为账户被删了）——展示降级提示。
-- `enabled` 的语义边界：注册表持久化在 `platform.db` 的只有 `account_id → gateway` 两列（契约 td-config §5），**不含** `enabled`。dzweb 重启后从 `platform.db` 恢复的条目 `enabled` 未知 → 回 `true`（不把账户误标为禁用）；随后该网关的配置帧到达即 reconcile 出真实值。这是**已知降级**（重启窗口内禁用账户会被显示为启用），比"把启用账户显示成禁用"危害小。
+- `enabled` 的语义边界：注册表持久化在 `platform.db` 的是 `account_id → gateway` 与 `account_name`，**不含** `enabled`。dzweb 重启后从 `platform.db` 恢复的条目 `enabled` 未知 → 回 `true`（不把账户误标为禁用）；随后该网关的配置帧到达即 reconcile 出真实值。这是**已知降级**（重启窗口内禁用账户会被显示为启用），比"把启用账户显示成禁用"危害小。
+- `account_name` 的语义边界：`platform.db` 恢复的旧行该列为空串（加列迁移），前端回落 `account_id`；配置帧到达即 reconcile 出真值。`account_name` **纯展示**——本端点任何字段缺失或非法都不得让调用方失败，调用方一律能用 `account_id` 兜底。
 - 该端点**不**触发帧、**不**读交易库，因此不受 §2.9.8 交易库降级影响。
 
 #### 2.9.10 账户会话控制（登录 / 登出）

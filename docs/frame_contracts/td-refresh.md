@@ -15,11 +15,11 @@
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `account_id` | string | 是 | 目标交易账户 ID（全局唯一，总则 §5）；空串 / 未配置账户 → 接收方忽略并记 WARN |
+| `account_id` | string | 是 | 目标交易账户 ID（柜台真实投资者代码，全局唯一，总则 §5）；空串 / 未配置账户 → 接收方忽略并记 WARN |
 | `request_id` | int | 否 | 调用方追踪 ID（日志关联用，原样记录、不回传）；由 dzweb 生成，当前固定 0 = 不追踪 |
 
 ```json
-{"account_id": "account_001", "request_id": 42}
+{"account_id": "00001", "request_id": 42}
 ```
 
 **时序与触发**：用户在资金面板点击该行「刷新」→ REST（契约 rest §2.9.11）→ dzweb 写本帧 → td 置脏（受查询通道合并 / 限速）→ 查询完成后写 `TRADING_ACCOUNT` 帧 → dzweb 广播 WS `td_trading_account` → 前端按同账户 `seq` 前进清除该行 pending。

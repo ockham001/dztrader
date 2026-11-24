@@ -2,30 +2,26 @@
 
 本文件覆盖 `DZ_FRAME_TD_RTN_STATUS` 一个帧。总则见《帧契约：通用规则》。
 
-帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` = **网关名:账户ID**（如 `"dztd_ctp:account_001"`，网关名为来源 td 进程名）。仅 RTN 推送，无 SET、无持久化、无文件 IO；交易网关在状态或状态字段变化时主动推送。
+帧使用 `DzExtInstFrameHeader` 扩展头，**账户级帧**：`instance_id` = **账户 ID**（如 `"00001"`，柜台真实投资者代码，总则 §5），不携带网关名（[ADR 0056](../adr/0056-td-account-identity-investor-code-and-display-name.md)）。仅 RTN 推送，无 SET、无持久化、无文件 IO；交易网关在状态或状态字段变化时主动推送。
 
 与《帧契约：账户登录状态》的分工：`ACCOUNT_STATUS` 面向策略/master 的三态聚合（Offline/LoggingIn/Ready）；本帧面向 UI 的细状态（11 态 + 登录信息 + 进度），按账户上报。
 
-**实现注记**：扁平结构（`date`/`api_version`/`sys_version` 在顶层、无 `ext`）与通用化 schema（`interface_type` + `ext`）的分层已随 #251 落地（`date` 改名随 #243）；dzweb 已消费本帧：按 `instance_id`（= 网关名:账户ID）维护镜像 domain `td_status` 并 WS 推送 `td_rtn_status`（映射见契约 webui-ws §2.2）。
+**实现注记**：扁平结构（`date`/`api_version`/`sys_version` 在顶层、无 `ext`）与通用化 schema（`interface_type` + `ext`）的分层已随 #251 落地（`date` 改名随 #243）；dzweb 已消费本帧：按 `instance_id`（= 账户 ID）维护镜像 domain `td_status` 并 WS 推送 `td_rtn_status`（映射见契约 webui-ws §2.2）。
 
 ---
 
 ## 1. 接口类型识别
 
-帧 payload 格式由**接口类型**决定。接口类型从 `instance_id` 的网关名部分（`:` 之前）派生，**payload 中不携带类型字段**，派生算法与《帧契约：交易网关配置》§1 完全一致：
+帧 payload 格式由**接口类型**决定，**payload 中不携带类型字段**。与《帧契约：交易网关配置》§1 的派生算法相同（去掉 `dztd_` 前缀 → tail 第一个 `_` 之前即 `interface_type`），但**输入不再是 `instance_id`**——`instance_id` 现在是账户 ID，本身不含接口类型信息：
 
-1. 取 `instance_id` 中第一个 `:` 之前的部分为网关进程名
-2. 去掉 `dztd_` 前缀得到 tail；tail 为空时不是合法的交易进程名（退化情况，不处理）
-3. tail 中第一个 `_` 之前的部分为 `interface_type`；不含 `_` 时 = tail 本身
+- **dzweb**：用 `instance_id`（= 账户 ID）查**账户注册表**得到归属网关（契约 td-config §5 / rest §2.9.9），再按上面的算法从网关名派生 `interface_type`，据此选择前端卡片 schema。注册表未命中（账户已删 / 注册表降级）时**按已收到的 `ext` 原样透传**，不猜接口类型（未知字段忽略，总则 §8）。
+- **后台进程**：每个交易网关进程只发自己的账户、只按自身接口类型构造 payload，不涉及识别。
 
-| instance_id | 网关名 | interface_type |
+| instance_id（账户 ID） | 注册表解析出的网关 | interface_type |
 |---|---|---|
-| `dztd_ctp:account_001` | `dztd_ctp` | `ctp` |
-| `dztd_ctp_2:account_001` | `dztd_ctp_2` | `ctp` |
-| `dztd_xtp:acct_a` | `dztd_xtp` | `xtp` |
-
-- **后台进程**：每个交易网关进程仅识别自身接口类型，按自身 schema 构造 payload。
-- **dzweb**：按 `instance_id` 定位实例（镜像 key = `instance_id`，与总则 §9 一致），按派生出的接口类型选择前端卡片 schema。
+| `00001` | `dztd_ctp` | `ctp` |
+| `00002` | `dztd_ctp_2` | `ctp` |
+| `10001` | `dztd_xtp` | `xtp` |
 
 ---
 
@@ -39,7 +35,7 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `account_id` | string | 账户标识（与 `instance_id` 冒号后半段一致；per-account 状态上报用） |
+| `account_id` | string | 账户 ID（柜台真实投资者代码，**与 `instance_id` 相同**；per-account 状态上报用） |
 | `state` | string | 网关内部状态，取值见 2.2；与《帧契约：账户登录状态》三态聚合的映射由后者定义 |
 | `date` | string | 会话交易日 `"YYYYMMDD"`（交易日，不是自然日）；未登录/进入 `Idle` 时为空串 |
 | `login_time` | string | 登录时间 `"YYYY-MM-DD HH:MM:SS"`（服务器本地时间，由登录响应时间戳转换）；未登录/进入 `Idle` 时为空串 |
@@ -55,7 +51,7 @@ JSON 示例：
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "state": "Ready",
   "date": "20260808",
   "login_time": "2026-08-08 08:45:32",
@@ -126,7 +122,7 @@ JSON 示例：
 ## 3. DZ_FRAME_TD_RTN_STATUS
 
 **语义**：交易网关上报账户级细状态（全量）
-**数据流**：形态 4（总则 §4.2）——交易网关（帧头 `instance_id` = 网关名:账户ID）→ dzweb；无前端入口；镜像（key = `instance_id`）→ WS（映射见契约 webui-ws，随实现票同步）
+**数据流**：形态 4（总则 §4.2）——交易网关（帧头 `instance_id` = 账户 ID）→ dzweb；无前端入口；镜像（key = `instance_id` = 账户 ID）→ WS（映射见契约 webui-ws，随实现票同步）
 **Payload**：JSON（TdStatus），**始终全量**
 
 **触发场景**：
@@ -137,20 +133,21 @@ JSON 示例：
 
 **约束**：
 - 始终全量：前端直接整体覆盖本地状态镜像
-- 一个帧只对应一个账户（`instance_id` 含账户 ID，payload 冗余携带 `account_id` 供消费方定位）
+- 一个帧只对应一个账户（`instance_id` 即账户 ID，payload 冗余携带 `account_id` 供消费方定位与自校验）
 - 账户被移除/网关退出前的最后一条状态由实现保证可观察（推 `Idle` 或停止推送，前端以在线集合（《帧契约：账户登录状态》）判断账户是否存在）
 - 本帧非策略可见：策略 SDK 直接丢弃（《帧契约：策略》拦截清单）
 
 **镜像与前端义务**：
-- dzweb 按 `instance_id` 更新细状态镜像并 WS 推送；不进交易记录镜像
-- 前端按 `instance_id`（= 网关名:账户ID）关联账户卡片；以全量覆盖更新，不自行推断字段清空时机；`date` 用于数据日期展示
+- dzweb 按 `instance_id`（= 账户 ID）更新细状态镜像并 WS 推送；不进交易记录镜像
+- 前端按 `instance_id`（= 账户 ID）关联账户行；以全量覆盖更新，不自行推断字段清空时机；`date` 用于数据日期展示
+- dzweb 在网关停止 / 崩溃 / 被移除时按注册表反查该网关账户集，清掉各账户的 `td_status` 镜像并广播（注册表降级时放弃清理，宁残留不猜）；账户从配置帧消失时同样清掉
 
 ---
 
 ## 4. 校验（仅写与总则不同的规则）
 
 - 仅 RTN 推送：无 SET/REQ、无校验失败路径；payload 为发送方进程状态机生成的全量快照，接收方（dzweb）不做字段校验，按全量覆盖写镜像。
-- `instance_id` 格式由发送方保证（网关名:账户ID）；dzweb 按第一个 `:` 拆分网关名与账户 ID（账户 ID 内不含 `:`）。
+- `instance_id` = 账户 ID，由发送方保证（本进程配置内的账户）；接收方**不做拆分**。`account_id` 字段与 `instance_id` 不一致时以 `instance_id` 为准并记 WARN（同一事实两处给出，不一致是发送方缺陷）。
 - 未知字段忽略（总则 §8）。
 
 ---

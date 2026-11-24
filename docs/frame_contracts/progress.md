@@ -2,7 +2,12 @@
 
 本文件覆盖 `DZ_FRAME_RTN_PROGRESS` 一个帧。总则见《帧契约：通用规则》。
 
-帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` 标识来源逻辑实例（进程名；TD 账户级为 `网关名:账户ID`，见总则 §5 与《帧契约：td 连接控制》）。
+帧使用 `DzExtInstFrameHeader` 扩展头，`instance_id` 标识来源逻辑实例。本帧**同时服务两种级别**（总则 §5）：
+
+- **进程级**：`instance_id` = 进程名（行情网关 `dzmd_ctp` 等）；
+- **账户级**：`instance_id` = **账户 ID**（交易网关的账户级登录进度，如 `"00001"`）。**不使用 `网关名:账户ID` 复合键**——网关名是运行期可变的进程实例名，不能作账户身份（[ADR 0056](../adr/0056-td-account-identity-investor-code-and-display-name.md)）。
+
+同一帧类型下两种级别的数据结构完全相同（进度骨架与字段一致），消费方按**帧来源与注册表**区分：`instance_id` 命中账户注册表 = 账户级，否则按进程级处理；两者共用同一份镜像键空间，因此账户 ID 不得等于进程名（契约 td-config §7）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/progress.h`（`ProgressReporter`）。
 
@@ -66,7 +71,7 @@ JSON 示例：
 ## DZ_FRAME_RTN_PROGRESS
 
 **语义**：推送当前进度状态
-**数据流**：形态 4（总则 §4.2）——进程（帧头 `instance_id` = 来源，TD 账户级为 `网关名:账户ID`）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
+**数据流**：形态 4（总则 §4.2）——进程或交易账户（帧头 `instance_id` = 来源：进程级为进程名，TD 账户级为账户 ID）→ dzweb；无前端入口；镜像 `progress` 域 → WS 消息 `progress`
 **Payload**：JSON（ProgressStatus）
 
 **触发场景**：
@@ -80,8 +85,10 @@ JSON 示例：
 - 进程无进度追踪需求时可不实现本帧（不影响其他帧）
 
 **镜像**：
-- dzweb 更新该实例镜像的 `progress` 域，并 WS 推送
+- dzweb 更新该实例镜像的 `progress` 域，并 WS 推送（进程级 key = 进程名；账户级 key = 账户 ID）
+- **账户级条目的清理**：网关停止 / 崩溃 / 被移除时，dzweb 按注册表反查该网关账户集，清掉各账户的 `progress` 镜像；注册表降级时放弃清理（宁残留不猜）。账户从配置帧消失时同样清掉。**不得**沿用按进程名清理的旧路径——账户级 key 不含进程名
 
 **前端义务**：
 - 以最新推送为准展示；镜像/快照中无 `progress` 域的实例视为无活跃进度
 - 超出范围的 `current` 钳制展示，不报错、不反馈
+- 账户级进度用于该账户行的登录 / 登出 pending 与连接状态展示，按 `account_id` 精确匹配

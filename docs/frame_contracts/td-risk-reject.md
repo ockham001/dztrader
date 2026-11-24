@@ -2,7 +2,7 @@
 
 本文件覆盖 `DZ_FRAME_TD_RISK_REJECT` 一个帧。单向通知（td 风控门 → 事件通道广播，dzweb 处理），无 RTN 配对。总则见《帧契约：通用规则》。
 
-帧使用 `DzExtFrameHeader` 扩展头（**无 `instance_id`**），接收方按 payload `account_id` 过滤（账户 ID 全局唯一，总则 §5）。
+帧使用 `DzExtFrameHeader` 扩展头（**无 `instance_id`**），接收方按 payload `account_id` 过滤（账户 ID = 柜台真实投资者代码，全局唯一，总则 §5）。
 
 类型层真相源：`libs/platform/include/dztrader/platform/risk_reject.h`。
 
@@ -25,7 +25,7 @@
 
 ```json
 {
-  "account_id": "account_001",
+  "account_id": "00001",
   "rule_name": "max_order_volume",
   "reason": "order volume 500 exceeds limit 100",
   "timestamp_ns": 1757500000000000000
