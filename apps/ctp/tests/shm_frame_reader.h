@@ -47,6 +47,18 @@ inline std::vector<std::string> position_frame_instruments(
     return out;
 }
 
+/// 帧副本里的资金账户 id（`DZ_FRAME_TRADING_ACCOUNT`，按出现顺序）。
+inline std::vector<std::string> trading_account_frame_accounts(
+    const std::vector<std::unique_ptr<std::byte[]>>& frames) {
+    std::vector<std::string> out;
+    for (const auto& frame : frames) {
+        const shm::FrameView view{frame.get()};
+        if (view.type() != DZ_FRAME_TRADING_ACCOUNT) continue;
+        out.emplace_back(view.payload<DzTradingAccount>().account_id);
+    }
+    return out;
+}
+
 /// 帧副本里的成交合约代码（`DZ_FRAME_TRADE_REPORT`，按出现顺序）。
 inline std::vector<std::string> trade_frame_instruments(
     const std::vector<std::unique_ptr<std::byte[]>>& frames) {

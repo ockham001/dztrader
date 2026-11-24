@@ -76,10 +76,13 @@ enum class QueryErrorTarget : uint8_t {
 
 /// 按 request_id 匹配在途查询的 request id 表。生产环境 request id 从 1 递增,
 /// 0 视为无效 (测试 / 未登录会话默认值), 不参与匹配; 未匹配返回 None。
+/// @param runtime_account_request_id 运行期资金刷新的在途 id (与登录链共用
+///        `TradingAccount` 目标, 调用方再按 id 区分登录 / 运行期)
 QueryErrorTarget route_query_error(int request_id,
                                    int instrument_request_id,
                                    int position_request_id,
-                                   int account_request_id) noexcept;
+                                   int account_request_id,
+                                   int runtime_account_request_id = 0) noexcept;
 
 /// order_ref 同步公式 (设计 §9.4): new = max(current+1, ctp_max+1)
 /// 解决重连后 CTP 端 MaxOrderRef 大于本地计数器的问题.
