@@ -1271,6 +1271,29 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshLateResponseAfterDisconnectIsD
         << "late runtime response after leaving Ready must not be written";
 }
 
+TEST_F(TdPositionLifecycleTest, ManualRefreshRequestMarksDirtyOnlyWhenReady) {
+    seed_today_position_row();
+    install_runtime_query_hooks();
+
+    // 非 Ready：手动刷新请求被拒绝，不置脏不查询（契约 td-refresh：只对 Ready 账户受理）。
+    EXPECT_FALSE(session_->request_fund_refresh());
+    session_->pump_query_lane();
+    EXPECT_TRUE(sent_fund_query_ids_.empty());
+
+    // Ready：受理并进入同一置脏路径（受查询通道合并/限速）。
+    session_->enter_ready_for_test();
+    EXPECT_TRUE(session_->request_fund_refresh());
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+    feed_fund_response(sent_fund_query_ids_.back());
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
+
+    // 断线后再次拒绝（会话已不可查询）。
+    session_->on_front_disconnected(0);
+    EXPECT_FALSE(session_->request_fund_refresh());
+}
+
 TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTimerWiringDrivesPump) {
     seed_today_position_row();
     enable_runtime_fund_refresh();

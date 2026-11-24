@@ -5,6 +5,7 @@
 #include "td/td_config.h"  // TdConfig, TdConfigOpReq, AccountConfig, TdConfigOp
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -13,6 +14,12 @@
 namespace dztrader::ctp {
 
 // === 自由函数声明 (与 td_api.h 中声明一致, 仅用于测试编译) ===
+/// DZ_FRAME_TD_REFRESH_REQ payload（契约 td-refresh / #459）。
+struct TdRefreshReq {
+    std::string account_id;
+    int64_t request_id = 0;
+};
+bool parse_td_refresh_req(std::string_view payload, TdRefreshReq* out, std::string* error);
 
 /// 纯粹的 op 应用: switch(req.op) 修改 cfg, 无副作用无 I/O。
 void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req);
@@ -493,4 +500,68 @@ TEST(IsConnectionOpTest, NonConnectionOps) {
 }
 
 }  // namespace
+}  // namespace dztrader::ctp
+
+namespace dztrader::ctp {
+
+// ============================================================================
+// parse_td_refresh_req（契约 td-refresh §校验 / #459）
+// ============================================================================
+
+TEST(ParseTdRefreshReqTest, ValidPayload) {
+    TdRefreshReq req;
+    std::string error;
+    ASSERT_TRUE(parse_td_refresh_req(R"({"account_id":"acc_a","request_id":42})", &req, &error))
+        << error;
+    EXPECT_EQ(req.account_id, "acc_a");
+    EXPECT_EQ(req.request_id, 42);
+}
+
+TEST(ParseTdRefreshReqTest, MissingRequestIdDefaultsToZero) {
+    TdRefreshReq req;
+    std::string error;
+    ASSERT_TRUE(parse_td_refresh_req(R"({"account_id":"acc_a"})", &req, &error)) << error;
+    EXPECT_EQ(req.request_id, 0);
+}
+
+TEST(ParseTdRefreshReqTest, UnknownFieldsIgnoredPerGeneralRule) {
+    TdRefreshReq req;
+    std::string error;
+    ASSERT_TRUE(parse_td_refresh_req(R"({"account_id":"acc_a","extra":true})", &req, &error))
+        << error;
+}
+
+TEST(ParseTdRefreshReqTest, RejectsInvalidJson) {
+    TdRefreshReq req;
+    std::string error;
+    EXPECT_FALSE(parse_td_refresh_req("{not-json", &req, &error));
+    EXPECT_EQ(error, "invalid_json");
+}
+
+TEST(ParseTdRefreshReqTest, RejectsNonObjectPayload) {
+    TdRefreshReq req;
+    std::string error;
+    EXPECT_FALSE(parse_td_refresh_req("[1,2,3]", &req, &error));
+    EXPECT_EQ(error, "payload_not_object");
+}
+
+TEST(ParseTdRefreshReqTest, RejectsMissingOrEmptyOrNonStringAccountId) {
+    TdRefreshReq req;
+    std::string error;
+    EXPECT_FALSE(parse_td_refresh_req(R"({})", &req, &error));
+    EXPECT_EQ(error, "invalid_account_id");
+    EXPECT_FALSE(parse_td_refresh_req(R"({"account_id":""})", &req, &error));
+    EXPECT_EQ(error, "invalid_account_id");
+    EXPECT_FALSE(parse_td_refresh_req(R"({"account_id":123})", &req, &error));
+    EXPECT_EQ(error, "invalid_account_id");
+}
+
+TEST(ParseTdRefreshReqTest, RejectsNonIntegerRequestId) {
+    // 契约 td-refresh §校验：request_id 非整数 → 整帧忽略，不得静默当 0 受理。
+    TdRefreshReq req;
+    std::string error;
+    EXPECT_FALSE(parse_td_refresh_req(R"({"account_id":"acc_a","request_id":"x"})", &req, &error));
+    EXPECT_EQ(error, "invalid_request_id");
+}
+
 }  // namespace dztrader::ctp

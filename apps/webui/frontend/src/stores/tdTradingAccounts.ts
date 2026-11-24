@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { tdApi } from '@/api/td'
 import { createTdRetryTimer, tdDegradedText } from '@/composables/tdListStore'
+import { useToastStore } from '@/stores/toast'
 import type { TdDegradedReason, TdRecentPayload, TdTradingAccountRow } from '@/types/api'
 
 /**
@@ -40,6 +41,13 @@ export const useTdTradingAccountsStore = defineStore('tdTradingAccounts', () => 
   const error = ref<string | null>(null)
   const available = ref(true)
   const degradedReason = ref<TdDegradedReason | null>(null)
+
+  // === 手动刷新（契约 rest §2.9.11 / webui-ws §5 第 15 条）===
+  /** 各账户刷新 pending（键 = account_id；清除信号 = 同账户新 seq / 3s 超时 / 请求失败） */
+  const refreshPending = ref<Record<string, boolean>>({})
+  /** pending 超时定时器（7×24 长跑：所有清除路径都必须 delete，防泄漏） */
+  const refreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const REFRESH_TIMEOUT_MS = 3000
 
   // === 内部状态（非响应式）===
   /** 每个账户已见过的最大 seq（同账户 seq 严格回退 = 数据重置，契约 webui-ws §5 第 8 条） */
@@ -108,6 +116,7 @@ export const useTdTradingAccountsStore = defineStore('tdTradingAccounts', () => 
     onlineAccounts.value = []
     tradingDay.value = null
     maxSeqByAccount = new Map()
+    clearAllRefreshPending()
   }
 
   /** 从当前行重建每账户 seq 水位（水位只来自有记录的行；has_data:false 行 seq 为 null） */
@@ -139,6 +148,51 @@ export const useTdTradingAccountsStore = defineStore('tdTradingAccounts', () => 
     return !!row && typeof row === 'object'
       && typeof row.account_id === 'string' && row.account_id !== ''
       && typeof row.seq === 'number'
+  }
+
+  function clearRefreshPending(accountId: string): void {
+    const timer = refreshTimers.get(accountId)
+    if (timer) {
+      clearTimeout(timer)
+      refreshTimers.delete(accountId)
+    }
+    if (refreshPending.value[accountId]) {
+      refreshPending.value = { ...refreshPending.value, [accountId]: false }
+    }
+  }
+
+  function clearAllRefreshPending(): void {
+    for (const accountId of refreshTimers.keys()) clearRefreshPending(accountId)
+    refreshPending.value = {}
+  }
+
+  /**
+   * 手动刷新单账户资金（契约 rest §2.9.11 / webui-ws §5 第 15 条）。
+   *
+   * - 离线（非 Ready）账户不得发起（REST 会 409）；返回值 false 表示未发起或失败。
+   * - 成功只代表已写入事件通道：保持 pending，等**同账户新 seq** 清除（失败清 pending + 错误提示）。
+   * - 3s 超时兜底提示「刷新超时，稍后自动更新」（与契约文案一致）。
+   */
+  async function refreshAccount(accountId: string): Promise<boolean> {
+    if (disposed || accountId === '') return false
+    if (!onlineAccounts.value.includes(accountId)) return false
+    if (refreshPending.value[accountId]) return false
+    refreshPending.value = { ...refreshPending.value, [accountId]: true }
+    const timer = setTimeout(() => {
+      refreshTimers.delete(accountId)
+      if (!refreshPending.value[accountId]) return
+      refreshPending.value = { ...refreshPending.value, [accountId]: false }
+      useToastStore().warning('刷新超时，稍后自动更新')
+    }, REFRESH_TIMEOUT_MS)
+    refreshTimers.set(accountId, timer)
+    try {
+      await tdApi.refreshTradingAccount(accountId)
+      return true
+    } catch (e) {
+      clearRefreshPending(accountId)
+      useToastStore().error(e instanceof Error ? e.message : '刷新请求失败')
+      return false
+    }
   }
 
   /**
@@ -252,6 +306,8 @@ export const useTdTradingAccountsStore = defineStore('tdTradingAccounts', () => 
     }
     absorbSeq(row)
     absorbOnline(row.account_id)
+    // 契约 webui-ws §5 第 15 条：同账户资金事件（新 seq）到达 = 本次刷新生效信号。
+    clearRefreshPending(row.account_id)
   }
 
   /**
@@ -297,6 +353,7 @@ export const useTdTradingAccountsStore = defineStore('tdTradingAccounts', () => 
   function dispose(): void {
     disposed = true
     clearRetry()
+    clearAllRefreshPending()
     retryTimer.dispose()
   }
 
@@ -312,10 +369,12 @@ export const useTdTradingAccountsStore = defineStore('tdTradingAccounts', () => 
     degradedText,
     isEmpty,
     dataDates,
+    refreshPending,
     onlineCount,
     totalAccounts,
     init,
     loadBaseline,
+    refreshAccount,
     applyTradingAccountEvent,
     applyRecent,
     handleDataChanged,

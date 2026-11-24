@@ -191,6 +191,11 @@ public:
     /// 测试夹具专用：立即触发运行期资金查询的 10s 超时路径（生产由 TimerQueue 触发）。
     void expire_runtime_query_timeout_for_test();
 
+    /// 手动刷新请求（契约 td-refresh）：Ready 时置脏一次并返回 true；
+    /// 非 Ready / 已离开会话返回 false（调用方记 WARN，不改变账户状态）。
+    /// 实际发送仍受账户查询通道的在途 / 最小间隔约束。
+    bool request_fund_refresh();
+
     /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false).
     /// 与「登录收尾是否完成」分开暴露: 会话未登录 / 收尾未完成时本标志可能恒为 false,
     /// 拿它断言「未知方向按查询失败处置」会恒真 (issue #367 审查 F9).
@@ -369,7 +374,8 @@ private:
     /// 查询通道复位（断线 / 重连 / 登出共用一处）：取消运行期定时器、清在途与请求 id。
     void reset_query_channel();
     /// 运行期资金刷新：事件置脏（仅 Ready；登录缓冲/重放/未就绪不置脏）。
-    void mark_fund_refresh_dirty();
+    /// @return true = 已置脏；false = 非 Ready 忽略
+    bool mark_fund_refresh_dirty();
     /// 按 lane 的 next_wake 排绝对时间定时器（无轮询；无待查则取消）。
     void schedule_query_lane_pump();
     /// 发送一笔运行期资金查询（经 lane 闸门；成功 note_sent + 10s 超时）。

@@ -573,6 +573,7 @@ constexpr std::pair<std::string_view, int> kFrozenCoreFrames[] = {
     {"DZ_FRAME_TD_TRANSFER_RTN", 1040},
     {"DZ_FRAME_TD_PASSWORD_UPDATE_REQ", 1041},
     {"DZ_FRAME_TD_PASSWORD_UPDATE_RSP", 1042},
+    {"DZ_FRAME_TD_REFRESH_REQ", 1043},
 };
 
 /// @brief 冻结的结构体字段表（名称 + 字段声明有序列表）

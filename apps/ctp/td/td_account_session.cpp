@@ -214,14 +214,17 @@ void AccountSession::reset_query_channel() {
     runtime_account_request_id_ = 0;
 }
 
-void AccountSession::mark_fund_refresh_dirty() {
+bool AccountSession::request_fund_refresh() { return mark_fund_refresh_dirty(); }
+
+bool AccountSession::mark_fund_refresh_dirty() {
     // 只有账户 Ready 后的回报才触发刷新：登录缓冲 / 重放 / 未就绪阶段的事件不置脏
     // （重放本身处于 LoadingInstruments，本守卫已覆盖）。
     if (state_machine_.state() != TdState::Ready) {
-        return;
+        return false;
     }
     query_lane_.mark_dirty(QueryKind::TradingAccount);
     schedule_query_lane_pump();
+    return true;
 }
 
 void AccountSession::schedule_query_lane_pump() {

@@ -442,7 +442,7 @@ int main(int argc, char* argv[]) {
     // 账户注册表参与持仓/资金的账户全集（契约 rest §2.9.1 第三源）
     drogon::app().registerController(std::make_shared<dztrader::webui::TdCtrl>(
         repo, td_domain, td_query, td_trades_query, td_positions_query, td_trading_accounts_query,
-        td_account_registry));
+        td_account_registry, process_mirror, shm_writer));
     // 账户注册表读端点 + 账户配置写端点（契约 rest §2.9.7/§2.9.9）
     drogon::app().registerController(std::make_shared<dztrader::webui::TdAccountCtrl>(
         repo, td_account_registry, process_mirror, shm_writer));

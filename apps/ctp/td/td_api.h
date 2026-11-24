@@ -71,6 +71,17 @@ int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
 /// 非法/缺失交易日回落 0。
 int32_t account_status_date(DzAccountState state, const std::string& date);
 
+/// DZ_FRAME_TD_REFRESH_REQ payload（契约 td-refresh）：调用方追踪字段 request_id 原样记录。
+struct TdRefreshReq {
+    std::string account_id;  ///< 目标账户（非空）
+    int64_t request_id = 0;  ///< 调用方追踪 ID（可选，缺失 = 0；非整数视为非法帧）
+};
+
+/// 解析并校验 TD_REFRESH_REQ JSON payload（契约 td-refresh §校验）。
+/// 成功返回 true；失败返回 false 并写 `error` 原因（invalid_json / payload_not_object /
+/// invalid_account_id / invalid_request_id），调用方整帧忽略并记 WARN。
+bool parse_td_refresh_req(std::string_view payload, TdRefreshReq* out, std::string* error);
+
 /// 账户上次推送的状态缓存 (三态去重口径: 状态 + 帧内交易日)。
 /// 同态但交易日变化 (日切) 必须重推 (契约场景 3), 故缓存不能只存状态。
 struct AccountStatusCache {
@@ -195,6 +206,9 @@ private:
     /// 处理 TD_ORDER_CANCEL_REQ 帧 (契约 td-order: basic 广播帧): 解析 payload DzOrderCancelReq
     /// (order_id + account_id), 按 account_id 归属过滤后 find_session + cancel_order
     void on_cancel_req(const shm::FrameView& view);
+    /// 处理 TD_REFRESH_REQ 帧（契约 td-refresh: JSON ext 帧、无 instance_id）：
+    /// 按 payload `account_id` 归属过滤，对 Ready 会话置脏一次（不保证立即发送）。
+    void handle_refresh_req(const shm::FrameView& view);
     /// 在 sessions_ 中查找 account_id 对应的 AccountSession。未找到返回 nullptr。
     /// 与纯函数 find_account_in (查 config_.accounts 配置) 语义不同: 本方法查运行中的会话。
     AccountSession* find_session(const std::string& account_id);

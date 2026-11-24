@@ -329,6 +329,12 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             on_cancel_req(view);
             return;
         }
+        case DZ_FRAME_TD_REFRESH_REQ: {
+            // 契约 td-refresh：JSON ext 帧（无 instance_id，事件通道广播），按 payload account_id
+            // 归属路由
+            handle_refresh_req(view);
+            return;
+        }
         default:
             break;
     }
@@ -849,6 +855,36 @@ void TdApi::on_cancel_req(const shm::FrameView& view) {
         SPDLOG_ERROR("td cancel_order failed | account={} order_id={} error=\"{}\"",
                      cancel_req.account_id, cancel_req.order_id, e.what());
     }
+}
+
+void TdApi::handle_refresh_req(const shm::FrameView& view) {
+    // 契约 td-refresh: JSON ext 帧（无 instance_id），payload {account_id, request_id?}。
+    // 只对 Ready 会话置脏一次；查询受账户级通道合并/限速，不保证立即发送。
+    const auto* payload = reinterpret_cast<const char*>(view.ext_payload());
+    const std::string_view payload_text(payload, view.ext_payload_size());
+    TdRefreshReq req;
+    std::string parse_error;
+    if (!parse_td_refresh_req(payload_text, &req, &parse_error)) {
+        SPDLOG_WARN("td refresh req rejected | reason={}", parse_error);
+        return;
+    }
+    const std::string& account_id = req.account_id;
+
+    if (find_account_in(config_, account_id) == nullptr) {
+        // 未配置账户（本进程没有该账户）：忽略并 WARN（契约 td-refresh §校验）。
+        SPDLOG_WARN("td refresh req ignored | reason=account_not_in_config account={}", account_id);
+        return;
+    }
+    auto* session = find_session(account_id);
+    if (session == nullptr) {
+        SPDLOG_WARN("td refresh req ignored | reason=no_session account={}", account_id);
+        return;
+    }
+    if (!session->request_fund_refresh()) {
+        SPDLOG_WARN("td refresh req ignored | reason=not_ready account={}", account_id);
+        return;
+    }
+    SPDLOG_INFO("td refresh req accepted | account={} request_id={}", account_id, req.request_id);
 }
 
 void TdApi::update_status(const std::string& account_id) {

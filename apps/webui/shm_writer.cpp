@@ -87,6 +87,23 @@ bool ShmWriter::write_td_disconnect(const std::string& gateway, const std::strin
     return ok;
 }
 
+bool ShmWriter::write_td_refresh_req(const std::string& account_id, int64_t request_id) {
+    if (!event_writer_ || account_id.empty()) {
+        return false;
+    }
+    // 契约 td-refresh：JSON ext 帧（无 instance_id，事件通道广播），td 侧按 payload
+    // account_id 归属过滤。
+    const bool ok = platform::write_ext_json(
+        *event_writer_, DZ_FRAME_TD_REFRESH_REQ,
+        nlohmann::json{{"account_id", account_id}, {"request_id", request_id}});
+    if (ok) {
+        spdlog::debug("td refresh req written | account={} request_id={}", account_id, request_id);
+    } else {
+        spdlog::error("write td refresh req failed | account={}", account_id);
+    }
+    return ok;
+}
+
 bool ShmWriter::write_process_control(platform::ProcessAction action,
                                       const std::string& target,
                                       std::optional<nlohmann::json> config) {

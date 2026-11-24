@@ -57,6 +57,45 @@ inline bool td_gateway_running(const ProcessMirror& process_mirror, const std::s
     return status.has_value() && status->state == platform::ChildState::Running;
 }
 
+/// 资金手动刷新（契约 rest §2.9.11）的守卫结果：无 admin 区分（任意已认证用户），
+/// 但「注册表 → 网关 Running → 账户在线 → 写通道」顺序与错误映射与 session guard 同源。
+enum class TdRefreshGuard {
+    Ok,
+    RegistryUnavailable,  ///< 注册表未装配 / 降级 → REST 503 account registry unavailable
+    AccountInvalid,       ///< 账户未登记 → REST 404 account_not_found
+    GatewayNotRunning,    ///< 网关未注册为 dztd_* 或镜像非 Running → REST 409 gateway_not_running
+    AccountOffline,       ///< 账户不在在线（Ready）集合 → REST 409 account_offline
+    ChannelUnavailable,   ///< 事件通道 writer 不可用 → REST 503 shm writer not available
+};
+
+/// 资金刷新守卫纯函数（唯一实现；`td_data_controller` 的 POST refresh 端点消费）。
+/// @param writer_ready 事件通道 writer 是否就绪
+/// @param account_online 账户是否在 dzweb 在线（Ready）集合
+inline TdRefreshGuard evaluate_td_refresh_guard(TdAccountRegistry* registry,
+                                                ProcessMirror* process_mirror,
+                                                std::string_view account_id,
+                                                bool account_online,
+                                                bool writer_ready) {
+    if (registry == nullptr || !registry->available()) {
+        return TdRefreshGuard::RegistryUnavailable;
+    }
+    if (account_id.empty() || !registry->find(std::string(account_id)).has_value()) {
+        return TdRefreshGuard::AccountInvalid;
+    }
+    const auto entry = registry->find(std::string(account_id));
+    if (process_mirror == nullptr || !td_gateway_registered(*process_mirror, entry->gateway) ||
+        !td_gateway_running(*process_mirror, entry->gateway)) {
+        return TdRefreshGuard::GatewayNotRunning;
+    }
+    if (!account_online) {
+        return TdRefreshGuard::AccountOffline;
+    }
+    if (!writer_ready) {
+        return TdRefreshGuard::ChannelUnavailable;
+    }
+    return TdRefreshGuard::Ok;
+}
+
 /// 统一守卫纯函数。
 /// @param is_admin        当前 REST 请求 / WS 连接是否为 admin
 /// @param registry        账户注册表（解析 account_id → gateway；nullptr = 未装配）

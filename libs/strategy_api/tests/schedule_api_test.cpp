@@ -511,7 +511,8 @@ INSTANTIATE_TEST_SUITE_P(TdUnfiltered,
 TEST_F(ScheduleApiTest, UiDomainTdFramesIntercepted) {
     constexpr DzFrameType kIntercepted[] = {
         DZ_FRAME_TD_RISK_REJECT,  DZ_FRAME_TD_TRANSFER_REQ,        DZ_FRAME_TD_TRANSFER_RSP,
-        DZ_FRAME_TD_TRANSFER_RTN, DZ_FRAME_TD_PASSWORD_UPDATE_REQ, DZ_FRAME_TD_PASSWORD_UPDATE_RSP};
+        DZ_FRAME_TD_TRANSFER_RTN, DZ_FRAME_TD_PASSWORD_UPDATE_REQ, DZ_FRAME_TD_PASSWORD_UPDATE_RSP,
+        DZ_FRAME_TD_REFRESH_REQ};
     for (const DzFrameType type : kIntercepted) {
         DzShmPreload dummy{};
         emit_struct(type, dummy);
@@ -580,6 +581,7 @@ TEST_F(ScheduleApiTest, PlatformFramesInterceptedPerContract) {
         {"NOTIFY_TD_STARTED", DZ_FRAME_NOTIFY_TD_STARTED, FrameLayout::kExtInst, "dztd_ctp",
          nullptr},
         {"TD_RTN_STATUS", DZ_FRAME_TD_RTN_STATUS, FrameLayout::kExtInst, "dztd_ctp", nullptr},
+        {"TD_REFRESH_REQ", DZ_FRAME_TD_REFRESH_REQ, FrameLayout::kExt, nullptr, nullptr},
     };
 
     for (const auto& c : cases) {

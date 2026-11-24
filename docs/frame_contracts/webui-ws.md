@@ -193,7 +193,7 @@ C2S 消息格式：`{ "type": ..., "seq": 0, "payload": { ... } }`（`payload` �
 12. **精度**：价格显示用行内 price_decimals / avg_price_decimals 做 `toFixed`；不得自行推断小数位，也不得依赖服务端字符串舍入（契约 rest §2.9.6）。
 13. **降级**：列表返回 `available:false` 时展示统一降级提示（不白屏、不用 0 冒充数据），按退避重试；WS 事件照常合并，恢复后重拉基线。
 14. **非契约范围**：有界窗口容量、虚拟滚动、批量刷新节流、新数据气泡等 UI 性能/交互设计见 ADR 0043 决策 7，由前端实现票落地，不属于本契约语义。
-15. **资金手动刷新**：资金面板按行刷新发 `POST /api/td/trading_accounts/{account_id}/refresh`（契约 rest §2.9.11）→ 该行设 pending；收到**同账户** `td_trading_account` 且 `seq` 前进后清除；超时兜底 3s 清除并提示「刷新超时，稍后自动更新」；离线（非 Ready）账户的行不得发起刷新。
+15. **资金手动刷新**：资金面板按行刷新发 `POST /api/td/trading_accounts/{account_id}/refresh`（契约 rest §2.9.11）→ 该行设 pending；收到**同账户** `td_trading_account` 且 `seq` 前进后清除；超时兜底 3s 清除并提示「刷新超时，稍后自动更新」；离线（非 Ready）账户的行不得发起刷新。请求失败或基线重置时立即清除 pending（避免旋转图标悬挂，错误提示文案由前端决定）。
 
 ---
 

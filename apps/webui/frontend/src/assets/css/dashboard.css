@@ -868,3 +868,8 @@
     display: none;
   }
 }
+
+/* 资金行手动刷新（契约 webui-ws §5 第 15 条）：pending 时图标旋转（复用 ds-btn-spin 关键帧） */
+.dashboard-fund-refresh[data-pending='true'] .icon {
+  animation: ds-btn-spin 0.8s linear infinite;
+}
