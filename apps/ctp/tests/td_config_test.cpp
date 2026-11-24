@@ -40,13 +40,13 @@ protected:
 
 TEST_F(TdConfigTest, LoadFullConfig) {
     dztrader::test::TdConfigSeed seed;
+    seed.qry_min_interval_ms = 900;  // 非默认值，确保字段确实被解析
     seed.frontend_address = "tcp://180.168.146.187:10130";
     seed.frontend_label = "SimNow 7x24";
     write_config(seed);
 
     auto cfg = TdConfig::load(path_, "td");
-    EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
+    EXPECT_EQ(cfg.qry_min_interval_ms, 900);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].account_id, "account_001");
@@ -62,9 +62,18 @@ TEST_F(TdConfigTest, LoadFullConfig) {
 TEST_F(TdConfigTest, LoadDefaultsOmittedFields) {
     write_json(R"json({"accounts": []})json");
     auto cfg = TdConfig::load(path_, "td");
-    EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
+    EXPECT_EQ(cfg.qry_min_interval_ms, 1100);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
+    EXPECT_TRUE(cfg.accounts.empty());
+}
+
+TEST_F(TdConfigTest, LoadIgnoresRemovedLegacyQryIntervalFields) {
+    // ADR 0055 / 契约 td-config §2.4：qry_account_interval_s / qry_flush_interval_ms 已删除。
+    // 旧配置文件里的这两个字段按总则 §8「未知字段忽略」继续可加载，缺失的新字段取默认值。
+    write_json(R"json({"qry_account_interval_s": 5, "qry_flush_interval_ms": 1500,
+                        "accounts": []})json");
+    auto cfg = TdConfig::load(path_, "td");
+    EXPECT_EQ(cfg.qry_min_interval_ms, 1100);
     EXPECT_TRUE(cfg.accounts.empty());
 }
 
@@ -72,8 +81,7 @@ TEST_F(TdConfigTest, LoadFileNotExistsReturnsDefaults) {
     const auto missing = tmp_dir_ / "nonexistent.json";
     auto cfg = TdConfig::load(missing, "td");
     EXPECT_TRUE(cfg.accounts.empty());
-    EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
+    EXPECT_EQ(cfg.qry_min_interval_ms, 1100);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
 }
 
@@ -95,7 +103,7 @@ TEST_F(TdConfigTest, LoadFileNotExistsRepairsFile) {
 TEST_F(TdConfigTest, LoadMalformedJsonThrowsWithPath) {
     path_ = tmp_dir_ / "dztd_ctp.json";
     std::ofstream ofs(path_);
-    ofs << R"json({"td": {"qry_account_interval_s": )json";  // 截断的非法 JSON
+    ofs << R"json({"td": {"qry_min_interval_ms": )json";  // 截断的非法 JSON
     ofs.close();
 
     try {
@@ -116,8 +124,7 @@ TEST_F(TdConfigTest, LoadSectionMissingReturnsDefaults) {
     ofs.close();  // 显式关闭, 确保数据落盘后再 load
     auto cfg = TdConfig::load(path_, "td");
     EXPECT_TRUE(cfg.accounts.empty());
-    EXPECT_EQ(cfg.qry_account_interval_s, 5);
-    EXPECT_EQ(cfg.qry_flush_interval_ms, 1500);
+    EXPECT_EQ(cfg.qry_min_interval_ms, 1100);
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
 }
 
@@ -143,7 +150,7 @@ TEST_F(TdConfigTest, LoadSectionMissingRepairsFilePreservingOtherSections) {
 /// `broker_id empty` 拒绝，`td_main` 据此致命退出（旧文件按 §6「校验失败」处理）。
 TEST_F(TdConfigTest, LoadLegacyFlatAccountFormatIsRejectedByValidate) {
     write_json(R"json({
-  "qry_account_interval_s": 5,
+  "qry_min_interval_ms": 1100,
   "accounts": [
     {
       "account_id": "account_001",
@@ -180,7 +187,7 @@ TEST_F(TdConfigTest, LoadTypeMismatchIsFatal) {
 
 /// 非法内容不写回文件（避免把坏文件覆盖成默认值，用户失去修复依据）。
 TEST_F(TdConfigTest, LoadInvalidContentDoesNotOverwriteFile) {
-    write_json(R"json({"qry_account_interval_s": "not-a-number"})json");
+    write_json(R"json({"qry_min_interval_ms": "not-a-number"})json");
     std::string before;
     {
         std::ifstream ifs(path_);
@@ -199,7 +206,7 @@ TEST_F(TdConfigTest, LoadInvalidContentDoesNotOverwriteFile) {
 
 TEST_F(TdConfigTest, SaveAndLoadRoundTrip) {
     TdConfig cfg;
-    cfg.qry_account_interval_s = 10;
+    cfg.qry_min_interval_ms = 900;
     cfg.ext.enable_lock_mode = false;
     AccountConfig acct;
     acct.account_id = "test_001";
@@ -215,7 +222,7 @@ TEST_F(TdConfigTest, SaveAndLoadRoundTrip) {
     cfg.save(path_, "td");
 
     auto loaded = TdConfig::load(path_, "td");
-    EXPECT_EQ(loaded.qry_account_interval_s, 10);
+    EXPECT_EQ(loaded.qry_min_interval_ms, 900);
     EXPECT_FALSE(loaded.ext.enable_lock_mode);
     ASSERT_EQ(loaded.accounts.size(), 1u);
     EXPECT_EQ(loaded.accounts[0].account_id, "test_001");
@@ -285,8 +292,7 @@ TEST_F(TdConfigTest, ToSafeJsonKeepsTopLevelProcessExt) {
 /// 这是 dzweb 注册表 reconcile 与前端配置页解析的输入，形状漂移会让它们静默读空。
 TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
     TdConfig cfg;
-    cfg.qry_account_interval_s = 7;
-    cfg.qry_flush_interval_ms = 800;
+    cfg.qry_min_interval_ms = 800;
     cfg.ext.enable_lock_mode = false;
     AccountConfig acct;
     acct.account_id = "account_001";
@@ -306,8 +312,7 @@ TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
     const auto j = cfg.to_safe_json();
 
     // 契约 §2.4 顶层键
-    EXPECT_EQ(j["qry_account_interval_s"], 7);
-    EXPECT_EQ(j["qry_flush_interval_ms"], 800);
+    EXPECT_EQ(j["qry_min_interval_ms"], 800);
     ASSERT_TRUE(j["ext"].is_object());
     EXPECT_FALSE(j["ext"]["enable_lock_mode"].get<bool>());
     ASSERT_TRUE(j["accounts"].is_array());
@@ -379,36 +384,20 @@ TEST_F(TdConfigTest, ValidateRejectsEmptyAccountId) {
     EXPECT_NE(err->find("account_id"), std::string::npos);
 }
 
-TEST_F(TdConfigTest, ValidateRejectsZeroQryInterval) {
+TEST_F(TdConfigTest, ValidateRejectsZeroQryMinInterval) {
     TdConfig cfg;
-    cfg.qry_account_interval_s = 0;
+    cfg.qry_min_interval_ms = 0;  // 0 应被拒绝 (会导致忙循环)
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("qry_account_interval_s"), std::string::npos);
+    EXPECT_NE(err->find("qry_min_interval_ms"), std::string::npos);
 }
 
-TEST_F(TdConfigTest, ValidateRejectsNegativeFlushInterval) {
+TEST_F(TdConfigTest, ValidateRejectsNegativeQryMinInterval) {
     TdConfig cfg;
-    cfg.qry_flush_interval_ms = -1;
+    cfg.qry_min_interval_ms = -1;
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("qry_flush_interval_ms"), std::string::npos);
-}
-
-TEST_F(TdConfigTest, ValidateRejectsZeroFlushInterval) {
-    TdConfig cfg;
-    cfg.qry_flush_interval_ms = 0;  // 0 应被拒绝 (会导致忙循环)
-    auto err = validate(cfg);
-    ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("qry_flush_interval_ms"), std::string::npos);
-}
-
-TEST_F(TdConfigTest, ValidateRejectsZeroAccountInterval) {
-    TdConfig cfg;
-    cfg.qry_account_interval_s = 0;
-    auto err = validate(cfg);
-    ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("qry_account_interval_s"), std::string::npos);
+    EXPECT_NE(err->find("qry_min_interval_ms"), std::string::npos);
 }
 
 TEST_F(TdConfigTest, ValidateRejectsEmptyBrokerId) {

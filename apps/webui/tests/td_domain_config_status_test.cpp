@@ -59,10 +59,8 @@ nlohmann::json config_payload(std::vector<std::pair<std::string, bool>> accounts
                                         {"app_id", ""},
                                         {"flow_dir", ""}}}});
     }
-    return nlohmann::json{{"qry_account_interval_s", 5},
-                          {"qry_flush_interval_ms", 1500},
-                          {"ext", {{"enable_lock_mode", true}}},
-                          {"accounts", list}};
+    return nlohmann::json{
+        {"qry_min_interval_ms", 1100}, {"ext", {{"enable_lock_mode", true}}}, {"accounts", list}};
 }
 
 class TdConfigDomainServiceTest : public ::testing::Test {
@@ -192,7 +190,7 @@ TEST_F(TdConfigDomainServiceTest, EnabledFlipBroadcastsDataChanged) {
 
 TEST_F(TdConfigDomainServiceTest, SnapshotFlagSetEvenWhenAccountsMissing) {
     // snapshot 标志先于 reconcile 置位（契约 rest §2.9.9 的降级判定）。
-    service_->on_rtn_td_config("dztd_ctp", nlohmann::json{{"qry_flush_interval_ms", 1500}});
+    service_->on_rtn_td_config("dztd_ctp", nlohmann::json{{"qry_min_interval_ms", 1100}});
 
     EXPECT_TRUE(registry_->has_snapshot());
     EXPECT_TRUE(registry_->available());
@@ -227,7 +225,7 @@ TEST_F(TdConfigDomainServiceTest, BadAccountElementsAreSkippedIndividually) {
 
 TEST_F(TdConfigDomainServiceTest, StillBroadcastsWhenAccountsUnusable) {
     // 即使注册表没更新，配置镜像与 WS 推送照常（契约 td-config §4 无条件）。
-    service_->on_rtn_td_config("dztd_ctp", nlohmann::json{{"qry_flush_interval_ms", 1500}});
+    service_->on_rtn_td_config("dztd_ctp", nlohmann::json{{"qry_min_interval_ms", 1100}});
 
     ASSERT_EQ(ws_.messages.size(), 1U);
     EXPECT_EQ(ws_.messages[0].type, "td_rtn_config");

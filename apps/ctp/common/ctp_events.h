@@ -59,6 +59,7 @@ enum class EventType : int16_t {
     OnRtnFromBankToFutureByFuture = 118,      ///< 出入金实时通知 (OnRtn, 权威)
     OnRspUserPasswordUpdate = 119,            ///< 修改登录密码响应
     OnRspTradingAccountPasswordUpdate = 120,  ///< 修改资金密码响应
+    OnRspErrorTd = 121,                       ///< 通用错误响应 (td 入队版, 含 account_id; ADR 0055)
 };
 
 /// SPI 线程到主线程的事件载体。

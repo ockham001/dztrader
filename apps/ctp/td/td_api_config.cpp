@@ -1,5 +1,6 @@
 #include "td/td_api.h"
 
+#include <chrono>
 #include <format>
 #include <string_view>
 
@@ -87,19 +88,22 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
         SPDLOG_INFO("lock_mode changed | old={} new={}", old_config.ext.enable_lock_mode,
                     new_config.ext.enable_lock_mode);
     }
-    if (old_config.qry_account_interval_s != new_config.qry_account_interval_s) {
-        SPDLOG_INFO("qry_account_interval_s changed | old={} new={}",
-                    old_config.qry_account_interval_s, new_config.qry_account_interval_s);
-    }
-    if (old_config.qry_flush_interval_ms != new_config.qry_flush_interval_ms) {
-        SPDLOG_INFO("qry_flush_interval_ms changed | old={} new={}",
-                    old_config.qry_flush_interval_ms, new_config.qry_flush_interval_ms);
+    if (old_config.qry_min_interval_ms != new_config.qry_min_interval_ms) {
+        SPDLOG_INFO("qry_min_interval_ms changed | old={} new={}", old_config.qry_min_interval_ms,
+                    new_config.qry_min_interval_ms);
     }
     if (old_config.accounts.size() != new_config.accounts.size()) {
         SPDLOG_INFO("accounts count changed | old={} new={}", old_config.accounts.size(),
                     new_config.accounts.size());
     }
     SPDLOG_INFO("td config updated | op={}", magic_enum::enum_name(req.op));
+
+    // ADR 0055: 查询通道最小间隔热更新——对活跃会话立即生效（无需重登/重启）。
+    for (auto& [account_id, session] : sessions_) {
+        if (session != nullptr) {
+            session->set_query_min_interval(std::chrono::milliseconds(config_.qry_min_interval_ms));
+        }
+    }
 
     // 契约 account-status: 配置账户集变化 (含盘中新加未连接账户) -> 全量重推 2018,
     // 无会话账户推 Offline, 让策略立即感知新账户存在且未登录

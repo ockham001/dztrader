@@ -4,7 +4,6 @@
 
 类型层真相源：**本契约**（JSON schema 与校验语义）；帧号在 `libs/core/include/dztrader/core/core_data_type.h` 登记（实现票落盘）。前端入口见契约 rest §2.9.11。
 
-<!-- pending-symbol: qry_min_interval_ms (#455) -->
 
 **实现状态（未接线）**：td 尚未分发该帧、dzweb 尚无发送方、前端无入口；本契约先定义语义，实现随 [#455](https://github.com/ockham001/dztrader/issues/455) 的子票落地（总则 §11.3 checklist 跟踪）。
 

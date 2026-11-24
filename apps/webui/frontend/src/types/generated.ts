@@ -832,10 +832,8 @@ export interface TdAccountConfig {
 
 // 交易网关配置全量回报（契约 td-config §2.4；WS td_rtn_config 的 data，脱敏）
 export interface TdConfigPayload {
-    /** 资金查询间隔（秒），> 0；本轮未接入周期资金查询，保留配置 */
-    qry_account_interval_s: number
-    /** 流控队列间隔（毫秒），> 0 */
-    qry_flush_interval_ms: number
+    /** 查询通道最小发送间隔（毫秒），> 0，默认 1100（ADR 0055；登录链与运行期资金刷新共用） */
+    qry_min_interval_ms: number
     /** 账户配置列表（RTN 全量；每个账户 ext.password 恒为 ****） */
     accounts: TdAccountConfig[]
     /** 进程级柜台特有配置 */

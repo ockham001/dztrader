@@ -161,6 +161,7 @@ TEST(TdEventsTest, TdDeleteEventDataAllTdTypes) {
     expect_freed_exactly_once<OnRspUserPasswordUpdateField>(EventType::OnRspUserPasswordUpdate);
     expect_freed_exactly_once<OnRspTradingAccountPasswordUpdateField>(
         EventType::OnRspTradingAccountPasswordUpdate);
+    expect_freed_exactly_once<OnRspErrorTdField>(EventType::OnRspErrorTd);
 }
 
 // td 版本 FrontConnected/Disconnected (含 account_id) 不能走 md 的 Event::delete_data,

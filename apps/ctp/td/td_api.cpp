@@ -445,6 +445,9 @@ void TdApi::process_event(Event& event) {
             dispatch<OnRspQryInvestorPositionField>(event,
                                                     &AccountSession::on_rsp_qry_investor_position);
             return;
+        case EventType::OnRspErrorTd:
+            dispatch<OnRspErrorTdField>(event, &AccountSession::on_rsp_error);
+            return;
         case EventType::OnRspOrderInsert:
             dispatch<OnRspOrderInsertField>(event, &AccountSession::on_rsp_order_insert);
             return;
@@ -670,6 +673,8 @@ void TdApi::connect_account_by_id(const std::string& account_id, bool user_initi
                 // 持久化通知 (登录 flush 屏障超时 ERROR) 转发 UI; 主循环线程同步调用 (安全)
                 notify_ui_.notify(level, std::move(message), popup);
             });
+        // ADR 0055: 查询通道最小发送间隔（契约 td-config qry_min_interval_ms）
+        session->set_query_min_interval(std::chrono::milliseconds(config_.qry_min_interval_ms));
         session->open(session_flow_dir.string(), front_addrs, cfg->ext.broker_id, cfg->ext.user_id,
                       cfg->ext.password, cfg->ext.auth_code, cfg->ext.app_id);
         // 注入独立只读连接提供器: 登录日装载当日订单/成交基准 (契约 td-data-sync §3).

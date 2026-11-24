@@ -34,9 +34,8 @@ namespace dztrader::test {
 /// 账户 `ext`（契约 td-config §2.3）。
 struct TdConfigSeed {
     // --- 进程层 ---
-    int qry_account_interval_s = 5;    ///< 资金查询间隔（秒）
-    int qry_flush_interval_ms = 1500;  ///< 流控队列间隔（毫秒）
-    bool enable_lock_mode = true;      ///< 进程级 `ext`：开平仓转换 LOCK 模式
+    int qry_min_interval_ms = 1100;  ///< 查询通道最小发送间隔（毫秒，ADR 0055）
+    bool enable_lock_mode = true;    ///< 进程级 `ext`：开平仓转换 LOCK 模式
 
     bool with_account = true;  ///< false = `accounts` 为空数组（无账户形态）
 
@@ -66,8 +65,7 @@ struct TdConfigSeed {
 /// @return 可直接 `dump()` 写文件的完整 JSON 文档
 [[nodiscard]] inline nlohmann::json make_td_config_json(const TdConfigSeed& seed = {}) {
     ctp::TdConfig config;
-    config.qry_account_interval_s = seed.qry_account_interval_s;
-    config.qry_flush_interval_ms = seed.qry_flush_interval_ms;
+    config.qry_min_interval_ms = seed.qry_min_interval_ms;
     config.ext.enable_lock_mode = seed.enable_lock_mode;
 
     if (seed.with_account) {

@@ -66,6 +66,21 @@ private:
     std::unordered_map<DzOrderId, std::string> id_to_strategy_;
 };
 
+/// OnRspError 路由结果 (ADR 0055 / #457): 通用错误按在途查询的 nRequestID 归位。
+enum class QueryErrorTarget : uint8_t {
+    None = 0,
+    Instrument,
+    Position,
+    TradingAccount,
+};
+
+/// 按 request_id 匹配在途查询的 request id 表。生产环境 request id 从 1 递增,
+/// 0 视为无效 (测试 / 未登录会话默认值), 不参与匹配; 未匹配返回 None。
+QueryErrorTarget route_query_error(int request_id,
+                                   int instrument_request_id,
+                                   int position_request_id,
+                                   int account_request_id) noexcept;
+
 /// order_ref 同步公式 (设计 §9.4): new = max(current+1, ctp_max+1)
 /// 解决重连后 CTP 端 MaxOrderRef 大于本地计数器的问题.
 int64_t sync_order_ref(int64_t current_ref, int64_t ctp_max) noexcept;

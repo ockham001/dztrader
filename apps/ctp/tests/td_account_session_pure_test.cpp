@@ -549,3 +549,31 @@ TEST(CrossDayLogoutMessageTest, DoesNotPromiseOperationsTheUiLacks) {
         EXPECT_NE(msg.find("自动登录"), std::string::npos) << msg;
     }
 }
+
+// ============================================================================
+// route_query_error (ADR 0055 / #457): OnRspError 按在途查询 request id 归位
+// ============================================================================
+
+TEST(RouteQueryErrorTest, RoutesByInFlightQueryRequestId) {
+    EXPECT_EQ(route_query_error(11, 11, 12, 13), QueryErrorTarget::Instrument);
+    EXPECT_EQ(route_query_error(12, 11, 12, 13), QueryErrorTarget::Position);
+    EXPECT_EQ(route_query_error(13, 11, 12, 13), QueryErrorTarget::TradingAccount);
+}
+
+TEST(RouteQueryErrorTest, UnmatchedRequestIdIsNone) {
+    EXPECT_EQ(route_query_error(99, 11, 12, 13), QueryErrorTarget::None);
+}
+
+TEST(RouteQueryErrorTest, InvalidRequestIdIsNone) {
+    // 0 / 负数视为无效（测试与未登录会话的默认值），不参与匹配，避免把无关错误
+    // 路由到默认 id=0 的查询链。
+    EXPECT_EQ(route_query_error(0, 11, 12, 13), QueryErrorTarget::None);
+    EXPECT_EQ(route_query_error(-1, 11, 12, 13), QueryErrorTarget::None);
+    EXPECT_EQ(route_query_error(0, 0, 0, 0), QueryErrorTarget::None);
+}
+
+TEST(RouteQueryErrorTest, FirstMatchWinsInFixedOrder) {
+    // 生产环境 request id 单调递增、绝不重复；若配置异常出现重复 id，按固定顺序
+    // （持仓 -> 合约 -> 资金）取第一个，行为确定、可测试。
+    EXPECT_EQ(route_query_error(7, 7, 7, 7), QueryErrorTarget::Position);
+}

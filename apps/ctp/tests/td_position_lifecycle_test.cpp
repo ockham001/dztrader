@@ -239,7 +239,8 @@ protected:
     /// 一条**成功**的资金查询响应（`is_last` 收口；金额可指定，默认值 = 常见形态）。
     static OnRspQryTradingAccountField trading_account_row(bool is_last,
                                                            double balance = 100000.0,
-                                                           double available = 85000.0) {
+                                                           double available = 85000.0,
+                                                           int request_id = 0) {
         OnRspQryTradingAccountField f{};
         CThostFtdcTradingAccountField a{};
         std::strcpy(a.AccountID, "acc1");
@@ -248,7 +249,7 @@ protected:
         a.CurrMargin = 15000.0;
         f.trading_account = a;
         f.is_last = is_last;
-        f.request_id = 0;
+        f.request_id = request_id;
         f.account_id = "acc1";
         return f;
     }
@@ -270,7 +271,8 @@ protected:
     /// LoadingInstruments 状态），用它给会话注入 product_class。
     static OnRspQryInstrumentField instrument_row(const std::string& instrument,
                                                   const char* exchange_id,
-                                                  char product_class = THOST_FTDC_PC_Futures) {
+                                                  char product_class = THOST_FTDC_PC_Futures,
+                                                  int request_id = 0) {
         OnRspQryInstrumentField f{};
         CThostFtdcInstrumentField inst{};
         std::strcpy(inst.InstrumentID, instrument.c_str());
@@ -282,7 +284,7 @@ protected:
         inst.PriceTick = 0.2;
         f.instrument = inst;
         f.is_last = false;
-        f.request_id = 0;
+        f.request_id = request_id;
         f.account_id = "acc1";
         return f;
     }
@@ -619,6 +621,27 @@ TEST_F(TdPositionLifecycleTest, SameDayFundQueryUpsertsInsteadOfAppending) {
               95000);
     EXPECT_GT(scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'"), first_seq)
         << "each successful query takes a new account-level seq";
+}
+
+// AC(#457): 查询响应按 nRequestID 关联本链——迟到 / 串号响应必须丢弃（不写表、不推进收尾）。
+TEST_F(TdPositionLifecycleTest, QueryResponsesWithWrongRequestIdAreDropped) {
+    // 未发起查询的会话 request id = 0（同生产：每次查询前 ++request_id_）。
+    // 先用错误 id 注入合约行 / 资金行：都应被丢弃。
+    session_->on_rsp_qry_instrument(
+        instrument_row("IF2506", "CFFEX", THOST_FTDC_PC_Futures, /*request_id=*/99));
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    session_->on_rsp_qry_trading_account(
+        trading_account_row(/*is_last=*/true, 100000.0, 85000.0, /*request_id=*/99));
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM instruments"), 0)
+        << "stale instrument response must not be persisted";
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 0)
+        << "stale trading account response must not be persisted";
+
+    // 正确 id（未发起时 = 0）的响应才被接受。
+    session_->on_rsp_qry_trading_account(trading_account_row(/*is_last=*/true, 100000.0, 85000.0));
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 1);
 }
 
 TEST_F(TdPositionLifecycleTest, DaySwitchFundQueriesCoexistAsTwoDayRows) {

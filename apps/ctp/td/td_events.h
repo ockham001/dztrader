@@ -204,6 +204,15 @@ struct OnRspUserPasswordUpdateField {
     std::string account_id;  // 多账户路由用, TdSpi push 时填入 (放末尾, 不破坏已有 layout)
 };
 
+/// OnRspError 回调数据 (通用错误响应; td 入队版, ADR 0055)
+/// CTP 对查询流控拒绝等场景经 OnRspError 返回 (可能没有对应 OnRspQry* 应答),
+/// 必须入队才能结束在途查询 / 进入失败路径, 否则只能等超时兜底 (#457)。
+struct OnRspErrorTdField {
+    std::optional<CThostFtdcRspInfoField> rsp_info;
+    int request_id = -1;
+    std::string account_id;  // 多账户路由用, TdSpi push 时填入
+};
+
 /// OnRspTradingAccountPasswordUpdate 回调数据 (修改资金密码响应)
 struct OnRspTradingAccountPasswordUpdateField {
     std::optional<CThostFtdcTradingAccountPasswordUpdateField> password_update;
@@ -280,6 +289,9 @@ inline void td_delete_event_data(Event& event) noexcept {
             break;
         case EventType::OnRspTradingAccountPasswordUpdate:
             delete static_cast<OnRspTradingAccountPasswordUpdateField*>(event.data);  // NOLINT
+            break;
+        case EventType::OnRspErrorTd:
+            delete static_cast<OnRspErrorTdField*>(event.data);  // NOLINT
             break;
         default:
             // 非 td 关心的类型 (md 类型 3,4-13 或 Unknown). 调用方应先按 type 路由到

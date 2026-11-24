@@ -124,6 +124,8 @@ add_executable(dztd_ctp
     td/td_report_filter.cpp
     td/td_day_load.cpp
     td/td_login_finalize.cpp
+    td/td_query_pacer.cpp
+    td/td_query_lane.cpp
     common/trading_calendar.cpp
 )
 target_include_directories(dztd_ctp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -287,6 +289,13 @@ foreach(testfile ${TD_CTP_TESTS})
     if(testname STREQUAL "td_login_finalize_test")
         target_sources(dztd_ctp_${testname} PRIVATE td/td_login_finalize.cpp)
     endif()
+    # td_query_pacer_test / td_query_lane_test: 查询通道纯逻辑（ADR 0055）
+    if(testname STREQUAL "td_query_pacer_test")
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_query_pacer.cpp)
+    endif()
+    if(testname STREQUAL "td_query_lane_test")
+        target_sources(dztd_ctp_${testname} PRIVATE td/td_query_pacer.cpp td/td_query_lane.cpp)
+    endif()
     # td_data_sync_integration_test 需要 td_persist_writer.cpp + td_persist_rows.cpp
     # + td_report_filter.cpp + td_day_load.cpp (进程内组装: PersistWriter 真线程 + ReportFilter
     # + TdIngestGate) + 链 dztdstore
@@ -306,7 +315,8 @@ foreach(testfile ${TD_CTP_TESTS})
             td/td_account_session.cpp td/td_account_session_pure.cpp td/td_spi.cpp
             td/td_ctp_mapping.cpp td/td_risk_gate.cpp td/td_offset_converter.cpp
             td/td_position.cpp td/td_persist_writer.cpp td/td_persist_rows.cpp
-            td/td_report_filter.cpp td/td_day_load.cpp td/td_login_finalize.cpp)
+            td/td_report_filter.cpp td/td_day_load.cpp td/td_login_finalize.cpp
+            td/td_query_pacer.cpp td/td_query_lane.cpp)
         target_link_libraries(dztd_ctp_${testname} PRIVATE
             dztdstore dzshm dzshm_test_support dztd_ctp_api)
     endif()

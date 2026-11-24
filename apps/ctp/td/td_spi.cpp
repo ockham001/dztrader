@@ -139,17 +139,24 @@ void TdSpi::OnRspUserLogout(CThostFtdcUserLogoutField* pUserLogout,
 }
 
 void TdSpi::OnRspError(CThostFtdcRspInfoField* pRspInfo, int nRequestID, bool bIsLast) {
-    (void)bIsLast;
-    // 通用错误仅日志, 不入队 (具体业务错误有对应 OnRsp* 回调)
+    // ADR 0055: 通用错误必须入队——查询流控拒绝 (「查询未就绪」) 等场景没有对应的
+    // OnRspQry* 应答, 不入队会让在途查询悬挂到超时。会话侧按 nRequestID 路由。
     // 异常保护: to_utf8_from_gbk 可能抛异常, 不能传播到 CTP
     try {
+        (void)bIsLast;
         if (pRspInfo) {
-            SPDLOG_ERROR("td rsp error | account={} error_id={} error_msg=\"{}\" request_id={}",
+            // 会话侧按路由记 ERROR / WARN（带 account 与业务语境），这里只留 DEBUG 原件。
+            SPDLOG_DEBUG("td rsp error | account={} error_id={} error_msg=\"{}\" request_id={}",
                          account_id_, pRspInfo->ErrorID,
                          dztrader::to_utf8_from_gbk(pRspInfo->ErrorMsg), nRequestID);
         }
+        event_queue_->push(EventType::OnRspErrorTd,
+                           new OnRspErrorTdField{
+                               .rsp_info = pRspInfo ? std::make_optional(*pRspInfo) : std::nullopt,
+                               .request_id = nRequestID,
+                               .account_id = account_id_});
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td rsp error log failed | account={} error=\"{}\"", account_id_, e.what());
+        SPDLOG_ERROR("td rsp error push failed | account={} error=\"{}\"", account_id_, e.what());
     }
 }
 
