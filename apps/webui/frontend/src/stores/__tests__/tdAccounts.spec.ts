@@ -313,13 +313,21 @@ describe('useTdAccountsStore · 账户展示名解析（ADR 0056 决策 9 / 契�
     expect(store.accountName('00001')).toBe('')
   })
 
-  it('注册表降级时仍可从配置镜像解析名字（降级不丢展示名）', () => {
+  it('注册表降级时仍可从配置镜像解析名字（降级不丢展示名）', async () => {
+    // 先让注册表进入降级态（available:false，契约 rest §2.9.9），再到达配置帧
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: false,
+      reason: 'no_gateway_snapshot',
+    } satisfies TdAccountsDegradedResponse)
     const store = useTdAccountsStore()
+    await store.init()
+    expect(store.available).toBe(false)
+
     store.applyTdConfig('dztd_ctp', configPayload([
       { account_id: '00001', account_name: '主账户', enabled: true, ext: { broker_id: '9999', password: '****' } },
     ]))
 
-    expect(store.available).toBe(true)  // 尚未拉过注册表，与「降级」无关
+    // 降级只影响「账户全集是否可信」，不影响已到达配置镜像里的名字（ADR 0056 决策 9）
     expect(store.displayName('00001')).toBe('主账户')
   })
 

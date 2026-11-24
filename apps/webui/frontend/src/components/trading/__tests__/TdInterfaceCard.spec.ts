@@ -620,6 +620,9 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(nameInput.value).toBe('主账户')
     expect((wrapper.find('[data-test="td-form-account-id"]').element as HTMLInputElement).readOnly).toBe(true)
 
+    // 弹窗标题用展示名（用户可见文案不用裸 id）
+    expect(wrapper.find('.modal-stub').attributes('data-title')).toBe('编辑交易账户：主账户')
+
     await wrapper.find('[data-test="td-form-submit"]').trigger('click')
     await flushPromises()
 
@@ -629,15 +632,23 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(patch).not.toHaveProperty('account_id')
     // 改名走同一端点（ADR 0056 决策 3）；未改名时提交原值同样合法
     expect(patch.account_name).toBe('主账户')
-    // 密码留空不得提交（避免把掩码/空串写成新密码）
-    expect(patch.ext).not.toHaveProperty('password')
-    // 旧「用户代码」字段已删除（ADR 0056 决策 2）
-    expect(patch.ext).not.toHaveProperty('user_id')
+    // 连接参数没变化 → patch 不带 ext：网关因此不会触发 Idle 状态保护
+    expect(patch).not.toHaveProperty('ext')
   })
 
-  it('改名：编辑弹窗改名后 PUT body 带 account_name，无需先登出（ADR 0056 决策 3 / #470 AC4）', async () => {
+  it('在线改名：patch 只带通用层字段、不带 ext（网关 requires_idle 只看 ext，ADR 0056 决策 3 / #470 AC4）', async () => {
     const store = await prepare()
-    // 会话就绪态也是常态（改名不要求账户 Idle）；用 progress 把账户置为已登录
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '旧名字',
+        enabled: true,
+        ext: { broker_id: '9999', password: '****' },
+      }],
+      ext: {},
+    })
+    // 会话就绪态是常态（改名不要求账户 Idle）：progress 到 max = 已登录
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
     vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
     const { wrapper } = mountCard(store)
@@ -653,6 +664,37 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(accountId).toBe('account_001')
     expect(patch.account_name).toBe('新的账户名')
     expect(patch).not.toHaveProperty('account_id')
+    // 关键：网关 requires_idle(UpdateAccount) 对「params 含非空 ext」才要求 Idle
+    //（apps/ctp/td/td_config.h）；纯改名 patch 不带 ext 才能在会话在线时被接受
+    expect(patch).not.toHaveProperty('ext')
+  })
+
+  it('连接参数变化才带 ext，且只带变化字段（未变化字段由网关字段级 merge 保留旧值）', async () => {
+    const store = await prepare()
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '主账户',
+        enabled: true,
+        ext: { broker_id: '9999', product_info: 'prod', password: '****' },
+      }],
+      ext: {},
+    })
+    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-edit-account_001"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('input[placeholder="broker_id"]').setValue('8888')
+    await wrapper.find('input[placeholder="留空 = 不修改密码"]').setValue('newpass')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    const [, patch] = vi.mocked(tdApi.updateAccount).mock.calls[0]
+    // 只下发真正变化的连接参数（broker_id 改了、密码填了）；product_info 未变不出现
+    expect(patch.ext).toEqual({ broker_id: '8888', password: 'newpass' })
   })
 
   it('账户名称留空提交 = 清空名字并回落 id（契约 td-config §2.1/§2.2）', async () => {

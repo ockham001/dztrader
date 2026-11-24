@@ -131,6 +131,17 @@ watch(() => [props.open, props.editing], () => {
 }, { immediate: true })
 
 const isEditing = computed(() => props.editing !== null)
+
+/**
+ * 编辑弹窗标题里的账户标识：优先展示名（原值 trim），未设置回落账户 ID（ADR 0056 决策 3）。
+ * 标题用**已保存的**名字（`editingAccountName`），不跟表单输入实时变化，避免打字时标题抖动。
+ */
+const editingTitle = computed(() => {
+  const editing = props.editing
+  if (editing === null) return ''
+  const name = (props.editingAccountName ?? '').trim()
+  return name === '' ? editing.account_id : name
+})
 const isCtp = computed(() => {
   const gateway = form.value.gateway
   if (!gateway.startsWith('dztd_')) return false
@@ -240,7 +251,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 <template>
   <Modal
     :open="open"
-    :title="isEditing ? `编辑交易账户：${form.account_id}` : '添加交易账户'"
+    :title="isEditing ? `编辑交易账户：${editingTitle}` : '添加交易账户'"
     @close="emit('close')"
   >
     <div class="td-form dialog-form">

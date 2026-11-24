@@ -78,15 +78,6 @@ function accountActionTitle(actionText: string): string {
   return accountWriteBlockedText.value !== '' ? accountWriteBlockedText.value : actionText
 }
 
-/**
- * 账户展示名（ADR 0056 决策 9 / 契约 td-config §8）：**渲染时按 id 现查**，
- * 任何行/事件都不缓存名字副本，因此改名经 `td_rtn_config` 到达即全站生效。
- * 取不到名字回落 `account_id`（决策 5：名字任何情况下不得影响展示以外的行为）。
- */
-function accountDisplayName(row: TdAccountRow): string {
-  return store.displayName(row.account_id)
-}
-
 // ===== 启动进程（崩溃/重启耗尽恢复；ADR 0053：不得以删除重加代替恢复） =====
 const startProcessTitle = computed(() => {
   if (removePending.value) return REMOVING_HINT
@@ -178,7 +169,7 @@ async function submitForm(value: TdAccountFormValue): Promise<void> {
       return
     }
 
-    const patch = buildUpdatePatch(value)
+    const patch = buildUpdatePatch(value, editingRow.value)
     const result = await store.updateAccount(editingRow.value.account_id, patch)
     if (!result.ok) {
       if (result.kind === 'conflict' || result.kind === 'failed') formError.value = result.message
@@ -192,14 +183,50 @@ async function submitForm(value: TdAccountFormValue): Promise<void> {
   }
 }
 
+/** 前置列表的可比签名（地址 trim、label 归一为空串、enabled 归一为布尔；顺序敏感——提供即整体替换） */
+function frontendsSignature(
+  frontends: { address: string; label?: string; enabled?: boolean }[],
+): string {
+  return JSON.stringify(frontends.map(fe => ({
+    address: fe.address.trim(),
+    label: (fe.label ?? '').trim(),
+    enabled: fe.enabled !== false,
+  })))
+}
+
 /**
  * 构造 `UpdateAccount` 的 params 子集（契约 td-config §2.1）：
  * 只包含**确实要改**的字段——空字符串表示「置空该字段」（如清空产品信息/认证码/账户名称），
  * 但密码例外（空 = 不修改，契约 §2.3）。`frontends` 提供即整体替换。
- * `account_name` 总随表单提交（改名走同一端点，ADR 0056 决策 3：不要求账户 `Idle`）。
+ *
+ * **`ext` 只在连接参数确实变化时才下发**（关键）：网关的 `requires_idle()` 对
+ * 「params 含非空 `ext`」的 UpdateAccount 要求账户 `Idle`（契约 td-config §2.1 状态保护、
+ * `apps/ctp/td/td_config.h`），而 `account_name` 是纯展示字段、任何会话状态都可改
+ * （ADR 0056 决策 3 / #470 AC4）。恒下发 `ext` 会让「在线改名」被网关以 `session_active`
+ * 拒绝——这正是本票修复的缺陷；因此这里与 `editingRow.config.ext` 逐字段 diff，只提交
+ * 真正变化的连接参数（再叠加字段级 merge：未提交的字段由网关保留旧值）。
+ * 配置镜像缺失（降级态骨架行）时宁可不下发 ext：猜一组空值下发会覆盖真实连接参数。
+ *
+ * `account_name` 总随表单提交（改名走同一端点，不要求账户 `Idle`）。
  * `flow_dir` 不下发：网关自动构造（契约 td-config §2.3），避免误清网关的本地文件布局。
  */
-function buildUpdatePatch(value: TdAccountFormValue): TdUpdateAccountBody {
+function buildUpdatePatch(value: TdAccountFormValue, row: TdAccountRow): TdUpdateAccountBody {
+  const original = row.config?.ext
+  const extPatch: NonNullable<TdUpdateAccountBody['ext']> = {}
+  if (value.broker_id !== (original?.broker_id ?? '')) extPatch.broker_id = value.broker_id
+  if (value.product_info !== (original?.product_info ?? '')) {
+    extPatch.product_info = value.product_info
+  }
+  if (value.auth_code !== (original?.auth_code ?? '')) extPatch.auth_code = value.auth_code
+  if (value.app_id !== (original?.app_id ?? '')) extPatch.app_id = value.app_id
+  if (frontendsSignature(value.frontends) !== frontendsSignature(original?.frontends ?? [])) {
+    extPatch.frontends = value.frontends
+  }
+  // 密码留空或残留掩码 = 保留旧值，绝不提交（契约 td-config §2.3；避免把 **** 写成新密码）
+  if (value.password !== '' && value.password !== '****') {
+    extPatch.password = value.password
+  }
+
   const patch: TdUpdateAccountBody = {
     // 账户名称是纯展示字段：显式空串 = 清空并回落 account_id（契约 td-config §2.1/§2.2）
     account_name: value.account_name,
@@ -207,18 +234,9 @@ function buildUpdatePatch(value: TdAccountFormValue): TdUpdateAccountBody {
     risk_control_enabled: value.risk_control_enabled,
     // currency_id 不下发：缺失=保留旧值（契约 td-config §2.1）。币种不做人工配置，
     // 后续由柜台回报推导（#446）；避免注册表骨架行编辑时把非 CNY 账户静默重置为 CNY。
-    ext: {
-      broker_id: value.broker_id,
-      product_info: value.product_info,
-      frontends: value.frontends,
-      auth_code: value.auth_code,
-      app_id: value.app_id,
-    },
   }
-  // 密码留空或残留掩码 = 保留旧值，绝不提交（契约 td-config §2.3；避免把 **** 写成新密码）
-  if (value.password !== '' && value.password !== '****') {
-    patch.ext!.password = value.password
-  }
+  // 只有连接参数真的变化才带 ext：纯改名/改启用的 patch 因此不触发网关的 Idle 状态保护
+  if (Object.keys(extPatch).length > 0) patch.ext = extPatch
   return patch
 }
 
@@ -257,7 +275,7 @@ async function confirmRemove(): Promise<void> {
     const result = await store.removeAccount(row.account_id)
     if (result.ok) {
       removingRow.value = null
-      toast.success(`已提交删除请求：${accountDisplayName(row)}`)
+      toast.success(`已提交删除请求：${store.displayName(row.account_id)}`)
       return
     }
     if (result.kind === 'conflict' || result.kind === 'failed') {
@@ -374,7 +392,7 @@ function logoutDisabledTitle(row: TdAccountRow): string {
 async function loginSession(row: TdAccountRow): Promise<void> {
   const result = await store.login(row.account_id)
   if (result.ok) {
-    toast.success(`已下发登录请求：${accountDisplayName(row)}`)
+    toast.success(`已下发登录请求：${store.displayName(row.account_id)}`)
   } else if (result.kind === 'conflict' || result.kind === 'failed') {
     toast.error(result.message)
   } else if (result.kind === 'timeout') {
@@ -386,7 +404,7 @@ async function loginSession(row: TdAccountRow): Promise<void> {
 async function logoutSession(row: TdAccountRow): Promise<void> {
   const result = await store.logout(row.account_id)
   if (result.ok) {
-    toast.success(`已下发登出请求：${accountDisplayName(row)}`)
+    toast.success(`已下发登出请求：${store.displayName(row.account_id)}`)
   } else if (result.kind === 'conflict' || result.kind === 'failed') {
     toast.error(result.message)
   } else if (result.kind === 'timeout') {
@@ -502,9 +520,9 @@ function progressPercent(row: TdAccountRow): number {
                 <div class="td-card__account-cell">
                   <div class="td-card__account-names">
                     <!-- 主显展示名（空名回落 id，ADR 0056 决策 3/9）；名字与 id 不同时 id 作副行小字保留可查 -->
-                    <span class="td-card__account-name" data-test="td-account-name">{{ accountDisplayName(row) }}</span>
+                    <span class="td-card__account-name" data-test="td-account-name">{{ store.displayName(row.account_id) }}</span>
                     <span
-                      v-if="accountDisplayName(row) !== row.account_id"
+                      v-if="store.displayName(row.account_id) !== row.account_id"
                       class="td-card__account-id"
                       data-test="td-account-id"
                     >{{ row.account_id }}</span>
@@ -529,7 +547,7 @@ function progressPercent(row: TdAccountRow): number {
                     type="button"
                     :disabled="store.sessionPending(row.account_id, 'login') || !canLoginRow(row)"
                     :title="loginDisabledTitle(row)"
-                    :aria-label="`登录账户 ${accountDisplayName(row)}`"
+                    :aria-label="`登录账户 ${store.displayName(row.account_id)}`"
                     :data-test="`td-login-${row.account_id}`"
                     @click="loginSession(row)"
                   >
@@ -541,7 +559,7 @@ function progressPercent(row: TdAccountRow): number {
                     type="button"
                     :disabled="store.sessionPending(row.account_id, 'logout') || !canLogoutRow(row)"
                     :title="logoutDisabledTitle(row)"
-                    :aria-label="`登出账户 ${accountDisplayName(row)}`"
+                    :aria-label="`登出账户 ${store.displayName(row.account_id)}`"
                     :data-test="`td-logout-${row.account_id}`"
                     @click="logoutSession(row)"
                   >
@@ -564,8 +582,8 @@ function progressPercent(row: TdAccountRow): number {
                     class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
                     type="button"
                     :disabled="accountWriteBlockedText !== '' || store.accountPending(row.account_id)"
-                    :title="accountActionTitle(`编辑账户 ${accountDisplayName(row)}`)"
-                    :aria-label="`编辑账户 ${accountDisplayName(row)}`"
+                    :title="accountActionTitle(`编辑账户 ${store.displayName(row.account_id)}`)"
+                    :aria-label="`编辑账户 ${store.displayName(row.account_id)}`"
                     :data-test="`td-edit-${row.account_id}`"
                     @click="openEdit(row)"
                   >
@@ -576,9 +594,9 @@ function progressPercent(row: TdAccountRow): number {
                     type="button"
                     :disabled="accountWriteBlockedText !== '' || store.accountPending(row.account_id)"
                     :title="accountActionTitle(row.enabled
-                      ? `禁用账户 ${accountDisplayName(row)}（已有会话不会被强制断开）`
-                      : `启用账户 ${accountDisplayName(row)}`)"
-                    :aria-label="`${row.enabled ? '禁用' : '启用'}账户 ${accountDisplayName(row)}`"
+                      ? `禁用账户 ${store.displayName(row.account_id)}（已有会话不会被强制断开）`
+                      : `启用账户 ${store.displayName(row.account_id)}`)"
+                    :aria-label="`${row.enabled ? '禁用' : '启用'}账户 ${store.displayName(row.account_id)}`"
                     :data-test="`td-toggle-${row.account_id}`"
                     @click="toggleEnabled(row)"
                   >
@@ -592,8 +610,8 @@ function progressPercent(row: TdAccountRow): number {
                     class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm ds-btn--danger-icon"
                     type="button"
                     :disabled="accountWriteBlockedText !== '' || store.accountPending(row.account_id)"
-                    :title="accountActionTitle(`删除账户 ${accountDisplayName(row)}`)"
-                    :aria-label="`删除账户 ${accountDisplayName(row)}`"
+                    :title="accountActionTitle(`删除账户 ${store.displayName(row.account_id)}`)"
+                    :aria-label="`删除账户 ${store.displayName(row.account_id)}`"
                     :data-test="`td-remove-${row.account_id}`"
                     @click="openRemove(row)"
                   >
@@ -639,7 +657,7 @@ function progressPercent(row: TdAccountRow): number {
     <Modal :open="removingRow !== null" title="删除交易账户" @close="closeRemove">
       <div v-if="removingRow" class="td-card__confirm">
         <p class="td-card__confirm-line" data-test="td-remove-confirm-text">
-          确认删除账户 <strong>{{ accountDisplayName(removingRow) }}</strong>（账户 ID {{ removingRow.account_id }} · 交易接口 {{ tdInterface.name }}）？
+          确认删除账户 <strong>{{ store.displayName(removingRow.account_id) }}</strong>（账户 ID {{ removingRow.account_id }} · 交易接口 {{ tdInterface.name }}）？
         </p>
         <ul class="td-card__confirm-list">
           <li>配置将从该交易接口的配置文件中移除，账户随即停止参与交易与查询。</li>

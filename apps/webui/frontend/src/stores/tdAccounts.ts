@@ -327,8 +327,8 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    * `account_id → account_name` 解析源（纯展示，**不参与任何路由/过滤**，契约 td-config §8）。
    *
    * 两个来源、合并顺序有讲究：
-   * 1. **注册表**（REST `GET /api/td/accounts`）：跨网关全集，也是账户被删除后仍可查的兜底
-   *    （历史委托/成交行按 id 解析，账户已删则解析不到 → 回落 id，ADR 0056 Consequences）；
+   * 1. **注册表**（REST `GET /api/td/accounts`）：跨网关全集；账户被删除后条目随之消失，
+   *    历史委托/成交行于是解析不到名字 → 回落 `account_id`（ADR 0056 Consequences）；
    * 2. **配置镜像**（WS `td_rtn_config`）**覆盖**注册表：改名只经该帧到达，dzweb 的注册表
    *    重拉要等 `data_changed{scope:"td"}`（账户集合**增减**才广播，改名不触发），因此
    *    以前者为准才能做到「改名立刻全站生效（含历史行）」。

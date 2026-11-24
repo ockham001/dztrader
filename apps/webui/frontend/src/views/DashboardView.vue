@@ -28,15 +28,10 @@ const positionsStore = useTdPositionsStore()
 const fundsStore = useTdTradingAccountsStore()
 const tdAccountsStore = useTdAccountsStore()
 
-/**
- * 账户展示名解析（ADR 0056 决策 9 / 契约 td-config §8）：持仓分组与资金行的账户列按
- * `account_id` 现查 `account_name`（空则回落 id）。持仓/资金行来自 REST 基线与 WS 增量，
- * 改名后不会重推，只有渲染时现查才能让历史行立刻显示新名字——**不得缓存名字副本**。
- * 过滤与业务键始终是 `account_id`（名字只用于展示）。
- */
-function accountDisplayName(accountId: string): string {
-  return tdAccountsStore.displayName(accountId)
-}
+// 账户展示名解析（ADR 0056 决策 9 / 契约 td-config §8）：持仓分组与资金行的账户列在模板里
+// 按 `account_id` 现查 `tdAccountsStore.displayName`（空则回落 id）。持仓/资金行来自 REST
+// 基线与 WS 增量，改名后不会重推，只有渲染时现查才能让历史行立刻显示新名字——不得缓存名字
+// 副本；过滤与业务键始终是 `account_id`（名字只用于展示）。
 
 // 行情面板：复用 store 的 sources，与行情源页面同步
 const marketOnlineCount = computed(
@@ -564,12 +559,12 @@ onUnmounted(() => {
                         type="checkbox"
                         :checked="isPositionAccountSelected(account)"
                         :disabled="isLastPositionAccount(account)"
-                        :aria-label="`筛选持仓账户 ${accountDisplayName(account)}`"
+                        :aria-label="`筛选持仓账户 ${tdAccountsStore.displayName(account)}`"
                         :title="isLastPositionAccount(account) ? '至少保留一个账户；要显示全部请用「全选」' : ''"
                         @change="togglePositionAccount(account)"
                       >
                       <span class="ds-check__box"></span>
-                      <span class="dashboard-pos-filter__label" :title="account">{{ accountDisplayName(account) }}</span>
+                      <span class="dashboard-pos-filter__label" :title="account">{{ tdAccountsStore.displayName(account) }}</span>
                     </label>
                   </div>
                 </div>
@@ -646,7 +641,7 @@ onUnmounted(() => {
                     data-test="position-row-net"
                   >{{ netVolumeDisplay(group) }}</td>
                   <td class="cell-num cell-muted" title="策略维度持仓归属尚未建立">—</td>
-                  <td class="cell-text cell-text--secondary" :title="group.account_id">{{ accountDisplayName(group.account_id) }}</td>
+                  <td class="cell-text cell-text--secondary" :title="group.account_id">{{ tdAccountsStore.displayName(group.account_id) }}</td>
                   <td class="cell-num cell-muted" data-test="position-row-date">{{ formatTdDate(group.date) }}</td>
                   <td v-for="name in strategyNames" :key="name" class="cell-num strategy-col" title="策略维度持仓归属尚未建立">—</td>
                   <template v-if="showPositionDetail">
@@ -739,7 +734,7 @@ onUnmounted(() => {
                     :data-account-id="row.account_id"
                     :title="row.has_data ? undefined : '该账户无资金记录'"
                   >
-                    <td class="frozen frozen-last cell-text dashboard-panel__cell-strong" :title="row.account_id">{{ accountDisplayName(row.account_id) }}</td>
+                    <td class="frozen frozen-last cell-text dashboard-panel__cell-strong" :title="row.account_id">{{ tdAccountsStore.displayName(row.account_id) }}</td>
                     <td class="cell-center">
                       <span
                         class="ds-tag dashboard-panel__tag"
