@@ -44,7 +44,7 @@ namespace dztrader::ctp {
 /// 职责:
 /// - 管理多个 AccountSession (每账户一个, sessions_ map)
 /// - 主循环: 处理 SHM 帧 + SPI 事件 (MPMC) + 定时器 + 信号量 wait
-/// - 帧路由: basic 广播帧 (TD_ORDER_REQ 等) + 含 instance_id 帧 (TD_CONNECT 等)
+/// - 帧路由: basic 广播帧 (TD_ORDER_REQ 等) + 进程级 instance_id 帧 (TD_CONNECT 等)
 /// - 事件 dispatch: 按 Field.account_id 路由到对应 AccountSession::on_*
 /// - 配置热更新 (op-based, 副本 + 回滚): td/log 两 section
 /// - 健康度广播 (per-account TdHealth 翻转检测)
@@ -114,7 +114,7 @@ public:
 private:
     // === 主循环 ===
     /// 处理一个 SHM 帧 (分两层: basic 帧 (广播控制帧 + TD_ORDER_REQ/CANCEL_REQ 按 payload
-    /// account_id 路由) / 含 instance_id 帧检查 instance_id == name_ 或 name_: 前缀)
+    /// account_id 路由) / 含 instance_id 帧检查 instance_id == name_ (进程级, 总则 §5))
     void handle_frame(const std::byte* frame);
     /// 实际帧分发逻辑 (由 handle_frame 调用, 异常由外层兜底)
     void handle_frame_inner(const std::byte* frame);
@@ -183,7 +183,7 @@ private:
     /// 处理 TD_QUERY_ACCOUNT_STATUS basic 广播帧: 空=全量应答, 指定=命中配置才应答
     void handle_query_account_status(const std::byte* frame);
     /// per-account 健康度翻转检测 + 广播 (NOTIFY_TD_CONNECTED / NOTIFY_TD_DISCONNECTED)。
-    /// instance_id 格式 name_:account_id。仅在 health 翻转时发送, 避免重复。
+    /// 账户级帧 instance_id = account_id（ADR 0056）。仅在 health 翻转时发送, 避免重复。
     void broadcast_health(const std::string& account_id, TdHealth now);
     /// 对所有 sessions_ 调用 update_status (用于定时上报 / QUERY_ALL 响应)
     void report_state();

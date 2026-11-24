@@ -886,7 +886,7 @@ protected:
         {
             dztrader::test::TdConfigSeed seed;
             seed.account_id = "CTP001";
-            seed.user_id = "SMOKE001";
+            seed.account_name = "冒烟账户";
             seed.password = "";
             // 夹具只产 {"td": ...} (td section 的真相源), auto_login 是文件外层 section,
             // 在此合并。关闭自动登录只能靠 enabled=false —— 空表语义已改为「回落默认」
@@ -1493,12 +1493,12 @@ TEST_F(SmokeTest, MasterStartsMdFrameRoundTripAndGracefulShutdown) {
             const nlohmann::json body = {{"gateway", "dztd_ctp"},
                                          {"account",
                                           {{"account_id", "SMOKE002"},
+                                           {"account_name", "冒烟账户二"},
                                            {"enabled", true},
                                            {"risk_control_enabled", false},
                                            {"currency_id", "CNY"},
                                            {"ext",
                                             {{"broker_id", "9999"},
-                                             {"user_id", "SMOKE002"},
                                              {"password", ""},
                                              {"product_info", ""},
                                              {"frontends", nlohmann::json::array()},
@@ -2180,12 +2180,12 @@ TEST_F(SmokeTdLifecycleTest, GatewayStartAccountGuardRemoveAndMasterRestart) {
     const nlohmann::json add_body = {{"gateway", "dztd_ctp"},
                                      {"account",
                                       {{"account_id", "SMOKE440"},
+                                       {"account_name", "冒烟账户四四零"},
                                        {"enabled", true},
                                        {"risk_control_enabled", false},
                                        {"currency_id", "CNY"},
                                        {"ext",
                                         {{"broker_id", "9999"},
-                                         {"user_id", "SMOKE440"},
                                          {"password", ""},
                                          {"product_info", ""},
                                          {"frontends", nlohmann::json::array()},

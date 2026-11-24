@@ -40,14 +40,14 @@ struct TdConfigSeed {
     bool with_account = true;  ///< false = `accounts` 为空数组（无账户形态）
 
     // --- 账户通用层（契约 td-config §2.2）---
-    std::string account_id = "account_001";
+    std::string account_id = "account_001";  ///< 柜台真实投资者代码（ADR 0056）
+    std::string account_name{};              ///< 展示名，空 = 回落 account_id
     bool enabled = true;
     bool risk_control_enabled = false;
     std::string currency_id = "CNY";
 
     // --- 账户 `ext`（契约 td-config §2.3）---
     std::string broker_id = "9999";
-    std::string user_id = "00001";
     std::string password = "123456";
     std::string product_info{};
     std::string auth_code{};
@@ -71,11 +71,11 @@ struct TdConfigSeed {
     if (seed.with_account) {
         ctp::AccountConfig account;
         account.account_id = seed.account_id;
+        account.account_name = seed.account_name;
         account.enabled = seed.enabled;
         account.risk_control_enabled = seed.risk_control_enabled;
         account.currency_id = seed.currency_id;
         account.ext.broker_id = seed.broker_id;
-        account.ext.user_id = seed.user_id;
         account.ext.password = seed.password;
         account.ext.product_info = seed.product_info;
         account.ext.auth_code = seed.auth_code;

@@ -440,7 +440,6 @@ void AccountSession::refresh_order_avg(int64_t order_id) {
 void AccountSession::open(const std::string& flow_dir,
                           const std::vector<std::string>& front_addrs,
                           const std::string& broker_id,
-                          const std::string& user_id,
                           const std::string& password,
                           const std::string& auth_code,
                           const std::string& app_id) {
@@ -449,7 +448,6 @@ void AccountSession::open(const std::string& flow_dir,
         return;
     }
     broker_id_ = broker_id;
-    user_id_ = user_id;
     password_ = password;
     auth_code_ = auth_code;
     app_id_ = app_id;
@@ -1079,7 +1077,7 @@ void AccountSession::place_order(const DzOrderReq& req) {
     // order_ref 递增 (设计 §9.4)
     ++order_ref_;
     OrderBuildContext build_ctx{};
-    build_ctx.account_id = user_id_;  // CTP InvestorID
+    build_ctx.account_id = account_id_;  // CTP InvestorID 与 UserID 同值 (ADR 0056)
     build_ctx.order_ref = order_ref_;
     build_ctx.request_id = ++request_id_;
     build_ctx.exchange_id = it->second.exchange_id;
@@ -1151,7 +1149,7 @@ bool AccountSession::cancel_order(DzOrderId order_id) {
 
     CThostFtdcInputOrderActionField action{};
     copy_string(action.BrokerID, broker_id_.c_str(), true);
-    copy_string(action.InvestorID, user_id_.c_str(), true);
+    fill_account_id(action.InvestorID, sizeof(action.InvestorID), account_id_);
     // OrderRef + FrontID + SessionID 三元组定位订单 (CTP 撤单要求)
     copy_string(action.OrderRef, ctx->order_ref.c_str(), true);
     action.FrontID = ctx->front_id;
@@ -1258,7 +1256,7 @@ void AccountSession::delete_event(Event& event) noexcept {
 void AccountSession::req_authenticate() {
     CThostFtdcReqAuthenticateField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
-    copy_string(f.UserID, user_id_.c_str(), true);
+    fill_account_id(f.UserID, sizeof(f.UserID), account_id_);
     copy_string(f.AppID, app_id_.c_str(), true);
     copy_string(f.AuthCode, auth_code_.c_str(), true);
     int ret = api_->ReqAuthenticate(&f, ++request_id_);
@@ -1306,7 +1304,7 @@ void AccountSession::notify_login_failed(const std::string& reason) {
 void AccountSession::req_login() {
     CThostFtdcReqUserLoginField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
-    copy_string(f.UserID, user_id_.c_str(), true);
+    fill_account_id(f.UserID, sizeof(f.UserID), account_id_);
     copy_string(f.Password, password_.c_str(), true);
     int ret = api_->ReqUserLogin(&f, ++request_id_);
     if (ret != 0) {
@@ -1327,7 +1325,7 @@ void AccountSession::req_login() {
 void AccountSession::req_settlement_confirm() {
     CThostFtdcSettlementInfoConfirmField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
-    copy_string(f.InvestorID, user_id_.c_str(), true);
+    fill_account_id(f.InvestorID, sizeof(f.InvestorID), account_id_);
     int ret = api_->ReqSettlementInfoConfirm(&f, ++request_id_);
     if (ret != 0) {
         SPDLOG_ERROR("td req settlement confirm failed | account={} ret={}", account_id_, ret);

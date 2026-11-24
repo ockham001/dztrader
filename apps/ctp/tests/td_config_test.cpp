@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 namespace dztrader::ctp {
 namespace {
@@ -36,11 +38,22 @@ protected:
     std::filesystem::path path_;
 };
 
+/// 构造一个基础字段合法的账户（用例只改关心的字段，避免每例重复填 broker_id）。
+AccountConfig make_valid_account(const std::string& account_id,
+                                 const std::string& account_name = "") {
+    AccountConfig acct;
+    acct.account_id = account_id;
+    acct.account_name = account_name;
+    acct.ext.broker_id = "9999";
+    return acct;
+}
+
 // --- JSON 加载（契约 td-config §2.4 通用层 + ext 分层）---
 
 TEST_F(TdConfigTest, LoadFullConfig) {
     dztrader::test::TdConfigSeed seed;
     seed.qry_min_interval_ms = 900;  // 非默认值，确保字段确实被解析
+    seed.account_name = "主账户";
     seed.frontend_address = "tcp://180.168.146.187:10130";
     seed.frontend_label = "SimNow 7x24";
     write_config(seed);
@@ -50,8 +63,8 @@ TEST_F(TdConfigTest, LoadFullConfig) {
     EXPECT_TRUE(cfg.ext.enable_lock_mode);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].account_id, "account_001");
+    EXPECT_EQ(cfg.accounts[0].account_name, "主账户");
     EXPECT_EQ(cfg.accounts[0].ext.broker_id, "9999");
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "00001");
     EXPECT_EQ(cfg.accounts[0].ext.password, "123456");
     ASSERT_EQ(cfg.accounts[0].ext.frontends.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].ext.frontends[0].address, "tcp://180.168.146.187:10130");
@@ -154,7 +167,7 @@ TEST_F(TdConfigTest, LoadLegacyFlatAccountFormatIsRejectedByValidate) {
   "accounts": [
     {
       "account_id": "account_001",
-      "broker": {"name": "simnow", "broker_id": "9999", "user_id": "00001", "password": "123456"}
+      "broker": {"name": "simnow", "broker_id": "9999", "password": "123456"}
     }
   ]
 })json");
@@ -168,6 +181,42 @@ TEST_F(TdConfigTest, LoadLegacyFlatAccountFormatIsRejectedByValidate) {
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
     EXPECT_NE(err->find("broker_id empty"), std::string::npos) << *err;
+}
+
+/// 契约 td-config §6 / ADR 0056：「含已删除的 `ext.user_id`」属内容非法，必须致命退出。
+/// 未知字段本会按总则 §8 静默忽略，但那样旧账户会以自造 id 启动、登录必失败——所以
+/// load 阶段显式检测该字段（删掉 td section 自愈重生成后重新添加账户即可恢复）。
+TEST_F(TdConfigTest, LoadLegacyExtUserIdIsFatal) {
+    write_json(R"json({
+  "qry_min_interval_ms": 1100,
+  "accounts": [
+    {
+      "account_id": "account_001",
+      "ext": {
+        "broker_id": "9999",
+        "user_id": "00001",
+        "password": "123456"
+      }
+    }
+  ]
+})json");
+
+    try {
+        auto cfg = TdConfig::load(path_, "td");
+        (void)cfg;
+        FAIL() << "expected std::runtime_error for removed ext.user_id";
+    } catch (const std::runtime_error& e) {
+        const std::string msg = e.what();
+        EXPECT_NE(msg.find("ext.user_id"), std::string::npos) << msg;
+        EXPECT_NE(msg.find(path_.string()), std::string::npos) << msg;
+    }
+
+    // 非法内容不写回文件（用户仍能按契约 §6 自行删 section 修复）
+    std::ifstream ifs(path_);
+    nlohmann::json j;
+    ifs >> j;
+    ASSERT_TRUE(j.contains("td"));
+    EXPECT_TRUE(j["td"]["accounts"][0]["ext"].contains("user_id"));
 }
 
 /// 契约 td-config §6：**内容非法致命**——类型不符（不是 JSON 语法错）必须抛异常，
@@ -210,8 +259,8 @@ TEST_F(TdConfigTest, SaveAndLoadRoundTrip) {
     cfg.ext.enable_lock_mode = false;
     AccountConfig acct;
     acct.account_id = "test_001";
+    acct.account_name = "测试账户";
     acct.ext.broker_id = "8888";
-    acct.ext.user_id = "user1";
     acct.ext.password = "secret";
     acct.ext.auth_code = "auth";
     acct.ext.app_id = "app";
@@ -226,6 +275,7 @@ TEST_F(TdConfigTest, SaveAndLoadRoundTrip) {
     EXPECT_FALSE(loaded.ext.enable_lock_mode);
     ASSERT_EQ(loaded.accounts.size(), 1u);
     EXPECT_EQ(loaded.accounts[0].account_id, "test_001");
+    EXPECT_EQ(loaded.accounts[0].account_name, "测试账户");
     EXPECT_EQ(loaded.accounts[0].ext.broker_id, "8888");
     EXPECT_EQ(loaded.accounts[0].ext.password, "secret");
     EXPECT_EQ(loaded.accounts[0].ext.auth_code, "auth");
@@ -295,12 +345,12 @@ TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
     cfg.qry_min_interval_ms = 800;
     cfg.ext.enable_lock_mode = false;
     AccountConfig acct;
-    acct.account_id = "account_001";
+    acct.account_id = "00001";
+    acct.account_name = "主账户";
     acct.enabled = true;
     acct.risk_control_enabled = true;
     acct.currency_id = "CNY";
     acct.ext.broker_id = "9999";
-    acct.ext.user_id = "00001";
     acct.ext.password = "123456";
     acct.ext.product_info = "prod";
     acct.ext.auth_code = "auth";
@@ -320,19 +370,20 @@ TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
 
     // 契约 §2.2 账户通用层
     const auto& a = j["accounts"][0];
-    EXPECT_EQ(a["account_id"], "account_001");
+    EXPECT_EQ(a["account_id"], "00001");
+    EXPECT_EQ(a["account_name"], "主账户");
     EXPECT_TRUE(a["enabled"].get<bool>());
     EXPECT_TRUE(a["risk_control_enabled"].get<bool>());
     EXPECT_EQ(a["currency_id"], "CNY");
 
-    // 契约 §2.3 账户 ext：连接参数在 ext 内，且密码脱敏
+    // 契约 §2.3 账户 ext：连接参数在 ext 内，且密码脱敏；已删除的 user_id 不再出现
     ASSERT_TRUE(a["ext"].is_object());
     EXPECT_EQ(a["ext"]["broker_id"], "9999");
-    EXPECT_EQ(a["ext"]["user_id"], "00001");
     EXPECT_EQ(a["ext"]["password"], "****");
     EXPECT_EQ(a["ext"]["product_info"], "prod");
     EXPECT_EQ(a["ext"]["auth_code"], "auth");
     EXPECT_EQ(a["ext"]["app_id"], "app");
+    EXPECT_FALSE(a["ext"].contains("user_id"));
     ASSERT_EQ(a["ext"]["frontends"].size(), 1u);
     EXPECT_EQ(a["ext"]["frontends"][0]["address"], "tcp://127.0.0.1:1");
 
@@ -342,46 +393,82 @@ TEST_F(TdConfigTest, ToSafeJsonMatchesContractFullShape) {
     EXPECT_FALSE(a.contains("flow_dir"));
 }
 
-// --- validate ---
+// --- validate: account_id（契约 td-config §2.2 / §2.3 / §7）---
 
 TEST_F(TdConfigTest, ValidatePassesForValidConfig) {
     TdConfig cfg;
-    AccountConfig acct;
-    acct.account_id = "a1";
-    acct.ext.broker_id = "broker1";
-    acct.ext.user_id = "user1";
-    cfg.accounts.push_back(acct);
+    cfg.accounts.push_back(make_valid_account("00001", "主账户"));
     EXPECT_EQ(validate(cfg), std::nullopt);
+}
+
+TEST_F(TdConfigTest, ValidateRejectsEmptyAccountId) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account(""));  // 空
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("account_id"), std::string::npos);
 }
 
 TEST_F(TdConfigTest, ValidateRejectsDuplicateAccountId) {
     TdConfig cfg;
-    AccountConfig a1;
-    a1.account_id = "dup";
-    a1.ext.broker_id = "broker1";
-    a1.ext.user_id = "user1";
-    AccountConfig a2;
-    a2.account_id = "dup";
-    a2.ext.broker_id = "broker1";
-    a2.ext.user_id = "user2";
-    cfg.accounts.push_back(a1);
-    cfg.accounts.push_back(a2);
+    cfg.accounts.push_back(make_valid_account("dup"));
+    cfg.accounts.push_back(make_valid_account("dup"));
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
     EXPECT_NE(err->find("duplicate"), std::string::npos);
 }
 
-TEST_F(TdConfigTest, ValidateRejectsEmptyAccountId) {
+/// 12 字节 = `TThostFtdcInvestorIDType[13]` 的可用上限（12 字符 + NUL），必须可通过。
+TEST_F(TdConfigTest, ValidateAcceptsTwelveByteAccountId) {
     TdConfig cfg;
-    AccountConfig acct;
-    acct.account_id = "";  // 空
-    // 显式填好其余必填字段, 隔离校验顺序 (否则会先命中 ext.broker_id empty)
-    acct.ext.broker_id = "broker1";
-    acct.ext.user_id = "user1";
+    cfg.accounts.push_back(make_valid_account("123456789012"));
+    EXPECT_EQ(validate(cfg), std::nullopt);
+}
+
+/// 契约 td-config §2.3：超长必须报错而不是静默截断——截断会把订单打到不存在的账户。
+TEST_F(TdConfigTest, ValidateRejectsAccountIdTooLong) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("1234567890123"));  // 13 字节
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+    EXPECT_NE(err->find("too long"), std::string::npos) << *err;
+}
+
+TEST_F(TdConfigTest, ValidateRejectsAccountIdWithSpace) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("000 01"));
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
+}
+
+/// 契约 td-config §2.2：account_id 禁 `:`（与 REST 路径 / 账户级 instance_id 约定一致）。
+TEST_F(TdConfigTest, ValidateRejectsAccountIdWithColon) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("000:01"));
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
+}
+
+TEST_F(TdConfigTest, ValidateRejectsNonAsciiAccountId) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001账户"));
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
+}
+
+/// 契约 td-config §2.3：broker_id 非空（连接参数是必填项）。
+TEST_F(TdConfigTest, ValidateRejectsEmptyBrokerId) {
+    TdConfig cfg;
+    auto acct = make_valid_account("acc1");
+    acct.ext.broker_id = "";
     cfg.accounts.push_back(acct);
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("account_id"), std::string::npos);
+    EXPECT_NE(err->find("broker_id"), std::string::npos);
 }
 
 TEST_F(TdConfigTest, ValidateRejectsZeroQryMinInterval) {
@@ -400,28 +487,159 @@ TEST_F(TdConfigTest, ValidateRejectsNegativeQryMinInterval) {
     EXPECT_NE(err->find("qry_min_interval_ms"), std::string::npos);
 }
 
-TEST_F(TdConfigTest, ValidateRejectsEmptyBrokerId) {
+// --- validate: account_name（契约 td-config §2.2 / §7 / ADR 0056 决策 4）---
+
+TEST_F(TdConfigTest, ValidateAcceptsEmptyAccountName) {
     TdConfig cfg;
-    AccountConfig acct;
-    acct.account_id = "acc1";
-    acct.ext.broker_id = "";  // 空
-    acct.ext.user_id = "user1";
-    cfg.accounts.push_back(acct);
-    auto err = validate(cfg);
-    ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("broker_id"), std::string::npos);
+    cfg.accounts.push_back(make_valid_account("00001"));  // 留空 = 回落 account_id
+    EXPECT_EQ(validate(cfg), std::nullopt);
 }
 
-TEST_F(TdConfigTest, ValidateRejectsEmptyUserId) {
+TEST_F(TdConfigTest, ValidateAcceptsAccountNameAtSixtyFourBytes) {
     TdConfig cfg;
-    AccountConfig acct;
-    acct.account_id = "acc1";
-    acct.ext.broker_id = "broker1";
-    acct.ext.user_id = "";  // 空
-    cfg.accounts.push_back(acct);
+    cfg.accounts.push_back(make_valid_account("00001", std::string(64, 'a')));
+    EXPECT_EQ(validate(cfg), std::nullopt);
+}
+
+/// `trim` 后 ≤64 字节：首尾空白不计入长度。
+TEST_F(TdConfigTest, ValidateRejectsAccountNameTooLongAfterTrim) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "  " + std::string(65, 'a') + "  "));
     auto err = validate(cfg);
     ASSERT_TRUE(err.has_value());
-    EXPECT_NE(err->find("user_id"), std::string::npos);
+    EXPECT_NE(err->find("account_name"), std::string::npos) << *err;
+    EXPECT_NE(err->find("too long"), std::string::npos) << *err;
+}
+
+TEST_F(TdConfigTest, ValidateRejectsAccountNameWithControlChars) {
+    const std::vector<std::string> invalid_names = {
+        std::string("a\tb"),    // TAB
+        std::string("a\rb"),    // CR
+        std::string("a\nb"),    // LF
+        std::string("a\x01b"),  // C0 控制字符
+        std::string("a\x7F"
+                    "b"),  // DEL
+        std::string("a\xC2\x80"
+                    "b"),  // C1 控制字符 U+0080
+    };
+    for (const auto& name : invalid_names) {
+        TdConfig cfg;
+        cfg.accounts.push_back(make_valid_account("00001", name));
+        auto err = validate(cfg);
+        ASSERT_TRUE(err.has_value()) << "name with control char should be rejected";
+        EXPECT_NE(err->find("account_name"), std::string::npos) << *err;
+    }
+}
+
+TEST_F(TdConfigTest, ValidateRejectsAccountNameInvalidUtf8) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "\xFF"));
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("account_name"), std::string::npos) << *err;
+}
+
+TEST_F(TdConfigTest, ValidateRejectsDuplicateAccountName) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "主账户"));
+    cfg.accounts.push_back(make_valid_account("00002", "主账户"));
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("conflict"), std::string::npos) << *err;
+}
+
+/// trim 后比较：首尾空白不同但主体相同的名字算冲突。
+TEST_F(TdConfigTest, ValidateTrimsAccountNameBeforeComparing) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "主账户"));
+    cfg.accounts.push_back(make_valid_account("00002", "  主账户  "));
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("conflict"), std::string::npos) << *err;
+}
+
+/// ADR 0056 决策 4：比较前做 NFC 规范化——预组合 "é"(U+00E9) 与分解形式 "e"+U+0301
+/// 渲染相同，必须判为冲突。
+TEST_F(TdConfigTest, ValidateRejectsNfcEquivalentAccountNames) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "\xC3\xA9"));   // U+00E9
+    cfg.accounts.push_back(make_valid_account("00002", "e\xCC\x81"));  // e + U+0301
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("conflict"), std::string::npos) << *err;
+}
+
+/// 大小写敏感（不做折叠）：大小写不同的名字不算冲突。
+TEST_F(TdConfigTest, ValidateAccountNameIsCaseSensitive) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "Main"));
+    cfg.accounts.push_back(make_valid_account("00002", "main"));
+    EXPECT_EQ(validate(cfg), std::nullopt);
+}
+
+/// 留空的名字按 account_id 参与判定：name 撞别人的 id 要拒绝（展平判定）。
+TEST_F(TdConfigTest, ValidateRejectsNameCollidingWithOtherAccountId) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001"));           // 留空 = 按 00001 参与
+    cfg.accounts.push_back(make_valid_account("00002", "00001"));  // name 撞别人 id
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("conflict"), std::string::npos) << *err;
+}
+
+/// 同一账户允许 name == 自己的 id（ADR 0056 决策 3：不做写入时规范化，
+/// 「未设置」与「设置成和 id 一样」是两件事）。
+TEST_F(TdConfigTest, ValidateAllowsAccountNameEqualToOwnId) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_valid_account("00001", "00001"));
+    EXPECT_EQ(validate(cfg), std::nullopt);
+}
+
+/// 契约 §6：配置加载（解码宽容）交给启动校验——超长 account_id 必须被 validate 拒绝，
+/// 由 td_main 致命退出，而不是静默截断启动。
+TEST_F(TdConfigTest, LoadThenValidateRejectsOverlongAccountId) {
+    dztrader::test::TdConfigSeed seed;
+    seed.account_id = "1234567890123";  // 13 字节，超出 CTP InvestorID 容量
+    write_config(seed);
+
+    auto cfg = TdConfig::load(path_, "td");  // 解码本身不报错
+    auto err = validate(cfg);                // td_main 的启动校验据此致命退出
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("too long"), std::string::npos) << *err;
+}
+
+/// 旧配置检测要扫完整个账户数组：`ext.user_id` 出现在第二个账户同样致命。
+TEST_F(TdConfigTest, LoadLegacyExtUserIdInLaterAccountIsFatal) {
+    write_json(R"json({
+  "accounts": [
+    {"account_id": "00001", "ext": {"broker_id": "9999", "password": "123456"}},
+    {"account_id": "00002", "ext": {"broker_id": "9999", "user_id": "00002"}}
+  ]
+})json");
+    EXPECT_THROW((void)TdConfig::load(path_, "td"), std::runtime_error);
+}
+
+/// AC4：account_name 留空存空串（不做写入时规范化 / 不回落成 id 再存）。
+TEST_F(TdConfigTest, SaveAndLoadKeepsEmptyAccountName) {
+    TdConfig cfg;
+    AccountConfig acct = make_valid_account("00001");
+    acct.account_name.clear();
+    cfg.accounts.push_back(acct);
+
+    path_ = tmp_dir_ / "dztd_ctp.json";
+    cfg.save(path_, "td");
+    auto loaded = TdConfig::load(path_, "td");
+    ASSERT_EQ(loaded.accounts.size(), 1u);
+    EXPECT_TRUE(loaded.accounts[0].account_name.empty());
+}
+
+/// 旧配置缺 account_name 字段时按默认空串解码（契约 §2.2 选填）。
+TEST_F(TdConfigTest, LoadMissingAccountNameDefaultsToEmpty) {
+    write_json(R"json({"accounts": [{"account_id": "00001", "ext": {"broker_id": "9999"}}]})json");
+    auto cfg = TdConfig::load(path_, "td");
+    ASSERT_EQ(cfg.accounts.size(), 1u);
+    EXPECT_TRUE(cfg.accounts[0].account_name.empty());
+    EXPECT_EQ(validate(cfg), std::nullopt);
 }
 
 }  // namespace

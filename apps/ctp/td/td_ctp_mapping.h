@@ -28,11 +28,22 @@ struct OrderTypeTriplet {
 /// 下单时构建 CTP InputOrderField 所需的上下文.
 /// AccountSession 维护 order_ref 递增序列, 转换时通过此结构传入.
 struct OrderBuildContext {
-    std::string account_id;   ///< 投资者代码 (CTP InvestorID)
+    std::string account_id;   ///< 账户 ID（柜台的 InvestorID 与 UserID 同值，ADR 0056）
     int64_t order_ref = 0;    ///< CTP OrderRef (12 位数字字符串)
     int32_t request_id = 0;   ///< CTP RequestID
     std::string exchange_id;  ///< 交易所代码 (CFFEX/SHFE/...)
 };
+
+// ============================================================================
+// 账户身份字段 (ADR 0056)
+// ============================================================================
+// CTP 的 UserID（认证 / 登录）与 InvestorID（下单 / 撤单 / 结算确认）都取同一个账户 ID
+// （柜台真实投资者代码），不再有独立的用户代码字段。集中成唯一填充入口，避免将来又拆出
+// 第二个来源；超长由配置校验（≤12 字节）保证，填充层非截断模式兜底。
+
+/// 把账户 ID 写入 CTP 身份字段（`UserID` 或 `InvestorID`）。
+/// 调用点：认证 / 登录请求填 `UserID`；撤单 / 结算确认请求填 `InvestorID`。
+void fill_account_id(char* field, std::size_t capacity, const std::string& account_id) noexcept;
 
 // ============================================================================
 // 纯函数: 时间/日期解析

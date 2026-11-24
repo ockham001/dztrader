@@ -11,6 +11,7 @@ target_sources(dzcore PRIVATE
     src/path.cpp
     src/this_process.cpp
     src/timer_queue.cpp
+    src/utf8.cpp
 )
 target_include_directories(dzcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -19,6 +20,8 @@ target_link_libraries(dzcore
     PUBLIC strategy_api_headers
     PUBLIC Boost::process spdlog::spdlog toml11::toml11
            nlohmann_json::nlohmann_json magic_enum::magic_enum
+    # Unicode NFC：实现细节（utf8.h 不暴露 utf8proc 头），随静态库传递到最终链接
+    PRIVATE utf8proc::utf8proc
 )
 # 可被链入 dztrader_sdk 动态库，静态库对象需 PIC（与 dzsdkdb/dztdstore/dztrading 同）。
 # 缺此设置时：SDK 动态库一旦引用本库某个含外部数据符号直接寻址的 TU（如 env.cpp），

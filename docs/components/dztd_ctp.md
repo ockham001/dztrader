@@ -53,7 +53,7 @@
 - **本进程暂无登录链自动重试**（缺口，见 #406）：认证失败 / 登录失败 / 结算确认失败都回滚到 `Authenticated` / `Connected` / `LoggedIn`，但从这些状态**没有任何路径重发请求**——`AccountSession::req_login()` 只在前置刚连上（`on_front_connected`）与认证刚成功（`on_rsp_authenticate`）两处被调用；`on_sched_timer` / `try_recover_login` / `connect_account_by_id` 都按 `find_session() == nullptr` 过滤，session 已存在时一律跳过。因此失败后账户停在帧侧 `LoggingIn`（`account_state_of` 把 `Authenticated`/`Connected` 都映射为 `LoggingIn`）。md 侧有 `can_login()` 重登能力（契约 md-status 失败语义），td 尚未对齐。
 - **登录失败必须让用户看得见**（#407）：正因为上一条——失败后停在正常中间态、且不自动重试——失败若不上浮，账户就会静默卡住。四条失败路径（柜台拒绝 / 交易日无效 / 当日基准装载失败 / 登录超时）统一经 `notify_login_failed()` 出口：先 `on_login_failed()` 转状态，再以 `DZ_NOTIFY_ERROR` + 弹窗推送 `NOTIFY_UI`，正文带上**具体场景**，不用状态机的通用文案「交易登录失败」——只说失败不说原因，用户拿不到可用信息。文案构造在 `login_failed_message()`（纯函数可单测）。状态机拒绝转移（非 `LoggingIn`，如前置已断线或已登出）时不推送，避免弹一条对不上界面状态的告警。
 - **失败原因仅瞬时可见，不进 `td-status`**（#407 决策，后续票 #427）：本票只做 `NOTIFY_UI` 弹窗，**不**在 `TdStatus` 新增 `last_error`（md-status 有该字段，td-status 没有）。是否把失败原因做成持久字段（而非弹窗一闪而过、断线后无从回看）已拆到 #427（与 md 对齐：`last_error` + 登录 pending 即时清除），不阻塞本流程。
-- **手动登录/登出入口**（#409 / ADR 0051，契约 td-connection）：恢复路径 = **先登出、再登录**（#406 拍板，登录失败不自动重试）。`TD_CONNECT` / `TD_DISCONNECT` 由 dzweb 生产：REST `POST /api/td/accounts/{account_id}/login|logout`、WS `td_connect/td_disconnect`（守卫 = admin + 账户注册表解析网关 + 网关 Running + 写通道）；前端账户行内「登录 / 登出」双按钮。**登录仅在完全未登录（progress 到 min）可用；登出在任意非未登录状态可用**（连接中/登录中/重连中/失败回滚/就绪 = 强制中断）。账户配置在有活跃会话时仍拒绝 `UpdateAccount`，提示「请先登出再修改配置」——该提示现在可执行。
+- **手动登录/登出入口**（#409 / ADR 0051，契约 td-connection）：恢复路径 = **先登出、再登录**（#406 拍板，登录失败不自动重试）。`TD_CONNECT` / `TD_DISCONNECT` 由 dzweb 生产：REST `POST /api/td/accounts/{account_id}/login|logout`、WS `td_connect/td_disconnect`（守卫 = admin + 账户注册表解析网关 + 网关 Running + 写通道）；前端账户行内「登录 / 登出」双按钮。**登录仅在完全未登录（progress 到 min）可用；登出在任意非未登录状态可用**（连接中/登录中/重连中/失败回滚/就绪 = 强制中断）。触及连接参数的 `UpdateAccount` 在有活跃会话时仍拒绝，提示「请先登出再修改配置」；只改 `account_name` 的改名不受此保护（ADR 0056 决策 3）——该提示现在可执行。
 - **状态即时推送**（#409 补齐）：`RTN_TD_STATUS` / `RTN_PROGRESS` 不再只在启动快照与配置变更时推送——主循环每轮用 `td_status_publish_key`（`state` / `progress_current` / `date` / `login_time`）对比上次推送，任一状态字段变化即推（`publish_changed_states()`）；新建会话与登出（会话销毁前）也各推一次终态。此前缺口正是 WebUI 的登录按钮 / pending 无法随登录结果翻转的原因，详见 `docs/frame_contracts/td-status.md` 触发场景 1。
 - 本进程不发起柜台登出请求：用户的「登出」（任意非未登录状态可发）即彻底释放 CTP SDK API（直接断开），回 Idle；不存在"已登出、连接保留"的稳定状态（契约 td-connection）。
 - 例外：若收到服务器主动登出的回调，状态已偏离预期，属异常情况，非本进程主动为之。此时保留前置连接，由自动调度重新登录恢复，并记录错误日志、上报告警，供排查。
@@ -147,21 +147,21 @@ CTP 的 `ReqQry*` 在同一 API 实例上共用查询流控：同时至多 1 笔
 
 ## 配置（契约 td-config / td-status）
 
-配置与状态 payload 都是**通用层 + 柜台 `ext` 分层**：新增接口类型只换 `ext`，通用层（`account_id` / `enabled` / `risk_control_enabled` / `currency_id`；状态帧的 `state` / `date` / `login_time` / `progress_*`）不变。类型层真相源 `apps/ctp/td/td_config.h` 与 `td_state.h`，JSON schema 以契约为唯一语义真相源。
+配置与状态 payload 都是**通用层 + 柜台 `ext` 分层**：新增接口类型只换 `ext`，通用层（`account_id` / `account_name` / `enabled` / `risk_control_enabled` / `currency_id`；状态帧的 `state` / `date` / `login_time` / `progress_*`）不变。`account_id` 是柜台真实投资者代码（CTP 的 `UserID` 与 `InvestorID` 同值），`account_name` 是选填展示名（空 = 回落 `account_id`，ADR 0056）。类型层真相源 `apps/ctp/td/td_config.h` 与 `td_state.h`，JSON schema 以契约为唯一语义真相源。
 
 ### 配置结构与持久化
 
 - **文件形态 = 帧形态**：`td` section 与 `RTN_TD_CONFIG` payload 同形（顶层查询通道最小间隔（契约 td-config §2.4）/ `ext` / `accounts[]`；账户 `ext` 内是 `broker_id` / `password` / `product_info` / `frontends` / `auth_code` / `app_id` / `flow_dir`）。不做「文件旧形 / 帧新形」双序列化——同一事实两处定义必然漂移。代价：**旧扁平格式（连接参数直接在账户对象上）不再兼容**，开发期无迁移义务。持仓查询间隔已随 [ADR 0049](../adr/0049-position-pure-incremental-no-periodic-query.md) 删除；qry_account_interval_s / qry_flush_interval_ms 已随 [ADR 0055](../adr/0055-td-query-channel-event-driven-fund-refresh.md) 删除。
-- **启动加载两级语义**（契约 td-config §6）：文件 / `td` section **缺失** → 用默认值 + 原子修复文件（自愈，首次启动的正常形态，写失败只记 ERROR 不阻断）；内容**非法**（JSON 解析失败 / section 类型不符）→ 记 CRITICAL 后**退出非零码**，不回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法与"本来就空"区分。旧扁平格式因未知字段被忽略（总则 §8）不会触发解码失败，但账户 `ext` 为空 → `validate()` 以 `broker_id empty` 拒绝 → 同样致命退出。
+- **启动加载两级语义**（契约 td-config §6）：文件 / `td` section **缺失** → 用默认值 + 原子修复文件（自愈，首次启动的正常形态，写失败只记 ERROR 不阻断）；内容**非法**（JSON 解析失败 / section 类型不符 / 含已删除的 `ext.user_id` / CTP `account_id` 超 12 字节）→ 记 CRITICAL 后**退出非零码**，不回落默认值。理由：账户连接参数是运维资产，静默清空比启动失败更危险，且自愈后的空账户集无法与"本来就空"区分。旧扁平格式因未知字段被忽略（总则 §8）不会触发解码失败，但账户 `ext` 为空 → `validate()` 以 `broker_id empty` 拒绝 → 同样致命退出；含 `ext.user_id` 的旧配置在 `load()` 阶段即按内容非法拒绝（ADR 0056 硬切，删 `td` section 自愈重生成后重新添加账户）。
 - **启动主动推一次**：`run()` 首次进入即 `report_full_snapshot()`（首帧 `report_config()`），供 dzweb 账户注册表启动快照（契约 td-config §4 场景 2）。配置在 `td_main` 中先于 `TdApi` 构造加载，推的是已加载的当前值。
 - **op 收敛**：进程级柜台特有配置统一走 `SetExt`（字段级补丁），旧 `SetLockMode` 已删除，不留双实现；`ext.enable_lock_mode` 是本进程唯一形态。账户级 op（`AddAccount` / `UpdateAccount` / `SetAccountEnabled` / `SetAccountRiskControl` / `SetAccountCurrency`）与 `SetQryIntervals` 语义见契约 §2.1。
-- **状态保护**：`UpdateAccount` / `RemoveAccount` 在账户有活跃会话时拒绝（连接参数不可热改；删除时销毁会话并推 Offline，不删交易数据，ADR 0045）；其余 op 不受状态保护。
+- **状态保护**（契约 td-config §2.1）：`UpdateAccount` 仅当请求触及连接参数（`ext` 内任何键）时拒绝——只改 `account_name` 等通用层字段任意会话状态可改（ADR 0056 决策 3）；`RemoveAccount` 在账户有活跃会话时拒绝（连接参数不可热改；不删交易数据，ADR 0045）。其余 op 不受状态保护。注意：契约 §2.1 对 `RemoveAccount` 的要求是「不受状态保护、执行时销毁会话并推 Offline」，与当前实现不一致（既存漂移，本票不改），已单独开票跟进（#474）。
 - **失败四件套**（总则 §8）：回滚旧值 + 日志 + `NOTIFY_UI` 错误弹窗 + 回 `RTN_TD_CONFIG` 旧值，清前端 pending。
-- **唯一性边界**：本进程只查自身配置文件内的 `account_id` 重复，**不是**跨网关防线——跨网关唯一性由 dzweb 权威校验（契约 td-config §5，ADR 0045）。
+- **唯一性边界**：本进程只查自身配置文件内 `account_id` 重复与 `account_name` 的展平唯一（与 `account_id` 同一命名空间、NFC 比较），**不是**跨网关防线——跨网关唯一性由 dzweb 权威校验（契约 td-config §5 / §7，ADR 0045 / ADR 0056）。
 
 ### 状态上报
 
-- 账户级细状态 `RTN_STATUS` 按 `instance_id = <网关名>:<account_id>` 推送（总则 §5 复合键例外），该复合键只用于帧路由与 dzweb 镜像分区，**账户身份仍是 `account_id`**。
+- 账户级细状态 `RTN_STATUS` 的 `instance_id = account_id`（总则 §5 / ADR 0056，不携带进程名、不用复合键），**账户身份就是 `account_id`**。
 - `date` 是**会话交易日**（登录响应确定），断线（`Disconnected`，SDK 自动重连中）期间不清空——它是本交易日全部业务数据的时间锚；进入 `Idle` 才清 `date` / `login_time` / `ext.sys_version`（`ext.api_version` 是进程生命周期常量，保留）。
 - 日切（会话交易日变化，含日切后重新登录）以新 `date` 全量推送；前端以字段值变化为准，不自行推断清空时机。
 - 未知枚举计数挂在 `ext.unknown_*`（口径见《帧契约：交易网关状态》§2.3）。

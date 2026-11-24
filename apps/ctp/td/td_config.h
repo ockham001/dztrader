@@ -19,7 +19,7 @@ namespace dztrader::ctp {
 using BrokerFrontend = dztrader::platform::CtpBrokerFrontend;
 
 /// 配置操作类型 (op-based 下发, 替代全量替换)。
-/// 状态保护: RemoveAccount/UpdateAccount 在非 Idle 时拒绝 (编排层校验)。
+/// 状态保护: 是否要求目标账户 Idle 见 {@link requires_idle}（契约 td-config §2.1）。
 enum class TdConfigOp {
     // 进程级 op
     AddAccount,     // 添加账户 ID + 创建账户配置
@@ -30,7 +30,7 @@ enum class TdConfigOp {
     SetQryIntervals,  // qry_min_interval_ms (查询通道最小发送间隔, ADR 0055)
 
     // 账户级 op (仅影响该账户)
-    UpdateAccount,          // 修改连接参数 (需 state==Idle)
+    UpdateAccount,          // 修改账户配置 (触及连接参数时需 state==Idle)
     SetAccountEnabled,      // 启用/禁用
     SetAccountRiskControl,  // 账户级风控开关
     SetAccountCurrency,
@@ -39,13 +39,24 @@ enum class TdConfigOp {
 /// 基于 magic_enum 自动派生 TdConfigOp 的 JSON 序列化。
 DZ_JSON_ENUM(TdConfigOp)
 
-/// 判断 op 是否涉及连接参数变更 (非 Idle 时拒绝)。
+/// 判断 op 是否要求目标账户处于 Idle（契约 td-config §2.1 状态保护）。
+/// - `RemoveAccount`：沿用既有 Idle 保护——契约 §2.1 要求「删除时销毁会话并推 Offline」，
+///   与现状的差异是既存漂移，不在 ADR 0056 范围内，已单独开票跟进（#474）。
+/// - `UpdateAccount`：仅当请求触及连接参数（`ext` 内任何键）时要求 Idle；只改通用层字段
+///   （如 `account_name`）任意会话状态可改——展示名不是连接参数（ADR 0056 决策 3）。
 /// switch 覆盖所有枚举值, 新增枚举时编译器 (-Wswitch) 会警告。
-inline bool is_connection_op(TdConfigOp op) {
+inline bool requires_idle(TdConfigOp op, const nlohmann::json& params) {
     switch (op) {
         case TdConfigOp::RemoveAccount:
-        case TdConfigOp::UpdateAccount:
             return true;
+        case TdConfigOp::UpdateAccount: {
+            if (!params.contains("ext")) {
+                return false;
+            }
+            const auto& ext = params["ext"];
+            // 非对象按「触及连接参数」保守处理（真正的类型错误由 apply_config_op 报出）
+            return !ext.is_object() || !ext.empty();
+        }
         case TdConfigOp::AddAccount:
         case TdConfigOp::SetExt:
         case TdConfigOp::SetQryIntervals:
@@ -75,16 +86,18 @@ struct TdConfigOpReq {
 ///    字段，将来有人会以为它可以填。
 /// 2. **分层是契约要求**：契约 td-config §1 规定「通用层 + 柜台 `ext`」是跨接口类型约定，
 ///    `ext` 的 schema 由各接口类型自己定义（§2.3）。`ext` 的键集合由契约固定
-///    （`broker_id`/`user_id`/`password`/`product_info`/`frontends`/`auth_code`/`app_id`/
-///    `flow_dir`），不完全等于 `CtpBrokerEntry` 的字段集合——复用平台类型会让「契约里的
-///    ext schema」与「平台 md 类型」两处各自演进却看起来同源。
+///    （`broker_id`/`password`/`product_info`/`frontends`/`auth_code`/`app_id`/`flow_dir`），
+///    不完全等于 `CtpBrokerEntry` 的字段集合——复用平台类型会让「契约里的 ext schema」与
+///    「平台 md 类型」两处各自演进却看起来同源。
+///
+/// 账户身份取通用层 `account_id`（契约 td-config §2.3 / ADR 0056）：CTP 的 `UserID`
+/// （登录 / 认证）与 `InvestorID`（下单 / 撤单 / 结算确认）都用它，`ext` 里没有独立字段。
 ///
 /// 代价（已知且接受）：平台侧给 `CtpBrokerEntry` 加连接字段时本结构不会自动跟随。这与
 /// 「md 与 td 是不同接口域、字段集本就不同」一致；`BrokerFrontend` 仍然复用（见顶部
 /// `using`），因为前置地址的语义两侧完全相同。
 struct CtpAccountExt {
     std::string broker_id;                  // 经纪公司代码
-    std::string user_id;                    // 用户代码
     std::string password;                   // 登录密码 (回报中脱敏为 "****")
     std::string product_info;               // 产品信息, 可空
     std::vector<BrokerFrontend> frontends;  // 前置地址列表, 默认空
@@ -92,28 +105,26 @@ struct CtpAccountExt {
     std::string app_id;                     // CTP AppID, 可空
     std::string flow_dir;  // 默认空 = 由网关构造 paths::home()/"flow"/<进程名>/<account_id>/
 
-    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(CtpAccountExt,
-                                                broker_id,
-                                                user_id,
-                                                password,
-                                                product_info,
-                                                frontends,
-                                                auth_code,
-                                                app_id,
-                                                flow_dir)
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
+        CtpAccountExt, broker_id, password, product_info, frontends, auth_code, app_id, flow_dir)
 };
 
 /// 账户配置：通用层（契约 td-config §2.2）+ 柜台特有 `ext`（§2.3）。
 /// 分层是跨接口类型约定：新增接口类型只换 `ext`，通用层不变（§1 双侧约定）。
 struct AccountConfig {
-    std::string account_id;  // 不可变 key；全局唯一由平台入口校验（§5），本进程只查自身重复
+    /// 柜台真实投资者代码（账户身份，不可变 key）：下单 / 撤单路由键、账户级 `instance_id`。
+    /// 全局唯一由平台入口校验（§5），本进程只查自身重复；CTP 侧 ≤12 字节（§2.3）。
+    std::string account_id;
+    /// 展示名（选填）：留空 = 显示时回落 `account_id`；纯展示字段，不参与路由 / 交易库，
+    /// 任何情况下不得影响交易（§2.2 / ADR 0056 决策 3/5）。
+    std::string account_name;
     bool enabled = true;
     bool risk_control_enabled = false;  // 账户级风控开关 (单层)
     std::string currency_id = "CNY";
     CtpAccountExt ext;  // 该接口类型的连接参数 (interface_type = ctp)
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        AccountConfig, account_id, enabled, risk_control_enabled, currency_id, ext)
+        AccountConfig, account_id, account_name, enabled, risk_control_enabled, currency_id, ext)
 };
 
 /// CTP 进程级 `ext`（契约 td-config §2.3）：`SetExt` 的补丁目标。
@@ -137,9 +148,11 @@ struct TdConfig {
 
     /// 从 JSON 文件的 "td" section 加载 (与 mdctp CtpMdConfig::load 模式一致)。
     /// 契约 td-config §6 两级语义：文件/section 缺失 -> 默认值 + 自愈写回；内容非法 -> 抛异常。
-    /// **旧扁平格式不在此抛**：未知字段按总则 §8 忽略、解码成功，由 {@link validate} 拒绝
-    /// （调用方对「解码失败」与「校验失败」的处理相同——记 CRITICAL 后致命退出）。
-    /// @throws std::runtime_error JSON 解析失败或 section 类型不符
+    /// 已删除的 `ext.user_id`（ADR 0056 硬切）在此按「内容非法」拒绝——未知字段本会按总则
+    /// §8 忽略，但静默忽略会让旧账户以自造 id 启动而登录必失败，必须让失败可见。
+    /// **旧扁平格式不在此抛**：连接参数在账户对象上、被忽略后 `ext` 为空，由 {@link validate}
+    /// 拒绝（调用方对「解码失败」与「校验失败」的处理相同——记 CRITICAL 后致命退出）。
+    /// @throws std::runtime_error JSON 解析失败 / section 类型不符 / 含已删除的 ext.user_id
     static TdConfig load(const std::filesystem::path& path, const std::string& section = "td");
 
     /// 原子写入 JSON 文件的指定 section (load-modify-save, tmp + rename)。
@@ -158,6 +171,8 @@ struct TdConfig {
 };
 
 /// 集中校验 (与 mdctp validate 模式一致): 返回错误消息, 校验通过返回 std::nullopt。
+/// 覆盖契约 td-config §7 的 td 侧规则：`account_id` 非空 / ≤12 字节 / 字符集，
+/// `account_name` 的 trim 长度 / 控制字符 / NFC 展平唯一，以及本配置内的 id 重复。
 std::optional<std::string> validate(const TdConfig& cfg);
 }  // namespace dztrader::ctp
 
