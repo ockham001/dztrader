@@ -1,3 +1,4 @@
+#include "td/td_api_pure.h"
 #include "td/td_config.h"
 
 #include <algorithm>
@@ -12,17 +13,9 @@
 
 namespace dztrader::ctp {
 
-// === 自由函数声明 (与 td_api.h 中声明一致; td_api.h 依赖 CTP 头, 协调层不 include) ===
-/// DZ_FRAME_TD_REFRESH_REQ payload（契约 td-refresh / #459）。
-struct TdRefreshReq {
-    std::string account_id;
-    int64_t request_id = 0;
-};
-bool parse_td_refresh_req(std::string_view payload, TdRefreshReq* out, std::string* error);
-
 // ============================================================================
 // td_api_pure.cpp: 纯函数实现, 不依赖 TdApi 类和 CTP 头文件
-// 供单元测试直接编译 (无需链接 CTP 库)
+// 供单元测试直接编译 (无需链接 CTP 库)。声明见 td_api_pure.h（唯一源）。
 // ============================================================================
 
 // 纯粹的 op 应用: switch(req.op) 修改 cfg, 无副作用无 I/O。

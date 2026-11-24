@@ -2,7 +2,7 @@
 // 这 2 个自由函数实现在 td_api_pure.cpp, 不依赖 TdApi 类和 CTP 头文件,
 // 因此测试目标无需链接 dztd_ctp_api。
 
-#include "td/td_config.h"  // TdConfig, TdConfigOpReq, AccountConfig, TdConfigOp
+#include "td/td_api_pure.h"  // 纯函数声明唯一源（不依赖 TdApi 类和 CTP 头文件）
 
 #include <string>
 #include <string_view>
@@ -12,26 +12,6 @@
 #include <nlohmann/json.hpp>
 
 namespace dztrader::ctp {
-
-// === 自由函数声明 (与 td_api.h 中声明一致, 仅用于测试编译) ===
-/// DZ_FRAME_TD_REFRESH_REQ payload（契约 td-refresh / #459）。
-struct TdRefreshReq {
-    std::string account_id;
-    int64_t request_id = 0;
-};
-bool parse_td_refresh_req(std::string_view payload, TdRefreshReq* out, std::string* error);
-
-/// 纯粹的 op 应用: switch(req.op) 修改 cfg, 无副作用无 I/O。
-void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req);
-
-/// 在 accounts 中查找 account_id 对应的账户 (纯函数)。
-/// account_id 为空或未找到时返回 nullptr。
-const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& accounts,
-                                             const std::string& account_id);
-
-/// 在 cfg.accounts 中查找 account_id 对应的账户 (纯函数)。
-/// account_id 为空或未找到时返回 nullptr。
-const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& account_id);
 
 namespace {
 

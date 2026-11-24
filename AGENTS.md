@@ -46,6 +46,8 @@
 
 绕开脚本直接 `cmake --build --preset ...` 仍被权限 deny：脚本负责构建锁、ccache 环境与 install，直调会绕过锁（两个 ninja 写同一棵树产出不可信结果）。
 
+**构建 / 测试的唯一入口是 `./scripts/gate.sh build|test`**（日志落盘、退出码正确、分命令槽留证）；`setup` / `run-dev` / `clean` 仍走各自脚本。**不要 `./scripts/build.sh 2>&1 | tail -N`**——管道把退出码变成 `tail` 的，构建/测试失败会被记成 exit 0 造成假绿（#465 复盘实测：后台 job 显示 `completed, exit code: 0`，输出里却是 `ninja: build stopped: subcommand failed`）。判绿看 `gate: OK` 行或 `.cache/gate/last-status-<cmd>` 槽。
+
 三条容易漏的附带事实：
 
 - **`clean` 会删掉 `build/` 与 `install/` 以及 `.dztrader_dev/`**，下次需重新 `setup`
@@ -191,7 +193,7 @@
 
 - worktree 由 `create_worktree` 建在 **`.agents/worktrees/<branch>`**（实际约定；`.worktrees/` 是历史路径，目录若存在同样受 `.gitignore` 保护）。手动建 worktree 时沿用 `.agents/worktrees/<branch>`：`git worktree add .agents/worktrees/<branch> -b <branch> main`（#316 AC5）
 - **`create_worktree` 的 `name` 必须写完整分支名（含 `/`）**：`name: fix/issue-411-today-position` → 分支 `fix/issue-411-today-position`、目录 `.agents/worktrees/fix/issue-411-today-position`。工具描述的「hyphens」示例只保证目录能建出来；写成 flat 的 `fix-issue-411-today-position` 在 #411 时一路拖到 **pre-push** 才被拒（到收尾才发现）。现在 Linux 的 `setup.sh` 开头就会早检并打印修复命令（判定在 `scripts/check_branch_name.py`）；已建错用 `git branch -m fix/issue-<n>-<slug>` 改名（worktree 目录可不动）。
-- worktree 内**需重新跑 `setup`**（conan 缓存用户级共享；沙箱下 `~/.conan2` 只读时 `setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2` 并从 `~/.conan2` 播种一次，见 [build-appendix](docs/agents/build-appendix.md)）
+- worktree 内**需重新跑 `setup`**（conan 缓存按 git common dir 共享：`~/.conan2` 只读时 `setup.sh` 自动回退到**共享**仓库 `.cache/conan2`（跨 worktree 复用，播种加 flock），见 [build-appendix](docs/agents/build-appendix.md)）
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
@@ -220,6 +222,8 @@
 ## 六、CodeGraph
 
 仓库根存在 `.codegraph/` 才可用（没有索引就跳过；触达方式见本文开头）。**是否建索引由我决定，不要自行 `codegraph init`**
+
+**`.agents/worktrees/` 内不要走 codegraph**：索引按**主工作区**建，worktree 下 codegraph 会提示 stale/查不到本分支（#465 复盘实测）；改用 Read/grep（见本文开头的读文件规则）。
 
 **按节取契约用 `python3 scripts/contract_slice.py <stem> §N [--children]`**；**列单份的大纲用 `--outline <stem | docs 路径>`**（`--list` 只列**全部**契约的编号标题，**不接受 stem**）；大文档同样可按节切与列大纲（`--outline docs/agents/ticket-closeout.md`、`ticket-closeout §1`、`docs/components/dzweb.md` 都接受）。**不要用 `sed -n` 按行号分页**——行号在改契约后即失效，契约已 105 KB 级；`sed -n` 只允许用在**非契约、非大文档**的小文件上（#316 AC3）。
 
