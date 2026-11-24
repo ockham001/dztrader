@@ -118,8 +118,10 @@ private:
     /// 预检 2 + 3（PUT/DELETE 在注册表解析之后共用）。返回 nullptr = 通过。
     drogon::HttpResponsePtr check_gateway_ready(const std::string& gateway) const;
 
-    /// `account_id` 是否等于任何已注册进程名（契约 td-config §7 / general §5：账户级与进程级
-    /// `instance_id` 共用镜像键空间）。`dztraderd` 恒占位，其余查进程配置镜像。
+    /// `account_id` 是否落入进程命名空间（契约 td-config §7 / general §5：账户级与进程级
+    /// `instance_id` 共用镜像键空间）。三种命中：`dztraderd`/`dzweb`/`dzsysmon` 恒占位（不出现
+    /// 在自己的进程配置里）；已注册进程查进程配置镜像；`dzmd_*`/`dztd_*`/`stg.*`/`stg_` 前缀
+    /// 按形态预留（网关与策略都能动态注册，空闲名字明天可能被占用）。
     bool is_registered_process_name(const std::string& name) const;
 
     /// 预检 4：`account_id` 通用层校验（非空 / ≤31 字节 / ASCII 可见字符集 / 进程名冲突）。
