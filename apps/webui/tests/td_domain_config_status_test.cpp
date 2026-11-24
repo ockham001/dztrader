@@ -4,9 +4,11 @@
  *        webui-ws §2.1/§2.2）。
  *
  * 断言外部可观察行为：镜像 domain 与 key、WS 消息 type / instance_id / payload、
- * 配置帧触发的注册表 reconcile 与 `data_changed{td}` 广播、异常 payload 不破坏注册表。
+ * 配置帧触发的注册表 reconcile（含 account_name）与 `data_changed{td}` 广播、
+ * 账户从配置帧消失时的账户级镜像清理、异常 payload 不破坏注册表。
  */
 
+#include "td_account_mirror_cleanup.h"
 #include "td_config_domain_service.h"
 #include "td_account_registry.h"
 #include "td_status_domain_service.h"
@@ -46,12 +48,12 @@ nlohmann::json config_payload(std::vector<std::pair<std::string, bool>> accounts
     nlohmann::json list = nlohmann::json::array();
     for (auto& [account_id, enabled] : accounts) {
         list.push_back(nlohmann::json{{"account_id", account_id},
+                                      {"account_name", ""},
                                       {"enabled", enabled},
                                       {"risk_control_enabled", false},
                                       {"currency_id", "CNY"},
                                       {"ext",
                                        {{"broker_id", "9999"},
-                                        {"user_id", "00001"},
                                         {"password", "****"},
                                         {"product_info", ""},
                                         {"frontends", nlohmann::json::array()},
@@ -69,13 +71,19 @@ protected:
     RecordingBroadcaster ws_;
     FakeDataChangeNotifier notifier_;
     std::unique_ptr<TdAccountRegistry> registry_ = std::make_unique<TdAccountRegistry>();
+    std::unique_ptr<TdAccountMirrorCleanup> cleanup_;
     std::unique_ptr<TdConfigDomainService> service_;
 
     void SetUp() override {
-        service_ = std::make_unique<TdConfigDomainService>(mirror_, *registry_, ws_, notifier_);
+        cleanup_ = std::make_unique<TdAccountMirrorCleanup>(mirror_, *registry_);
+        service_ =
+            std::make_unique<TdConfigDomainService>(mirror_, *registry_, ws_, notifier_, *cleanup_);
     }
 
-    void TearDown() override { service_.reset(); }
+    void TearDown() override {
+        service_.reset();
+        cleanup_.reset();
+    }
 };
 
 // ============================================================================
@@ -133,19 +141,82 @@ TEST_F(TdConfigDomainServiceTest, DifferentGatewaysKeepSeparateMirrorDomains) {
 // ============================================================================
 
 TEST_F(TdConfigDomainServiceTest, ReconcilesRegistryAndBroadcastsDataChanged) {
-    service_->on_rtn_td_config("dztd_ctp", config_payload({{"acc_a", true}, {"acc_b", false}}));
+    auto payload = config_payload({{"acc_a", true}, {"acc_b", false}});
+    payload["accounts"][0]["account_name"] = "我的主账户";
+    service_->on_rtn_td_config("dztd_ctp", payload);
 
     EXPECT_EQ(registry_->size(), 2U);
     const auto acc_a = registry_->find("acc_a");
     ASSERT_TRUE(acc_a.has_value()) << "acc_a must be reconciled into the registry";
     EXPECT_EQ(acc_a->gateway, "dztd_ctp");
+    EXPECT_EQ(acc_a->account_name, "我的主账户")
+        << "account_name is part of the registry (ADR 0056)";
     EXPECT_TRUE(acc_a->enabled);
     const auto acc_b = registry_->find("acc_b");
     ASSERT_TRUE(acc_b.has_value()) << "acc_b must be reconciled into the registry";
+    EXPECT_EQ(acc_b->account_name, "");
     EXPECT_FALSE(acc_b->enabled);
     // 账户集合增减 → data_changed{td}（契约 webui-ws §2.3 / rest §2.9.7 可观察效果）
     ASSERT_EQ(notifier_.scopes.size(), 1U);
     EXPECT_EQ(notifier_.scopes[0], "td");
+}
+
+TEST_F(TdConfigDomainServiceTest, MissingAccountNameDefaultsToEmpty) {
+    // 契约 td-config §2.2：account_name 选填，缺失 = 未设置（空串，前端回落 account_id）。
+    nlohmann::json payload = config_payload({});
+    payload["accounts"] = nlohmann::json::array({nlohmann::json{{"account_id", "acc_a"}}});
+    service_->on_rtn_td_config("dztd_ctp", payload);
+
+    ASSERT_TRUE(registry_->find("acc_a").has_value());
+    EXPECT_EQ(registry_->find("acc_a")->account_name, "");
+}
+
+TEST_F(TdConfigDomainServiceTest, AccountNameOnlyChangeDoesNotForceTransactionReload) {
+    // 改名不动交易数据基线（契约 webui-ws §2.3 的 data_changed{td} 口径）。
+    auto payload = config_payload({{"acc_a", true}});
+    service_->on_rtn_td_config("dztd_ctp", payload);
+    notifier_.scopes.clear();
+
+    payload["accounts"][0]["account_name"] = "新名字";
+    service_->on_rtn_td_config("dztd_ctp", payload);
+
+    EXPECT_EQ(registry_->find("acc_a")->account_name, "新名字");
+    EXPECT_TRUE(notifier_.scopes.empty());
+}
+
+TEST_F(TdConfigDomainServiceTest, AccountRemovedByConfigFrameClearsAccountLevelMirror) {
+    // AC6 / ADR 0056 决策 8：账户从配置帧消失 → 清其 td_status / progress 镜像。
+    service_->on_rtn_td_config("dztd_ctp", config_payload({{"acc_a", true}, {"acc_b", true}}));
+    mirror_.update("acc_a", "td_status", nlohmann::json{{"state", "Ready"}});
+    mirror_.update("acc_a", "progress", nlohmann::json{{"current", 10}});
+    mirror_.update("acc_b", "td_status", nlohmann::json{{"state", "Ready"}});
+    mirror_.update("acc_b", "progress", nlohmann::json{{"current", 10}});
+    notifier_.scopes.clear();
+
+    // 第二帧只含 acc_a：acc_b 已从配置消失。
+    service_->on_rtn_td_config("dztd_ctp", config_payload({{"acc_a", true}}));
+
+    const auto removed = mirror_.instance("acc_b");
+    EXPECT_FALSE(removed.contains("td_status")) << "vanished account must lose its status mirror";
+    EXPECT_FALSE(removed.contains("progress")) << "vanished account must lose its progress mirror";
+    const auto kept = mirror_.instance("acc_a");
+    EXPECT_TRUE(kept.contains("td_status")) << "still-configured account keeps its mirror";
+    EXPECT_TRUE(kept.contains("progress"));
+    // 账户集合变化仍触发交易数据基线重拉。
+    ASSERT_EQ(notifier_.scopes.size(), 1U);
+    EXPECT_EQ(notifier_.scopes[0], "td");
+}
+
+TEST_F(TdConfigDomainServiceTest, AccountReassignedToAnotherGatewayKeepsMirror) {
+    // 跨网关改判归属（手改配置造成）时账户**仍在**注册表 → 不清理其账户级镜像（只是归属变了）。
+    service_->on_rtn_td_config("dztd_ctp", config_payload({{"acc_a", true}}));
+    mirror_.update("acc_a", "td_status", nlohmann::json{{"state", "Ready"}});
+
+    service_->on_rtn_td_config("dztd_ctp_2", config_payload({{"acc_a", true}}));
+
+    ASSERT_TRUE(registry_->find("acc_a").has_value());
+    EXPECT_EQ(registry_->find("acc_a")->gateway, "dztd_ctp_2");
+    EXPECT_TRUE(mirror_.instance("acc_a").contains("td_status"));
 }
 
 TEST_F(TdConfigDomainServiceTest, RegistryIgnoresExtEntirely) {
@@ -236,13 +307,13 @@ TEST_F(TdConfigDomainServiceTest, StillBroadcastsWhenAccountsUnusable) {
 // 细状态领域服务（契约 td-status §3 / webui-ws §2.2）
 // ============================================================================
 
-TEST(TdStatusDomainServiceTest, WritesMirrorUnderCompositeKeyAndBroadcasts) {
+TEST(TdStatusDomainServiceTest, WritesMirrorUnderAccountIdKeyAndBroadcasts) {
     MirrorStore mirror;
     RecordingBroadcaster ws;
     TdStatusDomainService service(mirror, ws);
 
     const nlohmann::json status = {
-        {"account_id", "account_001"},
+        {"account_id", "00001"},
         {"state", "Ready"},
         {"date", "20260808"},
         {"login_time", "2026-08-08 08:45:32"},
@@ -252,17 +323,17 @@ TEST(TdStatusDomainServiceTest, WritesMirrorUnderCompositeKeyAndBroadcasts) {
         {"progress_current", 10},
         {"ext", {{"api_version", "v6.7.2"}, {"sys_version", "v6.7.2_20240105"}}},
     };
-    service.on_rtn_td_status("dztd_ctp:account_001", status);
+    service.on_rtn_td_status("00001", status);
 
-    // 镜像 domain `td_status`，key = 网关名:账户ID（契约 webui-ws §2.1）
-    const auto instance = mirror.instance("dztd_ctp:account_001");
+    // 镜像 domain `td_status`，key = 账户 ID（契约 webui-ws §2.1 / 总则 §5：无复合键）。
+    const auto instance = mirror.instance("00001");
     ASSERT_TRUE(instance.contains("td_status"));
     EXPECT_EQ(instance.at("td_status"), status);
 
     ASSERT_EQ(ws.messages.size(), 1U);
     EXPECT_EQ(ws.messages[0].type, "td_rtn_status");
-    EXPECT_EQ(ws.messages[0].instance_id, "dztd_ctp:account_001")
-        << "webui-ws §2.2: instance_id = gateway:account";
+    EXPECT_EQ(ws.messages[0].instance_id, "00001")
+        << "webui-ws §2.2: instance_id = account id (no gateway prefix)";
 }
 
 TEST(TdStatusDomainServiceTest, LaterFrameOverwritesEntireStatus) {
@@ -271,12 +342,11 @@ TEST(TdStatusDomainServiceTest, LaterFrameOverwritesEntireStatus) {
     RecordingBroadcaster ws;
     TdStatusDomainService service(mirror, ws);
 
-    service.on_rtn_td_status("dztd_ctp:acc_a",
+    service.on_rtn_td_status("acc_a",
                              nlohmann::json{{"account_id", "acc_a"}, {"date", "20260808"}});
-    service.on_rtn_td_status("dztd_ctp:acc_a",
-                             nlohmann::json{{"account_id", "acc_a"}, {"state", "Idle"}});
+    service.on_rtn_td_status("acc_a", nlohmann::json{{"account_id", "acc_a"}, {"state", "Idle"}});
 
-    const nlohmann::json stored = mirror.instance("dztd_ctp:acc_a").at("td_status");
+    const nlohmann::json stored = mirror.instance("acc_a").at("td_status");
     EXPECT_EQ(stored.at("state").get<std::string>(), "Idle");
     EXPECT_FALSE(stored.contains("date")) << "full overwrite: absent fields are gone, not retained";
 }
@@ -286,11 +356,11 @@ TEST(TdStatusDomainServiceTest, PerAccountKeysDoNotCollide) {
     RecordingBroadcaster ws;
     TdStatusDomainService service(mirror, ws);
 
-    service.on_rtn_td_status("dztd_ctp:acc_a", nlohmann::json{{"account_id", "acc_a"}});
-    service.on_rtn_td_status("dztd_ctp:acc_b", nlohmann::json{{"account_id", "acc_b"}});
+    service.on_rtn_td_status("acc_a", nlohmann::json{{"account_id", "acc_a"}});
+    service.on_rtn_td_status("acc_b", nlohmann::json{{"account_id", "acc_b"}});
 
-    EXPECT_TRUE(mirror.instance("dztd_ctp:acc_a").contains("td_status"));
-    EXPECT_TRUE(mirror.instance("dztd_ctp:acc_b").contains("td_status"));
+    EXPECT_TRUE(mirror.instance("acc_a").contains("td_status"));
+    EXPECT_TRUE(mirror.instance("acc_b").contains("td_status"));
     EXPECT_NE(ws.messages[0].instance_id, ws.messages[1].instance_id);
 }
 

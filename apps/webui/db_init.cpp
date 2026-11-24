@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS market_sources (
 
 CREATE TABLE IF NOT EXISTS td_account_registry (
     account_id TEXT PRIMARY KEY,
-    gateway TEXT NOT NULL
+    gateway TEXT NOT NULL,
+    account_name TEXT NOT NULL DEFAULT ''
 );
 )";
 
@@ -226,6 +227,36 @@ void run_schema(sqlite3* db) {
                 throw std::runtime_error("failed to add must_change_password column: " + err);
             }
             spdlog::info("legacy column added | table=users column=must_change_password");
+        }
+    }
+
+    // Migration: add account_name column to td_account_registry (ADR 0056 决策 9 /
+    // 契约 td-config §5、rest §2.9.9)。旧库已存在的行该列为空串——注册表恢复的条目
+    // account_name 为空，前端回落 account_id（已知降级），该网关配置帧到达即 reconcile
+    // 出真值。新库由上面的建表 SQL 直接带三列。
+    {
+        sqlite3_stmt* stmt = nullptr;
+        dz_prepare_v2(db, "PRAGMA table_info(td_account_registry)", -1, &stmt, nullptr);
+        bool has_account_name = false;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* name = sqlite3_column_text(stmt, 1);
+            if (name && std::string(reinterpret_cast<const char*>(name)) == "account_name") {
+                has_account_name = true;
+                break;
+            }
+        }
+        sqlite3_finalize(stmt);
+        if (!has_account_name) {
+            rc = sqlite3_exec(db,
+                              "ALTER TABLE td_account_registry ADD COLUMN account_name TEXT NOT "
+                              "NULL DEFAULT '';",
+                              nullptr, nullptr, &err_msg);
+            if (rc != SQLITE_OK) {
+                const std::string err = err_msg ? err_msg : "unknown";
+                sqlite3_free(err_msg);
+                throw std::runtime_error("failed to add account_name column: " + err);
+            }
+            spdlog::info("legacy column added | table=td_account_registry column=account_name");
         }
     }
 

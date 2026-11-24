@@ -120,9 +120,9 @@ DZ_BEGIN_C_DECLS
 #define DZ_FRAME_NOTIFY_TD_STARTED ((DzFrameType)1031)
 /** @brief 交易服务已停止 (master→所有进程, instance_id=网关名) */
 #define DZ_FRAME_NOTIFY_TD_STOPPED ((DzFrameType)1032)
-/** @brief 交易已就绪可下单 (td→所有进程, instance_id=网关名:账户ID) */
+/** @brief 交易已就绪可下单 (td→所有进程, instance_id=账户ID) */
 #define DZ_FRAME_NOTIFY_TD_CONNECTED ((DzFrameType)1033)
-/** @brief 交易不可用 (td→所有进程, instance_id=网关名:账户ID) */
+/** @brief 交易不可用 (td→所有进程, instance_id=账户ID) */
 #define DZ_FRAME_NOTIFY_TD_DISCONNECTED ((DzFrameType)1034)
 /** @brief 账户状态查询请求 (策略→td+master, 契约 account-status) */
 #define DZ_FRAME_TD_QUERY_ACCOUNT_STATUS ((DzFrameType)1035)

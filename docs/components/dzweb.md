@@ -116,13 +116,19 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
   `md_config_domain_service.h` / `md_status_domain_service.h` 同型（镜像 + 广播，无额外状态）。
   md 侧把 `source` 内嵌在 payload 且 `instance_id` 为空；td 侧按契约用 `instance_id` 承载归属
   （配置 = 网关进程名，账户级状态 = **账户 ID**，ADR 0056），payload 原样透传。
-- **账户级镜像清理**（ADR 0056）：`td_status` 与账户级 `progress` 的 key 是账户 ID，**不含
-  进程名**，因此 `ProcessMirror::mark_stale(网关名)` 那类按进程名的清理路径覆盖不到它们。
-  网关停止 / 崩溃 / 被移除时，dzweb 用注册表反查该网关账户集，逐个 `mirror_.erase(account_id,
-  "td_status"/"progress")` 并广播；注册表降级时放弃清理（宁残留不猜）。账户从配置帧消失时
-  同样清掉。
+- **账户级镜像清理**（ADR 0056 决策 8，`apps/webui/td_account_mirror_cleanup.h`）：
+  `td_status` 与账户级 `progress` 的 key 是账户 ID，**不含进程名**，因此
+  `ProcessMirror::mark_stale(网关名)` 那类按进程名的清理路径覆盖不到它们。网关停止 / 崩溃
+  （`RTN_PROCESS_STATUS` 的 `Stopped`/`Crashed`）与网关被移除（`RTN_PROCESS_CONFIG` 条目消失，
+  **在 `prune_gateways_not_in()` 之前**）时，dzweb 用注册表反查该网关账户集，逐个
+  `mirror_.erase(account_id, "td_status"/"progress")`；注册表降级时放弃清理（宁残留不猜）。
+  账户从配置帧消失（reconcile 后不再在注册表里）时同样清掉。清理本身不产生新 WS 消息——
+  webui-ws §2.2 是登记制且没有「删除镜像条目」的形状；确有条目被清时调用方广播
+  `data_changed{scope:"td"}`（账户基线失效口径），由前端重拉。
 - **`interface_type` 派生**：账户级帧的 `instance_id` 是账户 ID，本身不含接口类型，必须先用
-  注册表解析出归属网关再派生（td-status §1）；注册表未命中时按已收到的 `ext` 原样透传，不猜。
+  注册表解析出归属网关再派生（td-status §1）；dzweb 侧不派生（payload 原样透传 `ext`），
+  由前端用 `GET /api/td/accounts` 的 `account_id → gateway` 自行派生；注册表未命中时按已收到的
+  `ext` 原样透传，不猜。
 - **账户注册表**（`apps/webui/td_account_registry.{h,cpp}`，契约 td-config §5 / rest §2.9.9）：
   `account_id → {gateway, account_name, enabled}` 的平台侧**投影**，`account_id` 全局唯一（跨网关，
   ADR 0045 / ADR 0056）。它同时是**账户显示名的唯一来源**（`account_name` 不进交易推送帧、
@@ -150,7 +156,9 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
   - `POST` / `PUT /{account_id}` / `DELETE /{account_id}`（admin）：写
     `TD_REQ_MODIFY_CONFIG`（`ShmWriter::write_td_modify_config`），响应 `200 {"ok":true}`
     **只表示已写入事件通道**，生效以 `RTN_TD_CONFIG` 为准（成功推新值、失败推回滚旧值）。
-  - **预检与机器码**（错误体 `{"error","code"}`，契约 rest §1 形状）：
+  - **预检与机器码**（错误体 `{"error","code"}`，契约 rest §1 形状；`account_id` 字符集与
+    `account_name` 的 trim/64 字节/控制字符/NFC 规则与 td 网关自检共用
+    `libs/platform` 的 `platform::account_identity` 单一实现，长度上限按层各自判定）：
     - POST：admin(403 `admin_required`) → 网关是进程配置中的 `dztd_*`(400 `invalid_gateway`)
       → Running(409 `gateway_not_running`) → 通用层字段校验（id 长度/字符集/进程名冲突
       400 `invalid_account_id`；名称长度/控制字符 400 `invalid_account_name`）→

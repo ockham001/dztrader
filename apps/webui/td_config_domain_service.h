@@ -3,6 +3,7 @@
 
 #include "data_change_notifier.h"
 #include "mirror_store.h"
+#include "td_account_mirror_cleanup.h"
 #include "td_account_registry.h"
 #include "ws_broadcaster.h"
 
@@ -22,7 +23,10 @@ namespace dztrader::webui {
 /// - 广播消息 `td_rtn_config` 的 `instance_id` = 网关进程名（契约 webui-ws §2.2）——
 ///   md 侧把 `source` 内嵌在 payload 且 `instance_id` 为空，td 侧按契约用 `instance_id`；
 /// - 到达后按网关**整组 reconcile** 账户注册表（契约 td-config §5）。注册表**只读通用层**
-///   （`account_id` / `enabled`），不读 `ext`——`ext` 是柜台特有连接参数，与唯一性无关。
+///   （`account_id` / `account_name` / `enabled`），不读 `ext`——`ext` 是柜台特有连接参数，
+///   与唯一性无关；
+/// - 账户从配置帧消失时清其账户级镜像（ADR 0056 决策 8，见
+///   {@link TdAccountMirrorCleanup}）。
 ///
 /// payload 按契约 td-config §2.4 的最终形态消费：`{qry_*, accounts[], ext}`，与 td 侧
 /// 通用层 + ext 分层一致（dzweb 不改写 payload，整体透传广播，前端自己按 interface_type
@@ -36,14 +40,17 @@ public:
     /// @param ws 广播薄接口（WsController 实现）
     /// @param notifier 数据变更通知（注册表集合增减时广播 `data_changed{td}`，契约
     ///        webui-ws §2.3 / rest §2.9.7「可观察效果」）
+    /// @param cleanup 账户级镜像清理（账户从配置帧消失时用；ADR 0056 决策 8）
     TdConfigDomainService(MirrorStore& mirror,
                           TdAccountRegistry& registry,
                           WsBroadcaster& ws,
-                          DataChangeNotifier& notifier)
+                          DataChangeNotifier& notifier,
+                          TdAccountMirrorCleanup& cleanup)
         : mirror_(mirror),
           registry_(registry),
           ws_(ws),
-          notifier_(notifier) {}
+          notifier_(notifier),
+          cleanup_(cleanup) {}
 
     /// 处理一帧 `TD_RTN_CONFIG`。
     ///
@@ -57,14 +64,21 @@ public:
         // schema 异常（缺 accounts 数组或类型不符）只置标志、不 reconcile——用空集合
         // reconcile 会把该网关账户从注册表抹掉，比不更新更危险（注册表是账户配置页
         // 唯一列表来源，抹掉等于让账户在 UI 里消失）。
+        const auto account_ids_before = registry_.account_ids();
         registry_.note_config_frame_received();
         const auto accounts = parse_accounts(payload);
         if (!accounts.has_value()) {
             SPDLOG_WARN("td rtn config without usable accounts array, registry kept | gateway={}",
                         gateway);
-        } else if (registry_.reconcile_gateway(gateway, *accounts)) {
-            // 账户集合/启用状态变化 → 交易数据基线失效（前端清空重拉，契约 webui-ws §2.3）。
-            notifier_.broadcast_data_changed("td");
+        } else {
+            const bool changed = registry_.reconcile_gateway(gateway, *accounts);
+            // 账户从配置帧消失 → 清其账户级镜像（ADR 0056 决策 8；key 是账户 ID，按进程名
+            // 的清理路径覆盖不到）。只在有账户真的消失时才有实际清理，开销是一次集合查。
+            cleanup_.erase_unregistered(account_ids_before);
+            if (changed) {
+                // 账户集合/启用状态变化 → 交易数据基线失效（前端清空重拉，契约 webui-ws §2.3）。
+                notifier_.broadcast_data_changed("td");
+            }
         }
 
         ws_.broadcast("td_rtn_config", gateway, payload);
@@ -75,7 +89,8 @@ private:
     /// 从 payload 抽取注册表用的通用层条目（契约 td-config §2.2）。
     /// `accounts` 缺失 / 非数组 → nullopt（reconcile 跳过）；元素缺 `account_id` 或类型不符
     /// → 跳过该元素（单条坏数据不该让整组不更新）；`enabled` 缺失/类型不符 → true
-    /// （契约 §2.2 默认 true，不把账户误标为禁用）。
+    /// （契约 §2.2 默认 true，不把账户误标为禁用）；`account_name` 缺失/类型不符 → 空串
+    /// （= 未设置，前端回落 `account_id`）。
     static std::optional<std::vector<TdAccountRegistryEntry>> parse_accounts(
         const nlohmann::json& payload) {
         if (!payload.is_object()) {
@@ -103,6 +118,9 @@ private:
             auto enabled = item.find("enabled");
             entry.enabled =
                 enabled == item.end() || !enabled->is_boolean() ? true : enabled->get<bool>();
+            auto name = item.find("account_name");
+            entry.account_name =
+                name == item.end() || !name->is_string() ? std::string{} : name->get<std::string>();
             result.push_back(std::move(entry));
         }
         return result;
@@ -112,6 +130,7 @@ private:
     TdAccountRegistry& registry_;
     WsBroadcaster& ws_;
     DataChangeNotifier& notifier_;
+    TdAccountMirrorCleanup& cleanup_;
 };
 
 }  // namespace dztrader::webui

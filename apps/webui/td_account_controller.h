@@ -33,11 +33,14 @@ namespace dztrader::webui {
 /// 旧值）；会话控制（login/logout）以 `progress` / `td_rtn_status` 为准（契约 td-connection）。
 ///
 /// 预检顺序（契约 rest §2.9.7）：
-/// - POST：admin(403) → 网关是已注册的 `dztd_*`(400 `invalid_gateway`) → 网关 Running
-///   (409 `gateway_not_running`) → `account_id` 非空且 ≤31 字节(400) → 注册表查重
-///   (409 `account_exists`)。
+/// - POST：admin(403 `admin_required`) → 网关是已注册的 `dztd_*`(400 `invalid_gateway`) →
+///   网关 Running(409 `gateway_not_running`) → 通用层字段校验（`account_id` 非空 / ≤31 字节/
+///   字符集/进程名冲突 → 400 `invalid_account_id`；`account_name` 长度/控制字符/UTF-8 →
+///   400 `invalid_account_name`）→ 注册表查重（409 `account_exists`；展平名冲突
+///   409 `account_name_exists`）。
 /// - PUT/DELETE：admin(403) → 注册表解析 `account_id → gateway`(404 `account_not_found`)
-///   → 网关是 `dztd_*`(400 `invalid_gateway`) → Running(409 `gateway_not_running`)。
+///   → 网关是 `dztd_*`(400 `invalid_gateway`) → Running(409 `gateway_not_running`) → PUT 的
+///   字段校验与唯一性（排除自身）。
 ///   **顺序与 POST 不同是有意的**：PUT/DELETE 的 gateway 只能从注册表解析出来，契约
 ///   §2.9.7 的字面顺序（先校验网关）在这两个方法上不可机械照搬。
 ///
@@ -69,8 +72,9 @@ public:
     METHOD_LIST_END
 
     /// GET `/api/td/accounts`（契约 rest §2.9.9）：任意已认证用户。
-    /// 可用 → 200 `{available:true, accounts:[{account_id, gateway, enabled}]}`（按
-    /// account_id 升序）；尚未收到任何配置帧且未从 platform.db 恢复出条目 → 200
+    /// 可用 → 200 `{available:true, accounts:[{account_id, account_name, gateway, enabled}]}`
+    /// （按 account_id 升序；`account_name` 空串 = 未设置，展示回落 account_id）；
+    /// 尚未收到任何配置帧且未从 platform.db 恢复出条目 → 200
     /// `{available:false, reason:"no_gateway_snapshot"}`（"无账户"不可信，前端不得当空列表）。
     void list(const drogon::HttpRequestPtr& req,
               std::function<void(const drogon::HttpResponsePtr&)>&& callback);
@@ -113,6 +117,29 @@ private:
 
     /// 预检 2 + 3（PUT/DELETE 在注册表解析之后共用）。返回 nullptr = 通过。
     drogon::HttpResponsePtr check_gateway_ready(const std::string& gateway) const;
+
+    /// `account_id` 是否等于任何已注册进程名（契约 td-config §7 / general §5：账户级与进程级
+    /// `instance_id` 共用镜像键空间）。`dztraderd` 恒占位，其余查进程配置镜像。
+    bool is_registered_process_name(const std::string& name) const;
+
+    /// 预检 4：`account_id` 通用层校验（非空 / ≤31 字节 / ASCII 可见字符集 / 进程名冲突）。
+    /// 返回 nullptr = 通过；否则 400 `invalid_account_id`。
+    drogon::HttpResponsePtr check_account_id(const std::string& account_id) const;
+
+    /// 预检 4：`account_name` 通用层校验（trim 后 ≤64 字节 / 无控制字符 / UTF-8）。
+    /// 返回 nullptr = 通过；否则 400 `invalid_account_name`。
+    drogon::HttpResponsePtr check_account_name(const std::string& account_name) const;
+
+    /// 预检 5：`account_name` 与 `account_id` 的**展平唯一性**（契约 td-config §5/§7）。
+    /// @param exclude_account_id PUT 改名时排除自身（POST 传空）
+    /// @param check_candidate_id_against_names POST 新增 id 时还要判「新 id 与别人的名字冲突」
+    ///        （PUT 的 id 未变，既有冲突与本次改名无关）
+    /// 返回 nullptr = 通过；否则 409 `account_name_exists`。
+    drogon::HttpResponsePtr check_account_name_conflict(
+        const std::string& account_name,
+        const std::string& account_id,
+        const std::string& exclude_account_id,
+        bool check_candidate_id_against_names) const;
 
     /// 写 `TD_REQ_MODIFY_CONFIG` 帧；失败 → 503（不带 code，见类注释）。返回 nullptr = 成功。
     drogon::HttpResponsePtr dispatch(const std::string& gateway,

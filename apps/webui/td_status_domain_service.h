@@ -14,14 +14,19 @@ namespace dztrader::webui {
 /// 交易网关账户级细状态领域服务：`RTN_TD_STATUS` 的镜像更新 + WS 广播（契约 td-status §3）。
 ///
 /// 形态对齐 `MdStatusDomainService`，差异：
-/// - 镜像 domain 是 `td_status`，key = 帧头 `instance_id` = **网关名:账户ID**
-///   （如 `dztd_ctp:account_001`，契约 td-status §3）；一个帧只对应一个账户；
-/// - 广播消息 `td_rtn_status` 的 `instance_id` 也是该复合键（契约 webui-ws §2.2）；
+/// - 镜像 domain 是 `td_status`，key = 帧头 `instance_id` = **账户 ID**（如 `00001`，
+///   契约 td-status §3 / 总则 §5）；一个帧只对应一个账户；
+/// - 广播消息 `td_rtn_status` 的 `instance_id` 也是账户 ID（契约 webui-ws §2.2）；
 /// - payload 整体透传（契约 td-status §4：接收方不做字段校验，按全量覆盖写镜像）。
 ///
-/// 账户状态**不**写进程镜像的一级 key（那是进程），因此用复合 instance_id 作为镜像 key，
-/// 与 `progress` 域对 TD 账户的 key 约定一致（契约 webui-ws §2.1 的「各进程（TD 为账户
-/// ID）」）。
+/// 账户状态**不**写进程镜像的一级 key（那是进程），因此用账户 ID 作镜像 key，与 `progress`
+/// 域对 TD 账户的 key 约定一致（契约 webui-ws §2.1 的「各进程（TD 为账户 ID）」）。
+/// 账户级条目的清理不由本服务承担（key 不含进程名）：网关停止/崩溃/移除与账户从配置帧消失
+/// 时由 {@link TdAccountMirrorCleanup} 按账户注册表反查清除（ADR 0056 决策 8）。
+///
+/// `interface_type` 不由本服务派生（payload 不含类型字段，契约 td-status §1）：dzweb 整体
+/// 透传 `ext`，前端用账户 ID 查注册表得归属网关后自行派生；注册表未命中时按 `ext` 原样透传，
+/// 不猜接口类型。
 ///
 /// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问串行执行，不加锁。
 class TdStatusDomainService {
@@ -32,7 +37,7 @@ public:
 
     /// 处理一帧 `TD_RTN_STATUS`。
     ///
-    /// @param instance_id 帧头 `instance_id`（= 网关名:账户ID）
+    /// @param instance_id 帧头 `instance_id`（= 账户 ID）
     /// @param payload 契约 td-status §2.1 的 TdStatus 全量 payload
     void on_rtn_td_status(const std::string& instance_id, const nlohmann::json& payload) {
         if (instance_id.empty()) {

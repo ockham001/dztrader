@@ -14,12 +14,16 @@
  * 语义边界（契约只写这些，不要扩）：
  * - **内存优先，DB 尽力而为**：写入失败只记 ERROR、不抛、不阻塞账户操作（§5）。
  * - **帧为权威**：`TD_RTN_CONFIG` 到达时按网关**整组 reconcile**（自愈错误状态，§5）。
- * - **`enabled` 不持久化**：platform.db 只有 `account_id → gateway` 两列；重启恢复的条目
- *   `enabled` 未知 → 回 `true`（已知降级：重启窗口内禁用账户会显示为启用，比反过来危害小，
- *   rest §2.9.9）。随后该网关配置帧到达即 reconcile 出真实值。
+ * - **`enabled` 不持久化**：platform.db 只有 `account_id → gateway` 与 `account_name` 三列
+ *   （后者仅用于展示回落）；重启恢复的条目 `enabled` 未知 → 回 `true`（已知降级：重启窗口
+ *   内禁用账户会显示为启用，比反过来危害小，rest §2.9.9）。随后该网关配置帧到达即
+ *   reconcile 出真实值。
  * - **网关被移除时清掉该网关条目**（内存 + platform.db，§5）。
  * - **注册表是投影不是真相源**：真相源是各 td 网关配置文件（td-config §6）；注册表丢失时
  *   账户全集的前两个来源（在线集合 ∪ 交易库四表）仍能兜底（rest §2.9.1）。
+ * - **跨网关重复 = CRITICAL + NOTIFY_UI 弹窗，不阻断**（ADR 0056、契约 td-config §5）：
+ *   同一 `account_id` 出现在两个网关的配置帧里时以帧为权威改判归属，同时告警；只可能由手改
+ *   配置文件造成，平台的责任是检测并告警，不自动登出、不阻断网关启动。
  *
  * 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问都在 IO 线程串行执行，
  * 不加锁（与 `MirrorStore` 同约定）。
@@ -27,6 +31,7 @@
 
 #include "repository.h"
 
+#include <dztrader/shm/writer.h>
 #include <map>
 #include <memory>
 #include <optional>
@@ -48,8 +53,9 @@ public:
     virtual std::vector<TdAccountRegistryRow> load() = 0;
 
     /// 整组覆盖某网关的持久化条目（单事务）。返回 false = 写入失败。
+    /// @param rows 账户与展示名；`gateway` 以参数为准（行内的 gateway 字段不参与写入）
     virtual bool replace_gateway(const std::string& gateway,
-                                 const std::vector<std::string>& account_ids) = 0;
+                                 const std::vector<TdAccountRegistryRow>& rows) = 0;
 
     /// 删除某网关全部持久化条目。返回 false = 无行可删或写入失败。
     virtual bool delete_gateway(const std::string& gateway) = 0;
@@ -63,7 +69,7 @@ public:
 
     std::vector<TdAccountRegistryRow> load() override;
     bool replace_gateway(const std::string& gateway,
-                         const std::vector<std::string>& account_ids) override;
+                         const std::vector<TdAccountRegistryRow>& rows) override;
     bool delete_gateway(const std::string& gateway) override;
 
 private:
@@ -71,17 +77,21 @@ private:
 };
 
 /// 账户配置的通用层子集（契约 td-config §2.2）：`ext`（柜台特有连接参数）不在注册表内——
-/// 注册表只回答「哪个网关拥有它、是否启用」，连接参数读配置镜像。
+/// 注册表只回答「哪个网关拥有它、它的展示名、是否启用」，连接参数读配置镜像。
 struct TdAccountRegistryEntry {
-    std::string account_id;  ///< 全局唯一 key
-    std::string gateway;     ///< 拥有该账户的交易网关进程名（`dztd_*`）
-    bool enabled = true;     ///< 来自最近一次配置帧；从 DB 恢复的条目恒 true（已知降级）
+    std::string account_id;    ///< 全局唯一 key
+    std::string gateway;       ///< 拥有该账户的交易网关进程名（`dztd_*`）
+    std::string account_name;  ///< 展示名（ADR 0056 决策 3）；空串 = 未设置
+    bool enabled = true;       ///< 来自最近一次配置帧；从 DB 恢复的条目恒 true（已知降级）
 };
 
 class TdAccountRegistry {
 public:
     /// @param store 持久层（nullptr = 纯内存，测试/未装配 platform.db 时使用）
-    explicit TdAccountRegistry(std::unique_ptr<TdAccountRegistryStore> store = nullptr);
+    /// @param event_writer 事件通道 writer（跨网关重复账户的 NOTIFY_UI 弹窗用；nullptr = 不发，
+    ///        只记 CRITICAL——API-only 模式与纯单测路径）
+    explicit TdAccountRegistry(std::unique_ptr<TdAccountRegistryStore> store = nullptr,
+                               shm::MultiWriter* event_writer = nullptr);
 
     // 含 unique_ptr 成员，禁拷贝；不需移动
     TdAccountRegistry(const TdAccountRegistry&) = delete;
@@ -96,11 +106,14 @@ public:
 
     /// 配置帧到达时按网关**整组** reconcile（契约 td-config §5，帧为权威）：
     /// 先清掉该网关全部旧条目，再按 `accounts` 重建。跨网关重复的 `account_id` 以帧为准
-    /// 改判归属（记 WARN——它意味着其他网关的配置与注册表不一致，等那个网关的帧自愈）。
+    /// 改判归属（记 CRITICAL + `NOTIFY_UI` 弹窗，ADR 0056——只可能由手改配置文件造成，
+    /// 平台检测并告警、不阻断；等那个网关的帧到达时自愈到单一网关）。
     ///
-    /// `enabled` 取帧内通用层 `enabled`（缺失/类型不符回 true）；不读 `ext`。
+    /// 通用层只读 `account_id` / `account_name` / `enabled`，不读 `ext`；`enabled` 与
+    /// `account_name` 缺失/类型不符时分别回 true / 空串（不把账户误标为禁用、名字回落 id）。
     ///
-    /// @return true = 该网关的账户集合发生变化（供调用方广播 `data_changed{td}`）
+    /// @return true = 该网关的账户集合或 `enabled` 发生变化（供调用方广播 `data_changed{td}`）；
+    ///         `account_name` 变化**不算**（改名不动交易数据基线，前端由配置帧更新名字）
     bool reconcile_gateway(const std::string& gateway,
                            const std::vector<TdAccountRegistryEntry>& accounts);
 
@@ -128,6 +141,10 @@ public:
     /// {@link available()}，降级时「查不到」不等于「确实没有」，不得据此移除接口。
     [[nodiscard]] bool gateway_has_accounts(const std::string& gateway) const;
 
+    /// 该网关拥有的账户 ID（按 account_id 升序）——账户级镜像清理用（ADR 0056 决策 8 /
+    /// 契约 general §9：账户级 key 不含进程名，只能按注册表反查）。
+    [[nodiscard]] std::vector<std::string> account_ids_of_gateway(const std::string& gateway) const;
+
     /// 全部账户（按 account_id 升序，契约 rest §2.9.9）。
     [[nodiscard]] std::vector<TdAccountRegistryEntry> entries() const;
 
@@ -142,12 +159,19 @@ public:
 
 private:
     /// 尽力持久化某网关的整组条目：失败只记 ERROR，不影响内存状态（契约 td-config §5）。
-    void persist_gateway(const std::string& gateway, const std::vector<std::string>& account_ids);
+    void persist_gateway(const std::string& gateway, const std::vector<TdAccountRegistryRow>& rows);
 
     /// 尽力删除某网关的持久化条目：失败只记 ERROR。
     void persist_delete_gateway(const std::string& gateway);
 
+    /// 跨网关重复账户告警：CRITICAL 日志 + `NOTIFY_UI` 弹窗（ADR 0056 / 契约 td-config §5）。
+    /// writer 缺失（API-only / 纯单测）时只记日志。
+    void alert_cross_gateway_duplicate(const std::string& account_id,
+                                       const std::string& old_gateway,
+                                       const std::string& new_gateway);
+
     std::unique_ptr<TdAccountRegistryStore> store_;
+    shm::MultiWriter* event_writer_ = nullptr;               ///< NOTIFY_UI 弹窗用（可空）
     std::map<std::string, TdAccountRegistryEntry> entries_;  ///< account_id -> entry（有序）
     bool has_snapshot_ = false;
 };
