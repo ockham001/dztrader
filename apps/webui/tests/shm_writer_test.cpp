@@ -275,6 +275,24 @@ TEST_F(WebuiShmWriterTest, WriteTdDisconnectWritesAccountPayload) {
     EXPECT_EQ(parse_inst_payload(*view), (nlohmann::json{{"account_id", "acc_a"}}));
 }
 
+TEST_F(WebuiShmWriterTest, WriteTdRefreshReqWritesBasicJsonFrame) {
+    // 契约 td-refresh：JSON ext 帧、无 instance_id，payload {account_id, request_id}。
+    ASSERT_TRUE(shm_writer_->write_td_refresh_req("acc_a", 0));
+    auto view = next_frame_view(DZ_FRAME_TD_REFRESH_REQ);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_EQ(parse_payload(*view), (nlohmann::json{{"account_id", "acc_a"}, {"request_id", 0}}));
+    // 无 instance_id 帧：8B DzExtFrameHeader（与定向帧的 72B 头区分）。
+    EXPECT_EQ(view->frame_size(), sizeof(DzFrameHeader) + sizeof(DzExtFrameHeader) +
+                                      ((view->ext_payload_size() + 7) & ~7u));
+}
+
+TEST_F(WebuiShmWriterTest, WriteTdRefreshReqInvalidArgsReturnFalseAndWriteNothing) {
+    EXPECT_FALSE(shm_writer_->write_td_refresh_req("", 0));
+    EXPECT_EQ(reader_->next_frame(), nullptr);
+    ShmWriter writer{std::shared_ptr<shm::MultiWriter>()};
+    EXPECT_FALSE(writer.write_td_refresh_req("acc_a", 0));
+}
+
 TEST_F(WebuiShmWriterTest, WriteTdSessionEmptyArgsReturnFalseAndWriteNothing) {
     EXPECT_FALSE(shm_writer_->write_td_connect("", "acc_a"));
     EXPECT_FALSE(shm_writer_->write_td_connect("dztd_ctp", ""));

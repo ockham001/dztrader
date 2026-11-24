@@ -195,6 +195,9 @@ private:
     /// 处理 TD_ORDER_CANCEL_REQ 帧 (契约 td-order: basic 广播帧): 解析 payload DzOrderCancelReq
     /// (order_id + account_id), 按 account_id 归属过滤后 find_session + cancel_order
     void on_cancel_req(const shm::FrameView& view);
+    /// 处理 TD_REFRESH_REQ 帧（契约 td-refresh: JSON ext 帧、无 instance_id）：
+    /// 按 payload `account_id` 归属过滤，对 Ready 会话置脏一次（不保证立即发送）。
+    void handle_refresh_req(const shm::FrameView& view);
     /// 在 sessions_ 中查找 account_id 对应的 AccountSession。未找到返回 nullptr。
     /// 与纯函数 find_account_in (查 config_.accounts 配置) 语义不同: 本方法查运行中的会话。
     AccountSession* find_session(const std::string& account_id);

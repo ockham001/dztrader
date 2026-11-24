@@ -21,7 +21,7 @@ vi.mock('@/api/marketSources', () => ({
 }))
 
 vi.mock('@/api/td', () => ({
-  tdApi: { getPositions: vi.fn(), getTradingAccounts: vi.fn() },
+  tdApi: { getPositions: vi.fn(), getTradingAccounts: vi.fn(), refreshTradingAccount: vi.fn() },
 }))
 
 const ctpSource = {
@@ -441,6 +441,7 @@ describe('DashboardView', () => {
       '800,000.00',
       '入 +50,000.00 / 出 -1,234.50',
       '2026-08-08',
+      '',  // 操作列：刷新按钮无文本
     ])
 
     w.unmount()
@@ -479,7 +480,7 @@ describe('DashboardView', () => {
     expect(cells[1]).toBe('离线')
     // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期
     expect(cells.slice(2)).toEqual([
-      '—', '—', '—', '—', '—', '—', '入 — / 出 —', '—',
+      '—', '—', '—', '—', '—', '—', '入 — / 出 —', '—', '',
     ])
     // title 说明「该账户无资金记录」
     expect(row.attributes('title')).toBe('该账户无资金记录')
@@ -661,4 +662,28 @@ describe('DashboardView', () => {
 
     w.unmount()
   })
+
+  it('资金行手动刷新：在线行可点并发起请求、pending 生效；离线行禁用（契约 webui-ws §5 第 15 条）', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
+      [account(), account({ account_id: 'acc_offline' })],
+      { online_accounts: ['acc_a'] },
+    ))
+    vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
+
+    const w = await mountDashboard()
+    const onlineButton = fundRow(w, 'acc_a').find('[data-test="fund-refresh"]')
+    const offlineButton = fundRow(w, 'acc_offline').find('[data-test="fund-refresh"]')
+    expect(onlineButton.attributes('disabled')).toBeUndefined()
+    expect(offlineButton.attributes('disabled')).toBeDefined()
+    expect(offlineButton.attributes('title')).toBe('离线账户不可刷新')
+
+    await onlineButton.trigger('click')
+    await flushPromises()
+    expect(tdApi.refreshTradingAccount).toHaveBeenCalledWith('acc_a')
+    // 成功请求保持 pending（清 pending 的唯一信号 = 同账户新 seq），按钮进入刷新中态。
+    expect(useTdTradingAccountsStore().refreshPending.acc_a).toBe(true)
+    expect(fundRow(w, 'acc_a').find('[data-test="fund-refresh"]').attributes('data-pending')).toBe('true')
+    w.unmount()
+  })
+
 })

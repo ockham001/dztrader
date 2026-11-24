@@ -13,6 +13,9 @@
 #include "td_orders_query.h"
 #include "td_positions_query.h"
 #include "td_trading_accounts_query.h"
+
+#include "process_mirror.h"
+#include "shm_writer.h"
 #include "td_trades_query.h"
 
 namespace dztrader::webui {
@@ -48,14 +51,18 @@ public:
            std::shared_ptr<TdTradesQuery> trades,
            std::shared_ptr<TdPositionsQuery> positions,
            std::shared_ptr<TdTradingAccountsQuery> trading_accounts,
-           std::shared_ptr<TdAccountRegistry> registry = nullptr)
+           std::shared_ptr<TdAccountRegistry> registry = nullptr,
+           std::shared_ptr<ProcessMirror> process_mirror = nullptr,
+           std::shared_ptr<ShmWriter> shm_writer = nullptr)
         : ControllerBase(std::move(repo)),
           domain_(std::move(domain)),
           orders_(std::move(orders)),
           trades_(std::move(trades)),
           positions_(std::move(positions)),
           trading_accounts_(std::move(trading_accounts)),
-          registry_(std::move(registry)) {}
+          registry_(std::move(registry)),
+          process_mirror_(std::move(process_mirror)),
+          shm_writer_(std::move(shm_writer)) {}
 
     METHOD_LIST_BEGIN
     ADD_METHOD_TO(TdCtrl::get_orders, "/api/td/orders", drogon::Get);
@@ -63,6 +70,9 @@ public:
     ADD_METHOD_TO(TdCtrl::get_positions, "/api/td/positions", drogon::Get);
     ADD_METHOD_TO(TdCtrl::get_trading_accounts, "/api/td/trading_accounts", drogon::Get);
     ADD_METHOD_TO(TdCtrl::get_stats, "/api/td/stats", drogon::Get);
+    ADD_METHOD_TO(TdCtrl::refresh_trading_account,
+                  "/api/td/trading_accounts/{1}/refresh",
+                  drogon::Post);
     METHOD_LIST_END
 
     /// GET `/api/td/orders`：参数 `limit`（默认 200，1..1000）、`cursor`、`accounts`（逗号）。
@@ -97,6 +107,14 @@ public:
     void get_stats(const drogon::HttpRequestPtr& req,
                    std::function<void(const drogon::HttpResponsePtr&)>&& callback);
 
+    /// POST `/api/td/trading_accounts/{account_id}/refresh`（契约 rest §2.9.11）：
+    /// 手动刷新单账户资金快照（任意已认证用户，非 admin）→ `DZ_FRAME_TD_REFRESH_REQ`。
+    /// 预检：注册表解析（404）→ 网关已注册且 Running（409）→ 账户在线 Ready（409）
+    /// → 写通道（503）；预检失败不写帧。200 `{"ok":true}` 只表示已写入事件通道。
+    void refresh_trading_account(const drogon::HttpRequestPtr& req,
+                                 std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                 const std::string& account_id);
+
 private:
     /// 账户注册表账户集合（契约 rest §2.9.1 第三源）；未装配 = 空集合（两源兜底）。
     [[nodiscard]] std::vector<std::string> registry_accounts() const {
@@ -109,6 +127,8 @@ private:
     std::shared_ptr<TdPositionsQuery> positions_;
     std::shared_ptr<TdTradingAccountsQuery> trading_accounts_;
     std::shared_ptr<TdAccountRegistry> registry_;
+    std::shared_ptr<ProcessMirror> process_mirror_;
+    std::shared_ptr<ShmWriter> shm_writer_;
 };
 
 }  // namespace dztrader::webui

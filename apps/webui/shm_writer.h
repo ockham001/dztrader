@@ -101,6 +101,11 @@ public:
     /// 返回 true = 已写入事件通道
     bool write_td_disconnect(const std::string& gateway, const std::string& account_id);
 
+    /// 写 `DZ_FRAME_TD_REFRESH_REQ`（契约 td-refresh）：JSON ext 帧、**无 instance_id**
+    /// （事件通道广播，td 按 payload `account_id` 过滤）；payload `{account_id, request_id}`。
+    /// 返回 true = 已写入事件通道（不表示查询已完成；生效信号 = 新 `TRADING_ACCOUNT` 帧）。
+    bool write_td_refresh_req(const std::string& account_id, int64_t request_id);
+
     bool is_ready() const { return event_writer_ != nullptr; }
 
 private:

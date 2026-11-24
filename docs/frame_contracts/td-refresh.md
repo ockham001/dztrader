@@ -5,8 +5,6 @@
 类型层真相源：**本契约**（JSON schema 与校验语义）；帧号在 `libs/core/include/dztrader/core/core_data_type.h` 登记（实现票落盘）。前端入口见契约 rest §2.9.11。
 
 
-**实现状态（未接线）**：td 尚未分发该帧、dzweb 尚无发送方、前端无入口；本契约先定义语义，实现随 [#455](https://github.com/ockham001/dztrader/issues/455) 的子票落地（总则 §11.3 checklist 跟踪）。
-
 ## DZ_FRAME_TD_REFRESH_REQ
 
 **语义**：请求目标交易网关对指定账户做一次 CTP 资金查询（`ReqQryTradingAccount`）。只置脏，**不保证立即发送**（受账户查询通道的在途 / 最小间隔约束，见《帧契约：TD 数据同步》§4.1），也不保证查询成功；无专用 RTN 帧。

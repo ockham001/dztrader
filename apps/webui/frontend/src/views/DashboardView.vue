@@ -273,6 +273,16 @@ const positionUnknownBanner = computed<string>(() => tdPanelUnknownBannerText('p
 /** 资金未知态提示条文案（同上） */
 const fundUnknownBanner = computed<string>(() => tdPanelUnknownBannerText('fund'))
 
+/** 该账户资金行是否可手动刷新（契约 webui-ws §5 第 15 条：离线行不得发起） */
+function canRefreshFunds(accountId: string): boolean {
+  return isTdAccountOnline(accountId, fundsStore.onlineAccounts)
+}
+
+/** 点击行内刷新：fire-and-forget；pending 由 store 管理（同账户新 seq / 3s 超时清除） */
+async function onRefreshFunds(accountId: string): Promise<void> {
+  await fundsStore.refreshAccount(accountId)
+}
+
 // === 委托 / 策略 / 消息（演示数据，issue #200）===
 // 这三个面板的交易数据链路尚未接入：真实委托数据在「交易数据」页（`/trading-data`，随
 // #246/#248 落地，REST 直查交易库），仪表盘委托面板保留原型布局，但满足三条约束：
@@ -700,6 +710,7 @@ onUnmounted(() => {
                     <th>可取</th>
                     <th>出入金</th>
                     <th>数据日期</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -726,12 +737,25 @@ onUnmounted(() => {
                     <td class="cell-num">{{ formatTdMoney(row.withdraw_quota) }}</td>
                     <td class="cell-num">{{ formatDepositWithdraw(row.deposit, row.withdraw) }}</td>
                     <td class="cell-num cell-muted" data-test="fund-row-date">{{ row.has_data && row.date ? formatTdDate(row.date) : '—' }}</td>
+                    <td class="cell-center">
+                      <button
+                        class="ds-btn ds-btn--ghost ds-btn--icon ds-btn--sm dashboard-fund-refresh"
+                        type="button"
+                        data-test="fund-refresh"
+                        :data-pending="fundsStore.refreshPending[row.account_id] ? 'true' : undefined"
+                        :disabled="!canRefreshFunds(row.account_id) || fundsStore.refreshPending[row.account_id]"
+                        :title="!canRefreshFunds(row.account_id) ? '离线账户不可刷新' : (fundsStore.refreshPending[row.account_id] ? '刷新中…' : '刷新该账户资金')"
+                        @click="onRefreshFunds(row.account_id)"
+                      >
+                        <Icon name="Refresh" :size="14" />
+                      </button>
+                    </td>
                   </tr>
                   <!-- 空态：五态互斥（#358）——降级 / 加载中 / 加载失败 / 资金未知 / 暂无资金数据。
                        原先分两条规则（`!loading` 一条 + 兜底一条），语义正确但文案来源两处；
                        统一由 tdPanelState 给出，与持仓面板同一判定逻辑（契约 webui-ws §5 第 13 条）。 -->
                   <tr v-if="fundsStore.rows.length === 0">
-                    <td colspan="10" class="dashboard-fund-empty" data-test="fund-empty">{{ fundEmptyText }}</td>
+                    <td colspan="11" class="dashboard-fund-empty" data-test="fund-empty">{{ fundEmptyText }}</td>
                   </tr>
                 </tbody>
               </table>

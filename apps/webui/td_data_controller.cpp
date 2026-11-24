@@ -1,6 +1,9 @@
 #include "td_data_controller.h"
 
+#include <algorithm>
+
 #include "td_read_db.h"
+#include "td_session_guard.h"
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -127,6 +130,68 @@ void TdCtrl::get_stats(const drogon::HttpRequestPtr& req,
         return;
     }
     callback(json_response(drogon::k200OK, domain_->stats_body()));
+}
+
+// 契约 rest §2.9.11：资金手动刷新（写端点，fire-and-forget）。
+void TdCtrl::refresh_trading_account(const drogon::HttpRequestPtr& req,
+                                     std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                     const std::string& account_id) {
+    // 认证由 JWT advice 处理；本端点权限 = 任意已认证用户（与资金读端点一致，非 admin）。
+    (void)req;
+    // 预检 2：账户注册表解析（契约 rest §2.9.11）。
+    if (!registry_) {
+        SPDLOG_WARN("td refresh trading account rejected: registry not wired | account={}",
+                    account_id);
+        callback(error_response(drogon::k503ServiceUnavailable, "account registry unavailable"));
+        return;
+    }
+    if (!registry_->available()) {
+        SPDLOG_WARN("td refresh trading account rejected: registry degraded | account={}",
+                    account_id);
+        callback(error_response(drogon::k503ServiceUnavailable, "account registry unavailable"));
+        return;
+    }
+    const auto entry = registry_->find(account_id);
+    if (!entry.has_value()) {
+        SPDLOG_WARN("td refresh trading account rejected: account not found | account={}",
+                    account_id);
+        callback(error_with_code(drogon::k404NotFound, "account not found", "account_not_found"));
+        return;
+    }
+    // 预检 3：目标网关必须是已注册的 dztd_* 且 Running（契约 rest §2.9.11）。
+    if (!process_mirror_ || !td_gateway_registered(*process_mirror_, entry->gateway) ||
+        !td_gateway_running(*process_mirror_, entry->gateway)) {
+        SPDLOG_WARN(
+            "td refresh trading account rejected: gateway not running | account={} "
+            "gateway={}",
+            account_id, entry->gateway);
+        callback(
+            error_with_code(drogon::k409Conflict, "td gateway not running", "gateway_not_running"));
+        return;
+    }
+    // 预检 4：账户在线（Ready）——离线无会话可查询（契约 rest §2.9.11）。
+    const auto online = domain_ ? domain_->online_accounts() : std::vector<std::string>{};
+    if (std::find(online.begin(), online.end(), account_id) == online.end()) {
+        SPDLOG_WARN("td refresh trading account rejected: account offline | account={}",
+                    account_id);
+        callback(error_with_code(drogon::k409Conflict, "account offline", "account_offline"));
+        return;
+    }
+    // 预检 5：写通道可用；写失败同样 503（不带 code，同契约 rest §2.9.7）。
+    if (!shm_writer_ || !shm_writer_->is_ready()) {
+        SPDLOG_ERROR("td refresh trading account rejected: shm writer not available | account={}",
+                     account_id);
+        callback(error_response(drogon::k503ServiceUnavailable, "shm writer not available"));
+        return;
+    }
+    if (!shm_writer_->write_td_refresh_req(account_id, /*request_id=*/0)) {
+        SPDLOG_ERROR("td refresh trading account dispatch failed | account={}", account_id);
+        callback(error_response(drogon::k503ServiceUnavailable, "shm write failed"));
+        return;
+    }
+    SPDLOG_INFO("td refresh trading account dispatched | account={} gateway={}", account_id,
+                entry->gateway);
+    callback(json_response(drogon::k200OK, nlohmann::json{{"ok", true}}));
 }
 
 }  // namespace dztrader::webui

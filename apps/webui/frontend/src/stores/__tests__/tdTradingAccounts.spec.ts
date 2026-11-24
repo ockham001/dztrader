@@ -4,10 +4,11 @@ import { useTdTradingAccountsStore } from '../tdTradingAccounts'
 // 退避口径的唯一来源是共享定时器（委托/成交/持仓/资金同一份），测试从那里取常量。
 import { TD_RETRY_BASE_DELAY_MS } from '@/composables/tdListStore'
 import { tdApi } from '@/api/td'
+import { useToastStore } from '@/stores/toast'
 import type { TdTradingAccountRow } from '@/types/api'
 
 vi.mock('@/api/td', () => ({
-  tdApi: { getTradingAccounts: vi.fn() },
+  tdApi: { getTradingAccounts: vi.fn(), refreshTradingAccount: vi.fn() },
 }))
 
 /**
@@ -456,5 +457,84 @@ describe('useTdTradingAccountsStore · 降级（契约 rest §2.9.8 / webui-ws �
     expect(tdApi.getTradingAccounts).toHaveBeenCalledTimes(2)
     expect(store.rows).toHaveLength(1)
     expect(store.initialized).toBe(true)
+  })
+})
+
+// ============================================================================
+// 手动刷新（契约 rest §2.9.11 / webui-ws §5 第 15 条）
+// ============================================================================
+
+describe('useTdTradingAccountsStore · 手动刷新（契约 rest §2.9.11 / webui-ws §5 第 15 条）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+    vi.resetAllMocks()
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(
+      listResponse([account()], { online_accounts: ['acc_a', 'acc_offline'] }))
+  })
+  afterEach(() => {
+    useTdTradingAccountsStore().dispose()
+    vi.useRealTimers()
+  })
+
+  it('离线账户不发起刷新（REST 会 409）', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(
+      listResponse([account(), account({ account_id: 'acc_offline' })],
+        { online_accounts: ['acc_a'] }))
+    const store = useTdTradingAccountsStore()
+    await store.init()
+    expect(await store.refreshAccount('acc_offline')).toBe(false)
+    expect(tdApi.refreshTradingAccount).not.toHaveBeenCalled()
+    expect(store.refreshPending.acc_offline).toBeFalsy()
+  })
+
+  it('成功请求保持 pending，同账户新 seq 到达后清除', async () => {
+    vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
+    const store = useTdTradingAccountsStore()
+    await store.init()
+
+    expect(await store.refreshAccount('acc_a')).toBe(true)
+    expect(tdApi.refreshTradingAccount).toHaveBeenCalledWith('acc_a')
+    expect(store.refreshPending.acc_a).toBe(true)
+
+    // 同账户新 seq = 刷新生效信号（契约 webui-ws §5 第 15 条）。
+    store.applyTradingAccountEvent(account({ seq: 11 }))
+    expect(store.refreshPending.acc_a).toBe(false)
+  })
+
+  it('3s 超时清除 pending 并提示「刷新超时，稍后自动更新」', async () => {
+    vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
+    const store = useTdTradingAccountsStore()
+    const toast = useToastStore()
+    await store.init()
+
+    await store.refreshAccount('acc_a')
+    expect(store.refreshPending.acc_a).toBe(true)
+    vi.advanceTimersByTime(2999)
+    expect(store.refreshPending.acc_a).toBe(true)
+    vi.advanceTimersByTime(1)
+    expect(store.refreshPending.acc_a).toBe(false)
+    expect(toast.items.some(item => item.message === '刷新超时，稍后自动更新')).toBe(true)
+  })
+
+  it('请求失败立即清除 pending 并提示错误', async () => {
+    vi.mocked(tdApi.refreshTradingAccount).mockRejectedValue(new Error('boom'))
+    const store = useTdTradingAccountsStore()
+    const toast = useToastStore()
+    await store.init()
+
+    expect(await store.refreshAccount('acc_a')).toBe(false)
+    expect(store.refreshPending.acc_a).toBe(false)
+    expect(toast.items.some(item => item.message === 'boom')).toBe(true)
+  })
+
+  it('基线刷新清空 pending（data_changed / reset 不遗留旋转图标）', async () => {
+    vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
+    const store = useTdTradingAccountsStore()
+    await store.init()
+    await store.refreshAccount('acc_a')
+    expect(store.refreshPending.acc_a).toBe(true)
+    await store.handleDataChanged('td')
+    expect(store.refreshPending.acc_a).toBeFalsy()
   })
 })

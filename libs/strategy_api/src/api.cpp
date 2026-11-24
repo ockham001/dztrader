@@ -909,6 +909,7 @@ bool dispatch_frame(DzContext* ctx, const std::byte* frame, DzFrameType type) {
         case DZ_FRAME_TD_TRANSFER_RTN:
         case DZ_FRAME_TD_PASSWORD_UPDATE_REQ:
         case DZ_FRAME_TD_PASSWORD_UPDATE_RSP:
+        case DZ_FRAME_TD_REFRESH_REQ:  // 契约 td-refresh: 策略侧不可见（dzweb↔td 内部帧）
             return false;
         default:
             return false;  // 其余平台帧 (日志/SHM 配置/进程控制/TD 控制帧等) 丢弃
