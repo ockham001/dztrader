@@ -21,6 +21,12 @@
  * 基准查询的**有限重试预算/停住/ERROR 通知**是本文件覆盖的例外：重试定时器只排定不触发
  * （无柜台的测试不能真发请求），但预算判定、定时器清理、通知与「失败链不碰表」都走真实代码。
  *
+ * **#458 运行期资金刷新**：生产上由登录收尾链进入 Ready，本目标用
+ * `AccountSession::enter_ready_for_test` 注入同一状态迁移（纯状态机调用，不触网/不落库），
+ * 并注入确定时钟 + 发送钩子（`set_query_clock` / `set_query_send_hook`）驱动按需查询；
+ * TimerQueue 的真实 tick 只在「0 延迟即可发送」用例里使用，其余用例直接调
+ * `pump_query_lane` / `expire_runtime_query_timeout_for_test` 注入确定时序，不 sleep。
+ *
  * 确定性来源：每次断言前用 persist flush 屏障等末批提交（`wait_flush`），不用 sleep。
  */
 
@@ -355,23 +361,12 @@ protected:
         std::vector<std::string> orders;
         std::vector<std::string> funds;
     };
-    /// 资金帧的账户 id（共享 reader 辅助只覆盖持仓/成交/委托，这里本地取）。
-    static std::vector<std::string> fund_frame_accounts(
-        const std::vector<std::unique_ptr<std::byte[]>>& frames) {
-        std::vector<std::string> out;
-        for (const auto& frame : frames) {
-            const shm::FrameView view{frame.get()};
-            if (view.type() != DZ_FRAME_TRADING_ACCOUNT) continue;
-            out.emplace_back(view.payload<DzTradingAccount>().account_id);
-        }
-        return out;
-    }
     FrameInstruments read_frame_instruments() {
         const auto frames = dztrader::test::read_frames(*reader_);
         return FrameInstruments{dztrader::test::position_frame_instruments(frames),
                                 dztrader::test::trade_frame_instruments(frames),
                                 dztrader::test::order_frame_instruments(frames),
-                                fund_frame_accounts(frames)};
+                                dztrader::test::trading_account_frame_accounts(frames)};
     }
 
     static bool contains(const std::vector<std::string>& values, const std::string& needle) {
@@ -380,14 +375,19 @@ protected:
 
     // === 运行期资金刷新夹具（ADR 0055 / #458） ===
 
-    /// 注入确定性时钟 + 发送钩子，并把会话推进到 Ready（生产由登录收尾链进入）。
-    void enable_runtime_fund_refresh(bool position_ok = true) {
+    /// 安装确定性时钟 + 发送钩子（不改变状态；未 Ready 用例也用它验证「不置脏」）。
+    void install_runtime_query_hooks() {
         session_->set_query_clock([this]() { return query_fake_now_; });
         session_->set_query_send_hook(
             [this](CThostFtdcQryTradingAccountField& /*qry*/, int request_id) {
                 sent_fund_query_ids_.push_back(request_id);
                 return send_fund_ret_;
             });
+    }
+
+    /// 注入确定性时钟 + 发送钩子，并把会话推进到 Ready（生产由登录收尾链进入）。
+    void enable_runtime_fund_refresh(bool position_ok = true) {
+        install_runtime_query_hooks();
         session_->enter_ready_for_test(position_ok);
     }
 
@@ -1071,6 +1071,10 @@ TEST_F(TdPositionLifecycleTest, RepeatedCrossDayReportsNotifyOnce) {
 
 TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTriggersOnOrderAndWritesRowFrame) {
     seed_today_position_row();
+    // 历史资金行（上一交易日）：运行期刷新只 upsert 当日行，历史行不可变。
+    raw_exec(
+        "INSERT INTO trading_accounts (account_id, date, balance, available, seq, gateway)"
+        " VALUES ('acc1','20261008',999.0,888.0,5,'dztd_test')");
     enable_runtime_fund_refresh();
 
     trigger_order_event(1);
@@ -1090,6 +1094,11 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTriggersOnOrderAndWritesRowFra
     // 运行期写当日行不推进锚点日（两快照表 MAX(date) 同日）。
     EXPECT_EQ(scalar_int("SELECT MAX(date) FROM positions"), 20261009);
     EXPECT_EQ(scalar_int("SELECT MAX(date) FROM trading_accounts"), 20261009);
+    // 历史日资金行保持原值（不改写、不删除）。
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261008'"), 1);
+    EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261008'"),
+              999);
 }
 
 TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshCoalescesWindowAndReplenishesAfterSend) {
@@ -1133,14 +1142,11 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshRespectsPositionBaselineGuard)
 
 TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshSuppressedBeforeReady) {
     // 登录缓冲 / 重放 / 未就绪阶段：事件不置脏，也不产生查询。
-    session_->set_query_clock([this]() { return query_fake_now_; });
-    session_->set_query_send_hook(
-        [this](CThostFtdcQryTradingAccountField& /*qry*/, int request_id) {
-            sent_fund_query_ids_.push_back(request_id);
-            return send_fund_ret_;
-        });
+    install_runtime_query_hooks();
     trigger_order_event(1);
     trigger_trade_event(1);
+    // 事件发生在非 Ready 阶段：不置脏。随后即使进入 Ready，也不能凭空补一笔。
+    session_->enter_ready_for_test();
     session_->pump_query_lane();
     EXPECT_TRUE(sent_fund_query_ids_.empty());
 }
@@ -1155,6 +1161,12 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTriggeredByTransferEvents) {
     feed_fund_response(sent_fund_query_ids_.back());
     flush_persist();
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
+    {
+        const auto first_frames = read_frame_instruments();
+        ASSERT_EQ(first_frames.funds.size(), 1u);
+        EXPECT_EQ(first_frames.funds[0], "acc1");
+    }
+    const int64_t first_seq = scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'");
 
     // 出入金实时通知（银行权威）同样触发；等最小间隔后补一笔。
     trigger_transfer_rtn();
@@ -1168,6 +1180,11 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTriggeredByTransferEvents) {
     EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
                          " WHERE date='20261009'"),
               200000);
+    // AC6：每次成功刷新都推新帧并取新 seq（不做「值未变不写」优化）。
+    const auto second_frames = read_frame_instruments();
+    ASSERT_EQ(second_frames.funds.size(), 1u);
+    EXPECT_EQ(second_frames.funds[0], "acc1");
+    EXPECT_GT(scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'"), first_seq);
 }
 
 TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshFailureBacksOffAndNotifiesThrottled) {
@@ -1239,6 +1256,52 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshBusinessErrorAndOnRspErrorBack
     EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
 }
 
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshLateResponseAfterDisconnectIsDropped) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+    trigger_order_event(1);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+    const int request_id = sent_fund_query_ids_.back();
+
+    session_->on_front_disconnected(0);  // 断线：generation 前进，旧响应作废
+    feed_fund_response(request_id);
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 0)
+        << "late runtime response after leaving Ready must not be written";
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTimerWiringDrivesPump) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+    trigger_order_event(1);
+
+    // 事件置脏后应排好 lane 定时器（0 延迟 = 立即可发）；真正触发来自 TimerQueue::tick。
+    ASSERT_FALSE(timer_queue_.empty());
+    timer_queue_.tick();
+    EXPECT_EQ(sent_fund_query_ids_.size(), 1u)
+        << "lane timer must drive pump_query_lane (not test-only manual call)";
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTimeoutEntersBackoff) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+    trigger_order_event(1);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+    const int first_id = sent_fund_query_ids_.back();
+
+    // 响应丢失 → 10s 超时收口（测试注入同一收口逻辑，不 sleep）：不写表、进入退避。
+    session_->expire_runtime_query_timeout_for_test();
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 0);
+
+    advance_fake_time(1100);  // 第 1 次失败退避 = min_gap
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 2u) << "timeout must not stop the channel";
+    EXPECT_NE(sent_fund_query_ids_.back(), first_id);
+}
+
 TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshResetsOnDisconnect) {
     seed_today_position_row();
     enable_runtime_fund_refresh();
@@ -1247,9 +1310,17 @@ TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshResetsOnDisconnect) {
     ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
 
     session_->on_front_disconnected(0);  // 断线：通道复位、状态离开 Ready
+    // 断线期间的事件不置脏（不排队补查）。
     trigger_order_event(2);
     session_->pump_query_lane();
     EXPECT_EQ(sent_fund_query_ids_.size(), 1u) << "disconnected session must not schedule queries";
+
+    // 重连后重新 Ready：断线前的在途/待查必须已清空——新事件能立即再发一笔，
+    // 而不是被旧的 in-flight 永久挡住（falsifiable：reset 缺失时这里不会发）。
+    session_->enter_ready_for_test();
+    trigger_order_event(3);
+    session_->pump_query_lane();
+    EXPECT_EQ(sent_fund_query_ids_.size(), 2u) << "lane must be reset across disconnect";
 }
 
 }  // namespace

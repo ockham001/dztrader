@@ -188,6 +188,8 @@ public:
     void enter_ready_for_test(bool position_ok = true);
     /// 运行期查询调度驱动（lane 定时器回调；测试可直接调用以注入确定时序）。
     void pump_query_lane();
+    /// 测试夹具专用：立即触发运行期资金查询的 10s 超时路径（生产由 TimerQueue 触发）。
+    void expire_runtime_query_timeout_for_test();
 
     /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false).
     /// 与「登录收尾是否完成」分开暴露: 会话未登录 / 收尾未完成时本标志可能恒为 false,
@@ -358,9 +360,14 @@ private:
     /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
     void drive_finalizer();
 
+    /// 资金行写入来源（只影响日志，不影响写入语义）。
+    enum class TradingAccountWriteSource { kLogin, kRuntime };
     /// 资金行唯一写入点（ADR 0045 决策 4）：持仓基准守卫 + 当日行 upsert + 新 seq +
-    /// 推帧 + persist；登录收尾与运行期刷新共用。@param runtime 仅用于日志区分。
-    void apply_trading_account_row(const CThostFtdcTradingAccountField& row, bool runtime);
+    /// 推帧 + persist；登录收尾与运行期刷新共用。
+    void apply_trading_account_row(const CThostFtdcTradingAccountField& row,
+                                   TradingAccountWriteSource source);
+    /// 查询通道复位（断线 / 重连 / 登出共用一处）：取消运行期定时器、清在途与请求 id。
+    void reset_query_channel();
     /// 运行期资金刷新：事件置脏（仅 Ready；登录缓冲/重放/未就绪不置脏）。
     void mark_fund_refresh_dirty();
     /// 按 lane 的 next_wake 排绝对时间定时器（无轮询；无待查则取消）。
@@ -371,6 +378,8 @@ private:
     void handle_runtime_query_failure(QueryKind kind);
     /// 失败通知限频（每账户 5 分钟，单调时钟）。
     void notify_runtime_fund_failure();
+    /// 10s 超时收口（生产由 TimerQueue 回调；测试经 `expire_runtime_query_timeout_for_test`）。
+    void on_runtime_query_timeout(int request_id, QueryKind kind);
     void cancel_runtime_query_timeout();
     [[nodiscard]] QueryPacer::TimePoint query_now() const;
 
@@ -540,6 +549,8 @@ private:
     dztrader::core::TimerQueue::TimerId runtime_account_timeout_timer_id_ = 0;
     /// lane 唤醒定时器 id（tag 去重，绝对时间）。
     dztrader::core::TimerQueue::TimerId query_lane_timer_id_ = 0;
+    /// 已排 lane 定时器的目标时刻（用于热路径避免每笔回报重排同一定时器）。
+    QueryPacer::TimePoint query_lane_timer_deadline_{};
     /// 运行期失败通知上次发出时刻（单调秒；-1 = 尚未发过）。
     int64_t runtime_failure_notify_last_s_ = -1;
     /// 测试注入（空 = 生产实现）。
