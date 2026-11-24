@@ -86,6 +86,11 @@ protected:
     };
     std::vector<Notification> notifications_;
 
+    /// 运行期资金刷新夹具（ADR 0055 / #458）：确定性时钟 + 发送钩子，不连柜台不 sleep。
+    QueryPacer::TimePoint query_fake_now_{};
+    std::vector<int> sent_fund_query_ids_;
+    int send_fund_ret_ = 0;  ///< 发送钩子返回码（0=成功；-3 等构造失败路径）
+
     /// 构造会话 (notify 转发到 notifications_; 各用例的重连/新会话也走这里).
     std::unique_ptr<AccountSession> make_session() {
         return std::make_unique<AccountSession>(
@@ -348,16 +353,92 @@ protected:
         std::vector<std::string> positions;
         std::vector<std::string> trades;
         std::vector<std::string> orders;
+        std::vector<std::string> funds;
     };
+    /// 资金帧的账户 id（共享 reader 辅助只覆盖持仓/成交/委托，这里本地取）。
+    static std::vector<std::string> fund_frame_accounts(
+        const std::vector<std::unique_ptr<std::byte[]>>& frames) {
+        std::vector<std::string> out;
+        for (const auto& frame : frames) {
+            const shm::FrameView view{frame.get()};
+            if (view.type() != DZ_FRAME_TRADING_ACCOUNT) continue;
+            out.emplace_back(view.payload<DzTradingAccount>().account_id);
+        }
+        return out;
+    }
     FrameInstruments read_frame_instruments() {
         const auto frames = dztrader::test::read_frames(*reader_);
         return FrameInstruments{dztrader::test::position_frame_instruments(frames),
                                 dztrader::test::trade_frame_instruments(frames),
-                                dztrader::test::order_frame_instruments(frames)};
+                                dztrader::test::order_frame_instruments(frames),
+                                fund_frame_accounts(frames)};
     }
 
     static bool contains(const std::vector<std::string>& values, const std::string& needle) {
         return std::find(values.begin(), values.end(), needle) != values.end();
+    }
+
+    // === 运行期资金刷新夹具（ADR 0055 / #458） ===
+
+    /// 注入确定性时钟 + 发送钩子，并把会话推进到 Ready（生产由登录收尾链进入）。
+    void enable_runtime_fund_refresh(bool position_ok = true) {
+        session_->set_query_clock([this]() { return query_fake_now_; });
+        session_->set_query_send_hook(
+            [this](CThostFtdcQryTradingAccountField& /*qry*/, int request_id) {
+                sent_fund_query_ids_.push_back(request_id);
+                return send_fund_ret_;
+            });
+        session_->enter_ready_for_test(position_ok);
+    }
+
+    void advance_fake_time(int64_t ms) { query_fake_now_ += std::chrono::milliseconds(ms); }
+
+    static std::string padded(int64_t n, size_t width) {
+        std::string text = std::to_string(n);
+        if (text.size() < width) text.insert(0, width - text.size(), '0');
+        return text;
+    }
+
+    void trigger_order_event(int64_t n) {
+        const std::string ref = padded(n, 12);
+        session_->on_rtn_order(order_row("IF2506", ref.c_str()));
+    }
+
+    void trigger_trade_event(int64_t n) {
+        const std::string trade_id = padded(n, 8);
+        session_->on_rtn_trade(trade_row("IF2506", trade_id.c_str()));
+    }
+
+    void trigger_transfer_rsp() {
+        OnRspFromBankToFutureByFutureField f{};
+        f.req_transfer = CThostFtdcReqTransferField{};
+        std::strcpy(f.req_transfer->TradeCode, "202002");
+        f.req_transfer->TradeAmount = 1000.0;
+        f.account_id = "acc1";
+        session_->on_rsp_transfer(f);
+    }
+
+    void trigger_transfer_rtn() {
+        OnRtnFromBankToFutureByFutureField f{};
+        std::strcpy(f.rsp_transfer.TradeCode, "202002");
+        f.rsp_transfer.TradeAmount = 2000.0;
+        f.account_id = "acc1";
+        session_->on_rtn_transfer(f);
+    }
+
+    /// 按运行期在途 request id 收口一笔成功资金响应。
+    void feed_fund_response(int request_id, double balance = 100000.0) {
+        session_->on_rsp_qry_trading_account(
+            trading_account_row(/*is_last=*/true, balance, 85000.0, request_id));
+    }
+
+    /// 当日持仓行（让资金行的「锚点日不前进」断言有对照；生产上由登录链写入）。
+    void seed_today_position_row() {
+        raw_exec(
+            "INSERT INTO positions (account_id, date, instrument_id, exchange_id, direction, "
+            "volume,"
+            " frozen_volume, today_volume, yd_volume, price, seq, gateway)"
+            " VALUES ('acc1','20261009','IF2506','CFFEX',1,2,0,1,1,3900.0,20,'dztd_test')");
     }
 };
 
@@ -982,6 +1063,193 @@ TEST_F(TdPositionLifecycleTest, RepeatedCrossDayReportsNotifyOnce) {
     flush_persist();
     EXPECT_EQ(notifications_.size(), 1u);
     EXPECT_TRUE(session_->take_cross_day_logout_request());
+}
+
+// ============================================================================
+// 运行期资金刷新（ADR 0055 / #458）：四类触发源 + 合并 + 写路径 + 失败退避
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTriggersOnOrderAndWritesRowFrame) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+
+    trigger_order_event(1);
+    session_->pump_query_lane();  // 确定时钟下测试直接驱动（生产由 lane 定时器回调）
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+
+    feed_fund_response(sent_fund_query_ids_.back(), /*balance=*/123456.0);
+    flush_persist();
+
+    EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261009'"),
+              123456);
+    EXPECT_GT(scalar_int("SELECT seq FROM trading_accounts WHERE date='20261009'"), 0);
+    const auto frames = read_frame_instruments();
+    ASSERT_EQ(frames.funds.size(), 1u);
+    EXPECT_EQ(frames.funds[0], "acc1");
+    // 运行期写当日行不推进锚点日（两快照表 MAX(date) 同日）。
+    EXPECT_EQ(scalar_int("SELECT MAX(date) FROM positions"), 20261009);
+    EXPECT_EQ(scalar_int("SELECT MAX(date) FROM trading_accounts"), 20261009);
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshCoalescesWindowAndReplenishesAfterSend) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+
+    // 间隔窗口内多类事件（委托 x2 + 成交）只产生 1 笔查询。
+    trigger_order_event(1);
+    trigger_trade_event(1);
+    trigger_order_event(2);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u) << "window events must coalesce";
+    const int first_id = sent_fund_query_ids_.back();
+
+    // 查询在途期间到达的事件：收口后补查一次（不丢）。
+    trigger_order_event(3);
+    feed_fund_response(first_id);
+    session_->pump_query_lane();  // 最小间隔未到 → 不发
+    EXPECT_EQ(sent_fund_query_ids_.size(), 1u);
+
+    advance_fake_time(1100);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 2u) << "event during in-flight must be re-queried";
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshRespectsPositionBaselineGuard) {
+    // 持仓基准未就绪（ADR 0045 决策 4）：不写资金行、不推帧，避免锚点日被单独推进。
+    seed_today_position_row();
+    enable_runtime_fund_refresh(/*position_ok=*/false);
+
+    trigger_trade_event(1);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+    feed_fund_response(sent_fund_query_ids_.back());
+    flush_persist();
+
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 0)
+        << "fund row must not be written when the position baseline is not ready";
+    EXPECT_TRUE(read_frame_instruments().funds.empty());
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshSuppressedBeforeReady) {
+    // 登录缓冲 / 重放 / 未就绪阶段：事件不置脏，也不产生查询。
+    session_->set_query_clock([this]() { return query_fake_now_; });
+    session_->set_query_send_hook(
+        [this](CThostFtdcQryTradingAccountField& /*qry*/, int request_id) {
+            sent_fund_query_ids_.push_back(request_id);
+            return send_fund_ret_;
+        });
+    trigger_order_event(1);
+    trigger_trade_event(1);
+    session_->pump_query_lane();
+    EXPECT_TRUE(sent_fund_query_ids_.empty());
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshTriggeredByTransferEvents) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+
+    trigger_transfer_rsp();
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+    feed_fund_response(sent_fund_query_ids_.back());
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
+
+    // 出入金实时通知（银行权威）同样触发；等最小间隔后补一笔。
+    trigger_transfer_rtn();
+    advance_fake_time(1100);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 2u);
+    feed_fund_response(sent_fund_query_ids_.back(), /*balance=*/200000.0);
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1)
+        << "same-day refresh upserts the single business-key row";
+    EXPECT_EQ(scalar_int("SELECT CAST(balance AS INTEGER) FROM trading_accounts"
+                         " WHERE date='20261009'"),
+              200000);
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshFailureBacksOffAndNotifiesThrottled) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+    send_fund_ret_ = -3;  // 柜台流控拒绝 → 发送失败路径
+
+    // 每轮失败 4 次 = 1 次退避耗尽（≤3 次重试）；事件重新武装后下一轮再试。
+    auto exhaust_one_round = [&](int64_t ref_base) {
+        for (int i = 0; i < 4; ++i) {
+            trigger_order_event(ref_base + i);
+            session_->pump_query_lane();
+            advance_fake_time(10000);  // 跨过退避窗口（测试时钟，不 sleep）
+        }
+    };
+    exhaust_one_round(100);
+    EXPECT_EQ(sent_fund_query_ids_.size(), 4u);
+    ASSERT_EQ(notifications_.size(), 1u);
+    EXPECT_EQ(notifications_[0].level, DZ_NOTIFY_ERROR);
+    EXPECT_FALSE(notifications_[0].popup) << "运行期刷新失败不得弹窗";
+
+    // 5 分钟限频窗口内再次耗尽：不再通知（日志留证）。
+    exhaust_one_round(200);
+    EXPECT_EQ(notifications_.size(), 1u);
+
+    // 超出窗口后可再次通知。
+    advance_fake_time(301000);
+    exhaust_one_round(300);
+    EXPECT_EQ(notifications_.size(), 2u);
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshBusinessErrorAndOnRspErrorBackoff) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+
+    // 业务错误（is_last 带 ErrorID）：不写表不推帧，进入退避（不悬挂）。
+    trigger_order_event(1);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+    const int first_id = sent_fund_query_ids_.back();
+    OnRspQryTradingAccountField failed{};
+    failed.rsp_info = CThostFtdcRspInfoField{};
+    failed.rsp_info->ErrorID = 31;
+    std::strcpy(failed.rsp_info->ErrorMsg, "insufficient");
+    failed.request_id = first_id;
+    failed.is_last = true;
+    failed.account_id = "acc1";
+    session_->on_rsp_qry_trading_account(failed);
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts"), 0);
+
+    // OnRspError（通用错误响应）按在途 request id 路由到同一失败路径。
+    advance_fake_time(1100);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 2u);
+    OnRspErrorTdField rsp_error{};
+    rsp_error.rsp_info = CThostFtdcRspInfoField{};
+    rsp_error.rsp_info->ErrorID = 3;
+    rsp_error.request_id = sent_fund_query_ids_.back();
+    session_->on_rsp_error(rsp_error);
+
+    // 退避后第三笔成功：正常写行，证明失败不会永久停住通道。
+    // 第 2 次失败退避翻倍（1100 * 2^(2-1) = 2200ms，ADR 0055 决策 6）。
+    advance_fake_time(2200);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 3u);
+    feed_fund_response(sent_fund_query_ids_.back());
+    flush_persist();
+    EXPECT_EQ(scalar_int("SELECT COUNT(*) FROM trading_accounts WHERE date='20261009'"), 1);
+}
+
+TEST_F(TdPositionLifecycleTest, RuntimeFundRefreshResetsOnDisconnect) {
+    seed_today_position_row();
+    enable_runtime_fund_refresh();
+    trigger_order_event(1);
+    session_->pump_query_lane();
+    ASSERT_EQ(sent_fund_query_ids_.size(), 1u);
+
+    session_->on_front_disconnected(0);  // 断线：通道复位、状态离开 Ready
+    trigger_order_event(2);
+    session_->pump_query_lane();
+    EXPECT_EQ(sent_fund_query_ids_.size(), 1u) << "disconnected session must not schedule queries";
 }
 
 }  // namespace

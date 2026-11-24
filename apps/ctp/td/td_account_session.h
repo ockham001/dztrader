@@ -176,6 +176,19 @@ public:
     /// 配置热更新时由 TdApi 对活跃会话调用；立即作用于后续调度。
     void set_query_min_interval(std::chrono::milliseconds interval);
 
+    // === 运行期资金刷新（ADR 0055 / #458） ===
+    /// 运行期资金查询发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqQryTradingAccount` 返回码。
+    using QuerySendFn = std::function<int(CThostFtdcQryTradingAccountField&, int)>;
+    void set_query_send_hook(QuerySendFn hook);
+    /// 查询时钟（测试注入；空 = `steady_clock`）。确定性用例用它消除 sleep。
+    using QueryClockFn = std::function<QueryPacer::TimePoint()>;
+    void set_query_clock(QueryClockFn clock);
+    /// 测试夹具专用：把会话推进到 Ready（生产由登录收尾链进入）。
+    /// @param position_ok 同时置/清持仓基准就绪标志（覆盖写路径守卫用例）
+    void enter_ready_for_test(bool position_ok = true);
+    /// 运行期查询调度驱动（lane 定时器回调；测试可直接调用以注入确定时序）。
+    void pump_query_lane();
+
     /// 最近一轮持仓查询是否成功 (未知方向使整轮快照不可信时置 false).
     /// 与「登录收尾是否完成」分开暴露: 会话未登录 / 收尾未完成时本标志可能恒为 false,
     /// 拿它断言「未知方向按查询失败处置」会恒真 (issue #367 审查 F9).
@@ -345,6 +358,22 @@ private:
     /// 尝试推进登录收尾状态机并执行对应阶段动作; 未达前置时停留.
     void drive_finalizer();
 
+    /// 资金行唯一写入点（ADR 0045 决策 4）：持仓基准守卫 + 当日行 upsert + 新 seq +
+    /// 推帧 + persist；登录收尾与运行期刷新共用。@param runtime 仅用于日志区分。
+    void apply_trading_account_row(const CThostFtdcTradingAccountField& row, bool runtime);
+    /// 运行期资金刷新：事件置脏（仅 Ready；登录缓冲/重放/未就绪不置脏）。
+    void mark_fund_refresh_dirty();
+    /// 按 lane 的 next_wake 排绝对时间定时器（无轮询；无待查则取消）。
+    void schedule_query_lane_pump();
+    /// 发送一笔运行期资金查询（经 lane 闸门；成功 note_sent + 10s 超时）。
+    void send_runtime_trading_account(QueryKind kind, QueryPacer::TimePoint now);
+    /// 运行期查询失败收口：耗尽通知（限频 ERROR, popup=false）+ 安排下次退避。
+    void handle_runtime_query_failure(QueryKind kind);
+    /// 失败通知限频（每账户 5 分钟，单调时钟）。
+    void notify_runtime_fund_failure();
+    void cancel_runtime_query_timeout();
+    [[nodiscard]] QueryPacer::TimePoint query_now() const;
+
     /// 查询发送闸门（ADR 0055 决策 1）：pacer 不允许立即发送时，把 retry 用 TimerQueue
     /// 延后到最早合法时刻（绝对时间，无轮询），返回 true 表示已延后（调用方应 return）。
     /// 回调带代际/存活检查，断线重登后自动失效。
@@ -505,6 +534,17 @@ private:
     /// 各查询链在途请求 id（OnRspError 路由 + 响应关联；0 = 未在途）。
     int instrument_query_request_id_ = 0;
     int account_query_request_id_ = 0;
+    /// 运行期资金查询在途 request id（0 = 未在途；与登录链共用请求计数器）。
+    int runtime_account_request_id_ = 0;
+    /// 运行期资金查询 10s 超时定时器 id。
+    dztrader::core::TimerQueue::TimerId runtime_account_timeout_timer_id_ = 0;
+    /// lane 唤醒定时器 id（tag 去重，绝对时间）。
+    dztrader::core::TimerQueue::TimerId query_lane_timer_id_ = 0;
+    /// 运行期失败通知上次发出时刻（单调秒；-1 = 尚未发过）。
+    int64_t runtime_failure_notify_last_s_ = -1;
+    /// 测试注入（空 = 生产实现）。
+    QuerySendFn query_send_hook_;
+    QueryClockFn query_clock_;
 
     /// CTP 登录诊断字段 (open 时保存, 用于 ReqAuthenticate/ReqUserLogin)
     std::string broker_id_;

@@ -560,6 +560,12 @@ TEST(RouteQueryErrorTest, RoutesByInFlightQueryRequestId) {
     EXPECT_EQ(route_query_error(13, 11, 12, 13), QueryErrorTarget::TradingAccount);
 }
 
+TEST(RouteQueryErrorTest, RoutesRuntimeAccountRequestIdToTradingAccount) {
+    // 运行期资金刷新使用独立在途 id（与登录链共用 TradingAccount 目标，会话再按 id 区分）。
+    EXPECT_EQ(route_query_error(14, 11, 12, 13, 14), QueryErrorTarget::TradingAccount);
+    EXPECT_EQ(route_query_error(14, 11, 12, 13, 0), QueryErrorTarget::None);
+}
+
 TEST(RouteQueryErrorTest, UnmatchedRequestIdIsNone) {
     EXPECT_EQ(route_query_error(99, 11, 12, 13), QueryErrorTarget::None);
 }

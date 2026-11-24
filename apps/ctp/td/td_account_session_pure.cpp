@@ -132,7 +132,8 @@ void OrderRefMap::clear() noexcept {
 QueryErrorTarget route_query_error(int request_id,
                                    int instrument_request_id,
                                    int position_request_id,
-                                   int account_request_id) noexcept {
+                                   int account_request_id,
+                                   int runtime_account_request_id) noexcept {
     if (request_id <= 0) {
         return QueryErrorTarget::None;
     }
@@ -142,7 +143,7 @@ QueryErrorTarget route_query_error(int request_id,
     if (request_id == instrument_request_id) {
         return QueryErrorTarget::Instrument;
     }
-    if (request_id == account_request_id) {
+    if (request_id == account_request_id || request_id == runtime_account_request_id) {
         return QueryErrorTarget::TradingAccount;
     }
     return QueryErrorTarget::None;
