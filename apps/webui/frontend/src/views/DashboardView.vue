@@ -21,10 +21,17 @@ import {
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 
 const marketSourcesStore = useMarketSourcesStore()
 const positionsStore = useTdPositionsStore()
 const fundsStore = useTdTradingAccountsStore()
+const tdAccountsStore = useTdAccountsStore()
+
+// 账户展示名解析（ADR 0056 决策 9 / 契约 td-config §8）：持仓分组与资金行的账户列在模板里
+// 按 `account_id` 现查 `tdAccountsStore.displayName`（空则回落 id）。持仓/资金行来自 REST
+// 基线与 WS 增量，改名后不会重推，只有渲染时现查才能让历史行立刻显示新名字——不得缓存名字
+// 副本；过滤与业务键始终是 `account_id`（名字只用于展示）。
 
 // 行情面板：复用 store 的 sources，与行情源页面同步
 const marketOnlineCount = computed(
@@ -466,15 +473,19 @@ function onHSplitterDown(e: MouseEvent): void {
 // WS 连接/断开由 App.vue 全局管理，DashboardView 不再负责。
 // 持仓与资金两个面板消费交易数据：挂载即拉各自 REST 基线，卸载即停降级重试
 // （store 是单例，无视图时不该产生流量）。
+// 账户注册表同样在挂载时重拉：它是展示名的来源之一（配置镜像只覆盖在线网关的账户，
+// 资金行含离线账户，名字只能从注册表取；契约 rest §2.9.9）。
 onMounted(() => {
   void positionsStore.init()
   void fundsStore.init()
+  void tdAccountsStore.init()
 })
 
 onUnmounted(() => {
   onSplitterMouseUp()
   positionsStore.dispose()
   fundsStore.dispose()
+  tdAccountsStore.dispose()
 })
 </script>
 
@@ -548,12 +559,12 @@ onUnmounted(() => {
                         type="checkbox"
                         :checked="isPositionAccountSelected(account)"
                         :disabled="isLastPositionAccount(account)"
-                        :aria-label="`筛选持仓账户 ${account}`"
+                        :aria-label="`筛选持仓账户 ${tdAccountsStore.displayName(account)}`"
                         :title="isLastPositionAccount(account) ? '至少保留一个账户；要显示全部请用「全选」' : ''"
                         @change="togglePositionAccount(account)"
                       >
                       <span class="ds-check__box"></span>
-                      <span class="dashboard-pos-filter__label">{{ account }}</span>
+                      <span class="dashboard-pos-filter__label" :title="account">{{ tdAccountsStore.displayName(account) }}</span>
                     </label>
                   </div>
                 </div>
@@ -618,7 +629,7 @@ onUnmounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="group in visiblePositionGroups" :key="group.key">
+                <tr v-for="group in visiblePositionGroups" :key="group.key" :data-account-id="group.account_id">
                   <td class="frozen frozen-last cell-text dashboard-panel__cell-strong">{{ group.instrument_id }}</td>
                   <!-- 策略维度持仓归属尚未建立（策略记账在策略进程内）：保留列位置显示占位，
                        不拿账户净仓冒充策略净仓（契约 strategy §「策略逻辑持仓」）。 -->
@@ -630,7 +641,7 @@ onUnmounted(() => {
                     data-test="position-row-net"
                   >{{ netVolumeDisplay(group) }}</td>
                   <td class="cell-num cell-muted" title="策略维度持仓归属尚未建立">—</td>
-                  <td class="cell-text cell-text--secondary">{{ group.account_id }}</td>
+                  <td class="cell-text cell-text--secondary" :title="group.account_id">{{ tdAccountsStore.displayName(group.account_id) }}</td>
                   <td class="cell-num cell-muted" data-test="position-row-date">{{ formatTdDate(group.date) }}</td>
                   <td v-for="name in strategyNames" :key="name" class="cell-num strategy-col" title="策略维度持仓归属尚未建立">—</td>
                   <template v-if="showPositionDetail">
@@ -720,9 +731,10 @@ onUnmounted(() => {
                     v-for="row in fundsStore.rows"
                     :key="row.account_id"
                     data-test="fund-row"
+                    :data-account-id="row.account_id"
                     :title="row.has_data ? undefined : '该账户无资金记录'"
                   >
-                    <td class="frozen frozen-last cell-text dashboard-panel__cell-strong">{{ row.account_id }}</td>
+                    <td class="frozen frozen-last cell-text dashboard-panel__cell-strong" :title="row.account_id">{{ tdAccountsStore.displayName(row.account_id) }}</td>
                     <td class="cell-center">
                       <span
                         class="ds-tag dashboard-panel__tag"

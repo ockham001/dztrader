@@ -790,12 +790,10 @@ export interface TdCtpFrontend {
     enabled?: boolean
 }
 
-// CTP 账户级 ext（契约 td-config §2.3）。回报中 password 恒为 "****"；请求中缺失/空串/"****" 表示保留旧值（字段级 merge）
+// CTP 账户级 ext（契约 td-config §2.3）。回报中 password 恒为 "****"；请求中缺失/空串/"****" 表示保留旧值（字段级 merge）。CTP 的 UserID 与 InvestorID 都取通用层 account_id（ADR 0056），没有独立字段
 export interface TdCtpAccountExt {
     /** 经纪公司代码 */
     broker_id: string
-    /** 用户代码 */
-    user_id: string
     /** 登录密码；回报脱敏为 ****，请求中缺失/空串/**** 表示保留旧值 */
     password: string
     /** 产品信息，可空 */
@@ -818,8 +816,10 @@ export interface TdCtpProcessExt {
 
 // 交易账户配置（契约 td-config §2.2 通用层 + §2.3 接口类型 ext）：通用层字段缺失时按该节默认值，ext 由目标网关按接口类型校验
 export interface TdAccountConfig {
-    /** 账户标识，不可变 key，全局唯一（跨接口类型，ADR 0045） */
+    /** 账户标识（柜台真实投资者代码），不可变 key，全局唯一（跨接口类型，ADR 0045/ADR 0056） */
     account_id: string
+    /** 展示名，选填；留空 = 显示时回落 account_id（不做写入时规范化，ADR 0056）。纯展示字段，不参与路由、不进交易库 */
+    account_name?: string
     /** 是否启用，默认 true；禁用后连接请求被拒 */
     enabled?: boolean
     /** 账户级风控开关，默认 false */
@@ -840,10 +840,12 @@ export interface TdConfigPayload {
     ext: TdCtpProcessExt
 }
 
-// GET /api/td/accounts 的 accounts[] 条目（契约 rest §2.9.9 账户注册表条目）：gateway 是当前已知归属，enabled 来自最近一次配置帧的通用层
+// GET /api/td/accounts 的 accounts[] 条目（契约 rest §2.9.9 账户注册表条目）：gateway 是当前已知归属，enabled 来自最近一次配置帧的通用层，account_name 空串 = 未设置
 export interface TdConfigAccountList {
     /** 账户标识（全局唯一） */
     account_id: string
+    /** 展示名；空串 = 未设置（展示回落 account_id，不在服务端规范化） */
+    account_name: string
     /** 拥有该账户的交易网关进程名（dztd_*） */
     gateway: string
     /** 该账户当前是否启用；重启窗口内注册表恢复的条目回 true（已知降级） */

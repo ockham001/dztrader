@@ -120,8 +120,13 @@ export interface TdAddAccountBody {
  *
  * **不得包含 `account_id`**——路径是唯一来源，出现即 400（因此类型上就不给该字段）。
  * 允许空对象 `{}`（dzweb 转发前以路径值注入 `params.account_id`）。
+ *
+ * 改名走这里：`account_name` 是纯展示字段（ADR 0056），不要求账户 `Idle`，
+ * 任何会话状态下都可提交（契约 td-config §2.1 状态保护只作用于连接参数）。
  */
 export interface TdUpdateAccountBody {
+  /** 展示名（空串 = 清空并回落 account_id；ADR 0056 决策 3） */
+  account_name?: string
   enabled?: boolean
   risk_control_enabled?: boolean
   currency_id?: string

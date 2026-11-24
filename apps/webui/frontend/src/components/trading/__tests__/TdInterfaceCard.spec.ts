@@ -80,8 +80,10 @@ interface PrepareOptions {
   running?: boolean
   state?: ProcessState
   accounts?: string[]
+  /** 账户展示名（account_id → account_name；写入注册表条目，ADR 0056） */
+  accountNames?: Record<string, string>
   /** 额外注册表条目（用于唯一性冲突/跨网关场景） */
-  registryAccounts?: { account_id: string; gateway: string }[]
+  registryAccounts?: { account_id: string; account_name?: string; gateway: string }[]
 }
 
 /** 登记一个 dztd_* 进程 + 账户注册表，返回 store（卡片数据由 store.interfaces 派生） */
@@ -98,9 +100,14 @@ async function prepare(options: PrepareOptions = {}): Promise<TdAccountsStoreVie
     available: true,
     accounts: [
       ...(options.accounts ?? ['account_001']).map(accountId => ({
-        account_id: accountId, gateway: 'dztd_ctp', enabled: true,
+        account_id: accountId,
+        account_name: options.accountNames?.[accountId] ?? '',
+        gateway: 'dztd_ctp',
+        enabled: true,
       })),
-      ...(options.registryAccounts ?? []).map(entry => ({ enabled: true, ...entry })),
+      ...(options.registryAccounts ?? []).map(entry => ({
+        enabled: true, account_name: '', ...entry,
+      })),
     ],
   })
   const store = useTdAccountsStore()
@@ -140,9 +147,60 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(wrapper.find('[data-test="td-account-row-account_001"]').exists()).toBe(true)
 
     const headers = wrapper.findAll('th').map(th => th.text())
-    expect(headers).toEqual(['账户 ID', '启用', '连接状态', '交易日', '登录时间', '进度', '操作'])
+    expect(headers).toEqual(['账户名称', '启用', '连接状态', '交易日', '登录时间', '进度', '操作'])
     // 账户归属由卡片决定，表格不再有「交易网关」列
     expect(headers).not.toContain('交易网关')
+  })
+
+  it('账户表主显展示名、account_id 作副行小字；无名字时回落 id 且不重复副行（ADR 0056/#470 AC2/AC3）', async () => {
+    const store = await prepare({
+      accounts: ['account_001', 'account_002'],
+      accountNames: { account_001: '我的主账户' },
+    })
+    const { wrapper } = mountCard(store)
+
+    const row = wrapper.find('[data-test="td-account-row-account_001"]')
+    expect(row.find('[data-test="td-account-name"]').text()).toBe('我的主账户')
+    expect(row.find('[data-test="td-account-id"]').text()).toBe('account_001')
+    // 用户可见文案（aria/title）用展示名，测试钩子（data-test）保留 account_id
+    expect(row.find('[data-test="td-edit-account_001"]').attributes('aria-label')).toBe('编辑账户 我的主账户')
+    expect(row.find('[data-test="td-login-account_001"]').attributes('aria-label')).toBe('登录账户 我的主账户')
+
+    // 另一个无名字的账户：主显 = id，且不再渲染重复的副行
+    const second = wrapper.find('[data-test="td-account-row-account_002"]')
+    expect(second.find('[data-test="td-account-name"]').text()).toBe('account_002')
+    expect(second.find('[data-test="td-account-id"]').exists()).toBe(false)
+  })
+
+  it('改名经 td_rtn_config 到达后表格立即显示新名字（不缓存名字副本，ADR 0056 决策 9）', async () => {
+    const store = await prepare()
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '旧名字',
+        enabled: true,
+        ext: { broker_id: '9999', password: '****' },
+      }],
+      ext: {},
+    })
+    const { wrapper } = mountCard(store)
+    expect(wrapper.find('[data-test="td-account-name"]').text()).toBe('旧名字')
+
+    // 改名不广播 data_changed（契约 webui-ws §2.3 只覆盖账户集合增减），
+    // 生效信号是配置帧本身——解析层按 id 现查，因此同一行直接变新名字
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '新名字',
+        enabled: true,
+        ext: { broker_id: '9999', password: '****' },
+      }],
+      ext: {},
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-test="td-account-name"]').text()).toBe('新名字')
   })
 
   it('接口可零账户运行：显示卡片内空态提示，不渲染停止运行的表格', async () => {
@@ -159,7 +217,7 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
 
   it('细状态/交易日/登录时间/进度来自 td_rtn_status 与 progress；未上报显示占位', async () => {
     const store = await prepare({ accounts: ['account_001', 'account_002'] })
-    store.applyTdStatus('dztd_ctp:account_001', {
+    store.applyTdStatus('account_001', {
       account_id: 'account_001',
       state: 'Ready',
       date: '20260808',
@@ -170,7 +228,7 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
       progress_current: 10,
       ext: {},
     })
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 10, desc: '就绪' })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10, desc: '就绪' })
     const { wrapper } = mountCard(store)
 
     const ready = wrapper.find('[data-test="td-account-row-account_001"]')
@@ -380,9 +438,9 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(wrapper.find('.ds-dropdown').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(false)
 
-    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('account_new')
+    await wrapper.find('[data-test="td-form-account-id"]').setValue('account_new')
+    await wrapper.find('[data-test="td-form-account-name"]').setValue('主账户')
     await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
-    await wrapper.find('input[placeholder="user_id"]').setValue('00001')
     await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
     await flushPromises()
 
@@ -391,7 +449,11 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     expect(tdApi.addAccount).toHaveBeenCalledWith(expect.objectContaining({
       gateway: 'dztd_ctp',
-      account: expect.objectContaining({ account_id: 'account_new', enabled: true }),
+      account: expect.objectContaining({
+        account_id: 'account_new',
+        account_name: '主账户',
+        enabled: true,
+      }),
     }))
   })
 
@@ -415,7 +477,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
   it('会话控制双按钮（ADR 0051）：未登录仅登录可点，就绪仅登出可点；点击下发对应 REST', async () => {
     const store = await prepare()
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
     vi.mocked(tdApi.loginAccount).mockResolvedValue({ ok: true })
     vi.mocked(tdApi.logoutAccount).mockResolvedValue({ ok: true })
     const { wrapper } = mountCard(store)
@@ -429,7 +491,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     await flushPromises()
     expect(tdApi.loginAccount).toHaveBeenCalledWith('account_001')
 
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 10 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
     await flushPromises()
     await wrapper.setProps({ tdInterface: store.interfaces[0] })
     expect(wrapper.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeDefined()
@@ -457,7 +519,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
   it('progress 中间态（current < max）登出可点 = 强制中断，登录禁用（ADR 0051）', async () => {
     const store = await prepare()
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 2 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 2 })
     const { wrapper } = mountCard(store)
 
     expect(wrapper.find('[data-test="td-login-account_001"]').attributes('disabled')).toBeDefined()
@@ -483,9 +545,8 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
     await flushPromises()
-    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('account_new')
+    await wrapper.find('[data-test="td-form-account-id"]').setValue('account_new')
     await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
-    await wrapper.find('input[placeholder="user_id"]').setValue('00001')
     await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
     await flushPromises()
     await wrapper.find('[data-test="td-form-submit"]').trigger('click')
@@ -501,7 +562,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
     await flushPromises()
-    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('account_new')
+    await wrapper.find('[data-test="td-form-account-id"]').setValue('account_new')
     await flushPromises()
 
     expect(wrapper.find('[data-test="td-form-submit"]').attributes('disabled')).toBeDefined()
@@ -518,9 +579,8 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
     await flushPromises()
-    await wrapper.find('input[placeholder="账户唯一标识，全部交易接口间唯一"]').setValue('taken')
+    await wrapper.find('[data-test="td-form-account-id"]').setValue('taken')
     await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
-    await wrapper.find('input[placeholder="user_id"]').setValue('00001')
     await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
     await flushPromises()
     await wrapper.find('[data-test="td-form-submit"]').trigger('click')
@@ -535,13 +595,14 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
   it('编辑账户：UpdateAccount patch 不含 account_id，密码留空不提交（契约 td-config §2.1/§2.3）', async () => {
     const store = await prepare()
-    // 配置镜像提供 ext（密码恒脱敏），编辑表单据此回填 broker/user
+    // 配置镜像提供 ext（密码恒脱敏）与展示名，编辑表单据此回填
     store.applyTdConfig('dztd_ctp', {
       qry_min_interval_ms: 1100,
       accounts: [{
         account_id: 'account_001',
+        account_name: '主账户',
         enabled: true,
-        ext: { broker_id: '9999', user_id: 'u1', password: '****' },
+        ext: { broker_id: '9999', password: '****' },
       }],
       ext: {},
     })
@@ -553,6 +614,14 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     // 编辑态密码留空 = 不修改（占位说明），不把 **** 当密码回填
     expect(wrapper.find('input[placeholder="留空 = 不修改密码"]').exists()).toBe(true)
     expect((wrapper.find('input[placeholder="留空 = 不修改密码"]').element as HTMLInputElement).value).toBe('')
+    // 账户名称回填**原值**（不是回落 id）；账户 ID 只读且不可改
+    const nameInput = wrapper.find('[data-test="td-form-account-name"]')
+      .element as HTMLInputElement
+    expect(nameInput.value).toBe('主账户')
+    expect((wrapper.find('[data-test="td-form-account-id"]').element as HTMLInputElement).readOnly).toBe(true)
+
+    // 弹窗标题用展示名（用户可见文案不用裸 id）
+    expect(wrapper.find('.modal-stub').attributes('data-title')).toBe('编辑交易账户：主账户')
 
     await wrapper.find('[data-test="td-form-submit"]').trigger('click')
     await flushPromises()
@@ -561,8 +630,145 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     const [accountId, patch] = vi.mocked(tdApi.updateAccount).mock.calls[0]
     expect(accountId).toBe('account_001')
     expect(patch).not.toHaveProperty('account_id')
-    // 密码留空不得提交（避免把掩码/空串写成新密码）
-    expect(patch.ext).not.toHaveProperty('password')
+    // 改名走同一端点（ADR 0056 决策 3）；未改名时提交原值同样合法
+    expect(patch.account_name).toBe('主账户')
+    // 连接参数没变化 → patch 不带 ext：网关因此不会触发 Idle 状态保护
+    expect(patch).not.toHaveProperty('ext')
+  })
+
+  it('在线改名：patch 只带通用层字段、不带 ext（网关 requires_idle 只看 ext，ADR 0056 决策 3 / #470 AC4）', async () => {
+    const store = await prepare()
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '旧名字',
+        enabled: true,
+        ext: { broker_id: '9999', password: '****' },
+      }],
+      ext: {},
+    })
+    // 会话就绪态是常态（改名不要求账户 Idle）：progress 到 max = 已登录
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
+    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-edit-account_001"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-account-name"]').setValue('新的账户名')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    const [accountId, patch] = vi.mocked(tdApi.updateAccount).mock.calls[0]
+    expect(accountId).toBe('account_001')
+    expect(patch.account_name).toBe('新的账户名')
+    expect(patch).not.toHaveProperty('account_id')
+    // 关键：网关 requires_idle(UpdateAccount) 对「params 含非空 ext」才要求 Idle
+    //（apps/ctp/td/td_config.h）；纯改名 patch 不带 ext 才能在会话在线时被接受
+    expect(patch).not.toHaveProperty('ext')
+  })
+
+  it('连接参数变化才带 ext，且只带变化字段（未变化字段由网关字段级 merge 保留旧值）', async () => {
+    const store = await prepare()
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '主账户',
+        enabled: true,
+        ext: { broker_id: '9999', product_info: 'prod', password: '****' },
+      }],
+      ext: {},
+    })
+    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-edit-account_001"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('input[placeholder="broker_id"]').setValue('8888')
+    await wrapper.find('input[placeholder="留空 = 不修改密码"]').setValue('newpass')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    const [, patch] = vi.mocked(tdApi.updateAccount).mock.calls[0]
+    // 只下发真正变化的连接参数（broker_id 改了、密码填了）；product_info 未变不出现
+    expect(patch.ext).toEqual({ broker_id: '8888', password: 'newpass' })
+  })
+
+  it('账户名称留空提交 = 清空名字并回落 id（契约 td-config §2.1/§2.2）', async () => {
+    const store = await prepare()
+    store.applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{
+        account_id: 'account_001',
+        account_name: '主账户',
+        enabled: true,
+        ext: { broker_id: '9999', password: '****' },
+      }],
+      ext: {},
+    })
+    vi.mocked(tdApi.updateAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    await wrapper.find('[data-test="td-edit-account_001"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-account-name"]').setValue('')
+    await flushPromises()
+    await wrapper.find('[data-test="td-form-submit"]').trigger('click')
+    await flushPromises()
+
+    const [, patch] = vi.mocked(tdApi.updateAccount).mock.calls[0]
+    expect(patch.account_name).toBe('')
+  })
+
+  it('表单本地校验：account_id 字符集（空白 / 冒号）与长度、account_name 长度（契约 rest §2.9.7 预检 4）', async () => {
+    const store = await prepare({ accounts: [] })
+    const { wrapper } = mountCard(store)
+    await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
+    await flushPromises()
+
+    const idInput = wrapper.find('[data-test="td-form-account-id"]')
+    const nameInput = wrapper.find('[data-test="td-form-account-name"]')
+    const validation = () => wrapper.find('[data-test="td-form-validation"]')
+    const disabled = () => wrapper.find('[data-test="td-form-submit"]').attributes('disabled')
+
+    // 合法 ASCII 账户 ID + 中文名 → 仍因缺 broker_id 被拦（说明前两条没误报）
+    await idInput.setValue('00001')
+    await wrapper.find('input[placeholder="broker_id"]').setValue('9999')
+    await wrapper.find('input[placeholder="登录密码"]').setValue('secret')
+    await flushPromises()
+    expect(disabled()).toBeUndefined()
+
+    // 冒号是历史复合键分隔符，契约 §2.2 明确禁用
+    await idInput.setValue('000:01')
+    await flushPromises()
+    expect(validation().text()).toContain('账户 ID 只能使用可见 ASCII 字符')
+    expect(disabled()).toBeDefined()
+
+    // 空格同样非法
+    await idInput.setValue('000 01')
+    await flushPromises()
+    expect(validation().text()).toContain('账户 ID 只能使用可见 ASCII 字符')
+
+    // 超过 31 字节（32 个字符）
+    await idInput.setValue('a'.repeat(32))
+    await flushPromises()
+    expect(validation().text()).toContain('账户 ID 不能超过 31 字节')
+    expect(disabled()).toBeDefined()
+
+    // 中文账户名称按 UTF-8 字节计：64 字节 = 21 个汉字 + 1 个 ASCII 字节
+    await idInput.setValue('00001')
+    await nameInput.setValue('账'.repeat(22))
+    await flushPromises()
+    expect(validation().text()).toContain('账户名称不能超过 64 字节')
+    expect(disabled()).toBeDefined()
+
+    // 控制字符非法（契约 td-config §2.2）
+    await nameInput.setValue('主\t账户')
+    await flushPromises()
+    expect(validation().text()).toContain('账户名称不能包含控制字符')
   })
 
   it('非 admin：接口级按钮不渲染，账户写按钮禁用并给出原因', async () => {

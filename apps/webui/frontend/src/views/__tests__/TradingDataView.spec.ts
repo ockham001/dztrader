@@ -17,9 +17,10 @@ const stubs = {
   TradesTab: { template: '<div class="trades-tab-stub">成交面板</div>' },
 }
 
-// 统计条挂载即拉 REST 基线（#247）：mock 掉 API，避免真实 fetch
+// 统计条挂载即拉 REST 基线（#247）：mock 掉 API，避免真实 fetch。
+// 页面同时拉账户注册表（委托/成交账户列的展示名来源，ADR 0056 决策 9）。
 vi.mock('@/api/td', () => ({
-  tdApi: { getStats: vi.fn(), getOrders: vi.fn(), getTrades: vi.fn() },
+  tdApi: { getStats: vi.fn(), getOrders: vi.fn(), getTrades: vi.fn(), listAccounts: vi.fn() },
 }))
 
 /** 面板在当前 tab 下是否显示（v-show 以内联 display:none 隐藏） */
@@ -50,11 +51,20 @@ describe('TradingDataView（#246/#247/#248 交易数据页壳）', () => {
       online_accounts: ['acc_a'],
       stats: { total_orders: 1240, total_volume: 2480, unfilled_orders: 12, unfilled_volume: 21 },
     })
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] })
   })
   afterEach(() => {
     vi.useRealTimers()
     __resetTdStatsSchedulerForTests()
     __resetTdBatchSchedulerForTests()
+  })
+
+  it('挂载时拉账户注册表（委托/成交账户列的展示名来源之一，ADR 0056 决策 9）', async () => {
+    const wrapper = mount(TradingDataView, { global: { stubs } })
+    await flushPromises()
+
+    expect(tdApi.listAccounts).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 
   it('渲染页头「交易数据」与委托/成交两个 tab', () => {

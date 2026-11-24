@@ -4,8 +4,12 @@
  *
  * 为什么添加与编辑共用一个组件：两者字段集几乎相同，差别只有两处契约语义——
  * - **`account_id` 是不可变 key**（契约 td-config §2.1）：编辑时只读展示，不随请求提交；
+ *   它是**柜台真实账户号**（ADR 0056 决策 1：CTP 的 `InvestorID` 与 `UserID` 都取它）；
  * - **密码是「缺失/空串/`****` = 保留旧值」**（契约 td-config §2.3）：编辑时留空即不修改，
  *   占位提示 `****`（回报恒脱敏），前端**从不**回填明文（镜像里的 password 恒为 `"****"`）。
+ *
+ * 身份字段只有「账户 ID」+「账户名称」两个（`account_name` 选填、可中文、可改，ADR 0056
+ * 决策 3）：`ext.user_id`（旧「用户代码」）已删除——同一件事有两个名字正是 #467 要消灭的歧义。
  *
  * **所属交易接口由卡片传入（`gateway` prop）**，不再有网关下拉（ADR 0053 / #439）：
  * 账户是接口内部配置项，归属由所在卡片固定，用户没有"把账户配到别的接口"这个动作。
@@ -24,13 +28,14 @@ import type { TdAccountRow } from '@/stores/tdAccounts'
 
 export interface TdAccountFormValue {
   account_id: string
+  /** 展示名（选填；空串 = 未设置，界面回落 account_id，ADR 0056 决策 3） */
+  account_name: string
   gateway: string
   enabled: boolean
   risk_control_enabled: boolean
   currency_id: string
-  /** CTP ext（契约 td-config §2.3） */
+  /** CTP ext（契约 td-config §2.3）；CTP 的 UserID/InvestorID 都取 account_id，无独立字段（ADR 0056） */
   broker_id: string
-  user_id: string
   /** 空串 = 不修改（编辑）/ 未填（添加）；永远不会是 `****`（那表示保留旧值） */
   password: string
   product_info: string
@@ -43,6 +48,8 @@ const props = defineProps<{
   open: boolean
   /** null = 添加；非 null = 编辑该行 */
   editing: TdAccountRow | null
+  /** 编辑行的展示名**原值**（未设置 = 空串，不回落 id；由父组件经 store.accountName 取） */
+  editingAccountName?: string
   /** 所属交易接口进程名（所在卡片固定；不可在表单内修改） */
   gateway: string
   /** 提交中（按钮 spinner + 禁用） */
@@ -64,12 +71,12 @@ const fieldId = useFieldId()
 function emptyForm(gateway: string): TdAccountFormValue {
   return {
     account_id: '',
+    account_name: '',
     gateway,
     enabled: true,
     risk_control_enabled: false,
     currency_id: 'CNY',
     broker_id: '',
-    user_id: '',
     password: '',
     product_info: '',
     frontends: [],
@@ -85,6 +92,9 @@ const form = ref<TdAccountFormValue>(emptyForm(''))
  *
  * 密码**不回填**：配置镜像的 `ext.password` 恒为 `"****"`（契约 td-config §2.3/§4 脱敏），
  * 回填它只会诱导用户把掩码当密码提交；留空并在占位里说明「留空 = 不修改」。
+ *
+ * `account_name` 取父组件传入的**原值**（不是回落 id 的展示名）：留空 = 未设置，回填 id
+ * 会让一次无意保存把「没起名字」变成「名字 = id」。
  */
 function formFromRow(row: TdAccountRow): TdAccountFormValue {
   const base = emptyForm(row.gateway)
@@ -93,11 +103,11 @@ function formFromRow(row: TdAccountRow): TdAccountFormValue {
   return {
     ...base,
     account_id: row.account_id,
+    account_name: props.editingAccountName ?? '',
     enabled: config?.enabled ?? row.enabled,
     risk_control_enabled: config?.risk_control_enabled ?? row.riskControlEnabled,
     currency_id: config?.currency_id ?? row.currencyId,
     broker_id: ext?.broker_id ?? '',
-    user_id: ext?.user_id ?? '',
     password: '',
     product_info: ext?.product_info ?? '',
     frontends: (ext?.frontends ?? []).map(fe => ({
@@ -121,6 +131,17 @@ watch(() => [props.open, props.editing], () => {
 }, { immediate: true })
 
 const isEditing = computed(() => props.editing !== null)
+
+/**
+ * 编辑弹窗标题里的账户标识：优先展示名（原值 trim），未设置回落账户 ID（ADR 0056 决策 3）。
+ * 标题用**已保存的**名字（`editingAccountName`），不跟表单输入实时变化，避免打字时标题抖动。
+ */
+const editingTitle = computed(() => {
+  const editing = props.editing
+  if (editing === null) return ''
+  const name = (props.editingAccountName ?? '').trim()
+  return name === '' ? editing.account_id : name
+})
 const isCtp = computed(() => {
   const gateway = form.value.gateway
   if (!gateway.startsWith('dztd_')) return false
@@ -129,20 +150,61 @@ const isCtp = computed(() => {
   return (underscore < 0 ? tail : tail.slice(0, underscore)) === 'ctp'
 })
 
-/** account_id 长度上限：`DzAccountId` 容量 31 字节（契约 rest §2.9.7 预检 4） */
+/** account_id 长度上限：`DzAccountId` 容量 31 字节（契约 rest §2.9.7 预检 4 / ADR 0056 决策 6） */
 const ACCOUNT_ID_MAX_BYTES = 31
+/** account_name trim 后字节上限（契约 td-config §2.2 / §7） */
+const ACCOUNT_NAME_MAX_BYTES = 64
+/** account_id 字符集：ASCII 可见字符 `0x21`–`0x7E`，且不含 `:`（契约 td-config §2.2 / §7） */
+const ACCOUNT_ID_CHARSET = /^[\x21-\x39\x3B-\x7E]*$/
+/** UTF-8 字节数：长度上限是**字节**不是字符（中文名 3 字节/字），必须按字节拦 */
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).length
+}
 
-const accountIdBytes = computed<number>(() => new TextEncoder().encode(form.value.account_id.trim()).length)
+/**
+ * 是否含控制字符（契约 td-config §2.2）：ASCII < 0x20（含 `\t\r\n`）、DEL 0x7F、
+ * C1 段 U+0080–U+009F。按码点判而不写控制字符正则：后者在 eslint 的 `no-control-regex`
+ * 下必须豁免，且逐段写清楚「哪些码点非法」比正则更贴近契约原文。
+ */
+function hasControlChars(text: string): boolean {
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) return true
+  }
+  return false
+}
+
+/** `account_id` 按 trim 后校验（服务端以路径/配置值为准，提交时也 trim） */
+const accountIdTrimmed = computed(() => form.value.account_id.trim())
+const accountIdBytes = computed<number>(() => utf8Bytes(accountIdTrimmed.value))
 const accountIdTooLong = computed(() => accountIdBytes.value > ACCOUNT_ID_MAX_BYTES)
-const accountIdEmpty = computed(() => form.value.account_id.trim() === '')
+const accountIdEmpty = computed(() => accountIdTrimmed.value === '')
+const accountIdCharsetInvalid = computed(() => !ACCOUNT_ID_CHARSET.test(accountIdTrimmed.value))
 
-/** 表单本地校验（提交前置；服务端仍是权威校验点） */
+/**
+ * `account_name` 按 trim 后校验（契约 §2.2「trim 后 ≤64 字节、无控制字符」）：
+ * trim 掉的 ASCII 空白里虽有控制字符（`\t\r\n`），但服务端也是 trim 后判定，口径保持一致。
+ */
+const accountNameTrimmed = computed(() => form.value.account_name.trim())
+const accountNameBytes = computed<number>(() => utf8Bytes(accountNameTrimmed.value))
+const accountNameTooLong = computed(() => accountNameBytes.value > ACCOUNT_NAME_MAX_BYTES)
+const accountNameControlChar = computed(() => hasControlChars(accountNameTrimmed.value))
+
+/**
+ * 表单本地校验（提交前置；服务端仍是权威校验点）。
+ *
+ * 这里只挡**字段自身**可判定的错误（契约 rest §2.9.7 预检 4 的通用层规则）：字符集与长度。
+ * 跨账户唯一性（`account_exists` / `account_name_exists`）、进程名冲突、NFC 规范化后的比较
+ * 都在服务端裁决——前端不重复实现一套可能漂移的规则。
+ */
 const validationText = computed<string>(() => {
   if (!isEditing.value && accountIdEmpty.value) return '账户 ID 不能为空'
+  if (accountIdCharsetInvalid.value) return '账户 ID 只能使用可见 ASCII 字符（不含空格与「:」）'
   if (accountIdTooLong.value) return `账户 ID 不能超过 ${ACCOUNT_ID_MAX_BYTES} 字节（当前 ${accountIdBytes.value}）`
+  if (accountNameControlChar.value) return '账户名称不能包含控制字符'
+  if (accountNameTooLong.value) return `账户名称不能超过 ${ACCOUNT_NAME_MAX_BYTES} 字节（当前 ${accountNameBytes.value}）`
   if (isCtp.value) {
     if (form.value.broker_id.trim() === '') return 'CTP 经纪公司代码（broker_id）不能为空'
-    if (form.value.user_id.trim() === '') return 'CTP 用户代码（user_id）不能为空'
     // 密码必填只在添加态：编辑态留空 = 保留旧值（契约 td-config §2.3）
     if (!isEditing.value && form.value.password === '') return 'CTP 登录密码不能为空'
   }
@@ -154,12 +216,13 @@ const canSubmit = computed(() => validationText.value === '' && !props.submittin
 function submit(): void {
   if (!canSubmit.value) return
   const raw = form.value
-  // 规范化：字符串去首尾空白；未启用的空地址前置丢弃（契约 td-config §7：address 非空才注册）
+  // 规范化：字符串去首尾空白；未启用的空地址前置丢弃（契约 td-config §7：address 非空才注册）。
+  // `account_name` 的 trim 只是表单收集口径，唯一性比较的 NFC 规范化仍在服务端。
   emit('submit', {
     ...raw,
     account_id: raw.account_id.trim(),
+    account_name: raw.account_name.trim(),
     broker_id: raw.broker_id.trim(),
-    user_id: raw.user_id.trim(),
     product_info: raw.product_info.trim(),
     auth_code: raw.auth_code.trim(),
     app_id: raw.app_id.trim(),
@@ -188,7 +251,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
 <template>
   <Modal
     :open="open"
-    :title="isEditing ? `编辑交易账户：${form.account_id}` : '添加交易账户'"
+    :title="isEditing ? `编辑交易账户：${editingTitle}` : '添加交易账户'"
     @close="emit('close')"
   >
     <div class="td-form dialog-form">
@@ -205,15 +268,43 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
             :id="fieldId('account-id')"
             v-model="form.account_id"
             type="text"
+            data-test="td-form-account-id"
             :readonly="isEditing"
-            :placeholder="isEditing ? '' : '账户唯一标识，全部交易接口间唯一'"
+            :placeholder="isEditing ? '' : '柜台真实账户号（创建后不可修改）'"
             autocomplete="off"
           >
         </div>
-        <span class="dialog-field__hint" :class="{ 'td-form__hint--warn': accountIdTooLong }">
-          <template v-if="isEditing">账户 ID 是不可变标识，不可修改</template>
-          <template v-else>全部交易接口间唯一（含已禁用/离线账户），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节</template>
-          <template v-if="!isEditing"> · 当前 {{ accountIdBytes }}/{{ ACCOUNT_ID_MAX_BYTES }}</template>
+        <span
+          class="dialog-field__hint"
+          :class="{ 'td-form__hint--warn': accountIdTooLong || accountIdCharsetInvalid }"
+        >
+          <template v-if="isEditing">账户 ID 是柜台真实账户号，创建后不可修改</template>
+          <template v-else>
+            柜台真实账户号，创建后不可修改；全平台唯一，仅限可见 ASCII 字符（不含空格与「:」），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节
+            · 当前 {{ accountIdBytes }}/{{ ACCOUNT_ID_MAX_BYTES }}
+          </template>
+          <template v-if="isCtp">；CTP 账户号另有 12 字节上限（超限由网关报错，平台不会截断）</template>
+        </span>
+      </div>
+
+      <div class="dialog-field">
+        <label class="dialog-field__label" :for="fieldId('account-name')">账户名称</label>
+        <div class="ds-input">
+          <input
+            :id="fieldId('account-name')"
+            v-model="form.account_name"
+            type="text"
+            data-test="td-form-account-name"
+            placeholder="选填，例如：主账户"
+            autocomplete="off"
+          >
+        </div>
+        <span
+          class="dialog-field__hint"
+          :class="{ 'td-form__hint--warn': accountNameTooLong || accountNameControlChar }"
+        >
+          留空则显示账户 ID；可中文；全平台唯一（与账户 ID 及其它账户名称不冲突）；可随时修改
+          · 当前 {{ accountNameBytes }}/{{ ACCOUNT_NAME_MAX_BYTES }} 字节
         </span>
       </div>
 
@@ -236,19 +327,13 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
       <template v-if="isCtp">
         <div class="td-form__section-title">CTP 连接参数</div>
 
-        <div class="td-form__grid">
-          <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-broker-id')">经纪公司代码</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-broker-id')" v-model="form.broker_id" type="text" placeholder="broker_id" autocomplete="off">
-            </div>
+        <!-- 账户 ID 已承载 CTP 的 UserID/InvestorID（ADR 0056 决策 2），不再有「用户代码」字段 -->
+        <div class="dialog-field">
+          <label class="dialog-field__label" :for="fieldId('ctp-broker-id')">经纪公司代码</label>
+          <div class="ds-input">
+            <input :id="fieldId('ctp-broker-id')" v-model="form.broker_id" type="text" placeholder="broker_id" autocomplete="off">
           </div>
-          <div class="dialog-field">
-            <label class="dialog-field__label" :for="fieldId('ctp-user-id')">用户代码</label>
-            <div class="ds-input">
-              <input :id="fieldId('ctp-user-id')" v-model="form.user_id" type="text" placeholder="user_id" autocomplete="off">
-            </div>
-          </div>
+          <span class="dialog-field__hint">CTP 的登录账号与投资者代码都取上面的「账户 ID」，无需另填</span>
         </div>
 
         <div class="dialog-field">

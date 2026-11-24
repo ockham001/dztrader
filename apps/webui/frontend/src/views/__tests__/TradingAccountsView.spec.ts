@@ -86,10 +86,12 @@ function registerGateway(
   })
 }
 
-function mockRegistry(accounts: { account_id: string; gateway: string; enabled?: boolean }[]): void {
+function mockRegistry(
+  accounts: { account_id: string; account_name?: string; gateway: string; enabled?: boolean }[],
+): void {
   vi.mocked(tdApi.listAccounts).mockResolvedValue({
     available: true,
-    accounts: accounts.map(account => ({ enabled: true, ...account })),
+    accounts: accounts.map(account => ({ enabled: true, account_name: '', ...account })),
   })
 }
 
@@ -172,7 +174,7 @@ describe('TradingAccountsView · 空态与卡片渲染（ADR 0053 / 契约 rest 
       accounts: [{
         account_id: 'account_001',
         enabled: true,
-        ext: { broker_id: '9999', user_id: 'u1', password: '****' },
+        ext: { broker_id: '9999', password: '****' },
       }],
       ext: {},
     })

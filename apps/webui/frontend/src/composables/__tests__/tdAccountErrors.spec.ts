@@ -10,14 +10,18 @@ import {
 } from '../tdAccountErrors'
 
 /**
- * 交易账户写端点失败码 → 中文文案（#251；契约 rest §2.9.7）。
+ * 交易账户写端点失败码 → 中文文案（#251/#470；契约 rest §2.9.7）。
  *
  * 口径与 loginErrors 一致：`code` 是唯一分支依据，`error`（英文人类可读消息）不回显。
- * 这里固定三件事：五码全映射、码间文案互不重复、未知码/无码回落且绝不回显 snake_case。
+ * 这里固定三件事：全部预检码有映射、码间文案互不重复、未知码/无码回落且绝不回显 snake_case。
  */
 describe('tdAccountErrors（契约 rest §2.9.7 预检 code 全集）', () => {
-  it('五个预检码全部有中文文案，且文案互不相同', () => {
-    const codes = ['admin_required', 'invalid_gateway', 'gateway_not_running', 'account_exists', 'account_not_found'] as const
+  it('全部预检码有中文文案，且文案互不相同', () => {
+    const codes = [
+      'admin_required', 'invalid_gateway', 'gateway_not_running',
+      'invalid_account_id', 'invalid_account_name',
+      'account_exists', 'account_name_exists', 'account_not_found',
+    ] as const
     const texts = codes.map(code => TD_ACCOUNT_ERROR_TEXT[code])
     for (const [index, text] of texts.entries()) {
       expect(text, `${codes[index]} 缺文案`).toBeTruthy()
@@ -33,6 +37,22 @@ describe('tdAccountErrors（契约 rest §2.9.7 预检 code 全集）', () => {
     expect(tdAccountErrorText('gateway_not_running')).toContain('未运行')
     expect(tdAccountErrorText('invalid_gateway')).toContain('交易接口')
     expect(tdAccountErrorText('admin_required')).toContain('管理员')
+  })
+
+  it('account_name 两码文案指向「名称」而不是「ID」（用户才知道该改哪个字段，#470 AC5）', () => {
+    expect(tdAccountErrorText('account_name_exists')).toContain('账户名称')
+    expect(tdAccountErrorText('account_name_exists')).toContain('已被占用')
+    // 与 account_exists 是两类冲突（id 撞 id vs name 撞 id/name），文案必须可区分
+    expect(tdAccountErrorText('account_name_exists')).not.toBe(TD_ACCOUNT_ERROR_TEXT.account_exists)
+    expect(tdAccountErrorText('invalid_account_name')).toContain('账户名称')
+    expect(tdAccountErrorText('invalid_account_name')).toContain('64 字节')
+  })
+
+  it('invalid_account_id 文案带上契约 §2.9.7 预检 4 的三条硬约束（用户可自查）', () => {
+    const text = tdAccountErrorText('invalid_account_id')
+    expect(text).toContain('账户 ID')
+    expect(text).toContain('31 字节')
+    expect(text).toContain(':')
   })
 
   it('未知码 / 非字符串 / 缺失 → 兜底文案，绝不回显 code 本身', () => {

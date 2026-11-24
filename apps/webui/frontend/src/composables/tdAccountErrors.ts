@@ -5,12 +5,15 @@
 // `error` 是英文人类可读消息（排障用），`code` 是机器码、也是前端**唯一**的分支依据
 // （不解析 `error` 文本，也**不回显**英文消息给用户——与登录页 loginErrors.ts 同一口径）。
 //
-// code 全集（契约 rest §2.9.7 预检 1–5，与 HTTP 状态无关地按 code 映射，避免状态码与语义漂移）：
-//   admin_required       403  非 admin 角色
-//   invalid_gateway      400  目标网关不是已注册的 dztd_* 进程
-//   gateway_not_running  409  目标网关当前不是 Running
-//   account_exists       409  account_id 已在注册表（任何网关，含已禁用/离线）
-//   account_not_found    404  注册表无该 account_id（PUT/DELETE）
+// code 全集（契约 rest §2.9.7 预检 1–6，与 HTTP 状态无关地按 code 映射，避免状态码与语义漂移）：
+//   admin_required        403  非 admin 角色
+//   invalid_gateway       400  目标网关不是已注册的 dztd_* 进程
+//   gateway_not_running   409  目标网关当前不是 Running
+//   invalid_account_id    400  account_id 非法（空 / > 31 字节 / 字符集 / 与进程名冲突）
+//   invalid_account_name  400  account_name 非法（trim 后 > 64 字节 / 控制字符）
+//   account_exists        409  account_id 已在注册表（任何网关，含已禁用/离线）
+//   account_name_exists   409  account_name 与既有账户的 id 或 name 冲突（展平判定，ADR 0056）
+//   account_not_found     404  注册表无该 account_id（PUT/DELETE）
 //
 // 为什么本模块是 composable 目录下的独立模块：账户配置页与 store 的失败提示必须同源，
 // 与 `loginErrors.ts` / `marketSourceView.ts` 等既有跨 store 文案模块保持同一组织方式。
@@ -19,7 +22,10 @@ export type TdAccountErrorCode =
   | 'admin_required'
   | 'invalid_gateway'
   | 'gateway_not_running'
+  | 'invalid_account_id'
+  | 'invalid_account_name'
   | 'account_exists'
+  | 'account_name_exists'
   | 'account_not_found'
 
 /** 机器码 → 中文文案（契约 rest §2.9.7） */
@@ -27,7 +33,10 @@ export const TD_ACCOUNT_ERROR_TEXT: Record<TdAccountErrorCode, string> = {
   admin_required: '需要管理员权限才能修改交易账户',
   invalid_gateway: '目标交易接口不存在或未注册',
   gateway_not_running: '目标交易接口未运行，请先启动进程',
+  invalid_account_id: '账户 ID 不合法：仅限可见 ASCII 字符（不含空格与「:」），最多 31 字节，且不能与已有进程名相同',
+  invalid_account_name: '账户名称不合法：最多 64 字节，且不能包含控制字符',
   account_exists: '该账户 ID 已被占用（可能属于其它交易接口），请换一个账户 ID',
+  account_name_exists: '该账户名称已被占用（与其它账户的账户 ID 或账户名称冲突），请换一个名称',
   account_not_found: '账户不存在（可能已被删除或未同步），请刷新后重试',
 }
 

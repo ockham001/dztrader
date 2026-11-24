@@ -9,13 +9,25 @@
  * 统计条（#247，契约 rest §2.9.5）放在 tab 栏**上方**：统计是整页口径（不随 tab 切换），
  * 且与 tab 无关，放在 tab 上方才能一眼看到。StatsBar 自行 init/dispose（与两个列表 tab 同型）。
  */
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import OrdersTab from '@/components/trading/OrdersTab.vue'
 import StatsBar from '@/components/trading/StatsBar.vue'
 import TradesTab from '@/components/trading/TradesTab.vue'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 
 /** 当前 tab（委托默认，design §4.1） */
 const tab = ref<'orders' | 'trades'>('orders')
+
+/**
+ * 账户注册表（展示名来源之一，ADR 0056 决策 9）：委托/成交的账户列与筛选面板按
+ * `account_id` 现查 `account_name`。配置镜像（WS `td_rtn_config`）覆盖在线网关的账户；
+ * 历史行可能属于已停机的网关，名字只剩注册表能提供，因此页面挂载时重拉一次。
+ * 页面间共用同一 store 实例，卸载即停自愈重试（与交易账户页同型）。
+ */
+const tdAccounts = useTdAccountsStore()
+
+onMounted(() => { void tdAccounts.init() })
+onBeforeUnmount(() => { tdAccounts.dispose() })
 </script>
 
 <template>

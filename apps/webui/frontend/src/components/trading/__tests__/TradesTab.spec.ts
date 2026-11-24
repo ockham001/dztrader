@@ -8,6 +8,7 @@ import {
   __resetTdBatchSchedulerForTests,
   useTdTradesStore,
 } from '@/stores/tdTrades'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 import { tdApi } from '@/api/td'
 import type { TdTradeRow } from '@/types/api'
 
@@ -121,6 +122,30 @@ describe('TradesTab 渲染与交互（#248 契约 rest §2.9 / webui-ws §5）',
     expect(text).toContain('3512.3')    // price_decimals=1
     expect(text).toContain('10231')     // order_id
     expect(text).toContain('stg_demo')
+    wrapper.unmount()
+  })
+
+  it('账户列与筛选面板显示 account_name，id 保留在 title；过滤参数仍是 id（ADR 0056/#470 AC3）', async () => {
+    useTdAccountsStore().applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{ account_id: 'acc_a', account_name: '主账户', enabled: true, ext: { broker_id: '9999', password: '****' } }],
+      ext: {},
+    })
+    vi.mocked(tdApi.getTrades).mockResolvedValue(listResponse([trade()], { online_accounts: ['acc_a', 'acc_b'] }))
+    const wrapper = mount(TradesTab)
+    await flushPromises()
+
+    const accountCell = wrapper.find('.stub-row .td-trade__col--account')
+    expect(accountCell.text()).toBe('主账户')
+    expect(accountCell.attributes('title')).toBe('acc_a')
+
+    await wrapper.find('[aria-controls="td-trade-account-filter"]').trigger('click')
+    const labels = wrapper.findAll('.td-trades__filter-label').map(node => node.text())
+    expect(labels).toContain('主账户')
+    expect(labels).toContain('acc_b')
+    const boxes = wrapper.findAll('[data-test="td-trade-account-filter"] input[type="checkbox"]')
+    expect(boxes[0].attributes('aria-label')).toBe('筛选账户 主账户')
+    expect(boxes[0].attributes('title')).toBe('acc_a')
     wrapper.unmount()
   })
 

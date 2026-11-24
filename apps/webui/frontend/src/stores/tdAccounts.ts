@@ -42,12 +42,17 @@ import type { ProgressView } from '@/stores/progress'
  * - **配置细节 = 配置镜像**（WS `td_rtn_config`，契约 td-config §4/§8）：按网关全量覆盖
  *   （`configs[gateway]`）。提供 `ext`（密码恒为 `"****"`）、`risk_control_enabled`、
  *   `currency_id` 与三个查询间隔——注册表不携带这些字段。
- * - **细状态 = 状态镜像**（WS `td_rtn_status`，契约 td-status §3）：按 `网关名:账户ID` 全量覆盖。
- *   登录态/交易日/登录时间只从它取，**不从 `td_rtn_config` 推导**（契约 rest §4 前端义务）。
+ * - **细状态 = 状态镜像**（WS `td_rtn_status`，契约 td-status §3）：按 `instance_id` = **账户 ID**
+ *   全量覆盖。登录态/交易日/登录时间只从它取，**不从 `td_rtn_config` 推导**（契约 rest §4 前端义务）。
+ * - **展示名 = 解析层**（ADR 0056 决策 9、契约 td-config §8）：`account_id → account_name`
+ *   由注册表 + 配置镜像合并而来（{@link displayName}），所有展示位（账户表、委托/成交/持仓/
+ *   资金、筛选器、toast/aria）在渲染时按 id 现查，**不缓存名字副本**——改名经
+ *   `td_rtn_config` 到达即全站生效（含历史行）；解析不到回落 `account_id`。
+ *   名字是纯展示字段，**不用于任何路由或过滤**（过滤参数始终是 `account_id`）。
  *
  * 为什么进度不取 `td_rtn_status` 的 `progress_*`：契约 td-status §2.1 明示前端进度展示以
  * 契约 progress 为**唯一入口**（`td_rtn_status` 携带进度是历史兼容）。这里读 `progress` 镜像，
- * key = `网关名:账户ID`（与 `td_rtn_status` 的 instance_id 同形）。
+ * key = 账户 ID（ADR 0056 决策 7：账户级帧 `instance_id` 就是账户 ID，不再是复合键）。
  *
  * pending 语义（契约 webui-ws §5 第 1/2 条 + 契约 td-config §4「回报先于/等于前端生效信号」）：
  * - key = `td:{gateway}:{account}:{op}`（op ∈ add/update/remove/toggle_enabled）；
@@ -208,7 +213,7 @@ export interface TdAccountRow {
   config: TdAccountConfig | null
   /** 账户级细状态（WS td_rtn_status）；未到达为 null */
   status: TdStatusPayload | null
-  /** 进度（契约 progress，instance_id = 网关:账户）；未到达为 null */
+  /** 进度（契约 progress；账户级 `instance_id` = 账户 ID）；未到达为 null */
   progress: ProgressView | null
   /** 网关进程是否 Running（进程镜像）；镜像未到达为 false（页面据此提示先启动网关） */
   gatewayRunning: boolean
@@ -278,7 +283,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // === WS 镜像 ===
   /** 交易网关配置镜像（key = 网关进程名；契约 td-config §4 全量覆盖） */
   const configs = ref<Record<string, TdConfigPayload>>({})
-  /** 账户级细状态镜像（key = 网关名:账户ID；契约 td-status §3 全量覆盖） */
+  /** 账户级细状态镜像（key = 账户 ID = 帧头 instance_id；契约 td-status §3 全量覆盖） */
   const statuses = ref<Record<string, TdStatusPayload>>({})
 
   // === 内部状态（非响应式）===
@@ -314,6 +319,63 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       if (config.accounts?.some(a => a.account_id === accountId)) return gateway
     }
     return null
+  }
+
+  // === 展示名解析层（ADR 0056 决策 9；契约 td-config §8；契约 rest §2.9.9）===
+
+  /**
+   * `account_id → account_name` 解析源（纯展示，**不参与任何路由/过滤**，契约 td-config §8）。
+   *
+   * 两个来源、合并顺序有讲究：
+   * 1. **注册表**（REST `GET /api/td/accounts`）：跨网关全集；账户被删除后条目随之消失，
+   *    历史委托/成交行于是解析不到名字 → 回落 `account_id`（ADR 0056 Consequences）；
+   * 2. **配置镜像**（WS `td_rtn_config`）**覆盖**注册表：改名只经该帧到达，dzweb 的注册表
+   *    重拉要等 `data_changed{scope:"td"}`（账户集合**增减**才广播，改名不触发），因此
+   *    以前者为准才能做到「改名立刻全站生效（含历史行）」。
+   *
+   * 覆盖是**整值覆盖**（含空串）：配置帧是整网关全量真相，帧里名字为空 = 清空名字，
+   * 必须把注册表里的旧名一并覆盖掉——只写非空值会让「清空」变成「沿用旧名」。
+   * 空串 = 未设置（ADR 0056 决策 3「不做写入时规范化」），由 {@link displayName} 回落 id。
+   */
+  const accountNames = computed<Map<string, string>>(() => {
+    const names = new Map<string, string>()
+    for (const entry of registry.value) {
+      if (typeof entry.account_name === 'string') {
+        names.set(entry.account_id, entry.account_name)
+      }
+    }
+    for (const config of Object.values(configs.value)) {
+      for (const account of config.accounts ?? []) {
+        if (!account || typeof account.account_id !== 'string') continue
+        // 缺字段与空串同义（未设置）：配置帧是该网关的全量真相，必须覆盖注册表旧值
+        names.set(
+          account.account_id,
+          typeof account.account_name === 'string' ? account.account_name : '',
+        )
+      }
+    }
+    return names
+  })
+
+  /**
+   * 账户展示名原值（编辑表单回填用；未设置 = 空串，**不**回落 `account_id`）。
+   * 表单必须能区分「没起名字」与「名字恰好等于 id」，否则一次无意保存会把后者抹掉。
+   */
+  function accountName(accountId: string): string {
+    return accountNames.value.get(accountId) ?? ''
+  }
+
+  /**
+   * 账户展示名（所有展示位的唯一入口，契约 rest §2.9.9「账户显示名的唯一来源」+ 配置镜像）：
+   * 有名字显示名字（去首尾空白；全空白按未设置处理），否则回落 `account_id`。
+   *
+   * 为什么在渲染时按 id 解析，而不是把名字写进行/事件里：历史行（委托/成交/持仓/资金）来自
+   * REST 基线或交易库，改名后不会重推；只有「按 id 现查」才能让它们立刻显示新名字
+   * （ADR 0056 决策 9「改名立刻全站生效（含历史行）」）。**任何行都不得缓存名字副本**。
+   */
+  function displayName(accountId: string): string {
+    const name = accountName(accountId).trim()
+    return name === '' ? accountId : name
   }
 
   /**
@@ -379,18 +441,17 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       }
     }
 
-    // 3) 状态镜像（key = 网关名:账户ID）+ 进度镜像（同 key，契约 progress 为进度唯一入口）
-    for (const [instanceId, status] of Object.entries(statuses.value)) {
-      const separator = instanceId.indexOf(':')
-      if (separator <= 0) continue
-      const row = merged.get(instanceId.slice(separator + 1))
+    // 3) 状态镜像（key = 账户 ID）+ 进度镜像（同 key，契约 progress 为进度唯一入口）：
+    //    账户级帧的 instance_id 就是账户 ID（ADR 0056 决策 7），直接按 id 关联行，无需拆键。
+    //    进度镜像里同时有**进程级**条目（key = 进程名，如 dztd_ctp / dzmd_ctp / dztraderd）：
+    //    它们不在账户骨架里，`merged.get` 查不到自然跳过，不会串到账户行上。
+    for (const [accountId, status] of Object.entries(statuses.value)) {
+      const row = merged.get(accountId)
       if (!row) continue  // 状态镜像里的账户不在注册表/配置镜像中：等配置帧到达，不自造行
       row.status = status
     }
-    for (const [instanceId, progress] of Object.entries(progressStore.progress)) {
-      const separator = instanceId.indexOf(':')
-      if (separator <= 0) continue
-      const row = merged.get(instanceId.slice(separator + 1))
+    for (const [accountId, progress] of Object.entries(progressStore.progress)) {
+      const row = merged.get(accountId)
       if (!row) continue
       row.progress = progress
     }
@@ -493,7 +554,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
 
   // === 会话 pending 清除（契约 td-connection 前端义务 2 / 契约 progress 网关会话进度骨架） ===
 
-  /** instance_id（`网关名:账户ID`）→ 上一次 `current`：判定"进度回退 = 一次尝试失败/中止" */
+  /** 账户 ID（账户级 progress 的 instance_id）→ 上一次 `current`：判定"进度回退 = 一次尝试失败/中止" */
   const lastSessionCurrent = new Map<string, number>()
 
   function clearSessionPending(gateway: string, accountId: string, op: TdSessionOp): void {
@@ -509,11 +570,10 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     () => progressStore.progress,
     (progress) => {
       for (const [instanceId, p] of Object.entries(progress)) {
-        const separator = instanceId.indexOf(':')
-        if (separator <= 0) continue
-        const gateway = instanceId.slice(0, separator)
-        if (!gateway.startsWith('dztd_')) continue
-        const accountId = instanceId.slice(separator + 1)
+        // 账户级 progress 的 instance_id = 账户 ID（ADR 0056 决策 7）；先解析归属网关，
+        // 解不出该账户的条目是**进程级**进度（进程名，如 dztd_ctp），不参与会话 pending 清除。
+        const gateway = gatewayOf(instanceId)
+        if (gateway === null) continue
         const state = sessionStateOfProgress(p)
         if (state === null) continue
         const previous = lastSessionCurrent.get(instanceId)
@@ -521,10 +581,10 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
         // 清除范围判定与 md 共用 sessionProgress（ready→login、absent→both、回退→login）
         const clear = sessionPendingClear(previous, state, p.current)
         if (clear === 'login') {
-          clearSessionPending(gateway, accountId, 'login')
+          clearSessionPending(gateway, instanceId, 'login')
         } else if (clear === 'both') {
-          clearSessionPending(gateway, accountId, 'login')
-          clearSessionPending(gateway, accountId, 'logout')
+          clearSessionPending(gateway, instanceId, 'login')
+          clearSessionPending(gateway, instanceId, 'logout')
         }
       }
     },
@@ -887,14 +947,18 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   }
 
   /**
-   * `td_rtn_status`（契约 td-status §3 / 契约 webui-ws §2.2）：按 `网关名:账户ID` 全量覆盖。
-   * 缺 instance_id 或字段非法的帧忽略；**不做字段清空推断**（契约 td-status §2.4/§3：
-   * 清空时机由发送方决定，前端以字段值变化为准）。
+   * `td_rtn_status`（契约 td-status §3 / 契约 webui-ws §2.2）：按 `instance_id` = **账户 ID**
+   * 全量覆盖（ADR 0056 决策 7：账户级帧不再用 `网关名:账户ID` 复合键）。
+   * 缺 instance_id、payload 自校验不一致或字段非法的帧忽略；**不做字段清空推断**
+   *（契约 td-status §2.4/§3：清空时机由发送方决定，前端以字段值变化为准）。
    */
   function applyTdStatus(instanceId: string | undefined, payload: TdStatusPayload | undefined): void {
-    if (!instanceId || instanceId.indexOf(':') <= 0) return
+    if (!instanceId) return
     if (!payload || typeof payload !== 'object') return
     if (typeof payload.account_id !== 'string' || payload.account_id === '') return
+    // payload 冗余携带 account_id 供消费方定位与自校验（契约 td-status §3）：与帧头不一致
+    // 说明来源错乱，按非法帧丢弃，避免把 A 账户的状态挂到 B 账户行上。
+    if (payload.account_id !== instanceId) return
     // state 是契约 td-status §2.2 的 11 态枚举名；运行时不可信，非字符串/空串的帧丢弃
     //（类型声明已收窄为 TdState，因此先转 unknown 再判，避免与类型系统打架）
     const rawState: unknown = payload.state
@@ -978,6 +1042,9 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     accountIdConflict,
     registryEntry,
     gatewayOf,
+    // 展示名解析层（ADR 0056 决策 9）：所有展示位按 id 现查，不缓存名字副本
+    accountName,
+    displayName,
     accountPending,
     sessionPending,
     isOpPending,

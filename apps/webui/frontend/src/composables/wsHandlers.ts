@@ -102,7 +102,7 @@ registerHandler('td_rtn_config', (payload, instanceId) => {
 
 registerHandler('td_rtn_status', (payload, instanceId) => {
   // 契约 webui-ws §2.2：RTN_TD_STATUS → WS td_rtn_status（data = 账户级细状态，契约 td-status §2.1），
-  // instance_id = 网关名:账户ID（镜像 domain td_status 的 key）。
+  // instance_id = 账户 ID（镜像 domain td_status 的 key；ADR 0056 决策 7：不再用复合键）。
   // 细状态是登录态/交易日/登录时间/进度的唯一来源之一（进度以契约 progress 为唯一入口），
   // 不从 td_rtn_config 推导（契约 rest §4 前端义务）。
   useTdAccountsStore().applyTdStatus(instanceId, payload)
@@ -195,7 +195,7 @@ registerHandler('snapshot', (payload) => {
           useTdAccountsStore().applyTdConfig(instanceId, value as TdConfigPayload)
           break
         case 'td_status':
-          // 契约 td-status §3 / 契约 webui-ws §2.1: 账户级细状态域，key = 网关名:账户ID。
+          // 契约 td-status §3 / 契约 webui-ws §2.1: 账户级细状态域，key = 账户 ID。
           // 快照分发复用增量帧 apply（幂等覆盖，重连后恢复登录态/交易日展示）。
           useTdAccountsStore().applyTdStatus(instanceId, value as TdStatusPayload)
           break

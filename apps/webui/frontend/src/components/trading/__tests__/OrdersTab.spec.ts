@@ -8,6 +8,7 @@ import {
   __resetTdBatchSchedulerForTests,
   useTdOrdersStore,
 } from '@/stores/tdOrders'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 import { tdApi } from '@/api/td'
 import type { TdOrderRow } from '@/types/api'
 
@@ -123,6 +124,35 @@ describe('OrdersTab 渲染与交互（#246 契约 webui-ws §5）', () => {
     expect(text).toContain('3512.300')
     expect(text).toContain('部分成交')
     expect(text).toContain('2')
+    wrapper.unmount()
+  })
+
+  it('账户列与筛选面板显示 account_name，id 保留在 title；名字是纯展示不影响过滤参数（ADR 0056/#470 AC3）', async () => {
+    // 展示名来源之一 = 配置镜像（WS td_rtn_config）；组件按 id 现查
+    useTdAccountsStore().applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{ account_id: 'acc_a', account_name: '主账户', enabled: true, ext: { broker_id: '9999', password: '****' } }],
+      ext: {},
+    })
+    vi.mocked(tdApi.getOrders).mockResolvedValue(listResponse([
+      row({ order_id: 1, account_id: 'acc_a' }),
+    ], { online_accounts: ['acc_a', 'acc_b'] }))
+    const wrapper = mount(OrdersTab)
+    await flushPromises()
+
+    const accountCell = wrapper.find('.stub-row .td-order__col--account')
+    expect(accountCell.text()).toBe('主账户')
+    // id 保留可查（title），且过滤/请求参数始终是 id
+    expect(accountCell.attributes('title')).toBe('acc_a')
+
+    await wrapper.find('[aria-controls="td-order-account-filter"]').trigger('click')
+    const labels = wrapper.findAll('.td-orders__filter-label').map(node => node.text())
+    expect(labels).toContain('主账户')
+    // 无名账户回落 id
+    expect(labels).toContain('acc_b')
+    const boxes = wrapper.findAll('[data-test="td-account-filter"] input[type="checkbox"]')
+    expect(boxes[0].attributes('aria-label')).toBe('筛选账户 主账户')
+    expect(boxes[0].attributes('title')).toBe('acc_a')
     wrapper.unmount()
   })
 

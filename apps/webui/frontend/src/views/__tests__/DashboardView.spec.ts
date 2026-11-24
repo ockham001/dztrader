@@ -5,6 +5,7 @@ import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useProgressStore } from '@/stores/progress'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 import { marketSourcesApi } from '@/api/marketSources'
 import { tdApi } from '@/api/td'
 import DashboardView from '../DashboardView.vue'
@@ -21,7 +22,13 @@ vi.mock('@/api/marketSources', () => ({
 }))
 
 vi.mock('@/api/td', () => ({
-  tdApi: { getPositions: vi.fn(), getTradingAccounts: vi.fn(), refreshTradingAccount: vi.fn() },
+  tdApi: {
+    getPositions: vi.fn(),
+    getTradingAccounts: vi.fn(),
+    refreshTradingAccount: vi.fn(),
+    // 仪表盘挂载时重拉账户注册表（展示名来源之一，ADR 0056 决策 9）
+    listAccounts: vi.fn(),
+  },
 }))
 
 const ctpSource = {
@@ -120,10 +127,15 @@ async function mountDashboard() {
   return wrapper
 }
 
-/** 按账户 ID 找资金行（`data-test="fund-row"`），找不到时报错而不是静默通过 */
+/**
+ * 按账户 ID 找资金行（`data-test="fund-row"` 的 `data-account-id` 钩子）。
+ *
+ * `account_id` 可能被展示名替代（ADR 0056），因此不能按可见文本找；钩子保留 id 是
+ * 「测试选择器稳定」的既定口径（#470）。
+ */
 function fundRow(wrapper: Awaited<ReturnType<typeof mountDashboard>>, accountId: string) {
   const row = wrapper.findAll('[data-test="fund-row"]')
-    .find(item => item.text().includes(accountId))
+    .find(item => item.attributes('data-account-id') === accountId)
   if (!row) throw new Error(`fund row not found: ${accountId}`)
   return row
 }
@@ -135,12 +147,14 @@ describe('DashboardView', () => {
     vi.mocked(marketSourcesApi.list).mockResolvedValue([])
     vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([]))
     vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] })
   })
 
   afterEach(() => {
-    // 持仓/资金 store 的降级退避定时器：用例结束时统一释放
+    // 持仓/资金/账户注册表 store 的降级退避定时器：用例结束时统一释放
     useTdPositionsStore().dispose()
     useTdTradingAccountsStore().dispose()
+    useTdAccountsStore().dispose()
   })
 
   it('无行情源时展示在线/总数 0/0', async () => {
@@ -374,6 +388,81 @@ describe('DashboardView', () => {
     expect(filter.text()).toContain('acc_a')
     // 离线账户也必须在筛选项里（契约 webui-ws §5 第 11 条）
     expect(filter.text()).toContain('acc_offline')
+
+    w.unmount()
+  })
+
+  it('持仓分组与资金行的账户列显示展示名，id 保留在 title（ADR 0056/#470 AC3）', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [
+        { account_id: 'acc_a', account_name: '主账户', gateway: 'dztd_ctp', enabled: true },
+        { account_id: 'acc_offline', account_name: '', gateway: 'dztd_ctp_2', enabled: false },
+      ],
+    })
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([
+      position({ account_id: 'acc_a', instrument_id: 'rb2601' }),
+    ]))
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([
+      account(), emptyAccount({ account_id: 'acc_offline' }),
+    ]))
+    const w = await mountDashboard()
+
+    // 持仓分组行：账户列=展示名、title=id（第 5 列，列序见模板）
+    const positionRow = w.get('.dashboard-panel--position tr[data-account-id="acc_a"]')
+    const posAccountCell = positionRow.findAll('td')[4]
+    expect(posAccountCell.text()).toBe('主账户')
+    expect(posAccountCell.attributes('title')).toBe('acc_a')
+
+    // 资金行：同上；无名字的账户回落 id
+    const fundCell = fundRow(w, 'acc_a').findAll('td')[0]
+    expect(fundCell.text()).toBe('主账户')
+    expect(fundCell.attributes('title')).toBe('acc_a')
+    expect(fundRow(w, 'acc_offline').findAll('td')[0].text()).toBe('acc_offline')
+
+    w.unmount()
+  })
+
+  it('持仓账户筛选面板选项显示展示名（仍按 id 过滤）', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [{ account_id: 'acc_a', account_name: '主账户', gateway: 'dztd_ctp', enabled: true }],
+    })
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse(
+      [position({ account_id: 'acc_a' })], { online_accounts: ['acc_a'] }))
+    const w = await mountDashboard()
+
+    await w.get('[data-test="position-account-filter-trigger"]').trigger('click')
+    const label = w.get('[data-test="position-account-filter"] .dashboard-pos-filter__label')
+    expect(label.text()).toBe('主账户')
+    expect(label.attributes('title')).toBe('acc_a')
+    expect(w.get('[data-test="position-account-filter"] input[type="checkbox"]').attributes('aria-label'))
+      .toBe('筛选持仓账户 主账户')
+
+    w.unmount()
+  })
+
+  it('改名经 td_rtn_config 到达后历史行（REST 基线里的持仓/资金行）立刻显示新名字（ADR 0056 决策 9）', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [{ account_id: 'acc_a', account_name: '旧名字', gateway: 'dztd_ctp', enabled: true }],
+    })
+    vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([position({ account_id: 'acc_a' })]))
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([account()]))
+    const w = await mountDashboard()
+    expect(w.get('.dashboard-panel--position tr[data-account-id="acc_a"]').findAll('td')[4].text()).toBe('旧名字')
+    expect(fundRow(w, 'acc_a').findAll('td')[0].text()).toBe('旧名字')
+
+    // 改名不广播 data_changed、历史行也不会重推：解析层按 id 现查，因此帧到达即全站生效
+    useTdAccountsStore().applyTdConfig('dztd_ctp', {
+      qry_min_interval_ms: 1100,
+      accounts: [{ account_id: 'acc_a', account_name: '新名字', enabled: true, ext: { broker_id: '9999', password: '****' } }],
+      ext: {},
+    })
+    await flushPromises()
+
+    expect(w.get('.dashboard-panel--position tr[data-account-id="acc_a"]').findAll('td')[4].text()).toBe('新名字')
+    expect(fundRow(w, 'acc_a').findAll('td')[0].text()).toBe('新名字')
 
     w.unmount()
   })
