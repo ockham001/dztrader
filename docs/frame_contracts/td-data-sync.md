@@ -23,8 +23,6 @@
 **实现注记**：`ORDER_REPORT` 新增 `avg_price` 帧字段已随 #243 落地；交易库 schema v1 与 master 建库/重建、旧 v5 迁移链删除已随 #244 落地（迁移链删除对应「旧 dev 库直接丢弃」）；登录日装载（只装当日）、成交去重键含 `exchange_id`、无会话拒单落库与推帧（#13）、dzweb 记录镜像删除（改为在线账户集合 + 补发环 + `data_changed`）已随 #246 落地；dzweb 统计计数器已随 #247 落地（4 个整数 + 每账户 seq 水位 + 活动委托小表，启动/Ready/在线集合变化/日切全量重算，`GET /api/td/stats` 出口，见契约 rest §2.9.5；**周期对账已随 #416 取消**，首见判据改每账户 `order_id` 单调水位、重算同批取 `MAX(order_id)`，成交均价刷新帧不再多计——ADR 0050）；成交均价实时累计（`OrderTradeAvgTracker`：`Σ价×量 / Σ量`，登录日按当日成交重建，均价变化即新 seq 刷新委托行并推帧落库）与成交的 REST/WS 出口已随 #248 落地；持仓原子重建、查询失败不改表与「资金行只在持仓查询成功后写入」的跨表守卫已随 #249 落地；资金按 `(account_id, date)` 多日累积（同日 upsert、历史日行不变）与 dzweb 资金 REST/WS 出口已随 #250 落地。契约定稿后实现与契约冲突以契约为准。REST/WS 的记录字段形状由契约 rest 与 webui-ws 定义（本契约只定义语义，不重复 schema）。
 
 
-<!-- pending-symbol: account_name (#467) -->
-
 ---
 
 ## 1. seq 语义

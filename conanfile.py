@@ -98,6 +98,9 @@ class DztraderConan(ConanFile):
         self.requires("gtest/1.17.0")
         self.requires("drogon/1.9.12")
         self.requires("msgpack-cxx/7.0.0")
+        # Unicode NFC 规范化（account_name 唯一性判定，ADR 0056 决策 4）。单文件 MIT C 库：
+        # 仓内无 ICU，Boost.Locale 的 normalize 只在 ICU backend 下生效（本仓 Boost 未启用）。
+        self.requires("utf8proc/2.9.0")
 
     def generate(self):
         CMakeToolchain(self).generate()

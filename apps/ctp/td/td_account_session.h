@@ -66,7 +66,7 @@ using AccountNotifyFn = TdNotifyFn;
 class AccountSession {
 public:
     /// 构造 (不连接 CTP).
-    /// @param account_id 账户标识 (CTP InvestorID)
+    /// @param account_id 柜台真实投资者代码 (CTP InvestorID 与 UserID 同值, ADR 0056)
     /// @param order_id_meta 跨进程共享的 order_id 计数器 (外部拥有)
     /// @param event_writer SHM 多写入者 (外部拥有, 多账户共享)
     /// @param persist_writer SQLite 持久化 writer (外部拥有, 多账户共享)
@@ -99,14 +99,13 @@ public:
     /// @param flow_dir CTP 流文件目录
     /// @param front_addrs 前置地址列表 (tcp://...)
     /// @param broker_id 经纪商代码
-    /// @param user_id 投资者代码
     /// @param password 密码
     /// @param auth_code 认证码 (空则跳过认证)
     /// @param app_id 应用 ID (认证用, 空则跳过认证)
+    /// 账户身份（CTP 的 UserID 与 InvestorID）一律取构造时的 account_id（ADR 0056）。
     void open(const std::string& flow_dir,
               const std::vector<std::string>& front_addrs,
               const std::string& broker_id,
-              const std::string& user_id,
               const std::string& password,
               const std::string& auth_code = "",
               const std::string& app_id = "");
@@ -565,7 +564,6 @@ private:
 
     /// CTP 登录诊断字段 (open 时保存, 用于 ReqAuthenticate/ReqUserLogin)
     std::string broker_id_;
-    std::string user_id_;
     std::string password_;
     std::string auth_code_;
     std::string app_id_;

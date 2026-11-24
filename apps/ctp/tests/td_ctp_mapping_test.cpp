@@ -1,4 +1,5 @@
 #include "td/td_ctp_mapping.h"
+#include "td/td_config.h"
 
 #include <cstring>
 #include <string>
@@ -1033,4 +1034,40 @@ TEST(ToDzPositionTest, KnownDirectionsHaveNoUnknownEvidence) {
     ASSERT_TRUE(short_pos.has_value());
     EXPECT_EQ(short_pos->direction, DZ_DIRECTION_SHORT);
     EXPECT_TRUE(unknown.empty());
+}
+
+// ============================================================================
+// 账户身份字段 (ADR 0056): CTP 的 UserID 与 InvestorID 都取 account_id
+// ============================================================================
+
+/// 契约 td-config §2.3 / ADR 0056 决策 1-2：构造配置 → 账户 ID 填进认证 / 登录（UserID）
+/// 与撤单 / 结算确认（InvestorID），证明两处同源（不再有独立的 user_id 字段）。
+TEST(TdAccountIdentityTest, UserIdAndInvestorIdBothUseAccountId) {
+    TdConfig cfg;
+    AccountConfig acct;
+    acct.account_id = "00001";
+    cfg.accounts.push_back(acct);
+    const std::string& account_id = cfg.accounts[0].account_id;
+
+    CThostFtdcReqAuthenticateField auth{};
+    CThostFtdcReqUserLoginField login{};
+    CThostFtdcInputOrderActionField action{};
+    CThostFtdcSettlementInfoConfirmField settle{};
+    fill_user_id(auth.UserID, sizeof(auth.UserID), account_id);
+    fill_user_id(login.UserID, sizeof(login.UserID), account_id);
+    fill_investor_id(action.InvestorID, sizeof(action.InvestorID), account_id);
+    fill_investor_id(settle.InvestorID, sizeof(settle.InvestorID), account_id);
+
+    EXPECT_STREQ(auth.UserID, "00001");
+    EXPECT_STREQ(login.UserID, "00001");
+    EXPECT_STREQ(action.InvestorID, "00001");
+    EXPECT_STREQ(settle.InvestorID, "00001");
+}
+
+/// 契约 td-config §2.3：超长必须报错而不是静默截断——填充层兜底为空串（柜台会拒绝），
+/// 绝不截断成一个可能存在的其他账户。
+TEST(TdAccountIdentityTest, OverlongAccountIdFillsEmptyInsteadOfTruncating) {
+    CThostFtdcInputOrderActionField action{};
+    fill_investor_id(action.InvestorID, sizeof(action.InvestorID), "1234567890123");  // 13 字节
+    EXPECT_STREQ(action.InvestorID, "");
 }

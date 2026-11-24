@@ -103,9 +103,9 @@ SYMBOL_ALLOWLIST = {
     # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
     # 该引用是有意保留的反例，不是当前符号
     "watch_path",
-    # #467 计划字段/错误码：ADR 0056 定稿、契约先行写入，实现票落地后本项与三份契约里的
-    # pending-symbol 标记一并移除（届时符号自然可查）。
-    "account_name", "invalid_account_id", "invalid_account_name", "account_name_exists",
+    # #467 计划错误码：ADR 0056 定稿、契约先行写入，dzweb 实现票（#469）落地后本项移除。
+    # `account_name` 已随 #468（td 网关字段）落地、可从代码索引查到，不再需要豁免。
+    "invalid_account_id", "invalid_account_name", "account_name_exists",
 }
 
 

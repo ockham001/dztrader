@@ -155,6 +155,8 @@ find_package(toml11 CONFIG REQUIRED)
 find_package(SQLiteCpp CONFIG REQUIRED)
 find_package(magic_enum CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+# Unicode NFC 规范化（`account_name` 唯一性判定，ADR 0056 决策 4；实现在 libs/core）
+find_package(utf8proc CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
 # ============================================================

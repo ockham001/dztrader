@@ -36,24 +36,33 @@ TdConfigOpReq make_req(TdConfigOp op, nlohmann::json params) {
 TEST(ApplyConfigOpTest, AddAccount) {
     TdConfig cfg;
     auto req = make_req(TdConfigOp::AddAccount, {{"account_id", "a1"},
+                                                 {"account_name", "主账户"},
                                                  {"enabled", true},
                                                  {"risk_control_enabled", false},
                                                  {"currency_id", "CNY"},
                                                  {"ext",
                                                   {{"broker_id", "9999"},
-                                                   {"user_id", "00001"},
                                                    {"password", "123456"},
                                                    {"auth_code", "auth"},
                                                    {"app_id", "app"}}}});
     apply_config_op(cfg, req);
     ASSERT_EQ(cfg.accounts.size(), 1u);
     EXPECT_EQ(cfg.accounts[0].account_id, "a1");
+    EXPECT_EQ(cfg.accounts[0].account_name, "主账户");
     EXPECT_EQ(cfg.accounts[0].ext.broker_id, "9999");
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "00001");
     EXPECT_EQ(cfg.accounts[0].ext.password, "123456");
     EXPECT_EQ(cfg.accounts[0].ext.auth_code, "auth");
     EXPECT_EQ(cfg.accounts[0].ext.app_id, "app");
     EXPECT_EQ(cfg.accounts[0].currency_id, "CNY");
+}
+
+/// account_name 是选填通用层字段（契约 td-config §2.2）：AddAccount 缺失时存空串。
+TEST(ApplyConfigOpTest, AddAccountWithoutNameStoresEmpty) {
+    TdConfig cfg;
+    auto req = make_req(TdConfigOp::AddAccount, {{"account_id", "a1"}});
+    apply_config_op(cfg, req);
+    ASSERT_EQ(cfg.accounts.size(), 1u);
+    EXPECT_TRUE(cfg.accounts[0].account_name.empty());
 }
 
 TEST(ApplyConfigOpTest, AddAccountWithMissingFields) {
@@ -109,14 +118,37 @@ TEST(ApplyConfigOpTest, RemoveAccountNotFound) {
 TEST(ApplyConfigOpTest, UpdateAccount) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1", "old_broker", "old_pass"));
-    auto req =
-        make_req(TdConfigOp::UpdateAccount,
-                 {{"account_id", "a1"},
-                  {"ext", {{"broker_id", "9999"}, {"user_id", "u1"}, {"password", "new_pass"}}}});
+    auto req = make_req(TdConfigOp::UpdateAccount,
+                        {{"account_id", "a1"},
+                         {"account_name", "改名后"},
+                         {"ext", {{"broker_id", "9999"}, {"password", "new_pass"}}}});
     apply_config_op(cfg, req);
     EXPECT_EQ(cfg.accounts[0].ext.password, "new_pass");
     EXPECT_EQ(cfg.accounts[0].ext.broker_id, "9999");
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "u1");
+    EXPECT_EQ(cfg.accounts[0].account_name, "改名后");
+}
+
+/// 契约 td-config §2.1 / ADR 0056 决策 3：未提供 account_name 时保留旧值。
+TEST(ApplyConfigOpTest, UpdateAccountOmittedNameKeepsOld) {
+    TdConfig cfg;
+    AccountConfig acct = make_account("a1", "broker1", "pass1");
+    acct.account_name = "旧名字";
+    cfg.accounts.push_back(acct);
+    auto req = make_req(TdConfigOp::UpdateAccount,
+                        {{"account_id", "a1"}, {"ext", {{"password", "new_pass"}}}});
+    apply_config_op(cfg, req);
+    EXPECT_EQ(cfg.accounts[0].account_name, "旧名字");
+}
+
+/// 契约 td-config §2.1 / ADR 0056 决策 3：显式空串 = 清空（显示回落 account_id）。
+TEST(ApplyConfigOpTest, UpdateAccountExplicitEmptyNameClears) {
+    TdConfig cfg;
+    AccountConfig acct = make_account("a1", "broker1", "pass1");
+    acct.account_name = "旧名字";
+    cfg.accounts.push_back(acct);
+    auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"account_name", ""}});
+    apply_config_op(cfg, req);
+    EXPECT_TRUE(cfg.accounts[0].account_name.empty());
 }
 
 TEST(ApplyConfigOpTest, UpdateAccountPasswordMaskKeepsOld) {
@@ -134,7 +166,6 @@ TEST(ApplyConfigOpTest, UpdateAccountPasswordOnlyKeepsOtherExtFields) {
     AccountConfig acct;
     acct.account_id = "acc1";
     acct.ext.broker_id = "broker1";
-    acct.ext.user_id = "user1";
     acct.ext.product_info = "prod1";
     acct.ext.auth_code = "auth1";
     acct.ext.app_id = "app1";
@@ -155,7 +186,6 @@ TEST(ApplyConfigOpTest, UpdateAccountPasswordOnlyKeepsOtherExtFields) {
     EXPECT_EQ(cfg.accounts[0].ext.password, "new_pass");
     // 其他字段应保留旧值 (字段级 merge, 不被清空为默认值)
     EXPECT_EQ(cfg.accounts[0].ext.broker_id, "broker1");
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "user1");
     EXPECT_EQ(cfg.accounts[0].ext.product_info, "prod1");
     EXPECT_EQ(cfg.accounts[0].ext.auth_code, "auth1");
     EXPECT_EQ(cfg.accounts[0].ext.app_id, "app1");
@@ -179,7 +209,7 @@ TEST(ApplyConfigOpTest, UpdateAccountPasswordEmptyKeepsOld) {
 TEST(ApplyConfigOpTest, UpdateAccountUpdatesExtAndCommonFields) {
     TdConfig cfg;
     AccountConfig acct = make_account("a1", "old_broker", "old_pass");
-    acct.ext.user_id = "old_user";
+    acct.account_name = "旧名字";
     acct.ext.product_info = "old_product";
     acct.ext.auth_code = "old_auth";
     acct.ext.app_id = "old_app";
@@ -197,12 +227,12 @@ TEST(ApplyConfigOpTest, UpdateAccountUpdatesExtAndCommonFields) {
     nlohmann::json frontends = nlohmann::json::array();
     frontends.push_back({{"address", "new_addr"}, {"label", "new_label"}, {"enabled", false}});
     auto req = make_req(TdConfigOp::UpdateAccount, {{"account_id", "a1"},
+                                                    {"account_name", "新名字"},
                                                     {"enabled", false},
                                                     {"risk_control_enabled", true},
                                                     {"currency_id", "USD"},
                                                     {"ext",
                                                      {{"broker_id", "new_broker"},
-                                                      {"user_id", "new_user"},
                                                       {"product_info", "new_product"},
                                                       {"password", "new_pass"},
                                                       {"auth_code", "new_auth"},
@@ -211,8 +241,8 @@ TEST(ApplyConfigOpTest, UpdateAccountUpdatesExtAndCommonFields) {
                                                       {"frontends", frontends}}}});
     apply_config_op(cfg, req);
 
+    EXPECT_EQ(cfg.accounts[0].account_name, "新名字");
     EXPECT_EQ(cfg.accounts[0].ext.broker_id, "new_broker");
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "new_user");
     EXPECT_EQ(cfg.accounts[0].ext.product_info, "new_product");
     EXPECT_EQ(cfg.accounts[0].ext.password, "new_pass");
     EXPECT_EQ(cfg.accounts[0].ext.auth_code, "new_auth");
@@ -231,7 +261,7 @@ TEST(ApplyConfigOpTest, UpdateAccountUpdatesExtAndCommonFields) {
 TEST(ApplyConfigOpTest, UpdateAccountOmittedFieldsPreserved) {
     TdConfig cfg;
     AccountConfig acct = make_account("a1", "broker1", "old_pass");
-    acct.ext.user_id = "user1";
+    acct.account_name = "旧名字";
     acct.ext.product_info = "prod1";
     acct.ext.auth_code = "auth";
     acct.ext.app_id = "app";
@@ -252,7 +282,7 @@ TEST(ApplyConfigOpTest, UpdateAccountOmittedFieldsPreserved) {
     apply_config_op(cfg, req);
 
     EXPECT_EQ(cfg.accounts[0].ext.broker_id, "b2");
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "user1");
+    EXPECT_EQ(cfg.accounts[0].account_name, "旧名字");
     EXPECT_EQ(cfg.accounts[0].ext.product_info, "prod1");
     EXPECT_EQ(cfg.accounts[0].ext.password, "old_pass");
     EXPECT_EQ(cfg.accounts[0].ext.auth_code, "auth");
@@ -281,9 +311,34 @@ TEST(ApplyConfigOpTest, UpdateAccountNotFoundThrows) {
     TdConfig cfg;
     cfg.accounts.push_back(make_account("a1", "broker1"));
     auto req = make_req(TdConfigOp::UpdateAccount,
-                        {{"account_id", "nonexistent"}, {"ext", {{"user_id", "u1"}}}});
+                        {{"account_id", "nonexistent"}, {"ext", {{"broker_id", "b1"}}}});
     EXPECT_THROW(apply_config_op(cfg, req), std::invalid_argument);
-    EXPECT_EQ(cfg.accounts[0].ext.user_id, "");  // cfg 未被修改
+    EXPECT_EQ(cfg.accounts[0].ext.broker_id, "broker1");  // cfg 未被修改
+}
+
+/// 契约 td-config §2.3 / AC3：AddAccount 路径的组合校验——超长 account_id 由 validate
+/// 拒绝（编排层在写配置前调用），不得静默截断后接受。
+TEST(ApplyConfigOpTest, AddAccountOverlongIdRejectedByValidate) {
+    TdConfig cfg;
+    auto req = make_req(TdConfigOp::AddAccount, {{"account_id", "1234567890123"},  // 13 字节
+                                                 {"ext", {{"broker_id", "9999"}}}});
+    apply_config_op(cfg, req);
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("account_id"), std::string::npos) << *err;
+}
+
+/// 契约 td-config §2.2 / AC3：UpdateAccount 改名撞别的账户 id 时由 validate 拒绝。
+TEST(ApplyConfigOpTest, UpdateAccountNameConflictRejectedByValidate) {
+    TdConfig cfg;
+    cfg.accounts.push_back(make_account("00001", "9999"));
+    cfg.accounts.push_back(make_account("00002", "9999"));
+    auto req =
+        make_req(TdConfigOp::UpdateAccount, {{"account_id", "00002"}, {"account_name", "00001"}});
+    apply_config_op(cfg, req);
+    auto err = validate(cfg);
+    ASSERT_TRUE(err.has_value());
+    EXPECT_NE(err->find("conflict"), std::string::npos) << *err;
 }
 
 TEST(ApplyConfigOpTest, SetAccountEnabled) {
@@ -461,22 +516,39 @@ TEST(FindAccountInTest, EmptyAccountsReturnsNull) {
 }
 
 // ============================================================================
-// is_connection_op
+// requires_idle（契约 td-config §2.1 状态保护）
 // ============================================================================
 
-TEST(IsConnectionOpTest, ConnectionOps) {
-    EXPECT_TRUE(is_connection_op(TdConfigOp::RemoveAccount));
-    EXPECT_TRUE(is_connection_op(TdConfigOp::UpdateAccount));
+TEST(RequiresIdleTest, RemoveAccountAlwaysRequiresIdle) {
+    EXPECT_TRUE(requires_idle(TdConfigOp::RemoveAccount, nlohmann::json::object()));
 }
 
-TEST(IsConnectionOpTest, NonConnectionOps) {
-    EXPECT_FALSE(is_connection_op(TdConfigOp::AddAccount));
+/// ADR 0056 决策 3：只改 account_name 等通用层字段时任意会话状态可改（不要求 Idle）。
+TEST(RequiresIdleTest, UpdateAccountCommonFieldsOnlyDoesNotRequireIdle) {
+    EXPECT_FALSE(
+        requires_idle(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"account_name", "改名"}}));
+    EXPECT_FALSE(
+        requires_idle(TdConfigOp::UpdateAccount, {{"account_id", "a1"}, {"enabled", false}}));
+    EXPECT_FALSE(requires_idle(TdConfigOp::UpdateAccount,
+                               {{"account_id", "a1"}, {"ext", nlohmann::json::object()}}));
+}
+
+/// 触及连接参数（`ext` 内任何键）时要求 Idle（连接参数不可热改）。
+TEST(RequiresIdleTest, UpdateAccountTouchingExtRequiresIdle) {
+    EXPECT_TRUE(requires_idle(TdConfigOp::UpdateAccount,
+                              {{"account_id", "a1"}, {"ext", {{"password", "x"}}}}));
+    EXPECT_TRUE(requires_idle(TdConfigOp::UpdateAccount,
+                              {{"account_id", "a1"}, {"ext", {{"broker_id", "9999"}}}}));
+}
+
+TEST(RequiresIdleTest, OtherOpsDoNotRequireIdle) {
+    EXPECT_FALSE(requires_idle(TdConfigOp::AddAccount, nlohmann::json::object()));
     // 契约 auto-login 迁移完成: AddSchedule/RemoveSchedule/SetAutoLogin 已从枚举移除
-    EXPECT_FALSE(is_connection_op(TdConfigOp::SetExt));
-    EXPECT_FALSE(is_connection_op(TdConfigOp::SetQryIntervals));
-    EXPECT_FALSE(is_connection_op(TdConfigOp::SetAccountEnabled));
-    EXPECT_FALSE(is_connection_op(TdConfigOp::SetAccountRiskControl));
-    EXPECT_FALSE(is_connection_op(TdConfigOp::SetAccountCurrency));
+    EXPECT_FALSE(requires_idle(TdConfigOp::SetExt, nlohmann::json::object()));
+    EXPECT_FALSE(requires_idle(TdConfigOp::SetQryIntervals, nlohmann::json::object()));
+    EXPECT_FALSE(requires_idle(TdConfigOp::SetAccountEnabled, nlohmann::json::object()));
+    EXPECT_FALSE(requires_idle(TdConfigOp::SetAccountRiskControl, nlohmann::json::object()));
+    EXPECT_FALSE(requires_idle(TdConfigOp::SetAccountCurrency, nlohmann::json::object()));
 }
 
 }  // namespace

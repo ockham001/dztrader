@@ -12,8 +12,6 @@
 
 
 
-<!-- pending-symbol: account_name (#467) -->
-
 ---
 
 ## 1. 接口类型识别

@@ -43,7 +43,8 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
         return;
     }
 
-    // 2. 集中校验 (格式检查: account_id 唯一/非空, broker_id/user_id 非空, intervals > 0 等)
+    // 2. 集中校验 (格式检查: account_id 非空/≤12 字节/字符集/唯一, account_name 长度/
+    //    控制字符/展平唯一, broker_id 非空, intervals > 0 等；契约 td-config §7)
     if (auto err = validate(new_config)) {
         SPDLOG_WARN("td config change rejected | reason=\"validate_error\" msg=\"{}\"", *err);
         notify_ui_.error(std::format("配置校验失败: {}", *err));
@@ -51,9 +52,10 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
         return;
     }
 
-    // 3. 状态保护: 连接参数变更 (RemoveAccount/UpdateAccount) 在 session 活跃时拒绝
-    //    (运行中的 AccountSession 不能修改连接参数, 需先登出再改; 提示语见下方 NOTIFY_UI)
-    if (is_connection_op(req.op)) {
+    // 3. 状态保护（契约 td-config §2.1）：仅要求 Idle 的 op（RemoveAccount / 触及连接参数的
+    //    UpdateAccount）在 session 活跃时拒绝。只改通用层字段（如 account_name）不受保护
+    //    ——展示名不是连接参数，改名不该逼用户先登出（ADR 0056 决策 3）。
+    if (requires_idle(req.op, req.params)) {
         auto account_id = req.params.value("account_id", "");
         if (!account_id.empty()) {
             auto* session = find_session(account_id);

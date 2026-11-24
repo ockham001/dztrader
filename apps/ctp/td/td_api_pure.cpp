@@ -24,6 +24,8 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
         case TdConfigOp::AddAccount: {
             AccountConfig acct;
             acct.account_id = req.params.value("account_id", "");
+            // account_name 是选填展示名（契约 td-config §2.2）：留空存空串，显示时回落 account_id
+            acct.account_name = req.params.value("account_name", "");
             // 关键决策: AddAccount 检查 account_id 不重复, 重复抛 std::invalid_argument。
             // account_id 为空时跳过查重 (由 validate 在持久化前拦截空 id)。
             if (!acct.account_id.empty()) {
@@ -59,6 +61,8 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
                 if (a.account_id == id) {
                     // account_id 是不可变 key (不修改)
                     // 通用层与 ext 都是字段级 merge：未提供的字段保留旧值（契约 td-config §2.1）
+                    // account_name：未提供保留旧值；显式空串 = 清空并回落 account_id（ADR 0056）
+                    a.account_name = req.params.value("account_name", a.account_name);
                     a.enabled = req.params.value("enabled", a.enabled);
                     a.risk_control_enabled =
                         req.params.value("risk_control_enabled", a.risk_control_enabled);
@@ -66,7 +70,6 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
                     if (req.params.contains("ext")) {
                         const auto& ej = req.params["ext"];
                         a.ext.broker_id = ej.value("broker_id", a.ext.broker_id);
-                        a.ext.user_id = ej.value("user_id", a.ext.user_id);
                         a.ext.product_info = ej.value("product_info", a.ext.product_info);
                         a.ext.auth_code = ej.value("auth_code", a.ext.auth_code);
                         a.ext.app_id = ej.value("app_id", a.ext.app_id);

@@ -290,9 +290,9 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
     // 设计 §4.4 帧处理模式 (与 md_api.cpp 一致), 差异见契约 td-order:
     //   - basic 广播帧: 通用控制帧不做目标匹配; TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 按 payload
     //   account_id 归属路由
-    //   - 含 instance_id 帧: instance_id == name_ (进程级, 如 TD_CONNECT / TD_DISCONNECT /
-    //   SET_LOG_CONFIG 等)
-    //     或以 "name_:" 开头 (账户级, 设计 §1.1)
+    //   - 含 instance_id 帧: instance_id == name_（入站定向帧全是进程级: TD_CONNECT /
+    //   TD_DISCONNECT / TD_REQ_MODIFY_CONFIG / SET_LOG_CONFIG 等）；账户级帧的 instance_id
+    //   是 account_id，但那些帧由本进程发出，不作为入站目标（总则 §5 / ADR 0056）
     FrameView view(frame);
 
     // 1. 无 instance_id 帧 (basic 帧)
@@ -339,11 +339,12 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             break;
     }
 
-    // 2. 含 instance_id 帧: instance_id == name_ (进程级) 或以 "name_:" 开头 (账户级, 设计 §1.1)
+    // 2. 含 instance_id 帧: 入站定向帧全部是进程级（instance_id == name_）。账户级帧
+    //    （TD_RTN_STATUS / RTN_PROGRESS / NOTIFY_TD_*）的 instance_id = account_id，由本进程
+    //    发出，不存在「网关名:账户ID」复合键（总则 §5 / ADR 0056）。
     //    (TD_ORDER_REQ / TD_ORDER_CANCEL_REQ 属 basic 广播帧, 已在第 1 层处理, 见契约 td-order)
     std::string_view inst(view.ext_inst_id());
-    std::string prefix_with_colon = name_ + ":";
-    if (inst != name_ && !inst.starts_with(prefix_with_colon)) {
+    if (inst != name_) {
         return;
     }
 
@@ -681,8 +682,8 @@ void TdApi::connect_account_by_id(const std::string& account_id, bool user_initi
             });
         // ADR 0055: 查询通道最小发送间隔（契约 td-config qry_min_interval_ms）
         session->set_query_min_interval(std::chrono::milliseconds(config_.qry_min_interval_ms));
-        session->open(session_flow_dir.string(), front_addrs, cfg->ext.broker_id, cfg->ext.user_id,
-                      cfg->ext.password, cfg->ext.auth_code, cfg->ext.app_id);
+        session->open(session_flow_dir.string(), front_addrs, cfg->ext.broker_id, cfg->ext.password,
+                      cfg->ext.auth_code, cfg->ext.app_id);
         // 注入独立只读连接提供器: 登录日装载当日订单/成交基准 (契约 td-data-sync §3).
         // ensure_read_db 按需重开 (文件缺失时降级 -> 装载失败按登录失败处理).
         session->set_read_db_provider([this]() -> SQLite::Database* {
@@ -889,17 +890,16 @@ void TdApi::handle_refresh_req(const shm::FrameView& view) {
 
 void TdApi::update_status(const std::string& account_id) {
     // 设计 §5.8: 推 DZ_FRAME_RTN_TD_STATUS, payload 为 TdStatus JSON (per-account)
-    // instance_id 格式 "name_:account_id" (设计 §1.1), 让 dzweb 按 account_id 路由
+    // 账户级帧 instance_id = account_id（总则 §5 / ADR 0056），不用「网关名:账户ID」复合键
     auto* session = find_session(account_id);
     if (session == nullptr) {
         return;
     }
     try {
-        std::string inst_id = std::format("{}:{}", name_, account_id);
         const auto& status = session->state_machine().status();
         // 未知枚举计数随状态帧带出 (契约 td-status §2.3), 拼接口径在 td_status_payload.
         platform::write_ext_inst_json_obj(
-            event_writer_, DZ_FRAME_TD_RTN_STATUS, inst_id,
+            event_writer_, DZ_FRAME_TD_RTN_STATUS, account_id,
             td_status_payload(status, session->unknown_enum_counts()));
 
         // 同步推送 RTN_PROGRESS（per-account, 与 RTN_TD_STATUS 的 progress 字段一致）
@@ -909,7 +909,7 @@ void TdApi::update_status(const std::string& account_id) {
         if (!status.progress_desc.empty()) {
             prog["desc"] = status.progress_desc;
         }
-        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_PROGRESS, inst_id, prog);
+        platform::write_ext_inst_json_obj(event_writer_, DZ_FRAME_RTN_PROGRESS, account_id, prog);
 
         // 契约 account-status: 2018 三态去重推送 (与 2104 同一异常保护, 异常路径一致)
         write_account_status(account_id, account_state_of(status.state), status.date);
@@ -990,18 +990,18 @@ void TdApi::handle_query_account_status(const std::byte* frame) {
 
 void TdApi::broadcast_health(const std::string& account_id, TdHealth now) {
     // 设计 §5.8: per-account 健康度翻转检测 + NOTIFY_TD_CONNECTED/DISCONNECTED 广播
-    // 仅在 health 翻转时发送, 避免重复广播。instance_id 格式 "name_:account_id"
+    // 仅在 health 翻转时发送, 避免重复广播。账户级帧 instance_id = account_id (ADR 0056)
     auto& last = account_health_[account_id];  // 不存在则默认插入 TdHealth::Down (=0)
     if (now == last) {
         return;  // 未翻转, 不重复广播
     }
     last = now;
-    std::string inst_id = std::format("{}:{}", name_, account_id);
     try {
         if (now == TdHealth::Up) {
-            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_CONNECTED, inst_id);
+            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_CONNECTED, account_id);
         } else {
-            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_DISCONNECTED, inst_id);
+            platform::write_ext_inst_raw(event_writer_, DZ_FRAME_NOTIFY_TD_DISCONNECTED,
+                                         account_id);
         }
         SPDLOG_INFO("health broadcast | account={} health={}", account_id,
                     magic_enum::enum_name(now));
