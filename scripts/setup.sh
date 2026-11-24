@@ -105,9 +105,10 @@ setup_git_credentials
 # shellcheck source=scripts/ccache-env.sh
 . "$REPO_ROOT/scripts/ccache-env.sh"
 
-# DSH workspace-write 沙箱下 ~/.conan2 可能只读：回退到仓库内 CONAN_HOME（.cache/ 已 gitignore），
-# 避免 worktree setup 卡在权限申请上。回退时先从可读的 ~/.conan2 播种一次（1.8G 本地拷贝几十秒），
-# 否则每个新 worktree 都要重新下载全部依赖（本波 #88 实测 ~50 分钟）。
+# DSH workspace-write 沙箱下 ~/.conan2 可能只读：回退到**共享**仓库内 CONAN_HOME（.cache/ 已
+# gitignore），避免 worktree setup 卡在权限申请上。共享目录按 git common dir 解析——否则每个
+# 新 worktree 各自播种一份 1.8G 缓存并重编依赖（#465 复盘：#455 波 4 个 worktree 各自
+# setup 一次，合计约 1.5–2 小时墙钟）。播种加 flock，防多 worktree 并发 setup 写坏缓存。
 if [ -z "${CONAN_HOME:-}" ]; then
     conan_cache_ok=0
     if mkdir -p "$HOME/.conan2" 2>/dev/null && touch "$HOME/.conan2/.dz_setup_probe" 2>/dev/null; then
@@ -115,13 +116,35 @@ if [ -z "${CONAN_HOME:-}" ]; then
     fi
     rm -f "$HOME/.conan2/.dz_setup_probe" 2>/dev/null || true
     if [ "$conan_cache_ok" -eq 0 ]; then
-        export CONAN_HOME="$REPO_ROOT/.cache/conan2"
-        mkdir -p "$CONAN_HOME"
-        if [ ! -d "$CONAN_HOME/p" ] && [ -d "$HOME/.conan2/p" ]; then
-            echo "seeding conan cache from ~/.conan2 → $CONAN_HOME (one-time copy) ..." >&2
-            cp -a "$HOME/.conan2/." "$CONAN_HOME"/ 2>/dev/null || true
+        # 共享根与 ccache 共用 dz_resolve_shared_repo_root（同一套 git common dir 解析）。
+        shared_root="$(dz_resolve_shared_repo_root "$REPO_ROOT")"
+        if [ "$shared_root" != "$REPO_ROOT" ]; then
+            echo "note: conan cache shared across worktrees via $shared_root/.cache/conan2" >&2
+        else
+            echo "warning: could not resolve shared repo root (non-git?); using $REPO_ROOT/.cache/conan2" >&2
         fi
-        echo "warning: ~/.conan2 is not writable; using CONAN_HOME=$CONAN_HOME" >&2
+        export CONAN_HOME="$shared_root/.cache/conan2"
+        mkdir -p "$shared_root/.cache"
+        if [ ! -d "$CONAN_HOME/p" ] && [ -d "$HOME/.conan2/p" ]; then
+            seed_lock="$shared_root/.cache/conan-seed.lock"
+            seed_held=0
+            if command -v flock >/dev/null 2>&1; then
+                if { exec 9>"$seed_lock"; flock 9; } 2>/dev/null; then
+                    seed_held=1
+                else
+                    echo "warning: conan seed lock unavailable; seeding without lock" >&2
+                fi
+            fi
+            # 拿锁后二次检查：等锁期间其它 worktree 可能已完成播种。
+            if [ ! -d "$CONAN_HOME/p" ] && [ -d "$HOME/.conan2/p" ]; then
+                echo "seeding conan cache from ~/.conan2 → $CONAN_HOME (shared across worktrees) ..." >&2
+                cp -a "$HOME/.conan2/." "$CONAN_HOME"/ 2>/dev/null || true
+            fi
+            if [ "$seed_held" -eq 1 ]; then
+                flock -u 9 2>/dev/null || true
+            fi
+        fi
+        echo "warning: ~/.conan2 is not writable; using shared CONAN_HOME=$CONAN_HOME" >&2
     fi
 fi
 

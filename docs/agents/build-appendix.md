@@ -11,7 +11,7 @@ CMake + Conan 2.x + Ninja + GTest。本文档记录**项目特有规则与非主
 agent 会话可能跑在 workspace-write 沙箱里：只有仓库目录可写，`~` 下的共享缓存可能只读。
 
 - **`/tmp` 每次 bash 调用隔离**：跨调用要用的日志/快照写 `.cache/`（仓库已 gitignore），不要写 `/tmp`
-- **Conan 缓存**：默认 `~/.conan2`；不可写时 `scripts/setup.sh` 自动回退 `CONAN_HOME=<repo>/.cache/conan2`，并从可读的 `~/.conan2` **播种一次**（1.8G 本地拷贝，避免每个新 worktree 重新下载依赖；本波 #88 冷装实测约 50 分钟）
+- **Conan 缓存**：默认 `~/.conan2`；不可写时 `scripts/setup.sh` 自动回退 `CONAN_HOME=<主仓>/.cache/conan2`（按 **git common dir** 解析，**所有 worktree 共享同一份缓存**，从可读的 `~/.conan2` 播种一次；播种加 `flock` 防多 worktree 并发 setup 写坏）。共享前每个 worktree 各自播种 1.8G 并重编依赖（#455 波 4 个 worktree 各 setup 一次，合计约 1.5–2 小时墙钟，#465 修复）
 - **ccache**：本机装了 `ccache` 时 `scripts/setup.sh` 自动给 Linux CMake 配置 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`；缓存目录固定为**主仓** `.cache/ccache`（`scripts/ccache-env.sh` 从 git common dir 解析，所有 worktree 共享同一份缓存）。`CCACHE_DIR` 是环境变量、不随 CMakeCache 持久，所以 `build.sh` 每次自行导出；漏掉会让新 worktree 构建直接报 `ccache: error: Read-only file system`（#81 实测，修法见该文件）。CI 尚未接入 ccache
 - **npm 缓存**：默认 `~/.npm`；不可写时 `scripts/build.sh` / `scripts/preflight.sh` 自动设 `npm_config_cache=<repo>/.cache/npm`
 - **gh 缓存**：`~/.cache/gh` 不可写时 `scripts/wait-ci.sh` / `scripts/ci-log.sh` 自动设 `XDG_CACHE_HOME=<repo>/.cache`，避免 `gh run view --log-failed` 失败

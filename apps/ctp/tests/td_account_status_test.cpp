@@ -1,7 +1,9 @@
 // td_account_status_test: 2018 推送相关纯函数单元测试 (account_query_matches 路由 +
 // should_push_account_status 三态去重 + epoch_day_from_yyyymmdd 交易日转换)。
 // 纯函数实现在 td_api_pure.cpp, 不依赖 TdApi 类和 CTP 头文件,
-// 因此测试目标无需链接 dztd_ctp_api (与 td_api_pure_test.cpp 同款 extern 声明模式)。
+// 因此测试目标无需链接 dztd_ctp_api。声明单源在 td_api_pure.h（#465）。
+
+#include "td/td_api_pure.h"
 
 #include <gtest/gtest.h>
 
@@ -10,22 +12,6 @@
 
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date_time.h>
-
-// 与既有 td_api_pure_test.cpp 同款 extern 声明模式 (该文件在 namespace dztrader::ctp
-// 内 extern 声明, 不 include td_api.h——它携带 TdApi 类定义, 测试目标未链接完整依赖)。
-// 本文件同做法: 在 namespace dztrader::ctp {} 内 extern 声明, 签名与 td_api.h 纯函数区一致
-namespace dztrader::ctp {
-bool account_query_matches(const std::vector<std::string>& configured, const std::string& queried);
-/// 2018 三态去重判定 (契约 account-status 场景 2/3): 非强制时, 同态同交易日且非 Offline 不推;
-/// 同态但 `date` 变化 (日切) 必推; Offline 恒推 (删账户/崩溃兜底语义)。
-/// force (快照/查询应答) 绕过去重。
-bool should_push_account_status(
-    DzAccountState last, int32_t last_date, DzAccountState next, int32_t next_date, bool force);
-/// "YYYYMMDD" -> 距纪元天数; 空串/非法回落 0 (契约: 非 Ready 或缺失交易日 = 0)。
-int32_t epoch_day_from_yyyymmdd(const std::string& yyyymmdd);
-/// 契约 account-status: 帧内 `date` 仅 Ready 时为登录返回交易日, 其余状态恒 0。
-int32_t account_status_date(DzAccountState state, const std::string& date);
-}  // namespace dztrader::ctp
 
 TEST(AccountQueryRoute, EmptyQueryMeansAll) {
     EXPECT_TRUE(dztrader::ctp::account_query_matches({"A", "B"}, ""));
