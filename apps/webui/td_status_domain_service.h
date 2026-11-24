@@ -24,8 +24,10 @@ namespace dztrader::webui {
 /// 账户级条目的清理不由本服务承担（key 不含进程名）：网关停止/崩溃/移除与账户从配置帧消失
 /// 时由 {@link TdAccountMirrorCleanup} 按账户注册表反查清除（ADR 0056 决策 8）。
 ///
-/// `interface_type` 不由本服务派生（payload 不含类型字段，契约 td-status §1）：dzweb 整体
-/// 透传 `ext`，前端用账户 ID 查注册表得归属网关后自行派生；注册表未命中时按 `ext` 原样透传，
+/// `interface_type` 派生（契约 td-status §1）：payload 不含类型字段，`instance_id` 是账户 ID
+/// → 必须先经**账户注册表**解析归属网关再从网关名派生。本服务只负责镜像与透传，解析与派生
+/// 由前端解析层完成，数据源是 `GET /api/td/accounts` 的 `account_id → gateway`（契约 rest
+/// §2.9.9，即 td-status §1 所说的「查账户注册表」）；注册表未命中时按已收到的 `ext` 原样透传，
 /// 不猜接口类型。
 ///
 /// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问串行执行，不加锁。
@@ -45,7 +47,7 @@ public:
             SPDLOG_WARN("td rtn status dropped | reason=missing_instance_id");
             return;
         }
-        mirror_.update(instance_id, "td_status", payload);
+        mirror_.update(instance_id, kDomainTdStatus, payload);
         ws_.broadcast("td_rtn_status", instance_id, payload);
         SPDLOG_DEBUG("td_rtn_status pushed | instance={}", instance_id);
     }

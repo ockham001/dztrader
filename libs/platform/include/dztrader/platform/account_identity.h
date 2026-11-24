@@ -51,7 +51,7 @@ enum class AccountNameError : std::uint8_t {
 };
 
 /// `account_name` 校验结果（契约 td-config §2.2 / §7、ADR 0056 决策 4）。
-struct AccountNameKey {
+struct AccountNameValidation {
     AccountNameError error = AccountNameError::None;
     /// 成功时的唯一性比较键 = `NFC(trim(name))`；trim 后为空 → 空串（= 未设置）。
     /// **只用于比较**：配置与回报里存原值（ADR 0056 决策 3「不做写入时规范化」）。
@@ -69,7 +69,20 @@ struct AccountNameKey {
 /// （dzweb：REST `invalid_account_name`；td：CRITICAL 原因串）。
 ///
 /// @param account_name 原值（可为空串 = 未设置；不做写入时规范化）
-[[nodiscard]] AccountNameKey validate_account_name(std::string_view account_name);
+[[nodiscard]] AccountNameValidation validate_account_name(std::string_view account_name);
+
+/// 展平唯一性判定用的**有效身份键**（契约 td-config §2.2 / §5 / §7、ADR 0056 决策 4）：
+/// 名字合法且非空 → `NFC(trim(name))`；未设置 → 回落 `account_id`。非法名（只可能来自手改
+/// 配置文件的存量值）同样回落 `account_id`——与展示回落同一口径，且不会产出空键让
+/// 「id vs 别人名字」这一组合漏判。
+///
+/// 唯一实现的理由：这个「空名按 id 参与判定」规则同时用于 td 网关的配置内查重、dzweb 的
+/// REST 预检和注册表比对；三处各写一遍 ternary 必然漂移（ADR 0056 决策 4 的四组合）。
+///
+/// @param account_id 该账户的 ID（非空；调用方已校验）
+/// @param account_name 原值（未规范化；内部 trim + NFC）
+[[nodiscard]] std::string effective_account_name_key(std::string_view account_id,
+                                                     std::string_view account_name);
 
 }  // namespace dztrader::platform
 

@@ -123,12 +123,14 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
   **在 `prune_gateways_not_in()` 之前**）时，dzweb 用注册表反查该网关账户集，逐个
   `mirror_.erase(account_id, "td_status"/"progress")`；注册表降级时放弃清理（宁残留不猜）。
   账户从配置帧消失（reconcile 后不再在注册表里）时同样清掉。清理本身不产生新 WS 消息——
-  webui-ws §2.2 是登记制且没有「删除镜像条目」的形状；确有条目被清时调用方广播
-  `data_changed{scope:"td"}`（账户基线失效口径），由前端重拉。
+  webui-ws §2.2 是登记制且没有「删除镜像条目」的形状；网关状态/配置变化另有
+  `process_status` / `process_config` 广播（前端据此把该网关的账户行判为离线/消失），
+  确有条目被清时调用方再广播 `data_changed{scope:"td"}`（账户基线失效口径）让前端重拉。
 - **`interface_type` 派生**：账户级帧的 `instance_id` 是账户 ID，本身不含接口类型，必须先用
-  注册表解析出归属网关再派生（td-status §1）；dzweb 侧不派生（payload 原样透传 `ext`），
-  由前端用 `GET /api/td/accounts` 的 `account_id → gateway` 自行派生；注册表未命中时按已收到的
-  `ext` 原样透传，不猜。
+  注册表解析出归属网关再派生（td-status §1）。后端只负责提供映射与透传（payload 原样广播，
+  不改写 `ext`），派生点在前端解析层：用 `GET /api/td/accounts` 的 `account_id → gateway`
+  派生（该端点即 td-status §1 所称的「查账户注册表」，契约 rest §2.9.9）；注册表未命中时按
+  已收到的 `ext` 原样透传，不猜。
 - **账户注册表**（`apps/webui/td_account_registry.{h,cpp}`，契约 td-config §5 / rest §2.9.9）：
   `account_id → {gateway, account_name, enabled}` 的平台侧**投影**，`account_id` 全局唯一（跨网关，
   ADR 0045 / ADR 0056）。它同时是**账户显示名的唯一来源**（`account_name` 不进交易推送帧、

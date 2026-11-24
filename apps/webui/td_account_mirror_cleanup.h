@@ -32,11 +32,6 @@
 
 namespace dztrader::webui {
 
-/// 账户级镜像的两个 domain（契约 webui-ws §2.1）：清理必须同时覆盖，漏一个会让前端残留
-/// 旧登录态（`td_status`）或旧进度（`progress`）。
-inline constexpr std::string_view kTdAccountStatusDomain = "td_status";
-inline constexpr std::string_view kTdAccountProgressDomain = "progress";
-
 class TdAccountMirrorCleanup {
 public:
     TdAccountMirrorCleanup(MirrorStore& mirror, TdAccountRegistry& registry)
@@ -118,16 +113,16 @@ public:
                 continue;
             }
             const auto instance = mirror_.instance(account_id);
-            const bool had_status = instance.contains(kTdAccountStatusDomain);
-            const bool had_progress = instance.contains(kTdAccountProgressDomain);
+            const bool had_status = instance.contains(kDomainTdStatus);
+            const bool had_progress = instance.contains(kDomainProgress);
             if (!had_status && !had_progress) {
                 continue;
             }
             if (had_status) {
-                mirror_.erase(account_id, kTdAccountStatusDomain);
+                mirror_.erase(account_id, kDomainTdStatus);
             }
             if (had_progress) {
-                mirror_.erase(account_id, kTdAccountProgressDomain);
+                mirror_.erase(account_id, kDomainProgress);
             }
             ++erased;
         }

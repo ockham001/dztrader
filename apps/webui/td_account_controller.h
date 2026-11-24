@@ -131,15 +131,17 @@ private:
     drogon::HttpResponsePtr check_account_name(const std::string& account_name) const;
 
     /// 预检 5：`account_name` 与 `account_id` 的**展平唯一性**（契约 td-config §5/§7）。
+    ///
+    /// 冲突判定（ADR 0056 决策 4 的四组合，比较键 = `NFC(trim(name))`，留空按 account_id）：
+    /// 候选名 vs 每个已登记条目的 id / 有效名；候选 **新** id（POST）vs 别人的名字。
+    /// PUT 的 id 是既有账户→不重复判定，且 `exclude_account_id` 排除自身。
+    ///
     /// @param exclude_account_id PUT 改名时排除自身（POST 传空）
-    /// @param check_candidate_id_against_names POST 新增 id 时还要判「新 id 与别人的名字冲突」
-    ///        （PUT 的 id 未变，既有冲突与本次改名无关）
     /// 返回 nullptr = 通过；否则 409 `account_name_exists`。
     drogon::HttpResponsePtr check_account_name_conflict(
         const std::string& account_name,
         const std::string& account_id,
-        const std::string& exclude_account_id,
-        bool check_candidate_id_against_names) const;
+        const std::string& exclude_account_id) const;
 
     /// 写 `TD_REQ_MODIFY_CONFIG` 帧；失败 → 503（不带 code，见类注释）。返回 nullptr = 成功。
     drogon::HttpResponsePtr dispatch(const std::string& gateway,

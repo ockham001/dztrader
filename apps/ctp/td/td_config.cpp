@@ -174,7 +174,10 @@ std::optional<std::string> validate(const TdConfig& cfg) {
                 return std::format("account_name invalid | account_id=\"{}\" reason=invalid_utf8",
                                    acct.account_id);
         }
-        name_keys.push_back(name.unset() ? acct.account_id : name.key);
+        // 「空名/非法名按 account_id 参与判定」由 platform 单一实现，dzweb 的 REST 预检与
+        // 注册表比对用同一函数（ADR 0056 决策 4 的四组合）。
+        name_keys.push_back(
+            dztrader::platform::effective_account_name_key(acct.account_id, acct.account_name));
 
         // Global Constraints: 账户 ext 的连接参数非空
         if (acct.ext.broker_id.empty()) {

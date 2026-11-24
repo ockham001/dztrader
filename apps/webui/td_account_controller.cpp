@@ -19,13 +19,6 @@ namespace {
 /// （CTP 侧的 12 字节上限不在 dzweb：分层见 ADR 0056 决策 6。）
 constexpr size_t kMaxAccountIdBytes = sizeof(DzAccountId) - 1;
 
-/// 账户名的**有效比较键**（契约 td-config §5/§7 的「展平判定」）：`NFC(trim(name))`；
-/// 留空或非法（手改配置文件可能带来）按 `account_id` 参与判定——与展示回落同一口径。
-std::string effective_name_key(const TdAccountRegistryEntry& entry) {
-    const auto name = dztrader::platform::validate_account_name(entry.account_name);
-    return name.unset() ? entry.account_id : name.key;
-}
-
 }  // namespace
 
 bool TdAccountCtrl::is_registered_td_gateway(const std::string& gateway) const {
@@ -54,13 +47,20 @@ drogon::HttpResponsePtr TdAccountCtrl::check_gateway_ready(const std::string& ga
 bool TdAccountCtrl::is_registered_process_name(const std::string& name) const {
     // 契约 td-config §7 / general §5：账户级帧的 `instance_id` 就是 `account_id`，与进程级
     // `instance_id` 共用 MirrorStore 的一维键空间——同名会让 `progress` 域互相覆盖。
-    // `dztraderd`（master）不在自己的 process_config 里，但它的实例 key 恒存在于镜像
-    // （`kMasterInstance`），因此单独判定；其余进程（`dzweb`/`dzsysmon`/`dzmd_*`/`dztd_*`/
-    // 策略）都在进程配置镜像里。
-    if (name == kMasterInstance) {
+    // `dztraderd`（master）与 `dzweb` / `dzsysmon` 不在自己的 process_config 里（或 API-only
+    // 模式下进程配置尚空），但它们的实例 key 恒存在/将存在于镜像，因此按名字显式占位；
+    // 其余已注册进程（动态注册的网关/策略）查进程配置镜像。
+    if (name == kMasterInstance || name == "dzweb" || name == "dzsysmon") {
         return true;
     }
-    return process_mirror_ && process_mirror_->get_process_config(name).has_value();
+    if (process_mirror_ && process_mirror_->get_process_config(name).has_value()) {
+        return true;
+    }
+    // 进程命名空间按**形态**预留（契约 td-config §7 的 `dzmd_*` / `dztd_*` / `stg.*`）：
+    // 网关与策略都可动态注册（master 的 Start 会扫描 App Root 注册新网关），今天的空闲名字
+    // 明天可能就是进程名，而两类 instance_id 共用同一个镜像键空间。
+    return name.starts_with("dztd_") || name.starts_with("dzmd_") || name.starts_with("stg.") ||
+           name.starts_with("stg_");
 }
 
 drogon::HttpResponsePtr TdAccountCtrl::check_account_id(const std::string& account_id) const {
@@ -92,24 +92,25 @@ drogon::HttpResponsePtr TdAccountCtrl::check_account_name(const std::string& acc
 drogon::HttpResponsePtr TdAccountCtrl::check_account_name_conflict(
     const std::string& account_name,
     const std::string& account_id,
-    const std::string& exclude_account_id,
-    bool check_candidate_id_against_names) const {
+    const std::string& exclude_account_id) const {
     if (!registry_) {
         return nullptr;  // 未装配注册表（测试/异常装配）：交给目标网关
     }
     // 候选的有效名键：留空按候选 account_id 参与判定（契约 §2.9.7 预检 5）。
-    const auto name = dztrader::platform::validate_account_name(account_name);
-    const std::string candidate_key = name.unset() ? account_id : name.key;
+    const std::string candidate_key =
+        dztrader::platform::effective_account_name_key(account_id, account_name);
+    // 候选 id 是否**新**：POST 的 id 不在注册表（account_exists 已在此之前收敛），PUT 的
+    // id 是既有账户。新 id 还要与别人的名字两两不等（四组合之一）；PUT 的 id 未变，那种
+    // 既有冲突与本次改名无关，不得因此拒绝。
+    const bool candidate_id_is_new = !registry_->contains(account_id);
     for (const auto& entry : registry_->entries()) {
         if (!exclude_account_id.empty() && entry.account_id == exclude_account_id) {
             continue;  // PUT 改名排除自身（契约 §2.9.7 预检 6）
         }
-        const std::string existing_key = effective_name_key(entry);
-        // 展平判定（契约 td-config §5 / ADR 0056 决策 4 的四组合）：候选名与别人的 id /
-        // 名冲突；候选 id 与别人的名字冲突（仅新增时——PUT 的 id 未变，既有冲突与本次
-        // 请求无关，不得因此拒绝改名）。
+        const std::string existing_key =
+            dztrader::platform::effective_account_name_key(entry.account_id, entry.account_name);
         const bool conflict = candidate_key == entry.account_id || candidate_key == existing_key ||
-                              (check_candidate_id_against_names && account_id == existing_key);
+                              (candidate_id_is_new && account_id == existing_key);
         if (conflict) {
             SPDLOG_WARN(
                 "td account config rejected: account name conflict | account={} "
@@ -208,12 +209,15 @@ void TdAccountCtrl::create(const drogon::HttpRequestPtr& req,
     }
 
     // 预检 4：通用层字段校验（契约 rest §2.9.7 预检 4，规则真相源 td-config §2.2 / §7）。
-    // 契约区分「JSON 形状错误」（不带 code 的 bad request）与「字段值非法」（带 code 的
-    // 预检失败）：缺失 / 类型不符留给下面的通用失败体，值非法走 invalid_account_id /
-    // invalid_account_name。
+    // 字段级问题（缺失 / 类型不符 / 值非法）统一回该字段的 code——契约把「account_id 非空」
+    // 与「account_name 提供且非空」都登记在这条预检里，前端按 code 定位字段；只有 body 容器
+    // 形状错误（body 非 object、gateway/account 缺失或类型不符）才回不带 code 的 bad request。
     auto account_id_it = account_it->find("account_id");
     if (account_id_it == account_it->end() || !account_id_it->is_string()) {
-        callback(error_response(drogon::k400BadRequest, "bad request"));
+        SPDLOG_WARN("td account config rejected: account id missing or not string | gateway={}",
+                    gateway);
+        callback(
+            error_with_code(drogon::k400BadRequest, "invalid account id", "invalid_account_id"));
         return;
     }
     const std::string account_id = account_id_it->get<std::string>();
@@ -225,7 +229,10 @@ void TdAccountCtrl::create(const drogon::HttpRequestPtr& req,
     auto account_name_it = account_it->find("account_name");
     if (account_name_it != account_it->end()) {
         if (!account_name_it->is_string()) {
-            callback(error_response(drogon::k400BadRequest, "bad request"));
+            SPDLOG_WARN("td account config rejected: account name not string | account={}",
+                        account_id);
+            callback(error_with_code(drogon::k400BadRequest, "invalid account name",
+                                     "invalid_account_name"));
             return;
         }
         account_name = account_name_it->get<std::string>();
@@ -244,8 +251,7 @@ void TdAccountCtrl::create(const drogon::HttpRequestPtr& req,
     }
     // 预检 5（续）：account_name 展平唯一性（留空按 account_id 参与判定；NFC 后字节比较）。
     if (auto err = check_account_name_conflict(account_name, account_id,
-                                               /*exclude_account_id=*/"",
-                                               /*check_candidate_id_against_names=*/true);
+                                               /*exclude_account_id=*/"");
         err != nullptr) {
         callback(err);
         return;
@@ -304,7 +310,10 @@ void TdAccountCtrl::update(const drogon::HttpRequestPtr& req,
     }
     if (auto name_it = body.find("account_name"); name_it != body.end()) {
         if (!name_it->is_string()) {
-            callback(error_response(drogon::k400BadRequest, "bad request"));
+            SPDLOG_WARN("td account config rejected: account name not string | account={}",
+                        account_id);
+            callback(error_with_code(drogon::k400BadRequest, "invalid account name",
+                                     "invalid_account_name"));
             return;
         }
         const std::string account_name = name_it->get<std::string>();
@@ -314,8 +323,7 @@ void TdAccountCtrl::update(const drogon::HttpRequestPtr& req,
         }
         // 预检 5（改名）：唯一性同 POST，排除自身（契约 rest §2.9.7 预检 6）。
         if (auto err = check_account_name_conflict(account_name, account_id,
-                                                   /*exclude_account_id=*/account_id,
-                                                   /*check_candidate_id_against_names=*/false);
+                                                   /*exclude_account_id=*/account_id);
             err != nullptr) {
             callback(err);
             return;

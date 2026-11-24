@@ -8,7 +8,6 @@ constexpr std::string_view DOMAIN_MD_CONFIG = "md_config";
 constexpr std::string_view DOMAIN_MD_STATUS = "md_status";
 constexpr std::string_view DOMAIN_PROCESS_CONFIG = "process_config";
 constexpr std::string_view DOMAIN_AUTO_LOGIN = "auto_login";
-constexpr std::string_view DOMAIN_PROGRESS = "progress";
 }  // namespace
 
 namespace dztrader::webui {
@@ -40,7 +39,7 @@ void ProcessMirror::mark_stale(const std::string& name) {
     // 新 RTN_PROGRESS 覆盖。配置类领域（auto_login/log_config）保留（非状态, 重启后覆盖）。
     mirror_.erase(name, DOMAIN_MD_CONFIG);
     mirror_.erase(name, DOMAIN_MD_STATUS);
-    mirror_.erase(name, DOMAIN_PROGRESS);
+    mirror_.erase(name, kDomainProgress);
 }
 
 std::vector<platform::ProcessStatus> ProcessMirror::get_all() const {
@@ -143,7 +142,7 @@ void ProcessMirror::remove(const std::string& name) {
     mirror_.erase(name, DOMAIN_STATUS);
     mirror_.erase(name, DOMAIN_MD_CONFIG);
     mirror_.erase(name, DOMAIN_MD_STATUS);
-    mirror_.erase(name, DOMAIN_PROGRESS);
+    mirror_.erase(name, kDomainProgress);
     // 同时清理 dztraderd.process_config 中的条目
     auto j = mirror_.instance(std::string(kMasterInstance));
     auto it = j.find("process_config");

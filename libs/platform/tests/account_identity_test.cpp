@@ -161,5 +161,27 @@ TEST(AccountIdentityTest, ChineseNameIsNfcIdentity) {
     EXPECT_EQ(result.key, "主账户");
 }
 
+// ============================================================================
+// 展平判定用的有效身份键（契约 td-config §2.2 / §5 / §7、ADR 0056 决策 4）
+// ============================================================================
+
+TEST(AccountIdentityTest, EffectiveKeyUsesNormalizedNameWhenSet) {
+    EXPECT_EQ(effective_account_name_key("00001", "  我的主账户 "), "我的主账户");
+    EXPECT_EQ(effective_account_name_key("00001", "e\xCC\x81"), "\xC3\xA9") << "NFC applied";
+}
+
+TEST(AccountIdentityTest, EffectiveKeyFallsBackToAccountIdWhenUnset) {
+    // 留空 = 未设置：按 account_id 参与判定（"未设置"与"设置成和 id 一样"是两件事，但
+    // 唯一性比较键相同——两者都会让界面显示同一个字符串）。
+    EXPECT_EQ(effective_account_name_key("00001", ""), "00001");
+    EXPECT_EQ(effective_account_name_key("00001", "   "), "00001");
+}
+
+TEST(AccountIdentityTest, EffectiveKeyFallsBackToAccountIdForInvalidName) {
+    // 非法名只可能来自手改配置文件；与展示回落同口径按 id 参与判定（不产出空键）。
+    EXPECT_EQ(effective_account_name_key("00001", "bad\tname"), "00001");
+    EXPECT_EQ(effective_account_name_key("00001", std::string(65, 'n')), "00001");
+}
+
 }  // namespace
 }  // namespace dztrader::platform

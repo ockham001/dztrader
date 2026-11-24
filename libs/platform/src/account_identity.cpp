@@ -46,7 +46,7 @@ bool has_control_chars(std::string_view text) noexcept {
 
 }  // namespace
 
-AccountNameKey validate_account_name(std::string_view account_name) {
+AccountNameValidation validate_account_name(std::string_view account_name) {
     const std::string_view trimmed = trim_account_name(account_name);
     if (trimmed.empty()) {
         return {};  // 未设置：合法，key 为空串（调用方按 account_id 回落）
@@ -62,6 +62,14 @@ AccountNameKey validate_account_name(std::string_view account_name) {
         return {.error = AccountNameError::InvalidUtf8, .key = {}};
     }
     return {.error = AccountNameError::None, .key = std::move(*normalized)};
+}
+
+std::string effective_account_name_key(std::string_view account_id, std::string_view account_name) {
+    const auto name = validate_account_name(account_name);
+    if (name.valid() && !name.unset()) {
+        return name.key;
+    }
+    return std::string(account_id);
 }
 
 }  // namespace dztrader::platform

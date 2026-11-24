@@ -305,14 +305,16 @@ TEST_F(TdAccountControllerTest, CreateRejectsAccountOwnedByAnotherGateway) {
     EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "account_exists");
 }
 
-TEST_F(TdAccountControllerTest, CreateRejectsMissingAccountId) {
+TEST_F(TdAccountControllerTest, CreateRejectsMissingOrNonStringAccountId) {
+    // 契约 rest §2.9.7 预检 4：`account_id` 非空是字段规则——缺失/类型不符与空串一样回
+    // invalid_account_id（前端按 code 定位字段），不是容器形状错误。
     prime_gateway("dztd_ctp");
-    const std::string body =
-        nlohmann::json{{"gateway", "dztd_ctp"}, {"account", {{"enabled", true}}}}.dump();
-    auto resp = invoke(&TdAccountCtrl::create, admin_req(body));
-    // 缺字段是 JSON 形状错误（不带 code 的 bad request），不是字段值非法。
-    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
-    EXPECT_FALSE(parse_body(resp).contains("code"));
+    for (const std::string& body :
+         {nlohmann::json{{"gateway", "dztd_ctp"}, {"account", {{"enabled", true}}}}.dump(),
+          nlohmann::json{{"gateway", "dztd_ctp"}, {"account", {{"account_id", 42}}}}.dump()}) {
+        expect_error(invoke(&TdAccountCtrl::create, admin_req(body)), drogon::k400BadRequest,
+                     "invalid_account_id");
+    }
 }
 
 TEST_F(TdAccountControllerTest, CreateRejectsAccountIdLongerThan31Bytes) {
@@ -365,6 +367,16 @@ TEST_F(TdAccountControllerTest, CreateRejectsAccountIdEqualToProcessName) {
     }
 }
 
+TEST_F(TdAccountControllerTest, CreateRejectsAccountIdInReservedProcessNamespace) {
+    // 契约 td-config §7 的进程名形态（`dzmd_*` / `dztd_*` / `stg.*`）：网关与策略都能动态
+    // 注册，未注册的空闲名字同样要预留（两类 instance_id 共用一个镜像键空间）。
+    prime_gateway("dztd_ctp");
+    for (const char* reserved : {"dztd_xtp", "dzmd_future", "stg.demo", "stg_demo"}) {
+        auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", reserved)));
+        expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+    }
+}
+
 TEST_F(TdAccountControllerTest, CreateRejectsAccountNameTooLongOrWithControlChar) {
     prime_gateway("dztd_ctp");
     const std::string too_long(65, 'n');
@@ -375,7 +387,7 @@ TEST_F(TdAccountControllerTest, CreateRejectsAccountNameTooLongOrWithControlChar
         drogon::k400BadRequest, "invalid_account_name");
 }
 
-TEST_F(TdAccountControllerTest, CreateAcceptsChineseAccountName) {
+TEST_F(TdAccountControllerTest, CreateAcceptsChineseAccountNameAndForwardsIt) {
     ReadyShmFixture shm;
     prime_gateway("dztd_ctp");
     use_ready_shm(shm);
@@ -383,6 +395,21 @@ TEST_F(TdAccountControllerTest, CreateAcceptsChineseAccountName) {
     auto resp =
         invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_a", "我的主账户")));
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    // dzweb 只校验、不改写：account_name 原值随 AddAccount params 透传给目标网关。
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_REQ_MODIFY_CONFIG, "dztd_ctp");
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload.at("params").at("account_name").get<std::string>(), "我的主账户");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsNonStringAccountName) {
+    prime_gateway("dztd_ctp");
+    const std::string body =
+        nlohmann::json{{"gateway", "dztd_ctp"},
+                       {"account", {{"account_id", "acc_a"}, {"account_name", 42}}}}
+            .dump();
+    expect_error(invoke(&TdAccountCtrl::create, admin_req(body)), drogon::k400BadRequest,
+                 "invalid_account_name");
 }
 
 TEST_F(TdAccountControllerTest, CreateRejectsDuplicateAccountName) {
@@ -626,6 +653,10 @@ TEST_F(TdAccountControllerTest, UpdateRejectsInvalidAccountName) {
     expect_error(invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"bad\nname"})"),
                         std::string("acc_a")),
                  drogon::k400BadRequest, "invalid_account_name");
+    expect_error(
+        invoke(&TdAccountCtrl::update, admin_req(nlohmann::json{{"account_name", 42}}.dump()),
+               std::string("acc_a")),
+        drogon::k400BadRequest, "invalid_account_name");
 }
 
 TEST_F(TdAccountControllerTest, UpdateRejectsNameConflictWithOtherAccountExcludingSelf) {
