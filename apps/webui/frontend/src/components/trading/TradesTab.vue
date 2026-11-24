@@ -16,6 +16,7 @@ import type { RecycleScrollerExposed } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
 import Icon from '@/components/shared/Icon.vue'
 import { useTdTradesStore } from '@/stores/tdTrades'
+import { useTdAccountsStore } from '@/stores/tdAccounts'
 import {
   formatTdPrice,
   formatTdTime,
@@ -38,6 +39,17 @@ import type { TdTradeRow } from '@/types/api'
 
 const store = useTdTradesStore()
 const scroller = ref<RecycleScrollerExposed<TdTradeRow> | null>(null)
+
+/**
+ * 账户展示名解析（ADR 0056 决策 9 / 契约 td-config §8）：展示时按 `account_id` 现查
+ * （`account_name` 空则回落 id），**不在行数据里缓存名字副本**——历史行来自 REST 基线/交易库，
+ * 改名后不会重推，只有现查才能让它们立刻显示新名字。过滤参数始终是 `account_id`。
+ */
+const tdAccounts = useTdAccountsStore()
+
+function accountDisplayName(accountId: string): string {
+  return tdAccounts.displayName(accountId)
+}
 
 /** 行高固定 36px：RecycleScroller 据此算可视窗口（列多、单行不可换行） */
 const ROW_HEIGHT = 36
@@ -166,12 +178,14 @@ watch(accountOptions, options => {
                   type="checkbox"
                   :checked="isAccountSelected(account)"
                   :disabled="isLastSelectedAccount(account)"
-                  :aria-label="`筛选账户 ${account}`"
-                  :title="isLastSelectedAccount(account) ? '至少保留一个账户；要显示全部请用「全选」' : ''"
+                  :aria-label="`筛选账户 ${accountDisplayName(account)}`"
+                  :title="isLastSelectedAccount(account)
+                    ? `至少保留一个账户；要显示全部请用「全选」（账户 ID ${account}）`
+                    : account"
                   @change="toggleAccount(account)"
                 >
                 <span class="ds-check__box"></span>
-                <span class="td-trades__filter-label">{{ account }}</span>
+                <span class="td-trades__filter-label">{{ accountDisplayName(account) }}</span>
               </label>
             </div>
           </div>
@@ -235,7 +249,7 @@ watch(accountOptions, options => {
           <template #default="{ item }">
             <div class="td-trade" :data-trade-id="item.trade_id">
               <span class="td-trade__col td-trade__col--time">{{ formatTdTime(item.time) }}</span>
-              <span class="td-trade__col td-trade__col--account" :title="item.account_id">{{ item.account_id }}</span>
+              <span class="td-trade__col td-trade__col--account" :title="item.account_id">{{ accountDisplayName(item.account_id) }}</span>
               <span class="td-trade__col td-trade__col--instrument" :title="`${item.instrument_id} · ${item.exchange_id}`">{{ item.instrument_id }}</span>
               <span :class="directionClass(item.direction)">{{ tdDirectionText(item.direction) }}</span>
               <span class="td-trade__col td-trade__col--effect">{{ tdPositionEffectText(item.position_effect) }}</span>

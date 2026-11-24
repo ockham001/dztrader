@@ -56,7 +56,7 @@ vi.mock('@/api/tdGateways', async (importOriginal) => {
  * 固定这些契约事实：
  * - 注册表是账户列表的唯一视角；`available:false` 是**降级**，不得当空列表；
  * - 配置镜像按网关全量覆盖，到达时清该网关全部 pending（不是「账户消失」判定）；
- * - 细状态/进度按 `网关名:账户ID` 覆盖，不从配置镜像推导；
+ * - 细状态/进度按账户 ID（账户级帧 instance_id）覆盖，不从配置镜像推导；
  * - 唯一性预检命中即不发请求；**降级时跳过预检**（裁决交给 dzweb 的 409）；
  * - 失败文案按 code 映射中文，绝不回显英文 error。
  */
@@ -71,7 +71,7 @@ function isPending(key: string): boolean {
 }
 
 function registryEntry(overrides: Partial<TdConfigAccountList> = {}): TdConfigAccountList {
-  return { account_id: 'account_001', gateway: 'dztd_ctp', enabled: true, ...overrides }
+  return { account_id: 'account_001', account_name: '', gateway: 'dztd_ctp', enabled: true, ...overrides }
 }
 
 function configPayload(accounts: TdConfigPayload['accounts'] = []): TdConfigPayload {
@@ -198,10 +198,10 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
 
     // 降级前的配置镜像（含另一网关的账户）
     store.applyTdConfig('dztd_ctp', configPayload([
-      { account_id: 'account_001', enabled: true, ext: { broker_id: '9999', user_id: 'u1', password: '****' } },
+      { account_id: 'account_001', enabled: true, ext: { broker_id: '9999', password: '****' } },
     ]))
     store.applyTdConfig('dztd_ctp_2', configPayload([
-      { account_id: 'account_009', enabled: false, ext: { broker_id: '8888', user_id: 'u9', password: '****' } },
+      { account_id: 'account_009', enabled: false, ext: { broker_id: '8888', password: '****' } },
     ]))
 
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
@@ -226,7 +226,7 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
     await store.init()
 
     store.applyTdConfig('dztd_ctp', configPayload([
-      { account_id: 'account_001', enabled: false, ext: { broker_id: '9999', user_id: 'u1', password: '****' } },
+      { account_id: 'account_001', enabled: false, ext: { broker_id: '9999', password: '****' } },
     ]))
 
     // 契约 rest §2.9.7 可观察效果：只有账户集合增减才广播 data_changed，
@@ -248,6 +248,112 @@ describe('useTdAccountsStore · 注册表（契约 rest §2.9.9）', () => {
 
     await store.handleDataChanged('td')
     expect(tdApi.listAccounts).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useTdAccountsStore · 账户展示名解析（ADR 0056 决策 9 / 契约 td-config §8）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  it('注册表有名字 → displayName 返回名字；空名/未登记 → 回落 account_id', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [
+        registryEntry({ account_id: '00001', account_name: '我的主账户' }),
+        registryEntry({ account_id: '00002', account_name: '' }),
+      ],
+    } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    expect(store.displayName('00001')).toBe('我的主账户')
+    expect(store.displayName('00002')).toBe('00002')
+    // 解析不到（账户已删 / 未登记）同样回落 id：展示层不得因缺名字失败（ADR 0056 决策 5）
+    expect(store.displayName('unknown')).toBe('unknown')
+  })
+
+  it('配置镜像覆盖注册表：改名只经 td_rtn_config 到达，注册表缓存要等重拉', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [registryEntry({ account_id: '00001', account_name: '旧名字' })],
+    } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+    expect(store.displayName('00001')).toBe('旧名字')
+
+    store.applyTdConfig('dztd_ctp', configPayload([
+      { account_id: '00001', account_name: '新名字', enabled: true, ext: { broker_id: '9999', password: '****' } },
+    ]))
+
+    // 改名不广播 data_changed（契约 webui-ws §2.3 只覆盖账户集合增减），
+    // 所以注册表会停留在旧名——解析必须以配置镜像为准，改名才能立刻全站生效（含历史行）
+    expect(store.displayName('00001')).toBe('新名字')
+  })
+
+  it('帧里名字清空 = 未设置 → 回落 id（不保留注册表旧名）', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [registryEntry({ account_id: '00001', account_name: '旧名字' })],
+    } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    store.applyTdConfig('dztd_ctp', configPayload([
+      { account_id: '00001', account_name: '', enabled: true, ext: { broker_id: '9999', password: '****' } },
+    ]))
+
+    expect(store.displayName('00001')).toBe('00001')
+    expect(store.accountName('00001')).toBe('')
+  })
+
+  it('注册表降级时仍可从配置镜像解析名字（降级不丢展示名）', () => {
+    const store = useTdAccountsStore()
+    store.applyTdConfig('dztd_ctp', configPayload([
+      { account_id: '00001', account_name: '主账户', enabled: true, ext: { broker_id: '9999', password: '****' } },
+    ]))
+
+    expect(store.available).toBe(true)  // 尚未拉过注册表，与「降级」无关
+    expect(store.displayName('00001')).toBe('主账户')
+  })
+
+  it('accountName 返回原值（表单回填不回落 id），displayName 去首尾空白且全空白视为未设置', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [
+        registryEntry({ account_id: '00001', account_name: '  我的主账户  ' }),
+        registryEntry({ account_id: '00002', account_name: '   ' }),
+      ],
+    } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    // 表单回填必须能区分「没起名字」与「名字恰好等于 id」，因此原值不回落
+    expect(store.accountName('00001')).toBe('  我的主账户  ')
+    expect(store.displayName('00001')).toBe('我的主账户')
+    // 全空白名字 = 契约 §2.2「trim 后为空 = 未设置」
+    expect(store.accountName('00002')).toBe('   ')
+    expect(store.displayName('00002')).toBe('00002')
+  })
+
+  it('名字是纯展示字段：解析结果不参与 gatewayOf / 唯一性预检', async () => {
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [registryEntry({ account_id: '00001', account_name: '主账户' })],
+    } satisfies TdAccountsListResponse)
+    const store = useTdAccountsStore()
+    await store.init()
+
+    // 按名字查不到任何东西：账户身份始终是 account_id（契约 td-config §8）
+    expect(store.gatewayOf('主账户')).toBeNull()
+    expect(store.accountIdConflict('主账户')).toBeNull()
+    expect(store.gatewayOf('00001')).toBe('dztd_ctp')
   })
 })
 
@@ -324,7 +430,7 @@ describe('useTdAccountsStore · WS 镜像与 pending（契约 td-config §4、�
     expect(isPending('td:dztd_ctp:account_001:update')).toBe(true)
   })
 
-  it('td_rtn_status 按 网关名:账户ID 覆盖，并进入行展示；配置帧不携带细状态', async () => {
+  it('td_rtn_status 按账户 ID（instance_id）覆盖，并进入行展示；配置帧不携带细状态', async () => {
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: true,
       accounts: [registryEntry()],
@@ -334,35 +440,39 @@ describe('useTdAccountsStore · WS 镜像与 pending（契约 td-config §4、�
     registerGateway('dztd_ctp')
 
     store.applyTdConfig('dztd_ctp', configPayload([
-      { account_id: 'account_001', enabled: true, ext: { broker_id: '9999', user_id: 'u1', password: '****' } },
+      { account_id: 'account_001', enabled: true, ext: { broker_id: '9999', password: '****' } },
     ]))
     // 配置帧不含状态字段：细状态必须来自 td_rtn_status
     expect(store.rows[0].status).toBeNull()
 
-    store.applyTdStatus('dztd_ctp:account_001', statusPayload())
+    store.applyTdStatus('account_001', statusPayload())
     expect(store.rows[0].status?.state).toBe('Ready')
     expect(store.rows[0].status?.date).toBe('20260808')
 
     // 后到覆盖先到（全量语义，含 Idle 清空）
-    store.applyTdStatus('dztd_ctp:account_001', statusPayload({
+    store.applyTdStatus('account_001', statusPayload({
       state: 'Idle', date: '', login_time: '', progress_current: 0,
     }))
     expect(store.rows[0].status?.state).toBe('Idle')
     expect(store.rows[0].status?.date).toBe('')
   })
 
-  it('非法帧忽略：缺 instance_id / 缺 account_id / 非对象 status 不覆盖已有镜像', async () => {
+  it('非法帧忽略：缺 instance_id / 缺 account_id / instance_id 与 payload.account_id 不一致 不覆盖已有镜像', async () => {
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: true,
       accounts: [registryEntry()],
     } satisfies TdAccountsListResponse)
     const store = useTdAccountsStore()
     await store.init()
-    store.applyTdStatus('dztd_ctp:account_001', statusPayload())
+    store.applyTdStatus('account_001', statusPayload())
 
     store.applyTdStatus(undefined, statusPayload({ state: 'Idle' }))
-    store.applyTdStatus('dztd_ctp:account_001', undefined)
-    store.applyTdStatus('dztd_ctp:account_001', { ...statusPayload({ state: 'Idle' }), account_id: '' })
+    store.applyTdStatus('account_001', undefined)
+    store.applyTdStatus('account_001', { ...statusPayload({ state: 'Idle' }), account_id: '' })
+    // 自校验（契约 td-status §3：payload.account_id 供消费方定位与自校验）：不一致 = 来源错乱
+    store.applyTdStatus('account_002', statusPayload({ account_id: 'account_001', state: 'Idle' }))
+    // 旧的复合键实例标识已废弃（ADR 0056 决策 7）：不再被拆键匹配，整帧忽略
+    store.applyTdStatus('dztd_ctp:account_001', statusPayload({ state: 'Idle' }))
 
     expect(store.rows[0].status?.state).toBe('Ready')
   })
@@ -374,9 +484,9 @@ describe('useTdAccountsStore · WS 镜像与 pending（契约 td-config §4、�
     } satisfies TdAccountsListResponse)
     const store = useTdAccountsStore()
     await store.init()
-    store.applyTdStatus('dztd_ctp:account_001', statusPayload({ progress_current: 3 }))
+    store.applyTdStatus('account_001', statusPayload({ progress_current: 3 }))
 
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 7, desc: '加载合约' })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 7, desc: '加载合约' })
 
     expect(store.rows[0].progress?.current).toBe(7)
     expect(store.rows[0].progress?.desc).toBe('加载合约')
@@ -407,7 +517,7 @@ describe('useTdAccountsStore · 唯一性预检（契约 rest §2.9.7 预检 4 /
     registerGateway('dztd_ctp')
 
     const result = await store.addAccount('dztd_ctp', {
-      account_id: 'dup', ext: { broker_id: '9999', user_id: 'u1', password: 'p' },
+      account_id: 'dup', ext: { broker_id: '9999', password: 'p' },
     })
 
     expect(result).toEqual({
@@ -426,7 +536,7 @@ describe('useTdAccountsStore · 唯一性预检（契约 rest §2.9.7 预检 4 /
     registerGateway('dztd_ctp')
 
     const result = await store.addAccount('dztd_ctp', {
-      account_id: 'account_001', ext: { broker_id: '9999', user_id: 'u1', password: 'p' },
+      account_id: 'account_001', ext: { broker_id: '9999', password: 'p' },
     })
 
     expect(store.available).toBe(false)
@@ -445,7 +555,7 @@ describe('useTdAccountsStore · 唯一性预检（契约 rest §2.9.7 预检 4 /
     const result = await store.addAccount('dztd_ctp', {
       account_id: ' account_001 ',
       enabled: true,
-      ext: { broker_id: '9999', user_id: 'u1', password: 'p' },
+      ext: { broker_id: '9999', password: 'p' },
     })
 
     expect(result.ok).toBe(true)
@@ -454,7 +564,7 @@ describe('useTdAccountsStore · 唯一性预检（契约 rest §2.9.7 预检 4 /
       account: {
         account_id: 'account_001',  // 去首尾空白后再提交
         enabled: true,
-        ext: { broker_id: '9999', user_id: 'u1', password: 'p' },
+        ext: { broker_id: '9999', password: 'p' },
       },
     })
   })
@@ -497,7 +607,7 @@ describe('useTdAccountsStore · 写操作与失败文案（契约 rest §2.9.7�
     registerGateway('dztd_ctp')
 
     const result = await store.addAccount('dztd_ctp', {
-      account_id: 'account_001', ext: { broker_id: '9999', user_id: 'u1', password: 'p' },
+      account_id: 'account_001', ext: { broker_id: '9999', password: 'p' },
     })
 
     expect(result).toEqual({ ok: false, kind: 'failed', message: expect.stringContaining('已被占用') as unknown as string })
@@ -666,12 +776,29 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     const pending = store.login('account_001')
     expect(isPending(SESSION_KEY('login'))).toBe(true)
 
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 10 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
     await nextTick()
 
     expect(isPending(SESSION_KEY('login'))).toBe(false)
     expect(await pending).toEqual({ ok: true })
     expect(tdApi.loginAccount).toHaveBeenCalledWith('account_001')
+  })
+
+  it('进程级 progress（key = 进程名）不清账户会话 pending；账户级 instance_id = 账户 ID（ADR 0056 决策 7）', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 网关进程自身的进度与账户登录无关：instance_id 是进程名，解析不出账户 → 不清 pending
+    useProgressStore().applyProgress('dztd_ctp', { min: 0, max: 10, current: 10 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 账户级进度到 max 才清登录 pending
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await pending
   })
 
   it('登录在途时点登出：progress 到 min 时登录/登出 pending 都清（不挂 45s）', async () => {
@@ -681,7 +808,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     expect(isPending(SESSION_KEY('login'))).toBe(true)
     expect(isPending(SESSION_KEY('logout'))).toBe(true)
 
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
     await nextTick()
 
     expect(isPending(SESSION_KEY('login'))).toBe(false)
@@ -694,12 +821,12 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     const pending = store.login('account_001')
 
     // 建立中（5/10）：中间态但未回退 → 保持 pending
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 5 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 5 })
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(true)
 
     // 回退到 2/10：失败回滚（契约 progress 骨架：建立期 current 单调、失败回退）
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 2 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 2 })
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(false)
     await pending
@@ -712,14 +839,14 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     store.applyTdConfig('dztd_ctp', configPayload([
       {
         account_id: 'account_001', enabled: true, risk_control_enabled: false, currency_id: 'CNY',
-        ext: { broker_id: '9999', user_id: '00001', password: '****' },
+        ext: { broker_id: '9999', password: '****' },
       },
     ]))
     // 配置帧的清除粒度只覆盖配置写 pending（td:），不得误清登录 pending（td_sess:）
     expect(isPending(SESSION_KEY('login'))).toBe(true)
 
     // 收尾：progress 到 min 清掉，避免留下定时器
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
     await nextTick()
     await pending
   })
@@ -743,7 +870,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     expect(store.sessionPending('account_001', 'logout')).toBe(true)
     expect(store.sessionPending('account_001', 'login')).toBe(false)
 
-    useProgressStore().applyProgress('dztd_ctp:account_001', { min: 0, max: 10, current: 0 })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
     await nextTick()
     expect(store.sessionPending('account_001', 'logout')).toBe(false)
     await pending

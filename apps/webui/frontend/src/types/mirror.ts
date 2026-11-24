@@ -28,8 +28,9 @@ export interface DomainPayloads {
   // 与 md_config 同型——全量覆盖、后到覆盖先到、进快照（账户配置页基线由 snapshot + 增量构成，
   // 不需要额外 REST 基线拉取）。
   td_config?: TdConfigPayload
-  // 契约 td-status §3 / 契约 webui-ws §2.1：账户级细状态镜像，key = 网关名:账户ID
-  //（如 dztd_ctp:account_001）。前端按 instance_id 关联账户行，全量覆盖更新。
+  // 契约 td-status §3 / 契约 webui-ws §2.1：账户级细状态镜像，key = 账户 ID
+  //（如 00001；账户级帧 instance_id 不再是复合键，ADR 0056 决策 7）。前端按 instance_id
+  // 关联账户行，全量覆盖更新。
   td_status?: TdStatusPayload
 }
 

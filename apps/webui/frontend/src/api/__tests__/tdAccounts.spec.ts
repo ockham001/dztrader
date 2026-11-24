@@ -33,9 +33,10 @@ describe('tdApi 交易账户配置端点（契约 rest §2.9.7/§2.9.9）', () =
     const body = {
       gateway: 'dztd_ctp',
       account: {
-        account_id: 'account_001',
+        account_id: '00001',
+        account_name: '主账户',
         enabled: true,
-        ext: { broker_id: '9999', user_id: '00001', password: '123456' },
+        ext: { broker_id: '9999', password: '123456' },
       },
     }
 
@@ -44,6 +45,17 @@ describe('tdApi 交易账户配置端点（契约 rest §2.9.7/§2.9.9）', () =
     expect(fetchMock.mock.calls[0][0]).toBe('/api/td/accounts')
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('POST')
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual(body)
+  })
+
+  it('改名走 PUT 的 account_name（契约 rest §2.9.7；ADR 0056 决策 3：不要求账户 Idle）', async () => {
+    const fetchMock = stubFetch({ ok: true })
+
+    await tdApi.updateAccount('00001', { account_name: '新名称' })
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
+    expect(body).toEqual({ account_name: '新名称' })
+    // 路径是 account_id 的唯一来源；body 出现它会被服务端 400
+    expect(body).not.toHaveProperty('account_id')
   })
 
   it('updateAccount 打 PUT /api/td/accounts/{id}，路径参数做 URL 编码，body 不含 account_id', async () => {

@@ -8,7 +8,7 @@ import type { TdConfigPayload, TdStatusPayload } from '@/types/api'
  *
  * 固定四件事：
  * - `td_rtn_config` 只写 tdAccounts store 的配置镜像（按 instance_id = 网关进程名）；
- * - `td_rtn_status` 只写细状态镜像（按 instance_id = 网关名:账户ID）；
+ * - `td_rtn_status` 只写细状态镜像（按 instance_id = 账户 ID，ADR 0056 决策 7）；
  * - `data_changed{scope:"td"}` 追加触发账户注册表重拉（契约 rest §2.9.7 可观察效果）；
  * - `snapshot` 的 td_config / td_status 两个新域分发进同一个 store（幂等覆盖）。
  */
@@ -86,7 +86,7 @@ describe('wsHandlers · 交易账户配置/细状态（#251）', () => {
   it('td_rtn_config 按 instance_id（网关进程名）写配置镜像，并清该网关 pending', async () => {
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: true,
-      accounts: [{ account_id: 'account_001', gateway: 'dztd_ctp', enabled: true }],
+      accounts: [{ account_id: 'account_001', account_name: '', gateway: 'dztd_ctp', enabled: true }],
     })
     const store = useTdAccountsStore()
     await store.init()
@@ -95,7 +95,7 @@ describe('wsHandlers · 交易账户配置/细状态（#251）', () => {
     expect(tdAccountsPending.pending['td:dztd_ctp:account_001:update']).toBe(true)
 
     dispatch('td_rtn_config', config([
-      { account_id: 'account_001', enabled: false, ext: { broker_id: '9999', user_id: 'u1', password: '****' } },
+      { account_id: 'account_001', enabled: false, ext: { broker_id: '9999', password: '****' } },
     ]), 'dztd_ctp')
 
     // 镜像 key 是网关进程名（契约 webui-ws §2.2），不是固定值
@@ -104,13 +104,13 @@ describe('wsHandlers · 交易账户配置/细状态（#251）', () => {
     expect(tdAccountsPending.pending['td:dztd_ctp:account_001:update'] === true).toBe(false)
   })
 
-  it('td_rtn_status 按 instance_id（网关名:账户ID）写细状态镜像，且不影响配置镜像', async () => {
+  it('td_rtn_status 按 instance_id（= 账户 ID，ADR 0056 决策 7）写细状态镜像，且不影响配置镜像', async () => {
     const store = useTdAccountsStore()
 
-    dispatch('td_rtn_status', status(), 'dztd_ctp:account_001')
+    dispatch('td_rtn_status', status(), 'account_001')
 
-    expect(store.statuses['dztd_ctp:account_001']?.state).toBe('Ready')
-    expect(store.statuses['dztd_ctp:account_001']?.date).toBe('20260808')
+    expect(store.statuses['account_001']?.state).toBe('Ready')
+    expect(store.statuses['account_001']?.date).toBe('20260808')
     expect(store.configs).toEqual({})
   })
 
@@ -131,7 +131,7 @@ describe('wsHandlers · 交易账户配置/细状态（#251）', () => {
     vi.mocked(tdApi.listAccounts).mockClear()
     vi.mocked(tdApi.listAccounts).mockResolvedValue({
       available: true,
-      accounts: [{ account_id: 'account_009', gateway: 'dztd_ctp_2', enabled: true }],
+      accounts: [{ account_id: 'account_009', account_name: '', gateway: 'dztd_ctp_2', enabled: true }],
     })
 
     dispatch('data_changed', { scope: 'td' } as never)
@@ -148,15 +148,15 @@ describe('wsHandlers · 交易账户配置/细状态（#251）', () => {
     dispatch('snapshot', {
       dztd_ctp: {
         td_config: config([
-          { account_id: 'account_001', enabled: true, ext: { broker_id: '9999', user_id: 'u1', password: '****' } },
+          { account_id: 'account_001', enabled: true, ext: { broker_id: '9999', password: '****' } },
         ]),
       },
-      'dztd_ctp:account_001': {
+      'account_001': {
         td_status: status(),
       },
     } as never)
 
     expect(store.configs['dztd_ctp'].accounts).toHaveLength(1)
-    expect(store.statuses['dztd_ctp:account_001'].state).toBe('Ready')
+    expect(store.statuses['account_001'].state).toBe('Ready')
   })
 })
