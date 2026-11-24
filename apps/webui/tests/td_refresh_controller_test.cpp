@@ -90,9 +90,10 @@ protected:
 
     /// 账户写进注册表（等价收到配置帧，契约 td-config §5）。
     void seed_account(const std::string& gateway, const std::string& account_id) {
-        registry_->reconcile_gateway(
-            gateway, {TdAccountRegistryEntry{
-                         .account_id = account_id, .gateway = gateway, .enabled = true}});
+        registry_->reconcile_gateway(gateway, {TdAccountRegistryEntry{.account_id = account_id,
+                                                                      .gateway = gateway,
+                                                                      .account_name = "",
+                                                                      .enabled = true}});
         registry_->note_config_frame_received();
     }
 

@@ -44,6 +44,7 @@
 #include "td_domain_service.h"
 #include "td_data_controller.h"
 #include "td_account_registry.h"
+#include "td_account_mirror_cleanup.h"
 #include "td_account_controller.h"
 #include "td_gateway_controller.h"
 #include "td_config_domain_service.h"
@@ -179,13 +180,6 @@ int main(int argc, char* argv[]) {
     auto mirror_store = std::make_shared<dztrader::webui::MirrorStore>();
     auto process_mirror = std::make_shared<dztrader::webui::ProcessMirror>(*mirror_store);
 
-    // 交易账户注册表（契约 td-config §5 / rest §2.9.9）：平台侧 account_id → gateway 投影，
-    // 内存优先 + platform.db 尽力持久化。启动加载失败 → 从空开始、随各网关配置帧重建
-    // （已知降级：最多少覆盖一个网关）。
-    auto td_account_registry = std::make_shared<dztrader::webui::TdAccountRegistry>(
-        std::make_unique<dztrader::webui::RepositoryTdAccountRegistryStore>(*repo));
-    td_account_registry->load();
-
     // shm 初始化（master 已创建 channel，webui 只 open_only）
     // 共享内存不存在时降级为 API-only 模式（dztraderd 未启动）
     // 事件 Reader 由 EventMonitor 内部创建，此处仅创建事件 Writer
@@ -204,6 +198,21 @@ int main(int argc, char* argv[]) {
     // UPDATE_SHM_EVENT_SUBSCRIBER 刷新的是同一份订阅者缓存，动态重启的子进程
     // 才能在注册后被写帧 notify 到（否则 SET_AUTO_LOGIN 等请求会悬挂至对端超时兜底）
     auto shm_writer = std::make_shared<dztrader::webui::ShmWriter>(event_writer);
+
+    // 交易账户注册表（契约 td-config §5 / rest §2.9.9）：平台侧 account_id → gateway 投影，
+    // 内存优先 + platform.db 尽力持久化。启动加载失败 → 从空开始、随各网关配置帧重建
+    // （已知降级：最多少覆盖一个网关）。
+    // event_writer 注入用于跨网关重复账户的 NOTIFY_UI 弹窗（ADR 0056：CRITICAL + 弹窗，
+    // 不阻断、不自动登出）；API-only 模式下为空 → 只记 CRITICAL。
+    auto td_account_registry = std::make_shared<dztrader::webui::TdAccountRegistry>(
+        std::make_unique<dztrader::webui::RepositoryTdAccountRegistryStore>(*repo),
+        event_writer.get());
+    td_account_registry->load();
+
+    // 账户级镜像清理（ADR 0056 决策 8 / 契约 general §9）：账户级 key 是账户 ID、不含进程名，
+    // 网关停止/崩溃/移除与账户从配置帧消失时按注册表反查清除 td_status / progress。
+    auto td_account_mirror_cleanup = std::make_shared<dztrader::webui::TdAccountMirrorCleanup>(
+        *mirror_store, *td_account_registry);
 
     // NOTE: 启动查询 (write_query_all) 移到事件监听启动之后
     // 原因: event_thread 是 SHM 信号量的消费者, 必须先启动监听再发查询
@@ -390,11 +399,12 @@ int main(int argc, char* argv[]) {
     auto sysmon_domain =
         std::make_shared<dztrader::webui::SysmonDomainService>(*mirror_store, *ws_ctrl);
     // 交易网关配置/细状态领域服务（契约 td-config §4/§8、td-status §3）：镜像 domain
-    // `td_config`（key=网关进程名）/ `td_status`（key=网关名:账户ID）+ WS 广播；
+    // `td_config`（key=网关进程名）/ `td_status`（key=账户 ID）+ WS 广播；
     // 配置帧到达后按网关整组 reconcile 账户注册表（契约 td-config §5），账户集合变化时
-    // 广播 data_changed{td}（契约 webui-ws §2.3）。
+    // 广播 data_changed{td}（契约 webui-ws §2.3）；账户从配置帧消失时清其账户级镜像
+    // （ADR 0056 决策 8）。
     auto td_config_domain = std::make_shared<dztrader::webui::TdConfigDomainService>(
-        *mirror_store, *td_account_registry, *ws_ctrl, *ws_ctrl);
+        *mirror_store, *td_account_registry, *ws_ctrl, *ws_ctrl, *td_account_mirror_cleanup);
     auto td_status_domain =
         std::make_shared<dztrader::webui::TdStatusDomainService>(*mirror_store, *ws_ctrl);
 
@@ -475,13 +485,22 @@ int main(int argc, char* argv[]) {
                         });
     router.register_json<nlohmann::json>(
         DZ_FRAME_RTN_PROCESS_STATUS, false,
-        [process_domain](const std::string&, const nlohmann::json& p) {
+        [process_domain, td_account_mirror_cleanup, ws_ctrl](const std::string&,
+                                                             const nlohmann::json& p) {
             process_domain->on_rtn_process_status(p);
+            // 账户级镜像清理（ADR 0056 决策 8 / 契约 general §9）：`td_status` 与账户级
+            // `progress` 的 key 是账户 ID、不含进程名，ProcessMirror 的按进程名清理路径
+            // 覆盖不到；交易网关停止/崩溃时按注册表反查清除。确有条目被清时广播
+            // data_changed{td}（webui-ws §2.3 账户基线失效）——镜像条目消失本身对已连接
+            // 前端不可见（没有"删除镜像条目"的 WS 消息形状）。
+            if (td_account_mirror_cleanup->on_process_status(p) > 0) {
+                ws_ctrl->broadcast_data_changed("td");
+            }
         });
     router.register_json<nlohmann::json>(
         DZ_FRAME_RTN_PROCESS_CONFIG, false,
-        [process_domain, td_account_registry, ws_ctrl](const std::string&,
-                                                       const nlohmann::json& p) {
+        [process_domain, td_account_registry, td_account_mirror_cleanup, ws_ctrl](
+            const std::string&, const nlohmann::json& p) {
             process_domain->on_rtn_process_config(p);
             // 网关被移除时清掉该网关的账户注册表条目（内存 + platform.db，契约 td-config §5）。
             // 全量进程配置帧的条目消失 = 进程已移除（契约 process），只对 `dztd_*` 生效——
@@ -493,9 +512,15 @@ int main(int argc, char* argv[]) {
                         live_gateways.push_back(it.key());
                     }
                 }
+                // 账户级镜像清理必须在 prune **之前**：prune 会把归属信息从注册表抹掉，
+                // 抹掉后就再也反查不出「这些账户属于已移除的网关」。
+                const size_t cleared =
+                    td_account_mirror_cleanup->erase_departed_gateways(live_gateways);
                 // 注册表里只剩 dztd_* 条目：非 dztd 进程从不写入，因此「不在 live 集合」
                 // 等价于「该网关已移除」。
-                if (td_account_registry->prune_gateways_not_in(live_gateways)) {
+                const bool registry_pruned =
+                    td_account_registry->prune_gateways_not_in(live_gateways);
+                if (registry_pruned || cleared > 0) {
                     // 账户集合变化 → 交易数据基线失效（契约 webui-ws §2.3）。
                     ws_ctrl->broadcast_data_changed("td");
                 }

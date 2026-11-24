@@ -11,6 +11,12 @@ namespace dztrader::webui {
 /// （设计文档 §4.3）：master 是这类帧的唯一来源，其 log_config 镜像本就以 dztraderd 为 key。
 inline constexpr std::string_view kMasterInstance = "dztraderd";
 
+/// 跨领域服务共用的镜像 domain 名（契约 webui-ws §2.1 的 domain 清单）：写入方（领域服务）
+/// 与清理方（`TdAccountMirrorCleanup`）必须用同一个字面量——domain 名是协议取值，两处各写
+/// 一份字符串就是「同一事实两处定义」，改一处漏一处会让清理静默失效。
+inline constexpr std::string_view kDomainTdStatus = "td_status";
+inline constexpr std::string_view kDomainProgress = "progress";
+
 /// 统一状态镜像：instance_id -> { domain -> payload }
 /// 契约模型（frame_contracts 各文件的"镜像"节）：dzweb 以 instance_id 为 key 维护各领域镜像，
 /// 快照（snapshot）是 WS 连接时全量推送的唯一来源，增量帧由领域服务广播。

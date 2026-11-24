@@ -4,12 +4,11 @@
 #include <format>
 #include <fstream>
 #include <optional>
-#include <string_view>
 
 #include <spdlog/spdlog.h>
 
 #include <dztrader/core/json_section.h>
-#include <dztrader/core/utf8.h>
+#include <dztrader/platform/account_identity.h>
 
 namespace dztrader::ctp {
 
@@ -17,80 +16,9 @@ namespace {
 
 /// CTP `TThostFtdcInvestorIDType[13]` 的可用长度：12 字节 + NUL。超长必须报错而不是
 /// 静默截断——截断会把订单打到不存在的账户（ADR 0056 / 契约 td-config §2.3）。
+/// 长度上限属 CTP 层自有约束（dzweb 是 31 字节，ADR 0056 决策 6）；共有字节规则
+/// （字符集 / trim / 控制字符 / NFC）在 `platform::account_identity` 单一实现。
 constexpr std::size_t kCtpInvestorIdMaxBytes = 12;
-/// 契约 td-config §2.2：`account_name` trim 后 ≤64 字节 UTF-8。
-constexpr std::size_t kAccountNameMaxBytes = 64;
-/// 契约 td-config §2.2 / §7：`account_id` = ASCII 可见字符 `0x21`–`0x7E`，禁 `:`。
-constexpr unsigned char kAccountIdMinByte = 0x21;
-constexpr unsigned char kAccountIdMaxByte = 0x7E;
-/// ASCII 空白（契约 §2.2「trim 后」的口径）；控制字符另行拒绝（§7）。
-constexpr std::string_view kAsciiWhitespace = " \t\r\n\f\v";
-
-std::string_view trim_ascii_whitespace(std::string_view text) {
-    const auto first = text.find_first_not_of(kAsciiWhitespace);
-    if (first == std::string_view::npos) {
-        return {};
-    }
-    const auto last = text.find_last_not_of(kAsciiWhitespace);
-    return text.substr(first, last - first + 1);
-}
-
-bool is_valid_account_id_charset(std::string_view account_id) {
-    for (const char c : account_id) {
-        const auto byte = static_cast<unsigned char>(c);
-        if (byte < kAccountIdMinByte || byte > kAccountIdMaxByte || c == ':') {
-            return false;
-        }
-    }
-    return true;
-}
-
-/// 控制字符 = ASCII < 0x20（含 `\t\r\n`）、DEL 0x7F 与 C1 控制段 U+0080–U+009F。
-/// C1 段在 UTF-8 里只能是 `0xC2` + `0x80`–`0x9F` 两字节序列。
-bool contains_control_chars(std::string_view text) {
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        const auto byte = static_cast<unsigned char>(text[i]);
-        if (byte < 0x20 || byte == 0x7F) {
-            return true;
-        }
-        if (byte == 0xC2 && i + 1 < text.size()) {
-            const auto next = static_cast<unsigned char>(text[i + 1]);
-            if (next >= 0x80 && next <= 0x9F) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-/// `account_name` 校验结果：成功给唯一性比较键，失败给原因（错误串形态见契约 §7）。
-struct AccountNameValidation {
-    std::optional<std::string> key{};  ///< 成功 = NFC(trim(name))；留空时回落 account_id
-    std::string error{};               ///< key 为空时的原因（超长 / 控制字符 / 非 UTF-8）
-};
-
-/// 校验 `account_name` 并生成唯一性比较键（契约 §2.2 / ADR 0056 决策 4）。
-AccountNameValidation validate_account_name(const AccountConfig& acct) {
-    const std::string_view trimmed = trim_ascii_whitespace(acct.account_name);
-    if (trimmed.empty()) {
-        return {.key = acct.account_id};  // 留空按 account_id 参与唯一性判定
-    }
-    if (trimmed.size() > kAccountNameMaxBytes) {
-        return {.error = std::format("account_name too long | account_id=\"{}\" max_bytes={} "
-                                     "actual_bytes={}",
-                                     acct.account_id, kAccountNameMaxBytes, trimmed.size())};
-    }
-    if (contains_control_chars(trimmed)) {
-        return {.error = std::format("account_name invalid | account_id=\"{}\" reason=control_char",
-                                     acct.account_id)};
-    }
-    auto normalized = utf8_nfc(trimmed);
-    if (!normalized.has_value()) {
-        return {.error = std::format("account_name invalid | account_id=\"{}\" reason=invalid_utf8",
-                                     acct.account_id)};
-    }
-    return {.key = std::move(*normalized)};
-}
 
 /// 检测旧配置里已删除的 `ext.user_id`（ADR 0056 硬切）：返回首个命中账户的 account_id。
 std::optional<std::string> find_removed_user_id(const nlohmann::json& td_json) {
@@ -225,14 +153,31 @@ std::optional<std::string> validate(const TdConfig& cfg) {
                 "account_id too long | account_id=\"{}\" max_bytes={} actual_bytes={}",
                 acct.account_id, kCtpInvestorIdMaxBytes, acct.account_id.size());
         }
-        if (!is_valid_account_id_charset(acct.account_id)) {
+        if (!dztrader::platform::account_id_charset_valid(acct.account_id)) {
             return std::format("account_id charset invalid | account_id=\"{}\"", acct.account_id);
         }
-        auto name = validate_account_name(acct);
-        if (!name.key.has_value()) {
-            return name.error;
+        // 共有字节规则（trim / 64 字节 / 控制字符 / NFC）由 platform 单一实现：dzweb 平台
+        // 入口的权威校验用同一函数，两层不会漂移（ADR 0056 决策 4/6）。
+        const auto name = dztrader::platform::validate_account_name(acct.account_name);
+        switch (name.error) {
+            case dztrader::platform::AccountNameError::None:
+                break;
+            case dztrader::platform::AccountNameError::TooLong:
+                return std::format(
+                    "account_name too long | account_id=\"{}\" max_bytes={} actual_bytes={}",
+                    acct.account_id, dztrader::platform::kAccountNameMaxBytes,
+                    dztrader::platform::trim_account_name(acct.account_name).size());
+            case dztrader::platform::AccountNameError::ControlChar:
+                return std::format("account_name invalid | account_id=\"{}\" reason=control_char",
+                                   acct.account_id);
+            case dztrader::platform::AccountNameError::InvalidUtf8:
+                return std::format("account_name invalid | account_id=\"{}\" reason=invalid_utf8",
+                                   acct.account_id);
         }
-        name_keys.push_back(std::move(*name.key));
+        // 「空名/非法名按 account_id 参与判定」由 platform 单一实现，dzweb 的 REST 预检与
+        // 注册表比对用同一函数（ADR 0056 决策 4 的四组合）。
+        name_keys.push_back(
+            dztrader::platform::effective_account_name_key(acct.account_id, acct.account_name));
 
         // Global Constraints: 账户 ext 的连接参数非空
         if (acct.ext.broker_id.empty()) {

@@ -82,7 +82,7 @@ domain 清单与挂载实例：
 | `event_shm_config` | `RTN_EVENT_SHM_CONFIG` | SHM 事件通道配置 | 空（镜像挂 `dztraderd`） | shm |
 | `md_shm_config` | `RTN_MD_SHM_CONFIG` | SHM 行情通道配置 | 行情进程名 | shm |
 | `auto_login` | `RTN_AUTO_LOGIN` | `{ enabled, schedules }`；dzweb 读取时先校验，非法则记日志并忽略（不更新镜像、不广播） | 行情进程名 | auto-login |
-| `progress` | `RTN_PROGRESS` | `{ min, max, current, desc }` | 进程名 / `{进程}:{账户}` | progress |
+| `progress` | `RTN_PROGRESS` | `{ min, max, current, desc }` | 进程名（进程级）/ **账户 ID**（TD 账户级） | progress |
 | `sysmon_snapshot` | `RTN_SYSMON_SNAPSHOT` | 系统监控快照（契约 sysmon §2） | `dzsysmon`（固定；帧头无实例标识） | sysmon |
 | `sysmon_config` | `RTN_SYSMON_CONFIG` | 全量生效配置（契约 sysmon §3） | `dzsysmon` | sysmon |
 | td_order_report | `ORDER_REPORT` | 契约 rest §2.9.3 的委托行（含 avg_price / price_decimals / avg_price_decimals / seq / sort_key） | 空（account_id 在 payload 内） | td-data-sync |

@@ -1,5 +1,7 @@
 #include "td_account_registry.h"
 
+#include <dztrader/core/this_process.h>
+#include <dztrader/platform/notify_ui.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -16,8 +18,8 @@ std::vector<TdAccountRegistryRow> RepositoryTdAccountRegistryStore::load() {
 }
 
 bool RepositoryTdAccountRegistryStore::replace_gateway(
-    const std::string& gateway, const std::vector<std::string>& account_ids) {
-    return repo_.replace_td_account_registry_for_gateway(gateway, account_ids);
+    const std::string& gateway, const std::vector<TdAccountRegistryRow>& rows) {
+    return repo_.replace_td_account_registry_for_gateway(gateway, rows);
 }
 
 bool RepositoryTdAccountRegistryStore::delete_gateway(const std::string& gateway) {
@@ -28,8 +30,10 @@ bool RepositoryTdAccountRegistryStore::delete_gateway(const std::string& gateway
 // TdAccountRegistry
 // ---------------------------------------------------------------------------
 
-TdAccountRegistry::TdAccountRegistry(std::unique_ptr<TdAccountRegistryStore> store)
-    : store_(std::move(store)) {}
+TdAccountRegistry::TdAccountRegistry(std::unique_ptr<TdAccountRegistryStore> store,
+                                     shm::MultiWriter* event_writer)
+    : store_(std::move(store)),
+      event_writer_(event_writer) {}
 
 size_t TdAccountRegistry::load() {
     if (!store_) {
@@ -49,9 +53,12 @@ size_t TdAccountRegistry::load() {
             continue;
         }
         // enabled 未持久化（契约 rest §2.9.9）：回 true，不把账户误标为禁用；
+        // account_name 由加列迁移补上，旧行为空串 → 前端回落 account_id，配置帧到达即出真值。
         // 该网关配置帧到达后 reconcile 出真实值。
-        entries_[row.account_id] = TdAccountRegistryEntry{
-            .account_id = row.account_id, .gateway = row.gateway, .enabled = true};
+        entries_[row.account_id] = TdAccountRegistryEntry{.account_id = row.account_id,
+                                                          .gateway = row.gateway,
+                                                          .account_name = row.account_name,
+                                                          .enabled = true};
     }
     SPDLOG_INFO("td account registry loaded | accounts={}", entries_.size());
     return entries_.size();
@@ -81,8 +88,8 @@ bool TdAccountRegistry::reconcile_gateway(const std::string& gateway,
     }
 
     std::map<std::string, bool> after;
-    std::vector<std::string> account_ids;
-    account_ids.reserve(accounts.size());
+    std::vector<TdAccountRegistryRow> rows;
+    rows.reserve(accounts.size());
     for (const auto& account : accounts) {
         if (account.account_id.empty()) {
             continue;  // 空 account_id 无意义（网关侧校验失败会回旧值，不应走到这里）
@@ -90,17 +97,17 @@ bool TdAccountRegistry::reconcile_gateway(const std::string& gateway,
         auto it = entries_.find(account.account_id);
         if (it != entries_.end() && it->second.gateway != gateway) {
             // 跨网关重复：契约 td-config §5 规定 account_id 全局唯一，帧为权威 → 改判归属。
-            // 另一个网关的配置与注册表因此不一致，等它的帧到达时自愈。
-            SPDLOG_WARN(
-                "td account already owned by another gateway, reassigning | "
-                "account={} old_gateway={} new_gateway={}",
-                account.account_id, it->second.gateway, gateway);
+            // 只可能由手改配置文件造成（ADR 0056）：告警不阻断、不自动登出，等另一个网关的
+            // 帧到达时自愈。
+            alert_cross_gateway_duplicate(account.account_id, it->second.gateway, gateway);
         }
         TdAccountRegistryEntry entry = account;
         entry.gateway = gateway;
         entries_[account.account_id] = entry;
         after[account.account_id] = entry.enabled;
-        account_ids.push_back(account.account_id);
+        rows.push_back(TdAccountRegistryRow{.account_id = entry.account_id,
+                                            .gateway = entry.gateway,
+                                            .account_name = entry.account_name});
     }
 
     size_t added = 0;
@@ -124,7 +131,7 @@ bool TdAccountRegistry::reconcile_gateway(const std::string& gateway,
                      after.size());
     }
 
-    persist_gateway(gateway, account_ids);
+    persist_gateway(gateway, rows);
     return changed;
 }
 
@@ -168,6 +175,20 @@ std::vector<std::string> TdAccountRegistry::account_ids() const {
     return result;
 }
 
+std::vector<std::string> TdAccountRegistry::account_ids_of_gateway(
+    const std::string& gateway) const {
+    std::vector<std::string> result;
+    if (gateway.empty()) {
+        return result;
+    }
+    for (const auto& [account_id, entry] : entries_) {
+        if (entry.gateway == gateway) {
+            result.push_back(account_id);
+        }
+    }
+    return result;
+}
+
 bool TdAccountRegistry::prune_gateways_not_in(const std::vector<std::string>& live_gateways) {
     const std::set<std::string> live(live_gateways.begin(), live_gateways.end());
     std::set<std::string> removed_gateways;
@@ -194,12 +215,12 @@ bool TdAccountRegistry::prune_gateways_not_in(const std::vector<std::string>& li
 }
 
 void TdAccountRegistry::persist_gateway(const std::string& gateway,
-                                        const std::vector<std::string>& account_ids) {
+                                        const std::vector<TdAccountRegistryRow>& rows) {
     if (!store_) {
         return;
     }
     try {
-        if (store_->replace_gateway(gateway, account_ids)) {
+        if (store_->replace_gateway(gateway, rows)) {
             return;
         }
     } catch (const std::exception& e) {
@@ -210,6 +231,26 @@ void TdAccountRegistry::persist_gateway(const std::string& gateway,
     }
     SPDLOG_ERROR("td account registry persist failed | gateway={} reason=\"store rejected write\"",
                  gateway);
+}
+
+void TdAccountRegistry::alert_cross_gateway_duplicate(const std::string& account_id,
+                                                      const std::string& old_gateway,
+                                                      const std::string& new_gateway) {
+    // ADR 0056 / 契约 td-config §5：同一 account_id 出现在两个网关 → CRITICAL + NOTIFY_UI
+    // 弹窗，不阻断网关启动、不自动登出（帧为权威，归属已按到达顺序改判）。
+    // 日志保持英文 + k=v；弹窗面向用户，用中文说明可执行的补救动作。
+    SPDLOG_CRITICAL(
+        "td account id configured in multiple gateways | account={} old_gateway={} "
+        "new_gateway={}",
+        account_id, old_gateway, new_gateway);
+    if (event_writer_ == nullptr) {
+        return;  // API-only 模式 / 未装配事件通道：只记日志，不假装发过弹窗
+    }
+    const std::string message = "交易账户 " + account_id + " 同时配置在 " + old_gateway + " 与 " +
+                                new_gateway + "，已按最新配置归属 " + new_gateway +
+                                "。请修改配置文件消除重复（同一账户 ID 只能属于"
+                                "一个交易接口）。";
+    dztrader::platform::NotifyUi(dztrader::this_process::exe_stem(), *event_writer_).error(message);
 }
 
 void TdAccountRegistry::persist_delete_gateway(const std::string& gateway) {

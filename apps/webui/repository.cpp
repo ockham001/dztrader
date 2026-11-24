@@ -1085,19 +1085,22 @@ bool Repository::delete_market_source(int64_t id) {
 
 // ---------------------------------------------------------------------------
 // 交易账户注册表（契约 td-config §5 / rest §2.9.9）
-// 持久层只存 account_id → gateway 两列；enabled 由配置帧覆盖，不落库。
+// 持久层存 account_id → gateway 与 account_name 三列；enabled 由配置帧覆盖，不落库。
 // ---------------------------------------------------------------------------
 
 std::vector<TdAccountRegistryRow> Repository::list_td_account_registry() {
     std::scoped_lock lk(mutex_);
     sqlite3_stmt* stmt = nullptr;
-    dz_prepare_v2(db_, "SELECT account_id, gateway FROM td_account_registry ORDER BY account_id",
+    dz_prepare_v2(db_,
+                  "SELECT account_id, gateway, account_name FROM td_account_registry "
+                  "ORDER BY account_id",
                   -1, &stmt, nullptr);
     std::vector<TdAccountRegistryRow> result;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         TdAccountRegistryRow row;
         row.account_id = col_text(stmt, 0);
         row.gateway = col_text(stmt, 1);
+        row.account_name = col_text(stmt, 2);
         result.push_back(std::move(row));
     }
     sqlite3_finalize(stmt);
@@ -1105,7 +1108,7 @@ std::vector<TdAccountRegistryRow> Repository::list_td_account_registry() {
 }
 
 bool Repository::replace_td_account_registry_for_gateway(
-    const std::string& gateway, const std::vector<std::string>& account_ids) {
+    const std::string& gateway, const std::vector<TdAccountRegistryRow>& rows) {
     std::scoped_lock lk(mutex_);
     // 单事务：整组替换要么全生效要么全回滚，避免"删了旧的没插新的"这种半截状态
     sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr);
@@ -1125,15 +1128,18 @@ bool Repository::replace_td_account_registry_for_gateway(
     // 覆盖——静默覆盖会让另一个网关持久层的账户凭空消失（同 id 属两个网关本就是错误状态，
     // 配置帧 reconcile 会以帧为权威先自愈，这里只需不制造额外损伤）。
     dz_prepare_v2(db_,
-                  "INSERT INTO td_account_registry (account_id, gateway) VALUES (?, ?) "
-                  "ON CONFLICT(account_id) DO UPDATE SET gateway = excluded.gateway",
+                  "INSERT INTO td_account_registry (account_id, gateway, account_name) "
+                  "VALUES (?, ?, ?) "
+                  "ON CONFLICT(account_id) DO UPDATE SET gateway = excluded.gateway, "
+                  "account_name = excluded.account_name",
                   -1, &stmt, nullptr);
     bool ok = true;
-    for (const auto& account_id : account_ids) {
+    for (const auto& row : rows) {
         sqlite3_reset(stmt);
         sqlite3_clear_bindings(stmt);
-        sqlite3_bind_text(stmt, 1, account_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 1, row.account_id.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, gateway.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, row.account_name.c_str(), -1, SQLITE_TRANSIENT);
         if (sqlite3_step(stmt) != SQLITE_DONE) {
             ok = false;
             break;

@@ -59,9 +59,10 @@ protected:
     }
 
     void seed_account(const std::string& gateway, const std::string& account_id) {
-        registry_.reconcile_gateway(
-            gateway, {TdAccountRegistryEntry{
-                         .account_id = account_id, .gateway = gateway, .enabled = true}});
+        registry_.reconcile_gateway(gateway, {TdAccountRegistryEntry{.account_id = account_id,
+                                                                     .gateway = gateway,
+                                                                     .account_name = "",
+                                                                     .enabled = true}});
     }
 
     static std::vector<nlohmann::json> capture_replies(TdControlDomainService& svc,

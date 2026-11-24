@@ -103,6 +103,17 @@ protected:
         return nlohmann::json::parse(resp->getBody());
     }
 
+    /// 断言错误响应：状态码 + 契约 rest §1 的机器码。
+    static void expect_error(const drogon::HttpResponsePtr& resp,
+                             drogon::HttpStatusCode status,
+                             const std::string& code) {
+        ASSERT_NE(resp.get(), nullptr);
+        EXPECT_EQ(resp->getStatusCode(), status);
+        const auto body = parse_body(resp);
+        ASSERT_TRUE(body.contains("code")) << "body=" << body.dump();
+        EXPECT_EQ(body.at("code").get<std::string>(), code) << "body=" << body.dump();
+    }
+
     /// 注入就绪 writer（配合 ReadyShmFixture 做帧断言）。
     void use_ready_shm(ReadyShmFixture& shm) {
         shm_writer_ = std::make_shared<ShmWriter>(shm.writer);
@@ -136,32 +147,42 @@ protected:
     /// 需要多个账户时一次传入。
     void seed_account(const std::string& gateway,
                       const std::string& account_id,
-                      bool enabled = true) {
-        seed_accounts(gateway, {{account_id, enabled}});
+                      bool enabled = true,
+                      const std::string& account_name = "") {
+        seed_accounts(gateway, {{account_id, enabled, account_name}});
     }
 
-    void seed_accounts(const std::string& gateway,
-                       std::vector<std::pair<std::string, bool>> accounts) {
+    struct SeedAccount {
+        std::string account_id;
+        bool enabled = true;
+        std::string account_name;
+    };
+
+    void seed_accounts(const std::string& gateway, std::vector<SeedAccount> accounts) {
         std::vector<TdAccountRegistryEntry> entries;
         entries.reserve(accounts.size());
-        for (auto& [id, enabled] : accounts) {
-            entries.push_back(
-                TdAccountRegistryEntry{.account_id = id, .gateway = gateway, .enabled = enabled});
+        for (const auto& account : accounts) {
+            entries.push_back(TdAccountRegistryEntry{.account_id = account.account_id,
+                                                     .gateway = gateway,
+                                                     .account_name = account.account_name,
+                                                     .enabled = account.enabled});
         }
         registry_->reconcile_gateway(gateway, entries);
     }
 
-    /// 一条 AddAccount 的合法请求体。
-    static std::string add_body(const std::string& gateway, const std::string& account_id) {
-        return nlohmann::json{
-            {"gateway", gateway},
-            {"account",
-             {{"account_id", account_id},
-              {"enabled", true},
-              {"risk_control_enabled", false},
-              {"currency_id", "CNY"},
-              {"ext", {{"broker_id", "9999"}, {"user_id", "00001"}, {"password", "p"}}}}}}
-            .dump();
+    /// 一条 AddAccount 的合法请求体（ext 按契约 td-config §2.3 的 CTP 形态：无 user_id）。
+    static std::string add_body(const std::string& gateway,
+                                const std::string& account_id,
+                                const std::string& account_name = "") {
+        nlohmann::json account = {{"account_id", account_id},
+                                  {"enabled", true},
+                                  {"risk_control_enabled", false},
+                                  {"currency_id", "CNY"},
+                                  {"ext", {{"broker_id", "9999"}, {"password", "p"}}}};
+        if (!account_name.empty()) {
+            account["account_name"] = account_name;
+        }
+        return nlohmann::json{{"gateway", gateway}, {"account", account}}.dump();
     }
 };
 
@@ -191,19 +212,21 @@ TEST_F(TdAccountControllerTest, ListIsAvailableForAuthenticatedNonAdmin) {
     EXPECT_TRUE(body.at("accounts").empty());
 }
 
-TEST_F(TdAccountControllerTest, ListReturnsRegistryEntriesSortedWithEnabled) {
-    seed_accounts("dztd_ctp", {{"acc_b", true}, {"acc_a", false}});
+TEST_F(TdAccountControllerTest, ListReturnsRegistryEntriesSortedWithEnabledAndName) {
+    seed_accounts("dztd_ctp", {{"acc_b", true, "B 账户"}, {"acc_a", false, ""}});
 
     auto resp = invoke(&TdAccountCtrl::list, user_req());
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
     const auto body = parse_body(resp);
     ASSERT_TRUE(body.at("available").get<bool>());
     ASSERT_EQ(body.at("accounts").size(), 2U);
-    // 契约 rest §2.9.9：按 account_id 升序
+    // 契约 rest §2.9.9：按 account_id 升序；account_name 空串 = 未设置（不在服务端规范化）。
     EXPECT_EQ(body.at("accounts")[0].at("account_id").get<std::string>(), "acc_a");
+    EXPECT_EQ(body.at("accounts")[0].at("account_name").get<std::string>(), "");
     EXPECT_EQ(body.at("accounts")[0].at("gateway").get<std::string>(), "dztd_ctp");
     EXPECT_FALSE(body.at("accounts")[0].at("enabled").get<bool>());
     EXPECT_EQ(body.at("accounts")[1].at("account_id").get<std::string>(), "acc_b");
+    EXPECT_EQ(body.at("accounts")[1].at("account_name").get<std::string>(), "B 账户");
     EXPECT_TRUE(body.at("accounts")[1].at("enabled").get<bool>());
 }
 
@@ -282,19 +305,23 @@ TEST_F(TdAccountControllerTest, CreateRejectsAccountOwnedByAnotherGateway) {
     EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "account_exists");
 }
 
-TEST_F(TdAccountControllerTest, CreateRejectsMissingAccountId) {
+TEST_F(TdAccountControllerTest, CreateRejectsMissingOrNonStringAccountId) {
+    // 契约 rest §2.9.7 预检 4：`account_id` 非空是字段规则——缺失/类型不符与空串一样回
+    // invalid_account_id（前端按 code 定位字段），不是容器形状错误。
     prime_gateway("dztd_ctp");
-    const std::string body =
-        nlohmann::json{{"gateway", "dztd_ctp"}, {"account", {{"enabled", true}}}}.dump();
-    auto resp = invoke(&TdAccountCtrl::create, admin_req(body));
-    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    for (const std::string& body :
+         {nlohmann::json{{"gateway", "dztd_ctp"}, {"account", {{"enabled", true}}}}.dump(),
+          nlohmann::json{{"gateway", "dztd_ctp"}, {"account", {{"account_id", 42}}}}.dump()}) {
+        expect_error(invoke(&TdAccountCtrl::create, admin_req(body)), drogon::k400BadRequest,
+                     "invalid_account_id");
+    }
 }
 
 TEST_F(TdAccountControllerTest, CreateRejectsAccountIdLongerThan31Bytes) {
     prime_gateway("dztd_ctp");
     const std::string too_long(32, 'x');  // DzAccountId 容量 32，可用 31
     auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", too_long)));
-    EXPECT_EQ(resp->getStatusCode(), drogon::k400BadRequest);
+    expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
 }
 
 TEST_F(TdAccountControllerTest, CreateAcceptsAccountIdExactly31Bytes) {
@@ -305,6 +332,158 @@ TEST_F(TdAccountControllerTest, CreateAcceptsAccountIdExactly31Bytes) {
 
     auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", max_ok)));
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsEmptyAccountIdAsInvalidAccountId) {
+    prime_gateway("dztd_ctp");
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "")));
+    expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountIdWithSpaceOrColon) {
+    // AC4 / 契约 td-config §7：ASCII 可见字符 0x21–0x7E，禁空格、禁 `:`（复合键已取消，
+    // 不让旧形态回流）。
+    prime_gateway("dztd_ctp");
+    for (const char* id : {"000 01", "00001:x", " 00001", "00001\t"}) {
+        auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", id)));
+        expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+    }
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsNonAsciiAccountId) {
+    prime_gateway("dztd_ctp");
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "账户001")));
+    expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountIdEqualToProcessName) {
+    // AC4：账户级帧的 instance_id 就是 account_id，与进程级共用镜像键空间（general §5）。
+    prime_gateway("dztd_ctp");
+    prime_gateway("dzmd_ctp");
+    prime_gateway("dzweb");  // dzweb 也是进程配置条目（master 拉起）
+    for (const char* process : {"dztd_ctp", "dzmd_ctp", "dzweb", "dztraderd"}) {
+        auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", process)));
+        expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+    }
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountIdInReservedProcessNamespace) {
+    // 契约 td-config §7 的进程名形态（`dzmd_*` / `dztd_*` / `stg.*`）：网关与策略都能动态
+    // 注册，未注册的空闲名字同样要预留（两类 instance_id 共用一个镜像键空间）。
+    prime_gateway("dztd_ctp");
+    for (const char* reserved : {"dztd_xtp", "dzmd_future", "stg.demo", "stg_demo"}) {
+        auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", reserved)));
+        expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+    }
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountNameTooLongOrWithControlChar) {
+    prime_gateway("dztd_ctp");
+    const std::string too_long(65, 'n');
+    expect_error(invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_a", too_long))),
+                 drogon::k400BadRequest, "invalid_account_name");
+    expect_error(
+        invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_b", "bad\tname"))),
+        drogon::k400BadRequest, "invalid_account_name");
+}
+
+TEST_F(TdAccountControllerTest, CreateAcceptsChineseAccountNameAndForwardsIt) {
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    use_ready_shm(shm);
+
+    auto resp =
+        invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_a", "我的主账户")));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    // dzweb 只校验、不改写：account_name 原值随 AddAccount params 透传给目标网关。
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_REQ_MODIFY_CONFIG, "dztd_ctp");
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload.at("params").at("account_name").get<std::string>(), "我的主账户");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsNonStringAccountName) {
+    prime_gateway("dztd_ctp");
+    const std::string body =
+        nlohmann::json{{"gateway", "dztd_ctp"},
+                       {"account", {{"account_id", "acc_a"}, {"account_name", 42}}}}
+            .dump();
+    expect_error(invoke(&TdAccountCtrl::create, admin_req(body)), drogon::k400BadRequest,
+                 "invalid_account_name");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsDuplicateAccountName) {
+    // 契约 rest §2.9.7 预检 5：名字全局唯一且与 id 展平判定。
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a", true, "主账户");
+
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_b", "主账户")));
+    expect_error(resp, drogon::k409Conflict, "account_name_exists");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountNameEqualToOtherAccountId) {
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_b", "acc_a")));
+    expect_error(resp, drogon::k409Conflict, "account_name_exists");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountIdEqualToOtherAccountName) {
+    // 展平判定四组合之一：新 id 撞已有账户的名字也要拒绝（交叉冲突）。
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a", true, "main");
+
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "main")));
+    expect_error(resp, drogon::k409Conflict, "account_name_exists");
+}
+
+TEST_F(TdAccountControllerTest, CreateRejectsAccountNameNfcEquivalentToExisting) {
+    // 契约 td-config §7：NFC 规范化后字节比较——预组合 é 与 "e"+U+0301 视为同名。
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a", true, "\xC3\xA9");
+
+    auto resp =
+        invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_b", "e\xCC\x81")));
+    expect_error(resp, drogon::k409Conflict, "account_name_exists");
+}
+
+TEST_F(TdAccountControllerTest, CreateWithEmptyAccountNameIsAllowed) {
+    // 空串 = 未设置（不算撞名）；同一请求里 account_name 显式给空串也应放行。
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    use_ready_shm(shm);
+
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_a", "")));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+}
+
+TEST_F(TdAccountControllerTest, CreatePrecheckOrderGatewayBeforeFieldValidation) {
+    // 契约 rest §2.9.7：POST 顺序 1→2→3→4→5——网关非 Running(409) 先于字段非法(400)。
+    prime_gateway("dztd_ctp");
+    dztrader::platform::ProcessStatus status;
+    status.name = "dztd_ctp";
+    status.state = dztrader::platform::ChildState::Stopped;
+    process_mirror_->update_status("dztd_ctp", status);
+
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "bad id")));
+    expect_error(resp, drogon::k409Conflict, "gateway_not_running");
+}
+
+TEST_F(TdAccountControllerTest, CreatePrecheckOrderAccountIdBeforeAccountName) {
+    // 预检 4 内部先 id 后 name：两者都非法时回 invalid_account_id（契约的顺序语义）。
+    prime_gateway("dztd_ctp");
+    const std::string too_long(65, 'n');
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "bad id", too_long)));
+    expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+}
+
+TEST_F(TdAccountControllerTest, CreatePrecheckOrderAccountExistsBeforeNameConflict) {
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a", true, "主账户");
+
+    auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "acc_a", "主账户")));
+    expect_error(resp, drogon::k409Conflict, "account_exists");
 }
 
 TEST_F(TdAccountControllerTest, CreateRejectsNonObjectOrMissingFields) {
@@ -442,6 +621,103 @@ TEST_F(TdAccountControllerTest, UpdatePassesThroughFieldsAndExtWithoutValidation
     EXPECT_EQ(params.at("account_id").get<std::string>(), "acc_a");
     EXPECT_EQ(params.at("enabled").get<bool>(), false);
     EXPECT_EQ(params.at("ext").at("unknown_field").get<int>(), 1);
+}
+
+TEST_F(TdAccountControllerTest, UpdateRenamesAccountByName) {
+    // 契约 rest §2.9.7：改名走 PUT，字段级 merge；dzweb 只校验唯一性并注入 account_id。
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    use_ready_shm(shm);
+    seed_account("dztd_ctp", "acc_a", true, "旧名字");
+
+    auto resp = invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"新名字"})"),
+                       std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_REQ_MODIFY_CONFIG, "dztd_ctp");
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload.at("op").get<std::string>(), "UpdateAccount");
+    const nlohmann::json expected = {{"account_name", "新名字"}, {"account_id", "acc_a"}};
+    EXPECT_EQ(cap.payload.at("params"), expected);
+}
+
+TEST_F(TdAccountControllerTest, UpdateRejectsInvalidAccountName) {
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    const std::string too_long(65, 'n');
+
+    expect_error(
+        invoke(&TdAccountCtrl::update, admin_req(nlohmann::json{{"account_name", too_long}}.dump()),
+               std::string("acc_a")),
+        drogon::k400BadRequest, "invalid_account_name");
+    expect_error(invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"bad\nname"})"),
+                        std::string("acc_a")),
+                 drogon::k400BadRequest, "invalid_account_name");
+    expect_error(
+        invoke(&TdAccountCtrl::update, admin_req(nlohmann::json{{"account_name", 42}}.dump()),
+               std::string("acc_a")),
+        drogon::k400BadRequest, "invalid_account_name");
+}
+
+TEST_F(TdAccountControllerTest, UpdateRejectsNameConflictWithOtherAccountExcludingSelf) {
+    prime_gateway("dztd_ctp");
+    seed_accounts("dztd_ctp", {{"acc_a", true, "甲"}, {"acc_b", true, "乙"}});
+
+    // 改成别人的名字 → 409（排除自身：改成自己当前的名字是允许的）。
+    expect_error(
+        invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"乙"})"), std::string("acc_a")),
+        drogon::k409Conflict, "account_name_exists");
+    expect_error(invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"acc_b"})"),
+                        std::string("acc_a")),
+                 drogon::k409Conflict, "account_name_exists");
+}
+
+TEST_F(TdAccountControllerTest, UpdateAllowsKeepingOwnNameAndOwnIdAsName) {
+    // 契约 td-config §2.2：同一账户允许 name == 自己的 id；改名排除自身（旧名字不算冲突）。
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    use_ready_shm(shm);
+    seed_account("dztd_ctp", "acc_a", true, "主账户");
+
+    EXPECT_EQ(invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"主账户"})"),
+                     std::string("acc_a"))
+                  ->getStatusCode(),
+              drogon::k200OK);
+    EXPECT_EQ(invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":"acc_a"})"),
+                     std::string("acc_a"))
+                  ->getStatusCode(),
+              drogon::k200OK);
+}
+
+TEST_F(TdAccountControllerTest, UpdateClearsNameWithEmptyString) {
+    // 显式空串 = 清空并回落 account_id（ADR 0056 决策 3），不算撞名。
+    ReadyShmFixture shm;
+    prime_gateway("dztd_ctp");
+    use_ready_shm(shm);
+    seed_account("dztd_ctp", "acc_a", true, "主账户");
+
+    auto resp =
+        invoke(&TdAccountCtrl::update, admin_req(R"({"account_name":""})"), std::string("acc_a"));
+    ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
+    const auto cap = shm.capture_inst_frame(DZ_FRAME_TD_REQ_MODIFY_CONFIG, "dztd_ctp");
+    ASSERT_TRUE(cap.found);
+    EXPECT_EQ(cap.payload.at("params").at("account_name").get<std::string>(), "");
+}
+
+TEST_F(TdAccountControllerTest, UpdatePrecheckOrderGatewayBeforeFieldValidation) {
+    // 契约 rest §2.9.7 的 PUT 顺序 1→6→2→3→4：网关非 Running(409) 先于字段非法(400)。
+    prime_gateway("dztd_ctp");
+    seed_account("dztd_ctp", "acc_a");
+    dztrader::platform::ProcessStatus status;
+    status.name = "dztd_ctp";
+    status.state = dztrader::platform::ChildState::Stopped;
+    process_mirror_->update_status("dztd_ctp", status);
+    const std::string too_long(65, 'n');
+
+    expect_error(
+        invoke(&TdAccountCtrl::update, admin_req(nlohmann::json{{"account_name", too_long}}.dump()),
+               std::string("acc_a")),
+        drogon::k409Conflict, "gateway_not_running");
 }
 
 // ============================================================================

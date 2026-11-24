@@ -163,9 +163,10 @@ protected:
     void seed_account(const std::string& gateway,
                       const std::string& account_id,
                       bool enabled = true) {
-        registry_->reconcile_gateway(
-            gateway, {TdAccountRegistryEntry{
-                         .account_id = account_id, .gateway = gateway, .enabled = enabled}});
+        registry_->reconcile_gateway(gateway, {TdAccountRegistryEntry{.account_id = account_id,
+                                                                      .gateway = gateway,
+                                                                      .account_name = "",
+                                                                      .enabled = enabled}});
     }
 
     /// 超过单页（`ReadyShmFixture` page_size = 1MB）的进程名：用于构造「就绪 writer 写失败」
