@@ -744,7 +744,7 @@ onUnmounted(() => {
                         data-test="fund-refresh"
                         :data-pending="fundsStore.refreshPending[row.account_id] ? 'true' : undefined"
                         :disabled="!canRefreshFunds(row.account_id) || fundsStore.refreshPending[row.account_id]"
-                        :title="!canRefreshFunds(row.account_id) ? '离线账户不可刷新' : (fundsStore.refreshPending[row.account_id] ? '刷新中…' : '刷新该账户资金')"
+                        :title="!canRefreshFunds(row.account_id) ? '账户未在线，不可刷新' : (fundsStore.refreshPending[row.account_id] ? '刷新中…' : '刷新该账户资金')"
                         @click="onRefreshFunds(row.account_id)"
                       >
                         <Icon name="Refresh" :size="14" />

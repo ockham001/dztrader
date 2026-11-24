@@ -275,7 +275,7 @@ TEST_F(WebuiShmWriterTest, WriteTdDisconnectWritesAccountPayload) {
     EXPECT_EQ(parse_inst_payload(*view), (nlohmann::json{{"account_id", "acc_a"}}));
 }
 
-TEST_F(WebuiShmWriterTest, WriteTdRefreshReqWritesBasicJsonFrame) {
+TEST_F(WebuiShmWriterTest, WriteTdRefreshReqWritesJsonExtFrame) {
     // 契约 td-refresh：JSON ext 帧、无 instance_id，payload {account_id, request_id}。
     ASSERT_TRUE(shm_writer_->write_td_refresh_req("acc_a", 0));
     auto view = next_frame_view(DZ_FRAME_TD_REFRESH_REQ);

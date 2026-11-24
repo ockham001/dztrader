@@ -330,7 +330,8 @@ void TdApi::handle_frame_inner(const std::byte* frame) {
             return;
         }
         case DZ_FRAME_TD_REFRESH_REQ: {
-            // 契约 td-refresh: JSON ext 帧, 无 instance_id, 按 payload account_id 归属路由
+            // 契约 td-refresh：JSON ext 帧（无 instance_id，事件通道广播），按 payload account_id
+            // 归属路由
             handle_refresh_req(view);
             return;
         }
@@ -859,32 +860,19 @@ void TdApi::on_cancel_req(const shm::FrameView& view) {
 void TdApi::handle_refresh_req(const shm::FrameView& view) {
     // 契约 td-refresh: JSON ext 帧（无 instance_id），payload {account_id, request_id?}。
     // 只对 Ready 会话置脏一次；查询受账户级通道合并/限速，不保证立即发送。
-    std::string account_id;
-    int64_t request_id = 0;
-    try {
-        const auto j = shm::decode_ext_json<nlohmann::json>(view);
-        if (!j.is_object()) {
-            SPDLOG_WARN("td refresh req rejected | reason=payload_not_object");
-            return;
-        }
-        const auto acc = j.find("account_id");
-        if (acc == j.end() || !acc->is_string() || acc->get<std::string>().empty()) {
-            SPDLOG_WARN("td refresh req rejected | reason=invalid_account_id");
-            return;
-        }
-        account_id = acc->get<std::string>();
-        if (const auto rid = j.find("request_id"); rid != j.end() && rid->is_number_integer()) {
-            request_id = rid->get<int64_t>();
-        }
-    } catch (const std::exception& e) {
-        SPDLOG_WARN("td refresh req rejected | reason=invalid_payload error=\"{}\"", e.what());
+    const auto* payload = reinterpret_cast<const char*>(view.ext_payload());
+    const std::string_view payload_text(payload, view.ext_payload_size());
+    TdRefreshReq req;
+    std::string parse_error;
+    if (!parse_td_refresh_req(payload_text, &req, &parse_error)) {
+        SPDLOG_WARN("td refresh req rejected | reason={}", parse_error);
         return;
     }
+    const std::string& account_id = req.account_id;
 
     if (find_account_in(config_, account_id) == nullptr) {
-        // 其他 td 网关实例的账户：本进程不处理（REST 预检按注册表路由，这里是兜底）。
-        SPDLOG_DEBUG("td refresh req ignored | reason=account_not_in_config account={}",
-                     account_id);
+        // 未配置账户（本进程没有该账户）：忽略并 WARN（契约 td-refresh §校验）。
+        SPDLOG_WARN("td refresh req ignored | reason=account_not_in_config account={}", account_id);
         return;
     }
     auto* session = find_session(account_id);
@@ -896,7 +884,7 @@ void TdApi::handle_refresh_req(const shm::FrameView& view) {
         SPDLOG_WARN("td refresh req ignored | reason=not_ready account={}", account_id);
         return;
     }
-    SPDLOG_INFO("td refresh req accepted | account={} request_id={}", account_id, request_id);
+    SPDLOG_INFO("td refresh req accepted | account={} request_id={}", account_id, req.request_id);
 }
 
 void TdApi::update_status(const std::string& account_id) {

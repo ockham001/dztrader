@@ -502,6 +502,28 @@ describe('useTdTradingAccountsStore · 手动刷新（契约 rest §2.9.11 / web
     expect(store.refreshPending.acc_a).toBe(false)
   })
 
+  it('同 seq 重复事件不清 pending（清除信号必须是 seq 前进）', async () => {
+    vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
+    const store = useTdTradingAccountsStore()
+    await store.init()
+    await store.refreshAccount('acc_a')
+    expect(store.refreshPending.acc_a).toBe(true)
+    // 重复消息（同 seq）按幂等丢弃，不构成「新 seq」信号。
+    store.applyTradingAccountEvent(account({ seq: 10 }))
+    expect(store.refreshPending.acc_a).toBe(true)
+  })
+
+  it('其他账户的新事件不清本账户 pending', async () => {
+    vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
+    const store = useTdTradingAccountsStore()
+    await store.init()
+    await store.refreshAccount('acc_a')
+    expect(store.refreshPending.acc_a).toBe(true)
+    store.applyTradingAccountEvent(account({ account_id: 'acc_b', seq: 99 }))
+    expect(store.refreshPending.acc_a).toBe(true)
+    expect(store.refreshPending.acc_b).toBeFalsy()
+  })
+
   it('3s 超时清除 pending 并提示「刷新超时，稍后自动更新」', async () => {
     vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
     const store = useTdTradingAccountsStore()
@@ -528,7 +550,7 @@ describe('useTdTradingAccountsStore · 手动刷新（契约 rest §2.9.11 / web
     expect(toast.items.some(item => item.message === 'boom')).toBe(true)
   })
 
-  it('基线刷新清空 pending（data_changed / reset 不遗留旋转图标）', async () => {
+  it('data_changed 重置清空 pending（不遗留旋转图标）', async () => {
     vi.mocked(tdApi.refreshTradingAccount).mockResolvedValue({ ok: true })
     const store = useTdTradingAccountsStore()
     await store.init()

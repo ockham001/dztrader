@@ -99,7 +99,8 @@ export const tdApi = {
    * 手动刷新单账户资金快照（契约 rest §2.9.11 / 契约 td-refresh）：写端点，
    * fire-and-forget——200 `{ok:true}` 只表示 dzweb 已把 `DZ_FRAME_TD_REFRESH_REQ` 写入事件通道，
    * **不表示查询已完成**；生效信号 = 同账户 `td_trading_account` 新 `seq`（契约 webui-ws §5 第 15 条）。
-   * 预检失败由服务端返回 404/409/503（带 `code` 的机器码，前端只认 `code`）。
+   * 预检失败由服务端返回 404/409/503（带 `code` 的机器码；当前前端提示服务端 `error` 文案，
+   * `code` 供后续按码定制提示，二者都在响应体里）。
    */
   refreshTradingAccount: (accountId: string) =>
     api.post<TdWriteOkResponse>(

@@ -175,6 +175,27 @@ TEST_F(TdRefreshControllerTest, OfflineAccountReturns409AndWritesNoFrame) {
     EXPECT_FALSE(shm_.has_any_frame());
 }
 
+TEST_F(TdRefreshControllerTest, DegradedRegistryReturns503BeforeAccountLookup) {
+    // 注册表未收到任何配置帧（available=false）：503，且不因「账户查不到」误判 404。
+    prime_gateway("dztd_ctp");
+    auto resp = invoke_refresh("acc_a");
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
+    EXPECT_EQ(parse_body(resp).at("error").get<std::string>(), "account registry unavailable");
+    EXPECT_FALSE(shm_.has_any_frame());
+}
+
+TEST_F(TdRefreshControllerTest, PrecheckOrderAccountBeforeGateway) {
+    // 契约 rest §2.9.11 预检顺序：账户不存在（2）先于网关 Running（3）。
+    // 网关也没 Running、账户也不存在时，必须回 404 而不是 409。
+    registry_->note_config_frame_received();  // 注册表可用但无该账户
+    auto resp = invoke_refresh("acc_missing");
+    ASSERT_NE(resp, nullptr);
+    EXPECT_EQ(resp->getStatusCode(), drogon::k404NotFound);
+    EXPECT_EQ(parse_body(resp).at("code").get<std::string>(), "account_not_found");
+    EXPECT_FALSE(shm_.has_any_frame());
+}
+
 TEST_F(TdRefreshControllerTest, RegistryUnavailableReturns503AndWritesNoFrame) {
     registry_.reset();
     ctrl_ = std::make_shared<TdCtrl>(/*repo=*/nullptr, domain_, /*orders=*/nullptr,
@@ -194,8 +215,8 @@ TEST_F(TdRefreshControllerTest, ShmWriterNotAvailableReturns503AndWritesNoFrame)
     prime_gateway("dztd_ctp");
     seed_account("dztd_ctp", "acc_a");
     mark_ready("acc_a");
-    // 未就绪 writer（临时目录无 dzevent 通道）→ is_ready() false。
-    shm_writer_ = std::make_shared<ShmWriter>(std::filesystem::temp_directory_path());
+    // 未就绪 writer（nullptr 底层 MultiWriter）→ is_ready() false（不依赖环境）。
+    shm_writer_ = std::make_shared<ShmWriter>(std::shared_ptr<shm::MultiWriter>());
     ctrl_ = std::make_shared<TdCtrl>(/*repo=*/nullptr, domain_, /*orders=*/nullptr,
                                      /*trades=*/nullptr, /*positions=*/nullptr,
                                      /*trading_accounts=*/nullptr, registry_, process_mirror_,

@@ -374,7 +374,8 @@ private:
     /// 查询通道复位（断线 / 重连 / 登出共用一处）：取消运行期定时器、清在途与请求 id。
     void reset_query_channel();
     /// 运行期资金刷新：事件置脏（仅 Ready；登录缓冲/重放/未就绪不置脏）。
-    void mark_fund_refresh_dirty();
+    /// @return true = 已置脏；false = 非 Ready 忽略
+    bool mark_fund_refresh_dirty();
     /// 按 lane 的 next_wake 排绝对时间定时器（无轮询；无待查则取消）。
     void schedule_query_lane_pump();
     /// 发送一笔运行期资金查询（经 lane 闸门；成功 note_sent + 10s 超时）。

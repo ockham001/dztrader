@@ -33,6 +33,9 @@ namespace dztrader::webui {
 /// 统计（§2.9.5）：读 dzweb 内存计数器（`TdDomainService::stats_body()`），不直查库、
 /// 不接受 `accounts` 过滤；未装配 / 未就绪 → 200 `{"available":false,"reason":"not_ready"}`。
 ///
+/// 写端点：`POST /api/td/trading_accounts/{account_id}/refresh`（§2.9.11，任意已认证用户）
+/// 读注册表 + 进程镜像做预检，再经 `ShmWriter` 写 `DZ_FRAME_TD_REFRESH_REQ`（fire-and-forget）。
+///
 /// 线程：drogon 固定单 IO 线程且查询为同步只读 + 200ms busy_timeout（§2.9），
 /// 与 SysmonCtrl 的历史查询同型；无共享可变状态。
 class TdCtrl : public drogon::HttpController<TdCtrl, false>, public ControllerBase {
@@ -45,6 +48,8 @@ public:
     /// @param trading_accounts 资金列表只读查询（不分页，契约 rest §2.9.2）
     /// @param registry 账户注册表（持仓/资金的账户全集**第三源**，契约 rest §2.9.1；
     ///        nullptr = 未装配，此时两源兜底，行为与接入注册表前一致）
+    /// @param process_mirror 进程镜像（刷新端点预检：网关是否已注册且 Running）
+    /// @param shm_writer 事件通道写入（刷新端点写 `TD_REFRESH_REQ`；nullptr = 未装配 → 503）
     TdCtrl(std::shared_ptr<Repository> repo,
            std::shared_ptr<TdDomainService> domain,
            std::shared_ptr<TdOrdersQuery> orders,

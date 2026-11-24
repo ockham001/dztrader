@@ -4,12 +4,21 @@
 #include <format>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <dztrader/data_type.h>
 #include <dztrader/date_time/date_time.h>
 
 namespace dztrader::ctp {
+
+// === 自由函数声明 (与 td_api.h 中声明一致; td_api.h 依赖 CTP 头, 协调层不 include) ===
+/// DZ_FRAME_TD_REFRESH_REQ payload（契约 td-refresh / #459）。
+struct TdRefreshReq {
+    std::string account_id;
+    int64_t request_id = 0;
+};
+bool parse_td_refresh_req(std::string_view payload, TdRefreshReq* out, std::string* error);
 
 // ============================================================================
 // td_api_pure.cpp: 纯函数实现, 不依赖 TdApi 类和 CTP 头文件
@@ -145,6 +154,40 @@ void apply_config_op(TdConfig& cfg, const TdConfigOpReq& req) {
             break;
         }
     }
+}
+
+bool parse_td_refresh_req(std::string_view payload, TdRefreshReq* out, std::string* error) {
+    if (out == nullptr) {
+        if (error != nullptr) *error = "null_output";
+        return false;
+    }
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(payload.begin(), payload.end());
+    } catch (const std::exception&) {
+        if (error != nullptr) *error = "invalid_json";
+        return false;
+    }
+    if (!j.is_object()) {
+        if (error != nullptr) *error = "payload_not_object";
+        return false;
+    }
+    const auto acc = j.find("account_id");
+    if (acc == j.end() || !acc->is_string() || acc->get<std::string>().empty()) {
+        if (error != nullptr) *error = "invalid_account_id";
+        return false;
+    }
+    out->account_id = acc->get<std::string>();
+    out->request_id = 0;
+    if (const auto rid = j.find("request_id"); rid != j.end()) {
+        // 契约 td-refresh §校验：request_id 非整数 → 整帧忽略（不得静默当 0）。
+        if (!rid->is_number_integer()) {
+            if (error != nullptr) *error = "invalid_request_id";
+            return false;
+        }
+        out->request_id = rid->get<int64_t>();
+    }
+    return true;
 }
 
 // 在 accounts 中查找 account_id 对应的账户 (纯函数, 供单元测试)。

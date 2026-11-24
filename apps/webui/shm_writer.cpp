@@ -91,7 +91,8 @@ bool ShmWriter::write_td_refresh_req(const std::string& account_id, int64_t requ
     if (!event_writer_ || account_id.empty()) {
         return false;
     }
-    // 契约 td-refresh：basic 广播帧（无 instance_id），td 侧按 payload account_id 归属过滤。
+    // 契约 td-refresh：JSON ext 帧（无 instance_id，事件通道广播），td 侧按 payload
+    // account_id 归属过滤。
     const bool ok = platform::write_ext_json(
         *event_writer_, DZ_FRAME_TD_REFRESH_REQ,
         nlohmann::json{{"account_id", account_id}, {"request_id", request_id}});

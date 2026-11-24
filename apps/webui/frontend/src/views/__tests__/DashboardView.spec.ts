@@ -430,7 +430,7 @@ describe('DashboardView', () => {
 
     const row = fundRow(w, 'acc_a')
     const cells = row.findAll('td').map(td => td.text())
-    // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期
+    // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期 | 操作
     expect(cells[1]).toBe('在线')
     expect(cells.slice(2)).toEqual([
       '1,234,567.89',
@@ -478,7 +478,7 @@ describe('DashboardView', () => {
     const row = fundRow(w, 'acc_offline')
     const cells = row.findAll('td').map(td => td.text())
     expect(cells[1]).toBe('离线')
-    // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期
+    // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期 | 操作
     expect(cells.slice(2)).toEqual([
       '—', '—', '—', '—', '—', '—', '入 — / 出 —', '—', '',
     ])
@@ -675,7 +675,7 @@ describe('DashboardView', () => {
     const offlineButton = fundRow(w, 'acc_offline').find('[data-test="fund-refresh"]')
     expect(onlineButton.attributes('disabled')).toBeUndefined()
     expect(offlineButton.attributes('disabled')).toBeDefined()
-    expect(offlineButton.attributes('title')).toBe('离线账户不可刷新')
+    expect(offlineButton.attributes('title')).toBe('账户未在线，不可刷新')
 
     await onlineButton.trigger('click')
     await flushPromises()

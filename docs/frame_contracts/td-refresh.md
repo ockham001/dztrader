@@ -36,7 +36,7 @@
 
 - payload 必须为 JSON object；`account_id` 缺失 / 空串 / 非 string、`request_id` 非整数 → 整帧忽略并记 WARN（不写 RTN、不改状态）。
 - 未知字段忽略（总则 §8）。
-- 接收方只处理自己配置内的 `account_id`；不在配置内 → DEBUG 忽略（REST 预检为其兜底）。
+- 接收方只处理自己配置内的 `account_id`；不在配置内 → 忽略并记 WARN（REST 预检按注册表路由，这里是兜底）。
 
 ## 镜像
 
