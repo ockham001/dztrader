@@ -46,7 +46,7 @@
 
 绕开脚本直接 `cmake --build --preset ...` 仍被权限 deny：脚本负责构建锁、ccache 环境与 install，直调会绕过锁（两个 ninja 写同一棵树产出不可信结果）。
 
-**构建 / 测试的唯一入口是 `./scripts/gate.sh build|test`**（日志落盘、退出码正确、分命令槽留证）；`setup` / `run-dev` / `clean` 仍走各自脚本。**不要 `./scripts/build.sh 2>&1 | tail -N`**——管道把退出码变成 `tail` 的，构建/测试失败会被记成 exit 0 造成假绿（#465 复盘实测：后台 job 显示 `completed, exit code: 0`，输出里却是 `ninja: build stopped: subcommand failed`）。判绿看 `gate: OK` 行或 `.cache/gate/last-status-<cmd>` 槽。
+**agent 侧构建/测试的唯一入口是 `./scripts/gate.sh build|test`**（日志落盘、退出码正确、分命令槽留证）。人类 4 命令工作流（`setup` / `build` / `run-dev` / `clean`）仍以 [README.md](README.md) 为准，其中 `build`/`test` 由 `gate.sh` 统一驱动。**不要 `./scripts/build.sh 2>&1 | tail -N`**——管道把退出码变成 `tail` 的，构建/测试失败会被记成 exit 0 造成假绿（#465 复盘实测：后台 job 显示 `completed, exit code: 0`，输出里却是 `ninja: build stopped: subcommand failed`）。判绿看 `gate: OK` 行或 `.cache/gate/last-status-<cmd>` 槽。
 
 三条容易漏的附带事实：
 

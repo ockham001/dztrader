@@ -116,10 +116,12 @@ if [ -z "${CONAN_HOME:-}" ]; then
     fi
     rm -f "$HOME/.conan2/.dz_setup_probe" 2>/dev/null || true
     if [ "$conan_cache_ok" -eq 0 ]; then
-        shared_root="$REPO_ROOT"
-        git_common_dir="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-        if [ -n "$git_common_dir" ]; then
-            shared_root="$(dirname "$git_common_dir")"
+        # 共享根与 ccache 共用 dz_resolve_shared_repo_root（同一套 git common dir 解析）。
+        shared_root="$(dz_resolve_shared_repo_root "$REPO_ROOT")"
+        if [ "$shared_root" != "$REPO_ROOT" ]; then
+            echo "note: conan cache shared across worktrees via $shared_root/.cache/conan2" >&2
+        else
+            echo "warning: could not resolve shared repo root (non-git?); using $REPO_ROOT/.cache/conan2" >&2
         fi
         export CONAN_HOME="$shared_root/.cache/conan2"
         mkdir -p "$shared_root/.cache"

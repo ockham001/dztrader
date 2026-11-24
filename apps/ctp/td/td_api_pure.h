@@ -6,7 +6,7 @@
 #include <string_view>
 #include <vector>
 
-#include <dztrader/struct.h>  // DzAccountState
+#include <dztrader/data_type.h>  // DzAccountState
 
 #include "td/td_config.h"
 
@@ -17,8 +17,8 @@ namespace dztrader::ctp {
 // 与 md_api.h 声明 apply_config_op / find_current_broker_in 的模式一致。
 //
 // 声明单源：本头是这些纯函数的**唯一声明处**——`td_api.h`（CTP 协调层）include 本头，
-// `td_api_pure.cpp` 与 `td_api_pure_test.cpp` 直接 include 本头，不再各自本地重声明
-// （本地重声明曾导致「与 td_api.h 中声明一致」的三处手工同步，漏改即编译失败，见 #465）。
+// `td_api_pure.cpp` 与各 `td_*_test.cpp` 直接 include 本头，不再各自本地重声明
+// （本地重声明曾导致多处手工同步，漏改即编译失败，见 #465）。
 // ============================================================================
 
 /// 纯粹的 op 应用: switch(req.op) 修改 cfg, 无副作用无 I/O。

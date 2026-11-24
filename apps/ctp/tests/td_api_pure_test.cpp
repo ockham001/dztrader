@@ -1,6 +1,6 @@
-// td_api_pure_test: 单元测试 apply_config_op / find_current_account_in
-// 这 2 个自由函数实现在 td_api_pure.cpp, 不依赖 TdApi 类和 CTP 头文件,
-// 因此测试目标无需链接 dztd_ctp_api。
+// td_api_pure_test: 纯函数单元测试（apply_config_op / find_current_account_in /
+// find_account_in / parse_td_refresh_req 等）。这些自由函数实现在 td_api_pure.cpp,
+// 不依赖 TdApi 类和 CTP 头文件, 因此测试目标无需链接 dztd_ctp_api。
 
 #include "td/td_api_pure.h"  // 纯函数声明唯一源（不依赖 TdApi 类和 CTP 头文件）
 
