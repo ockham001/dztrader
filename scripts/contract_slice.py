@@ -25,9 +25,11 @@
   - `§N` 参数接受 `2` / `2.5` / `2.9` / `7.9`，前导 `§` 可省略
   - **按标题名切节**（#480）：`docs/frame_contracts/` 25 份契约里 17 份没有任何编号标题
     （`md-config` / `md-status` / `process` / `shm` …），`§N` 无从下手而 AGENTS 又禁止
-    对契约用 `sed -n`。参数不以数字开头即按标题名匹配（`md-config 数据结构`，前导 `§`
-    可有可无），编号前缀自动剥除（`第九节` 也能命中 `### 2.9 第九节`）；未知标题 exit 1
-    并列出候选标题。以数字开头的参数仍按编号解析（`§7.x` 继续报 invalid section）
+    对契约用 `sed -n`。参数直接写标题名（`md-config 数据结构`），编号前缀自动剥除
+    （`第九节` 也能命中 `### 2.9 第九节`）；未知标题 exit 1 并列出候选标题。
+    **`§` 前缀表示「节号」语义**：`md-config §数据结构` 与 `md-config §7.x` 一样按写错的
+    节号报错（exit 2）——不放宽 `§N` 的既有含义，避免把笔误当标题猜。以数字开头的标题
+    暂不支持按名切（同样按写错的节号处理）
   - 同号重复（同一编号出现多次，含 `## 2.5` 与 `### 2.5` 跨层级冲突）不静默取第一个：
     切片报错并列出全部行号，`--list` 也标出该编号
   - 未知契约 / 未知节号 exit 1 并给候选；参数或环境错误 exit 2
@@ -363,15 +365,16 @@ def slice_text(
     return "\n".join(lines)
 
 
-def render_block(path: Path, stem: str, root: Path) -> list[str]:
+def render_block(path: Path, stem: str, root: Path, *, include_plain: bool = True) -> list[str]:
     """单份目标的大纲块：首行 `<stem> (<相对路径>)`，随后缩进的大纲行。
 
-    `--list` 的每份契约块与 `--outline` 共用本函数，输出形状因此不会分叉（#316 AC3）。
+    `--list` 的每份契约块与 `--outline` 共用本函数（输出形状不分叉，#316 AC3），但
+    **`--list` 传 `include_plain=False`**：它的文档口径是「只列编号标题」，加列非编号标题
+    会是本票自引入的漂移（R1 审查 finding 3）。`--outline` 才列两种标题形态。
 
-    两种标题形态并列输出（#480）：编号标题 `§N <title>`（缩进反映编号深度），
-    非编号标题 `# <title>`（缩进按 `#` 层数）——`docs/frame_contracts/` 25 份契约里
-    17 份只有后者，只列编号会让这些契约的 `--outline` 变成一行「no numbered headings」，
-    而 AGENTS 又不允许对契约用 `sed -n` 分页。
+    两种标题形态（#480）：编号标题 `§N <title>`（缩进反映编号深度），非编号标题
+    `# <title>`（缩进按 `#` 层数，**按文档行号顺序与编号标题合并**——不能一律追加到末尾，
+    否则混合文档里大纲顺序与文件顺序不一致，R1 审查 finding 5）。
     """
     out = [f"{stem} ({_relative(path, root)})"]
     numbers = numbered_sections(path)
@@ -381,25 +384,30 @@ def render_block(path: Path, stem: str, root: Path) -> list[str]:
         for line_no, line, title, level in _iter_heading_lines(raw_text)
         if not _HEADING_RE.match(line)
     ]
+    if not include_plain:
+        plain = []
     if not numbers and not plain:
-        out.append("  (no headings at all)")
+        out.append("  (no numbered headings)" if not include_plain else "  (no headings at all)")
         return out
-    if numbers:
-        duplicates = {
-            heading.number
-            for heading in numbers
-            if sum(1 for other in numbers if other.number == heading.number) > 1
-        }
-        for heading in numbers:
-            marker = " [duplicate]" if heading.number in duplicates else ""
-            indent = " " * _number_indent(heading.number)
-            out.append(f"  {indent}§{heading.number} {heading.title}{marker}")
-    elif plain:
+    if not numbers and include_plain:
         # 无编号契约（25 份里 17 份）：直说「只能按标题名切」，否则读者会以为工具坏了。
         out.append("  (no numbered headings; address sections by title)")
-    # 非编号标题只在大纲里补列（编号标题已由上面覆盖），用于定位按标题名切节的入口。
-    for _line_no, title, level in plain:
-        out.append(f"  {'  ' * (level - 2)}# {title}")
+    duplicates = {
+        heading.number
+        for heading in numbers
+        if sum(1 for other in numbers if other.number == heading.number) > 1
+    }
+    numbered_lines = [
+        (heading.line, f"  {' ' * _number_indent(heading.number)}"
+                       f"§{heading.number} {heading.title}"
+                       f"{' [duplicate]' if heading.number in duplicates else ''}")
+        for heading in numbers
+    ]
+    plain_lines = [
+        (line_no, f"  {'  ' * (level - 2)}# {title}") for line_no, title, level in plain
+    ]
+    for _line_no, rendered in sorted(numbered_lines + plain_lines, key=lambda item: item[0]):
+        out.append(rendered)
     return out
 
 
@@ -408,13 +416,13 @@ def render_list(contract_dir: Path) -> str:
     paths = contract_paths(contract_dir)
     out: list[str] = []
     for stem, path in paths.items():
-        out.extend(render_block(path, stem, REPO_ROOT))
+        out.extend(render_block(path, stem, REPO_ROOT, include_plain=False))
     return "\n".join(out)
 
 
 def render_outline(target: Target, root: Path) -> str:
     """单份目标的大纲；与 `--list` 的单份块同一形状。"""
-    return "\n".join(render_block(target.path, target.stem, root))
+    return "\n".join(render_block(target.path, target.stem, root, include_plain=True))
 
 
 # `--outline` 的值省略时用这个哨兵：目标改从位置参数 `<stem>` 取（#480——
@@ -472,8 +480,10 @@ def _is_title_arg(raw: str) -> bool:
         这样 `contract_slice.py md-config §数据结构` 会被当成写错的节号并给出提示，
         而不是静默按标题猜——与既有 `test_exit_codes_separate_unknown_from_usage` 的
         「格式错误必须和未知节号区分开」一致。
-      - 不匹配纯数字点号形态（`2.9` 这类仍走编号），且不以数字开头（`3D 渲染` 这类
-        数字开头的标题仍可用，但要写全名——按编号解析失败后才轮到它）。
+      - 不匹配纯数字点号形态（`2.9` 这类仍走编号），且不以数字开头——因此**以数字
+        开头的标题（如 `3D 渲染`）目前无法按标题名切**（会被当成写错的节号，exit 2）。
+        这是有意的保守取舍：把 `7.x` 这类笔误当标题猜会掩盖真实错误；确需切这类标题时
+        先用 `--outline` 确认编号，或改标题措辞。
     """
     value = raw.strip()
     if not value or value.startswith("§"):
@@ -483,9 +493,7 @@ def _is_title_arg(raw: str) -> bool:
     return not value[0].isdigit()
 
 
-def slice_by_title(
-    text: str, headings: list[Heading], title: str, include_children: bool
-) -> str:
+def slice_by_title(text: str, title: str, include_children: bool) -> str:
     """按**标题文本**切节（#480）：给无编号契约用。
 
     匹配规则（依次尝试，命中即止）：
@@ -626,7 +634,7 @@ def run(
     # 形态、不以数字开头 —— `§N` 的语义不被放宽（`§x` 仍是参数错误）。
     if by_title:
         try:
-            section = slice_by_title(text, headings, args.section, args.children)
+            section = slice_by_title(text, args.section, args.children)
         except SliceError as exc:
             return 1, "", f"error: {exc} | target={stem} section={args.section!r}"
         if not section:
@@ -641,11 +649,12 @@ def run(
     except UnknownSectionError:
         hints = candidates_for_section(headings, number)
         if not headings:
-            # docs 目标常见形态：整份文档没有编号标题（`## 标题` 不带数字）——切不了，
-            # 只能报错；此时候选提示不能沿用契约口径的文案。
+            # 无编号标题的目标（17/25 份契约即此形态）：先指路「按标题名切」，再**列出候选
+            # 标题**——只指路不给候选时，读者还得先去 --outline 再回来（R1 审查 finding 10）。
             hints = (
                 "target declares no numbered headings; address it by title instead "
-                f"({args.stem} <标题名>) or run --outline {args.stem}"
+                f"({args.stem} <标题名>) or run --outline {args.stem}; "
+                + title_candidates(text)
             )
         return 1, "", f"error: unknown section | target={stem} section=§{number} {hints}"
     except SliceError as exc:
@@ -956,6 +965,18 @@ def selftest() -> tuple[int, str, str]:
         check("ambiguous docs stem lists both candidates", rc == 1
               and "ambiguous" in err and "docs/agents/shared.md" in err
               and "docs/components/shared.md" in err, f"rc={rc} err={err!r}")
+
+        # R1 回归钉子：--list 保持「只列编号标题」形状（文档口径），非编号标题只在 --outline
+        rc, out, _err = run(["--list"], contract_dir, docs_dir)
+        check("--list keeps the numbered-only shape", "  # " not in out,
+              f"out={out!r}")
+        check("--list does not announce plain headings", "address sections by title" not in out,
+              f"out={out!r}")
+
+        # R1 回归钉子：无编号契约给数字节号时，错误信息必须**带候选标题**
+        rc, _out, err = run(["plain", "3"], contract_dir, docs_dir)
+        check("number on a no-number contract lists title candidates",
+              rc == 1 and "headings:" in err, f"rc={rc} err={err!r}")
 
         rc, _out, err = run(["--outline", "sample", "--list"], contract_dir, docs_dir)
         check("--outline and --list are mutually exclusive", rc == 2

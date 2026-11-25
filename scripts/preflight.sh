@@ -333,6 +333,15 @@ check_frontend() {
         echo "error: npm not found; install Node.js or run --c-only" >&2
         return 2
     fi
+    # `-L` 必须先判（R1 finding 9）：`-d` 跟随符号链接，`ln -s <主仓>/node_modules` 会让
+    # `-d` 为真而直接进 type-check/lint/test——AGENTS 却写着「preflight 会硬拒」。符号链接
+    # 在这里不是「能用」，而是危险状态本身：`npm ci` 会清空链接目标（#480 / #471 实测）。
+    if [ -L "$fe/node_modules" ]; then
+        echo "error: $fe/node_modules is a symlink; worktrees must install deps locally (#480)" >&2
+        echo "       npm ci would empty the link target (the main workspace's node_modules)" >&2
+        echo "       fix: rm \"$fe/node_modules\" && cd \"$fe\" && npm ci" >&2
+        return 2
+    fi
     if [ ! -d "$fe/node_modules" ]; then
         # worktree 里的前端依赖不能靠 ln -s 共享：npm ci 会清空符号链接的目标目录
         # （主工作区的 node_modules，见 #480）。给本地安装命令，别让 agent 去猜。

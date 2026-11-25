@@ -30,16 +30,17 @@ DSH 等其它宿主没有这层约束（AGENTS §一第 7 条已声明「规则�
   python3 scripts/md_lock_marker.py --selftest
 
 `scripts/push-ticket.sh` 在 diff 触及 `apps/ctp/md/` 时以 `--strict` 调用本脚本，
-缺失即拒绝推送；逃生口 `DZ_ALLOW_MD_LOCK=1`（仅真故障，用完在报告里写明）。
+缺失即拒绝推送。**逃生口 `DZ_ALLOW_MD_LOCK=1` 只实现在 push-ticket.sh 一处**（本脚本不读
+环境变量）：本脚本只回答「diff 是否触及锁定目录、标记是否写了」；绕过决策属于推送网关，
+放两处会出现「脚本自己放行、调用方的拒绝分支永不触发」的死代码（R1 审查 finding 7）。
 
-退出码：0=通过（可带 warning）、3=拒绝（`--strict` 且标记缺失/为空）、2=参数或环境错误。
+退出码：0=通过、3=拒绝（`--strict` 且标记缺失/为空）、2=参数或环境错误。
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -49,14 +50,11 @@ LOCK_DIR_REL = Path(".cache") / "lock"
 LOCK_SUFFIX = "-md-lock.done"
 # 被锁定的生产目录（AGENTS §一硬门禁 1）。push-ticket.sh 用它判「这次 diff 是否触及」。
 LOCKED_PATH_PREFIX = "apps/ctp/md/"
-ALLOW_ENV = "DZ_ALLOW_MD_LOCK"
 REFUSED = 3
 
 USAGE = f"""usage: md_lock_marker.py write <issue> [--sha <sha>]
        md_lock_marker.py check <issue> [--strict] [--base <ref>] [--head <sha>]
        md_lock_marker.py --selftest
-
-`{ALLOW_ENV}=1` allows a push without the marker (emergency only).
 """
 
 
@@ -107,9 +105,13 @@ def read_marker(root: Path, issue: str) -> str:
 
 def touches_locked_path(root: Path, base: str, head: str) -> tuple[bool, str]:
     """`base...head` 的改动是否触及生产锁定目录。返回 (是否触及, 命中的路径或原因)。"""
-    result = _git("diff", "--name-only", f"{base}...{head}", cwd=root)
+    # `--no-renames`：默认开启的 rename detection 会把 `git mv apps/ctp/md/a.cpp other/a.cpp`
+    # 只报成 `other/a.cpp`，让生产锁定判定被绕过（R1 审查实测）。当作「删除 + 新增」
+    # 看，源路径才会出现。
+    result = _git("diff", "--name-only", "--no-renames", f"{base}...{head}", cwd=root)
     if result.returncode != 0:
-        return False, f"cannot compute changed paths: {result.stderr.strip()}"
+        detail = " ".join(result.stderr.split())
+        return False, f"cannot compute changed paths: {detail}"
     for line in result.stdout.splitlines():
         path = line.strip().replace("\\", "/")
         if path.startswith(LOCKED_PATH_PREFIX):
@@ -120,12 +122,11 @@ def touches_locked_path(root: Path, base: str, head: str) -> tuple[bool, str]:
 def default_base(root: Path) -> str:
     """把「当前分支上游」解析成可用于 `git diff base...head` 的 ref。
 
-    三种失败形态都归到 `origin/main`（与 `scripts/check-push-scope.sh` 的 `resolve_base()`
-    同一口径，故意保持逐条一致——两处判定的对象不同，但「本票的 diff 从哪算起」必须是
-    同一个答案，否则 scope 说通过、md-lock 却算出一个不同的改动面）：
-      1) 没有上游（rev-parse 非零退出，无输出）
-      2) 上游指向 URL（`git push -u <URL>` 的后果）——rev-parse 打印字面量 "@{u}"
-      3) 上游 ref 不可解析
+    失败形态归到 `origin/main`，与 `scripts/check-push-scope.sh` 的 `resolve_base()` 保持
+    「本票 diff 从哪算起」这个答案一致（否则 scope 说通过、md-lock 却算出不同的改动面）。
+    **差异（有意）**：本函数多一条「上游 ref 不可解析 → origin/main」的 probe。对方只处理
+    「无上游」与「上游是 URL」两种；第 3 种在那边会让 `git log` 直接报错，而这里退化成
+    `origin/main` 更安全（宁可多判一次「是否触及锁定目录」，也不静默放行）。
     """
     result = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", cwd=root)
     resolved = result.stdout.strip() if result.returncode == 0 else ""
@@ -137,9 +138,7 @@ def default_base(root: Path) -> str:
     return resolved
 
 
-def check(
-    root: Path, issue: str, *, strict: bool, allow_env: bool, base: str, head: str
-) -> int:
+def check(root: Path, issue: str, *, strict: bool, base: str, head: str) -> int:
     touched, path = touches_locked_path(root, base, head)
     if not touched:
         # 不触及锁定目录的票不该被要求写标记（否则每个票都多一步机械动作）。path 非空时
@@ -161,15 +160,12 @@ def check(
         f"{path}: AGENTS §一 hard gate 1 requires telling the user what changes in "
         "apps/ctp/md/ and getting their confirmation before touching it"
     )
-    if allow_env:
-        print(f"md-lock: warning: {message} (allowed by {ALLOW_ENV}=1, emergency only)")
-        return 0
     if strict:
         print(f"md-lock: BLOCKED {message}", file=sys.stderr)
         print(
             f"md-lock: after the user confirms, run "
             f"`python3 scripts/md_lock_marker.py write {issue}` "
-            f"(escape: {ALLOW_ENV}=1)",
+            "(if the push gate must be bypassed, that escape lives in push-ticket.sh only)",
             file=sys.stderr,
         )
         return REFUSED
@@ -198,11 +194,8 @@ def _selftest_git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _selftest_cli(repo: Path, *args: str, allow_env: bool = False) -> tuple[int, str]:
+def _selftest_cli(repo: Path, *args: str) -> tuple[int, str]:
     env = dict(os.environ)
-    env.pop(ALLOW_ENV, None)
-    if allow_env:
-        env[ALLOW_ENV] = "1"
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), *args],
         capture_output=True,
@@ -260,13 +253,6 @@ def selftest() -> int:
         rc, out = _selftest_cli(repo, "check", "480", "--base", docs_head, "--head", md_head)
         expect("missing marker only warns without --strict", rc == 0, f"rc={rc} out={out!r}")
 
-        # 逃生口：无标记 + --strict + DZ_ALLOW_MD_LOCK=1 → 放行且明示
-        rc, out = _selftest_cli(
-            repo, "check", "480", "--strict", "--base", docs_head, "--head", md_head, allow_env=True
-        )
-        expect("escape hatch allows the push", rc == 0, f"rc={rc} out={out!r}")
-        expect("escape hatch is announced", ALLOW_ENV in out, f"out={out!r}")
-
         # 不触及锁定目录的票：即使没有标记也放行，且**不**要求确认（不打扰无关票）
         rc, out = _selftest_cli(
             repo, "check", "480", "--strict", "--base", base, "--head", docs_head
@@ -297,12 +283,31 @@ def selftest() -> int:
         )
         expect("empty marker is treated as missing", rc == REFUSED, f"rc={rc}")
 
-        # 默认 write 用 HEAD（不传 --sha）
+        # rename 绕过（R1 finding 2）：`git mv apps/ctp/md/x.cpp other/x.cpp` 默认会被
+        # rename detection 报成 `other/x.cpp`，锁定目录判定必须仍然命中。
+        (repo / "apps" / "ctp" / "md").mkdir(parents=True, exist_ok=True)
+        (repo / "apps" / "ctp" / "md" / "renamed.cpp").write_text("int y;\n", encoding="utf-8")
+        _selftest_git(repo, "add", "apps/ctp/md/renamed.cpp")
+        _selftest_git(repo, "commit", "-q", "-m", "feat: add md file for rename")
+        rename_base = _selftest_git(repo, "rev-parse", "HEAD")
+        (repo / "other").mkdir(exist_ok=True)
+        _selftest_git(repo, "mv", "apps/ctp/md/renamed.cpp", "other/renamed.cpp")
+        _selftest_git(repo, "commit", "-q", "-m", "refactor: move md file out")
+        rename_head = _selftest_git(repo, "rev-parse", "HEAD")
+        hits, path = touches_locked_path(repo, rename_base, rename_head)
+        expect("rename out of apps/ctp/md is still detected", hits and path.startswith(LOCKED_PATH_PREFIX),
+               f"hit={path}")
+        rc, _ = _selftest_cli(repo, "check", "483", "--strict", "--base", rename_base, "--head", rename_head)
+        expect("rename out of apps/ctp/md requires the marker", rc == REFUSED, f"rc={rc}")
+
+        # 默认 write 用 HEAD（不传 --sha）——用当前 HEAD，不写死早先的 md_head
+        # （中途新增 commit 会让写死的期望值变成假失败，R1 返工时实测）。
+        head_now = _selftest_git(repo, "rev-parse", "HEAD")
         rc, _ = _selftest_cli(repo, "write", "482")
         expect(
             "write defaults to HEAD",
-            rc == 0 and read_marker(repo, "482") == md_head,
-            f"rc={rc} marker={read_marker(repo, '482')!r}",
+            rc == 0 and read_marker(repo, "482") == head_now,
+            f"rc={rc} marker={read_marker(repo, '482')!r} expected={head_now}",
         )
 
     if failures:
@@ -312,7 +317,7 @@ def selftest() -> int:
         return 1
     print(
         f"selftest: {checks} cases (touched-path / non-touching / strict / warning / "
-        "escape / write / per-issue / empty)"
+        "write / per-issue / empty / rename-safe)"
     )
     return 0
 
@@ -359,12 +364,9 @@ def main(argv: list[str]) -> int:
             path = write_marker(root, args.issue, sha)
             print(f"md-lock: wrote {path.relative_to(root)} @ {sha[:12]}")
             return 0
-        allow_env = os.environ.get(ALLOW_ENV, "0") == "1"
         head = resolve_head(args.head, root)
         base = args.base or default_base(root)
-        return check(
-            root, args.issue, strict=args.strict, allow_env=allow_env, base=base, head=head
-        )
+        return check(root, args.issue, strict=args.strict, base=base, head=head)
     except EnvError as exc:
         print(f"md-lock: error: {exc}", file=sys.stderr)
         return 2

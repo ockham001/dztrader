@@ -20,7 +20,7 @@ closed_by.commit_id = dbf1ef3）、#260、#243 三票同形态；#260 的补充�
 规则：
 
   R1 prefix          subject 必须匹配 `<type>[(scope)]!?: <描述>`，type 取仓库白名单
-  R2 subject-length  subject 长度不超过 72 字符（GitHub/Git 日志可读性；warn 级不阻断）
+  R2 subject-length  subject 长度不超过 72 字符（GitHub/Git 日志可读性；与 R1/R3/R4 同级，违规即 exit 1）
   R3 closing-keyword subject 含 auto-close 形态（见下）→ 违规
   R4 pr-body-closing PR 正文含 auto-close 形态（#316 AC4）→ 违规
 

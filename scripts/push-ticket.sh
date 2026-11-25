@@ -407,6 +407,8 @@ fi
 # 3) md 生产锁定（#480）：diff 触及 apps/ctp/md/ 时要求确认标记。
 #    「是否触及」与「标记是否存在」都由 md_lock_marker.py 单点判定——本脚本不另写 glob，
 #    否则两处口径漂移时会出现「scope 认为改了 md、md-lock 认为没改」的矛盾结论。
+#    逃生口 DZ_ALLOW_MD_LOCK **只在这一处**：md_lock_marker.py 不读环境变量，只报事实
+#    （R1 finding 7：两处都实现时，脚本会自己放行、下面的 rc=3 分支永不触发）。
 mdlock_out="$("$PYTHON" "$ROOT/scripts/md_lock_marker.py" check "$ISSUE" --strict </dev/null 2>&1)"
 mdlock_rc=$?
 if [ "$mdlock_rc" = "0" ]; then

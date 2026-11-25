@@ -32,12 +32,13 @@
 
 ### 内容树对齐（#480）
 
-closeout §2→§3 的顺序是「门禁绿 → 提交 → 推送」，于是记录里的 `head=` 必然是**被推
-commit 的父提交**——只比 commit sha 会让每次合规推送都打印
+closeout §2→§3 的顺序是「门禁绿 → 提交 → 推送」，于是门禁跑在**脏工作区**上、记录里的
+`head=` 必然是**被推 commit 的父提交**——只比 commit sha 会让每次合规推送都打印
 `record is from <parent>, not HEAD`（#471 实测），并诱导 agent 为「对齐」重复跑整门禁
-（一次 build ≈ 20 分钟）。门禁验证的是**工作区内容**，所以记录里同时写 `tree=`
-（`git rev-parse HEAD^{tree}`）：tree 相等 ⇒ 内容没变 ⇒ 结论仍成立。判定顺序是
-「同 tree 即视为当前内容」→ 再看 `rc`；旧槽位没有 `tree=` 字段时退回只比 `head=`（向后兼容）。
+（一次 build ≈ 20 分钟）。门禁验证的是**工作区内容**，所以 `gate.sh` 记录里的 `tree=` 是
+**被验证的工作区内容树**（临时 index 的 `write-tree`，不是 `HEAD^{tree}`）：提交后该树
+等于新 commit 的树 ⇒ tree 相等即视为「覆盖被推内容」。判定顺序是「同 tree 即视为当前
+内容」→ 再看 `rc`；旧槽位没有 `tree=` 字段时退回只比 `head=`（向后兼容）。
 
 应急逃生口 `DZ_ALLOW_RED_GATE=1`：拒绝态降级为 WARNING 并放行（沿用既有含义）。
 
@@ -185,8 +186,9 @@ def resolve_tree(sha: str, root: Path) -> str:
 def _covers(status: Status, head: str, tree: str) -> bool:
     """记录是否描述「被推 commit 的内容」（#480）。
 
-    同 commit，或同内容树（提交只改提交、不改内容——closeout §2→§3 的规范顺序）都算覆盖。
-    记录里没有 `tree=`（旧槽位）或 tree 解析不出时，退回只比 `head=`。
+    同 commit，或同内容树都算覆盖——`gate.sh` 的 `tree=` 记的是**门禁当时的工作区内容树**
+    （closeout §2→§3：门禁跑在提交前），所以提交后它应当等于新 commit 的树。
+    记录里没有 `tree=`（旧槽位 / 算不出）或被推端 tree 解析不出时，退回只比 `head=`。
     """
     if status.head == head:
         return True
@@ -417,7 +419,10 @@ def selftest() -> int:
         expect("unknown ticket type only warns", rc == 0, f"rc={rc} out={out!r}")
 
         # ---- #480：内容树对齐（closeout §2→§3 = 门禁绿 → 提交 → 推送）------------
-        # 造一个「只改提交、不改内容」的 commit：门禁记录的 head= 是父提交，tree 相同。
+        # 真实形态由 gate.sh 侧产生：门禁在**脏工作区**跑，记录 head=父提交、
+        # tree=门禁当时的工作区内容树；提交后该树 == 新 commit 的树。这里用「只改提交、
+        # 不改内容」的 commit 复现同一个 (head≠HEAD, tree==HEAD^{tree}) 组合——
+        # gate.sh 的端到端用例（gate.sh --selftest 的 dirty-worktree 用例）覆盖了前半段。
         tree_of_head = _selftest_git(repo, "rev-parse", "HEAD^{tree}")
         _selftest_git(repo, "commit", "-q", "--allow-empty", "-m", "chore: same tree, new sha")
         same_tree_head = _selftest_git(repo, "rev-parse", "HEAD")
