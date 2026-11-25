@@ -161,13 +161,14 @@ void ShmManager::handle_account_status(const std::byte* frame) {
         std::memcpy(&status, &view.payload<DzAccountStatus>(), sizeof(status));
         const std::string gateway(status.gateway_name);
         if (gateway.empty()) {
-            return;  // master 兜底应答回声: 不入镜像 (防自锁)
+            // gateway_name 空串 = 平台生成帧 (查询兜底 / td 退出代推), 无网关归属, 整帧不入镜像
+            // (ADR 0058); 这同时保证 master 自己的回声不会污染镜像
+            return;
         }
         if (status.state == DZ_ACCOUNT_OFFLINE) {
-            // Offline = 账户退出该网关的管理 (td 退出代推回声/断开/删账户): 从镜像移除。
-            // 否则 master 自推的 Offline 帧回流会重建镜像, dead-td 下
-            // DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 再次静默 (audit A-F1 自锁复活); 重启后 td 快照
-            // (LoggingIn/Ready) 重建镜像
+            // Offline = 账户退出该网关的管理 (td 断开 / 删账户 / 退出前自推): 从镜像移除。
+            // 否则 dead-td 下残留镜像会抑制 DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 兜底,
+            // 策略静默挂死 (audit A-F1); 重启后 td 快照 (LoggingIn/Ready) 重建镜像
             auto git = td_account_mirror_.find(gateway);
             if (git != td_account_mirror_.end()) {
                 git->second.erase(std::string(status.account_id));
@@ -203,7 +204,7 @@ void ShmManager::handle_query_account_status(const std::byte* frame) {
                 return;  // 该账户归属某网关, td 会权威应答
             }
         }
-        // 无任何运行中网关管理该账户: 兜底 Offline, gateway_name="" 标记非权威应答
+        // 无任何运行中网关管理该账户: 兜底 Offline (gateway_name 空串 = 平台生成帧, ADR 0058)
         DzAccountStatus fallback{};
         dztrader::copy_string(fallback.account_id, queried.c_str(), true);
         fallback.state = DZ_ACCOUNT_OFFLINE;
@@ -223,7 +224,7 @@ void ShmManager::notify_td_stopped(std::string_view gateway_name) {
     for (const auto& account : it->second) {
         DzAccountStatus status{};
         dztrader::copy_string(status.account_id, account.c_str(), true);
-        dztrader::copy_string(status.gateway_name, std::string(gateway_name).c_str(), true);
+        // ADR 0058: 平台生成的帧 gateway_name 留空串 (非权威兜底; 空串 ⇔ 平台生成)
         status.state = DZ_ACCOUNT_OFFLINE;
         status.date = 0;
         platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);

@@ -203,9 +203,9 @@ public:
     /// (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
-    /// td 网关退出兜底: 对镜像内该网关账户集逐账户写 Offline (gateway_name=真实网关名),
-    /// 推完即清镜像 (镜像 = 运行中网关当前管理的账户集, td 退出后 2115 查询走 master 兜底;
-    /// 由 ProcessSupervisor::on_child_exit GatewayTd 分支与 remove 流程统一调用)
+    /// td 网关退出兜底 (ADR 0058): 对镜像内该网关账户集逐账户写 Offline (gateway_name 空串 =
+    /// 平台生成帧), 推完即清镜像 (镜像 = 运行中网关当前管理的账户集, td 退出后 2115 查询走
+    /// master 兜底; 由 ProcessSupervisor::on_child_exit GatewayTd 分支与 remove 流程统一调用)
     void notify_td_stopped(std::string_view gateway_name);
     /// 删除该网关的账户镜像条目 (notify_td_stopped 内部调用; 公开保留供方法级测试)
     void forget_td_accounts(std::string_view gateway_name);
@@ -298,7 +298,7 @@ private:
     void handle_query_account_status(const std::byte* frame);
     /// DZ_FRAME_ACCOUNT_STATUS payload -> 独立缓冲 (帧指针在下一次 next_frame 后失效, 不外借)
     /// td 网关名 -> 该网关管理的账户集 (DZ_FRAME_ACCOUNT_STATUS 非空 gateway_name 帧喂入;
-    /// master 兜底回声 gateway_name="" 不入镜像)
+    /// gateway_name="" = 平台生成帧 (查询兜底/退出代推), 整帧不入镜像)
     std::unordered_map<std::string, std::set<std::string>> td_account_mirror_;
 
     // ===== 配置状态 (声明在最前, 构造函数初始化列表先执行) =====
