@@ -1883,8 +1883,8 @@ TEST_F(ShmManagerTest, AccountStatusFrameBuildsMirror) {
     EXPECT_TRUE(collect_account_status_frames(reader).empty());
 }
 
-// 2018 Offline 移除分支 (契约 account-status): 真实网关名的 Offline 帧从镜像移除该账户,
-// 之后 2115 查询走 master 兜底 (gateway_name="")
+// 2018 Offline 移除分支 (契约 account-status): td 权威帧 (带网关名) 的 Offline 从镜像移除该账户,
+// 之后 2115 查询走 master 兜底 (gateway_name="" = 平台生成帧)
 TEST_F(ShmManagerTest, AccountStatusOfflineRemovesFromMirror) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
 
@@ -1895,7 +1895,7 @@ TEST_F(ShmManagerTest, AccountStatusOfflineRemovesFromMirror) {
     for (int i = 0; i < 10; ++i) {
         mgr.drain_event_channel();
     }
-    // td 主动断开/删账户: 同账户 Offline 帧 (gateway_name=真实网关名) 必从镜像移除
+    // td 主动断开/删账户: 同账户 Offline 帧 (gateway_name=dztd_ctp, td 权威帧) 必从镜像移除
     write_account_status_frame(writer, "dztd_ctp", "CTP001", DZ_ACCOUNT_OFFLINE);
     for (int i = 0; i < 10; ++i) {
         mgr.drain_event_channel();
@@ -1908,7 +1908,7 @@ TEST_F(ShmManagerTest, AccountStatusOfflineRemovesFromMirror) {
         mgr.drain_event_channel();
     }
 
-    // 镜像已移除: master 兜底回 Offline, gateway_name="" 标记非权威应答
+    // 镜像已移除: master 兜底回 Offline (gateway_name="" = 平台生成帧, 非权威兜底)
     auto frames = collect_account_status_frames(reader);
     ASSERT_EQ(frames.size(), 1u);
     EXPECT_STREQ(frames[0].account_id, "CTP001");
@@ -1943,15 +1943,15 @@ TEST_F(ShmManagerTest, QueryUnknownAccountGetsOfflineFallback) {
     EXPECT_EQ(frames[0].date, 0);
 }
 
-// 回声防自锁: master 自己写的兜底帧 (gateway_name="") 回流后不得入镜像
-// (否则 2115 查询会命中镜像而不再兜底, 兜底链路永久失效)
+// 平台生成帧 (gateway_name="") 一律不入镜像: 夹具故意用 READY 而非真实写入口径的 Offline,
+// 以确认守卫不依赖状态分支; 若入镜像, 2115 查询会命中镜像而不再兜底, 兜底链路永久失效
 TEST_F(ShmManagerTest, FallbackEchoSkippedFromMirror) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
 
     auto meta = shm::ChannelMeta::open_only(shm::channel_name("dzevent"), dztrader::paths::shm());
     auto writer =
         shm::MultiWriter::create(std::make_shared<shm::ChannelMeta>(std::move(meta)), "fake_td");
-    // 模拟 master 兜底应答回声: gateway_name="" 的 DZ_FRAME_ACCOUNT_STATUS 帧
+    // 模拟平台生成帧回流: gateway_name="" 的 DZ_FRAME_ACCOUNT_STATUS 帧 (master 实际只写 Offline)
     write_account_status_frame(writer, "", "CTP001", DZ_ACCOUNT_READY);
     for (int i = 0; i < 10; ++i) {
         mgr.drain_event_channel();
@@ -1972,9 +1972,9 @@ TEST_F(ShmManagerTest, FallbackEchoSkippedFromMirror) {
     EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
 }
 
-// td 退出兜底 (ADR 0057): notify_td_stopped 对镜像内账户逐账户写 Offline
+// td 退出兜底 (ADR 0058): notify_td_stopped 对镜像内账户逐账户写 Offline
 // (gateway_name 空串 = 平台生成帧), 且写完即清镜像 (新语义: 运行中网关当前管理的账户集;
-// td 退出后 2115 查询走 master 兜底, 消除 dead-td + 镜像保留导致的静默自锁窗口)
+// td 退出后 2115 查询走 master 兜底, 消除 dead-td + 镜像保留导致的静默窗口)
 TEST_F(ShmManagerTest, NotifyTdStoppedWritesOfflineAndClearsMirror) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
 
@@ -1991,7 +1991,7 @@ TEST_F(ShmManagerTest, NotifyTdStoppedWritesOfflineAndClearsMirror) {
         shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(), "td_stop_probe");
     mgr.notify_td_stopped("dztd_ctp");
 
-    // 逐账户 2 条 Offline 帧, gateway_name 为空串 (平台生成帧: 空串 ⇔ 非 td 写, ADR 0057)
+    // 逐账户 2 条 Offline 帧, gateway_name 为空串 (平台生成帧: 空串 ⇔ 平台生成, ADR 0058)
     auto frames = collect_account_status_frames(reader);
     ASSERT_EQ(frames.size(), 2u);
     std::set<std::string> accounts;

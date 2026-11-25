@@ -161,7 +161,7 @@ DZ_DECLARE_ALIGNED_STRUCT(DzScheduleEvent, {
  *  身份在 payload account_id + gateway_name, 无扩展头, 契约 account-status) */
 DZ_DECLARE_ALIGNED_STRUCT(DzAccountStatus, {
     DzAccountId account_id;     ///< 账户标识
-    DzInstanceId gateway_name;  ///< 报告该状态的网关进程名; 空串 = 平台(master)生成帧 (ADR 0057)
+    DzInstanceId gateway_name;  ///< 报告该状态的网关进程名; 空串 = 平台(master)生成帧 (ADR 0058)
     DzDate date;                ///< 交易日（距纪元天数; Offline 时为 0）
     DzAccountState state;       ///< 三态 (DZ_ACCOUNT_*)
     char reserved[3];

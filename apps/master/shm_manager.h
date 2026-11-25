@@ -203,7 +203,7 @@ public:
     /// (launch_child/on_child_exit/stop_single_child)。
     void write_process_status(const platform::ProcessStatus& status);
 
-    /// td 网关退出兜底 (ADR 0057): 对镜像内该网关账户集逐账户写 Offline (gateway_name 空串 =
+    /// td 网关退出兜底 (ADR 0058): 对镜像内该网关账户集逐账户写 Offline (gateway_name 空串 =
     /// 平台生成帧), 推完即清镜像 (镜像 = 运行中网关当前管理的账户集, td 退出后 2115 查询走
     /// master 兜底; 由 ProcessSupervisor::on_child_exit GatewayTd 分支与 remove 流程统一调用)
     void notify_td_stopped(std::string_view gateway_name);

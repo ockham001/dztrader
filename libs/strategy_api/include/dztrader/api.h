@@ -328,7 +328,8 @@ DZ_API bool dz_set_logical_position(DzContext* ctx,
  * 写 TD_QUERY_ACCOUNT_STATUS basic 广播帧; td 网关按配置应答
  * DzAccountStatus(DZ_FRAME_ACCOUNT_STATUS) 帧（经 on_account_status 回调到达）。
  * 应答与主动推送为同一种帧, 无请求-响应关联。
- * 无网关在线时由 master 兜底应答 (该帧 gateway_name 为空串 = 平台生成, ADR 0057)。
+ * 查不到任何运行中网关管理该账户时由 master 兜底应答
+ * (该帧 gateway_name 为空串 = 平台生成, ADR 0058)。
  * 策略侧可把 gateway_name 当作只读运行态判断依据 (日志 / 告警 / 按接口聚合), 但它不是稳定
  * 标识 (网关名是运行期实例名, 改名 / 换实例 / 账户迁移即变), 只覆盖当前有网关在报的账户,
  * 且不改变下单路由 (下单帧按 account_id 归属路由, 平台不支持按网关下单)。

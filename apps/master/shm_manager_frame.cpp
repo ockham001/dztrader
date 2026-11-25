@@ -162,7 +162,7 @@ void ShmManager::handle_account_status(const std::byte* frame) {
         const std::string gateway(status.gateway_name);
         if (gateway.empty()) {
             // gateway_name 空串 = 平台生成帧 (查询兜底 / td 退出代推), 无网关归属, 整帧不入镜像
-            // (ADR 0057); 这同时保证 master 自己的回声不会污染镜像
+            // (ADR 0058); 这同时保证 master 自己的回声不会污染镜像
             return;
         }
         if (status.state == DZ_ACCOUNT_OFFLINE) {
@@ -204,7 +204,7 @@ void ShmManager::handle_query_account_status(const std::byte* frame) {
                 return;  // 该账户归属某网关, td 会权威应答
             }
         }
-        // 无任何运行中网关管理该账户: 兜底 Offline (gateway_name 空串 = 平台生成帧, ADR 0057)
+        // 无任何运行中网关管理该账户: 兜底 Offline (gateway_name 空串 = 平台生成帧, ADR 0058)
         DzAccountStatus fallback{};
         dztrader::copy_string(fallback.account_id, queried.c_str(), true);
         fallback.state = DZ_ACCOUNT_OFFLINE;
@@ -224,7 +224,7 @@ void ShmManager::notify_td_stopped(std::string_view gateway_name) {
     for (const auto& account : it->second) {
         DzAccountStatus status{};
         dztrader::copy_string(status.account_id, account.c_str(), true);
-        // ADR 0057: 平台生成的帧 gateway_name 留空串 (非权威兜底; 空串 ⇔ 非 td 写)
+        // ADR 0058: 平台生成的帧 gateway_name 留空串 (非权威兜底; 空串 ⇔ 平台生成)
         status.state = DZ_ACCOUNT_OFFLINE;
         status.date = 0;
         platform::write_struct(event_writer_, DZ_FRAME_ACCOUNT_STATUS, status);
