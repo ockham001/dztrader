@@ -649,8 +649,8 @@ void TdApi::connect_account_by_id(const std::string& account_id, bool user_initi
     }
 
     // 4. flow_dir: cfg->ext.flow_dir 优先 (用户指定), 否则用 flow_dir_ / account_id (每账户独立)
-    //    account_id 现为用户输入的柜台账户号，契约字符集允许 `/` 与 `.` —— 直接作目录名会有
-    //    路径穿越/目录碰撞风险，目录名转义/字符集收窄见 #475（本票不改路径构造）。
+    //    account_id 的契约字符集已排除路径分隔符与点号（ADR 0057；dzweb 入口与 validate 双重
+    //    校验），因此可直接作单级目录名；手改配置文件绕过校验属用户自担风险（契约 td-config §5）。
     std::filesystem::path session_flow_dir;
     if (!cfg->ext.flow_dir.empty()) {
         session_flow_dir = cfg->ext.flow_dir;

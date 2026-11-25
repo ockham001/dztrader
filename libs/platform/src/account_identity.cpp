@@ -14,10 +14,12 @@ std::string_view trim_account_name(std::string_view text) noexcept {
 }
 
 bool account_id_charset_valid(std::string_view account_id) noexcept {
-    // 契约 td-config §7：ASCII 可见字符 0x21–0x7E（禁空格 / 控制字符 / 非 ASCII），禁 `:`。
+    // 契约 td-config §7 / ADR 0057：ASCII 可见字符 0x21–0x7E（禁空格 / 控制字符 / 非 ASCII）；
+    // 另禁 `:`（旧复合键分隔符）与 `/`、`\`、`.`——td 网关以 account_id 作 CTP 流文件目录名，
+    // 分隔符可穿越目录，`.` / `..` 与 Windows 尾点归一可造成目录碰撞。
     for (const char c : account_id) {
         const auto byte = static_cast<unsigned char>(c);
-        if (byte < 0x21 || byte > 0x7E || c == ':') {
+        if (byte < 0x21 || byte > 0x7E || c == ':' || c == '/' || c == '\\' || c == '.') {
             return false;
         }
     }

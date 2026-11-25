@@ -439,7 +439,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 2. 目标网关（POST 来自 body 的 `gateway`；PUT/DELETE 来自注册表解析结果）必须是已注册的交易网关进程（进程配置中的 `dztd_*`）；否则 400 `{"error":"invalid gateway","code":"invalid_gateway"}`。
 3. 目标网关当前必须为 Running（`process_status`，契约 process）；否则 409 `{"error":"td gateway not running","code":"gateway_not_running"}`。
 4. **通用层字段校验**（POST 与 PUT 都做，规则真相源：契约 td-config §2.2 / §7）：
-   - `account_id` 非空、≤ 31 字节（`DzAccountId` 容量）、ASCII 可见字符 `0x21`–`0x7E`（禁空格 / 禁 `:` / 禁控制字符）、**不得等于任何已注册进程名**（`dztraderd`/`dzsysmon`/`dzmd_*`/`dztd_*`/`stg.*`）——否则 400 `{"error":"invalid account id","code":"invalid_account_id"}`。
+   - `account_id` 非空、≤ 31 字节（`DzAccountId` 容量）、ASCII 可见字符 `0x21`–`0x7E`（禁空格 / 禁 `:` / 禁 `/` / 禁 `\` / 禁 `.` / 禁控制字符；后三者因 td 网关以它作 CTP 流文件目录名，ADR 0057）、**不得等于任何已注册进程名**（`dztraderd`/`dzsysmon`/`dzmd_*`/`dztd_*`/`stg.*`）——否则 400 `{"error":"invalid account id","code":"invalid_account_id"}`。
    - `account_name`（提供且非空时）：`trim` 后 ≤ 64 字节 UTF-8、无控制字符；否则 400 `{"error":"invalid account name","code":"invalid_account_name"}`。
 5. POST 唯一性：`account_id` 已在账户注册表中（**任何**网关，含已禁用/离线账户）→ 409 `{"error":"account already exists","code":"account_exists"}`。`account_name` 与任何已登记账户的 `account_id` 或 `account_name` 冲突（**展平判定**；留空的名字按 `account_id` 参与判定，NFC 规范化后字节比较）→ 409 `{"error":"account name already exists","code":"account_name_exists"}`。
 6. PUT / DELETE：`account_id` 由账户注册表解析网关（`account_id → gateway`）；注册表无该账户 → 404 `{"error":"account not found","code":"account_not_found"}`。PUT 改名的 `account_name` 唯一性同第 5 条（排除自身）。

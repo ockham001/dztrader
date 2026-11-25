@@ -350,6 +350,16 @@ TEST_F(TdAccountControllerTest, CreateRejectsAccountIdWithSpaceOrColon) {
     }
 }
 
+TEST_F(TdAccountControllerTest, CreateRejectsAccountIdWithPathSeparatorOrDot) {
+    // ADR 0057 / 契约 td-config §7：account_id 会被 td 网关直接当作 CTP 流文件目录名，
+    // 路径分隔符与点号（`.` / `..` / Windows 尾点）一律非法。
+    prime_gateway("dztd_ctp");
+    for (const char* id : {"000/01", "000\\01", "000.01", "..", ".", "00001."}) {
+        auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", id)));
+        expect_error(resp, drogon::k400BadRequest, "invalid_account_id");
+    }
+}
+
 TEST_F(TdAccountControllerTest, CreateRejectsNonAsciiAccountId) {
     prime_gateway("dztd_ctp");
     auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", "账户001")));

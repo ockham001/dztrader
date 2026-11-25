@@ -124,8 +124,8 @@ private:
     /// 按形态预留（网关与策略都能动态注册，空闲名字明天可能被占用）。
     bool is_registered_process_name(const std::string& name) const;
 
-    /// 预检 4：`account_id` 通用层校验（非空 / ≤31 字节 / ASCII 可见字符集 / 进程名冲突）。
-    /// 返回 nullptr = 通过；否则 400 `invalid_account_id`。
+    /// 预检 4：`account_id` 通用层校验（非空 / ≤31 字节 / ASCII 可见字符集（禁 `:`、`/`、
+    /// `\`、`.`）/ 进程名冲突）。返回 nullptr = 通过；否则 400 `invalid_account_id`。
     drogon::HttpResponsePtr check_account_id(const std::string& account_id) const;
 
     /// 预检 4：`account_name` 通用层校验（trim 后 ≤64 字节 / 无控制字符 / UTF-8）。
