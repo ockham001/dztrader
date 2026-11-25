@@ -8,8 +8,10 @@
 用法:
   python3 scripts/contract_slice.py sysmon §2.9            # 切 §2.9 本节（不含子节）
   python3 scripts/contract_slice.py sysmon §2.9 --children # 含全部子节
+  python3 scripts/contract_slice.py md-config 数据结构     # 按标题名切（无编号契约）
   python3 scripts/contract_slice.py --list                 # 全部契约的编号标题
   python3 scripts/contract_slice.py --outline sysmon       # 一份契约/文档的节大纲
+  python3 scripts/contract_slice.py sysmon --outline       # 同上（值可省略，#480）
   python3 scripts/contract_slice.py --outline ticket-closeout          # docs stem
   python3 scripts/contract_slice.py --outline docs/agents/ticket-closeout.md  # 仓库相对路径
   python3 scripts/contract_slice.py ticket-closeout §1     # docs 目标也能切
@@ -21,6 +23,13 @@
     常用同一层数；按层数切会把整章后面的节都带进来）
   - 代码围栏（``` / ~~~）里的假标题不算节——围栏里的行不参与标题索引
   - `§N` 参数接受 `2` / `2.5` / `2.9` / `7.9`，前导 `§` 可省略
+  - **按标题名切节**（#480）：`docs/frame_contracts/` 25 份契约里 17 份没有任何编号标题
+    （`md-config` / `md-status` / `process` / `shm` …），`§N` 无从下手而 AGENTS 又禁止
+    对契约用 `sed -n`。参数直接写标题名（`md-config 数据结构`），编号前缀自动剥除
+    （`第九节` 也能命中 `### 2.9 第九节`）；未知标题 exit 1 并列出候选标题。
+    **`§` 前缀表示「节号」语义**：`md-config §数据结构` 与 `md-config §7.x` 一样按写错的
+    节号报错（exit 2）——不放宽 `§N` 的既有含义，避免把笔误当标题猜。以数字开头的标题
+    暂不支持按名切（同样按写错的节号处理）
   - 同号重复（同一编号出现多次，含 `## 2.5` 与 `### 2.5` 跨层级冲突）不静默取第一个：
     切片报错并列出全部行号，`--list` 也标出该编号
   - 未知契约 / 未知节号 exit 1 并给候选；参数或环境错误 exit 2
@@ -30,8 +39,10 @@
     里找，多个命中 → exit 1 并列出候选；未知 → exit 1 给候选（契约 stem + docs stem）。
     含 `/` 或以 `.md` 结尾的目标按**路径**解析（必须是仓库内已存在的 .md 文件）；
     不存在 / 绝对路径 / 目录 → exit 2。`--outline` 与 `--list`、位置参数互斥 (#316 AC3)
-  - `--outline <target>` 输出与 `--list` 单份块**同一形状**：首行 `<stem> (<相对路径>)`，
-    随后按编号深度缩进的 `§N <title>`；docs 目录经 `--docs-dir` 覆盖（selftest 用临时夹具）
+  - `--outline [<target>]` 输出与 `--list` 单份块**同一形状**：首行 `<stem> (<相对路径>)`，
+    随后缩进的大纲行；编号标题渲染为 `§N <title>`（按编号深度缩进），非编号标题渲染为
+    `# <title>`（按 `#` 层数缩进）——无编号契约因此也能定位「按标题名切」的入口。
+    值可省略：`<stem> --outline` 等价于 `--outline <stem>`。docs 目录经 `--docs-dir` 覆盖
 
 退出码: 0=命中, 1=未知目标/未知节号/歧义（含候选提示）, 2=参数/环境错误。
 """
@@ -50,12 +61,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTRACT_DIR = REPO_ROOT / "docs" / "frame_contracts"
 DEFAULT_DOCS_ROOT = REPO_ROOT / "docs"
 USAGE = (
-    "usage: contract_slice.py <target> <section> [--children] | --list | --outline <target> "
-    "| --selftest [--contract-dir <path>]"
+    "usage: contract_slice.py <target> <section|title> [--children] | --list | "
+    "--outline [<target>] | --selftest [--contract-dir <path>]"
 )
 
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 _HEADING_RE = re.compile(r"^(#{2,6})\s+(\d+(?:\.\d+){0,3})(?:\.)?(?:\s+(.*))?$")
+# 非编号标题（`### 数据结构`）：`docs/frame_contracts/` 25 份契约里 17 份只有这种形态，
+# 按 `§N` 切不了 (#480)。`--outline` 与按标题名切节都走这个正则。
+_PLAIN_HEADING_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*#*\s*$")
 _SECTION_ARG_RE = re.compile(r"^\d+(?:\.\d+){0,3}$")
 
 
@@ -100,6 +114,26 @@ class _Parser(argparse.ArgumentParser):
 def iter_headings(text: str) -> list[Heading]:
     """返回围栏代码块之外的编号标题；围栏里的 `## 2.9` 是内容，不是节。"""
     headings: list[Heading] = []
+    for line_no, line, _title, _level in _iter_heading_lines(text):
+        heading_match = _HEADING_RE.match(line)
+        if heading_match:
+            headings.append(
+                Heading(
+                    number=heading_match.group(2),
+                    line=line_no,
+                    title=(heading_match.group(3) or "").strip(),
+                )
+            )
+    return headings
+
+
+def _iter_heading_lines(text: str) -> list[tuple[int, str, str, int]]:
+    """围栏外的全部 `##`–`######` 标题：(行号 0 起, 原始行, 标题文本, `#` 层数)。
+
+    标题文本已剥掉前导 `#` 与行尾 `#`；带编号的标题保留编号（`2.9 第九节`）——调用方
+    按需再剥。围栏里的假标题不算，与 `iter_headings` 同一判据（只解析一次围栏状态）。
+    """
+    rows: list[tuple[int, str, str, int]] = []
     fence: tuple[str, int] | None = None
     for line_no, line in enumerate(text.splitlines()):
         fence_match = _FENCE_RE.match(line)
@@ -112,16 +146,20 @@ def iter_headings(text: str) -> list[Heading]:
             continue
         if fence is not None:
             continue
-        heading_match = _HEADING_RE.match(line)
-        if heading_match:
-            headings.append(
-                Heading(
-                    number=heading_match.group(2),
-                    line=line_no,
-                    title=(heading_match.group(3) or "").strip(),
-                )
+        plain_match = _PLAIN_HEADING_RE.match(line)
+        if plain_match:
+            rows.append(
+                (line_no, line, plain_match.group(2).strip(), len(plain_match.group(1)))
             )
-    return headings
+    return rows
+
+
+def title_of_heading(title: str) -> str:
+    """标题的可匹配文本：剥掉编号前缀（`2.9 第九节` → `第九节`，`数据结构` 原样）。"""
+    return _HEADING_NUMBER_PREFIX_RE.sub("", title).strip()
+
+
+_HEADING_NUMBER_PREFIX_RE = re.compile(r"^\d+(?:\.\d+){0,3}\.?[\s\u3000]*")
 
 
 def contract_paths(contract_dir: Path) -> dict[str, Path]:
@@ -327,25 +365,49 @@ def slice_text(
     return "\n".join(lines)
 
 
-def render_block(path: Path, stem: str, root: Path) -> list[str]:
-    """单份目标的大纲块：首行 `<stem> (<相对路径>)`，随后缩进的 `§N <title>`。
+def render_block(path: Path, stem: str, root: Path, *, include_plain: bool = True) -> list[str]:
+    """单份目标的大纲块：首行 `<stem> (<相对路径>)`，随后缩进的大纲行。
 
-    `--list` 的每份契约块与 `--outline` 共用本函数，输出形状因此不会分叉（#316 AC3）。
+    `--list` 的每份契约块与 `--outline` 共用本函数（输出形状不分叉，#316 AC3），但
+    **`--list` 传 `include_plain=False`**：它的文档口径是「只列编号标题」，加列非编号标题
+    会是本票自引入的漂移（R1 审查 finding 3）。`--outline` 才列两种标题形态。
+
+    两种标题形态（#480）：编号标题 `§N <title>`（缩进反映编号深度），非编号标题
+    `# <title>`（缩进按 `#` 层数，**按文档行号顺序与编号标题合并**——不能一律追加到末尾，
+    否则混合文档里大纲顺序与文件顺序不一致，R1 审查 finding 5）。
     """
     out = [f"{stem} ({_relative(path, root)})"]
-    headings = numbered_sections(path)
-    if not headings:
-        out.append("  (no numbered headings)")
+    numbers = numbered_sections(path)
+    raw_text = path.read_text(encoding="utf-8", errors="replace")
+    plain = [
+        (line_no, title, level)
+        for line_no, line, title, level in _iter_heading_lines(raw_text)
+        if not _HEADING_RE.match(line)
+    ]
+    if not include_plain:
+        plain = []
+    if not numbers and not plain:
+        out.append("  (no numbered headings)" if not include_plain else "  (no headings at all)")
         return out
+    if not numbers and include_plain:
+        # 无编号契约（25 份里 17 份）：直说「只能按标题名切」，否则读者会以为工具坏了。
+        out.append("  (no numbered headings; address sections by title)")
     duplicates = {
         heading.number
-        for heading in headings
-        if sum(1 for other in headings if other.number == heading.number) > 1
+        for heading in numbers
+        if sum(1 for other in numbers if other.number == heading.number) > 1
     }
-    for heading in headings:
-        marker = " [duplicate]" if heading.number in duplicates else ""
-        indent = " " * _number_indent(heading.number)
-        out.append(f"  {indent}§{heading.number} {heading.title}{marker}")
+    numbered_lines = [
+        (heading.line, f"  {' ' * _number_indent(heading.number)}"
+                       f"§{heading.number} {heading.title}"
+                       f"{' [duplicate]' if heading.number in duplicates else ''}")
+        for heading in numbers
+    ]
+    plain_lines = [
+        (line_no, f"  {'  ' * (level - 2)}# {title}") for line_no, title, level in plain
+    ]
+    for _line_no, rendered in sorted(numbered_lines + plain_lines, key=lambda item: item[0]):
+        out.append(rendered)
     return out
 
 
@@ -354,25 +416,38 @@ def render_list(contract_dir: Path) -> str:
     paths = contract_paths(contract_dir)
     out: list[str] = []
     for stem, path in paths.items():
-        out.extend(render_block(path, stem, REPO_ROOT))
+        out.extend(render_block(path, stem, REPO_ROOT, include_plain=False))
     return "\n".join(out)
 
 
 def render_outline(target: Target, root: Path) -> str:
     """单份目标的大纲；与 `--list` 的单份块同一形状。"""
-    return "\n".join(render_block(target.path, target.stem, root))
+    return "\n".join(render_block(target.path, target.stem, root, include_plain=True))
+
+
+# `--outline` 的值省略时用这个哨兵：目标改从位置参数 `<stem>` 取（#480——
+# `contract_slice.py md-config --outline` 与 `--outline md-config` 都必须工作，
+# 前者是实际最常被误写的形态，旧实现直接报 `argument --outline: expected one argument`）。
+OUTLINE_FROM_STEM = "\x00outline-from-stem"
 
 
 def build_parser() -> _Parser:
     parser = _Parser(prog="contract_slice.py", usage=USAGE, add_help=True)
     parser.add_argument("stem", nargs="?", help="契约 stem / docs stem / 仓库相对 .md 路径")
-    parser.add_argument("section", nargs="?", help="节号，例如 §2.9 / §2 / §6.1.1")
+    parser.add_argument(
+        "section", nargs="?", help="节号（§2.9）或标题名（数据结构）；见 --outline"
+    )
     parser.add_argument("--children", action="store_true", help="含子节（默认只切本节）")
     parser.add_argument("--list", action="store_true", help="列出全部契约的编号标题")
     parser.add_argument(
         "--outline",
         metavar="TARGET",
-        help="列出单个目标（契约 stem / docs stem / 仓库相对 .md 路径）的编号节大纲",
+        nargs="?",
+        const=OUTLINE_FROM_STEM,
+        help=(
+            "列出单个目标的节大纲（契约 stem / docs stem / 仓库相对 .md 路径）。"
+            "值可省略：`<stem> --outline` 等价于 `--outline <stem>`"
+        ),
     )
     parser.add_argument("--selftest", action="store_true", help="临时目录自测，不碰真实契约")
     parser.add_argument(
@@ -397,6 +472,74 @@ def normalize_section(raw: str) -> str:
     return value
 
 
+def _is_title_arg(raw: str) -> bool:
+    """参数是标题名而非节号。
+
+    判据两条同时成立：
+      - **没有 `§` 前缀**：`§` 是「节号」的显式标记，`§x` 继续报 invalid section（exit 2）。
+        这样 `contract_slice.py md-config §数据结构` 会被当成写错的节号并给出提示，
+        而不是静默按标题猜——与既有 `test_exit_codes_separate_unknown_from_usage` 的
+        「格式错误必须和未知节号区分开」一致。
+      - 不匹配纯数字点号形态（`2.9` 这类仍走编号），且不以数字开头——因此**以数字
+        开头的标题（如 `3D 渲染`）目前无法按标题名切**（会被当成写错的节号，exit 2）。
+        这是有意的保守取舍：把 `7.x` 这类笔误当标题猜会掩盖真实错误；确需切这类标题时
+        先用 `--outline` 确认编号，或改标题措辞。
+    """
+    value = raw.strip()
+    if not value or value.startswith("§"):
+        return False
+    if _SECTION_ARG_RE.match(value):
+        return False
+    return not value[0].isdigit()
+
+
+def slice_by_title(text: str, title: str, include_children: bool) -> str:
+    """按**标题文本**切节（#480）：给无编号契约用。
+
+    匹配规则（依次尝试，命中即止）：
+      1. 标题文本全等（大小写敏感——契约标题是专有名词，`BrokerEntry` ≠ `brokerentry`）
+      2. 忽略空白与全角/半角空格后全等
+    子节边界按 `#` 层数（无编号信息可用）：`--children` 时收到第一个同级或更高级标题为止，
+    默认模式收到第一个任何标题为止。
+    """
+    rows = _iter_heading_lines(text)
+    candidate = _normalize_title(title)
+    hits: list[tuple[int, str, int]] = []
+    for line_no, _line, heading_text, level in rows:
+        if _normalize_title(heading_text) == candidate:
+            hits.append((line_no, heading_text, level))
+    if not hits:
+        return ""
+    if len(hits) > 1:
+        lines = ", ".join(str(hit[0] + 1) for hit in hits)
+        raise DuplicateSectionError(
+            f"duplicate heading '{title}' at lines {lines}; address it by number or rename"
+        )
+    start_line, _heading_text, level = hits[0]
+    all_lines = text.splitlines()
+    end = len(all_lines)
+    for line_no, _line, heading_text, other_level in rows:
+        if line_no <= start_line:
+            continue
+        if include_children:
+            if other_level <= level:
+                end = line_no
+                break
+        else:
+            end = line_no
+            break
+    lines = all_lines[start_line:end]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _normalize_title(value: str) -> str:
+    """比较用：剥编号前缀、折叠空白（含全角空格）、去首尾空白。"""
+    stripped = title_of_heading(value)
+    return re.sub(r"\s+", " ", stripped.replace("\u3000", " ")).strip()
+
+
 def run(
     argv: list[str],
     contract_dir: Path = DEFAULT_CONTRACT_DIR,
@@ -419,18 +562,32 @@ def run(
             return 2, "", f"error: --selftest takes no --contract-dir or --docs-dir\n{USAGE}"
         return selftest()
     if args.outline is not None:
-        # `--outline` 取代「`<stem> --list`」（#316 AC3）：它接受一个目标，且与
-        # `--list`、位置参数互斥 —— 三种混用都是用法错误（exit 2）。
+        # `--outline` 取代「`<stem> --list`」（#316 AC3）：它接受一个目标，且与 `--list`
+        # 互斥。**值可省略**（#480）：省略时目标取位置参数 `<stem>`，
+        # `contract_slice.py md-config --outline` 与 `--outline md-config` 等价——
+        # 前者是实际最常被误写的形态（旧实现直接报 `expected one argument`）。
         if args.list:
             return 2, "", f"error: --outline and --list are mutually exclusive\n{USAGE}"
-        if args.stem or args.section or args.children:
-            return 2, "", (
-                "error: --outline takes no positional arguments or --children\n" + USAGE
-            )
-        if not args.outline.strip():
+        if args.children:
+            return 2, "", f"error: --outline takes no --children\n{USAGE}"
+        outline_target = ""
+        if args.outline == OUTLINE_FROM_STEM:
+            if not args.stem or args.section:
+                return 2, "", (
+                    "error: --outline without a value needs exactly one positional target\n"
+                    + USAGE
+                )
+            outline_target = args.stem
+        else:
+            if args.stem or args.section:
+                return 2, "", (
+                    "error: --outline takes no positional arguments or --children\n" + USAGE
+                )
+            outline_target = args.outline
+        if not outline_target.strip():
             return 2, "", f"error: --outline requires a target\n{USAGE}"
         try:
-            target = resolve_target(args.outline, contract_dir, docs_dir)
+            target = resolve_target(outline_target, contract_dir, docs_dir)
         except ContractDirError as exc:
             return 2, "", f"error: {exc}"
         except UsageError as exc:
@@ -450,10 +607,17 @@ def run(
             return 2, "", f"error: {exc}"
     if not args.stem or not args.section:
         return 2, "", f"error: missing contract stem or section\n{USAGE}"
-    try:
-        number = normalize_section(args.section)
-    except UsageError as exc:
-        return 2, "", f"error: {exc}\n{USAGE}"
+
+    # 参数形态校验**先于**目标解析：`ghost §x` 是「写法错误」（exit 2），不能因为契约名
+    # 恰好也不存在就降级成 exit 1 —— 两者修复动作不同（改参数 vs 改契约名）。
+    by_title = _is_title_arg(args.section)
+    number = ""
+    if not by_title:
+        try:
+            number = normalize_section(args.section)
+        except UsageError as exc:
+            return 2, "", f"error: {exc}\n{USAGE}"
+
     try:
         target = resolve_target(args.stem, contract_dir, docs_dir)
     except ContractDirError as exc:
@@ -464,18 +628,50 @@ def run(
         return 1, "", f"error: {exc}"
     stem = target.stem
     text, headings = read_contract(target.path)
+
+    # 按标题名切节（#480）：17/25 份契约没有任何编号标题，`§数据结构` 这类参数原先直接
+    # 报 `invalid section number`。判据见 _is_title_arg：无 `§` 前缀、不是纯数字点号
+    # 形态、不以数字开头 —— `§N` 的语义不被放宽（`§x` 仍是参数错误）。
+    if by_title:
+        try:
+            section = slice_by_title(text, args.section, args.children)
+        except SliceError as exc:
+            return 1, "", f"error: {exc} | target={stem} section={args.section!r}"
+        if not section:
+            hints = title_candidates(text)
+            return 1, "", (
+                f"error: unknown heading | target={stem} section={args.section!r} {hints}"
+            )
+        return 0, section + "\n", ""
+
     try:
         section = slice_text(text, headings, number, args.children)
     except UnknownSectionError:
         hints = candidates_for_section(headings, number)
         if not headings:
-            # docs 目标常见形态：整份文档没有编号标题（`## 标题` 不带数字）——切不了，
-            # 只能报错；此时候选提示不能沿用契约口径的文案。
-            hints = "target declares no numbered headings; sections can only be addressed by number"
+            # 无编号标题的目标（17/25 份契约即此形态）：先指路「按标题名切」，再**列出候选
+            # 标题**——只指路不给候选时，读者还得先去 --outline 再回来（R1 审查 finding 10）。
+            hints = (
+                "target declares no numbered headings; address it by title instead "
+                f"({args.stem} <标题名>) or run --outline {args.stem}; "
+                + title_candidates(text)
+            )
         return 1, "", f"error: unknown section | target={stem} section=§{number} {hints}"
     except SliceError as exc:
         return 1, "", f"error: {exc} | target={stem} section=§{number}"
     return 0, section + "\n", ""
+
+
+def title_candidates(text: str, limit: int = 12) -> str:
+    """按标题名切节失败时列出候选标题（无编号契约唯一可用的导航面）。"""
+    titles = [
+        title_of_heading(heading_text)
+        for _line_no, _line, heading_text, _level in _iter_heading_lines(text)
+    ]
+    titles = [title for title in titles if title]
+    if not titles:
+        return "target declares no headings at all"
+    return "headings: " + " | ".join(titles[:limit]) + ("" if len(titles) <= limit else " | …")
 
 
 def selftest() -> tuple[int, str, str]:
@@ -718,7 +914,48 @@ def selftest() -> tuple[int, str, str]:
 
         rc, out, err = run(["--outline", "plain"], contract_dir, docs_dir)
         check("docs target without numbered headings says so", rc == 0
-              and "(no numbered headings)" in out, f"rc={rc} out={out!r} err={err!r}")
+              and "(no numbered headings; address sections by title)" in out
+              and "# 标题没有编号" in out, f"rc={rc} out={out!r} err={err!r}")
+
+        # ---- #480: --outline 值可省略 / 按标题名切节 ----
+        rc, out, err = run(["sample", "--outline"], contract_dir, docs_dir)
+        check("stem --outline equals --outline stem", rc == 0
+              and out.splitlines()[0].startswith("sample (")
+              and "§2.9 第九节" in out, f"rc={rc} out={out!r} err={err!r}")
+
+        rc, out, err = run(["--outline"], contract_dir, docs_dir)
+        check("bare --outline without target exits 2", rc == 2
+              and "exactly one positional target" in err, f"rc={rc} err={err!r}")
+
+        rc, out, err = run(["plain", "标题没有编号"], contract_dir, docs_dir)
+        check("title slicing works on a no-number contract", rc == 0
+              and "标题没有编号" in out, f"rc={rc} out={out!r} err={err!r}")
+
+        rc, out, err = run(["sample", "第九节"], contract_dir, docs_dir)
+        check("title slicing strips the number prefix from the heading",
+              rc == 0 and "body nine" in out and "body nine one" not in out,
+              f"rc={rc} out={out!r} err={err!r}")
+
+        rc, out, err = run(["sample", "第九节", "--children"], contract_dir, docs_dir)
+        check("title slicing honours --children", rc == 0
+              and "body nine one" in out and "body ten" not in out,
+              f"rc={rc} out={out!r} err={err!r}")
+
+        rc, _out, err = run(["sample", "不存在的标题"], contract_dir, docs_dir)
+        check("unknown title exits 1 and lists heading candidates", rc == 1
+              and "unknown heading" in err and "第九节" in err, f"rc={rc} err={err!r}")
+
+        rc, _out, err = run(["sample", "§7.x"], contract_dir, docs_dir)
+        check("numeric-looking bad section still exits 2 (not treated as a title)",
+              rc == 2 and "invalid section number" in err, f"rc={rc} err={err!r}")
+
+        rc, _out, err = run(["--outline", "sample", "§1"], contract_dir, docs_dir)
+        check("--outline takes no positional arguments or --children", rc == 2
+              and "positional" in err, f"rc={rc} err={err!r}")
+
+        rc, _out, err = run(["--outline", "sample", "--children"], contract_dir, docs_dir)
+        check("--outline rejects --children", rc == 2 and "--children" in err,
+              f"rc={rc} err={err!r}")
 
         rc, _out, err = run(["--outline", "ghost"], contract_dir, docs_dir)
         check("--outline unknown target exits 1 with candidates", rc == 1
@@ -728,6 +965,18 @@ def selftest() -> tuple[int, str, str]:
         check("ambiguous docs stem lists both candidates", rc == 1
               and "ambiguous" in err and "docs/agents/shared.md" in err
               and "docs/components/shared.md" in err, f"rc={rc} err={err!r}")
+
+        # R1 回归钉子：--list 保持「只列编号标题」形状（文档口径），非编号标题只在 --outline
+        rc, out, _err = run(["--list"], contract_dir, docs_dir)
+        check("--list keeps the numbered-only shape", "  # " not in out,
+              f"out={out!r}")
+        check("--list does not announce plain headings", "address sections by title" not in out,
+              f"out={out!r}")
+
+        # R1 回归钉子：无编号契约给数字节号时，错误信息必须**带候选标题**
+        rc, _out, err = run(["plain", "3"], contract_dir, docs_dir)
+        check("number on a no-number contract lists title candidates",
+              rc == 1 and "headings:" in err, f"rc={rc} err={err!r}")
 
         rc, _out, err = run(["--outline", "sample", "--list"], contract_dir, docs_dir)
         check("--outline and --list are mutually exclusive", rc == 2
@@ -750,7 +999,8 @@ def selftest() -> tuple[int, str, str]:
         return 1, "", "\n".join(f"FAIL {detail}" for detail in failures)
     return 0, (
         f"selftest OK: {total} cases "
-        "(hit / children / unknown / duplicate / fence / list / outline)"
+        "(hit / children / unknown / duplicate / fence / list / outline / "
+        "outline-value-optional / title-slicing)"
     ), ""
 
 

@@ -9,7 +9,8 @@
 #       （#281，build.sh/test.sh 重复 flag 必须累积）/ Windows CI 预算分档（#267）/
 #       孤儿导出（#274）/ CI 快路径分类（#289，与 ci.yml scope job 共用一份 denylist）/
 #       SYSMON 指标键集合（#309，4 处数据副本 + snapshot_builder 的 15 分支镜像）/ push 纪律
-#       （#309，push-ticket.sh 的 scope+验证标记+push 串联）/ 审查验证标记（#289，pre-push
+#       （#309，push-ticket.sh 的 scope+验证标记+md 锁定+push 串联）/ md 生产锁定确认标记
+#       （#480，push-ticket.sh 对 apps/ctp/md 改动的硬前置）/ 审查验证标记（#289，pre-push
 #       读取）/ PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
 #       门禁分槽 + 票型放行判定（#316 AC2，scripts/gate_status.py，pre-push 共用）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
@@ -306,6 +307,15 @@ check_push_ticket() {
     "$ROOT/scripts/push-ticket.sh" --selftest
 }
 
+check_md_lock_marker() {
+    # `apps/ctp/md/` 生产锁定确认标记（#480）：AGENTS 硬门禁 1 原先只有 opencode 的
+    # permission 机器化，DSH 等宿主没有——#471 的实现者把确认留到全部实现完之后，
+    # 漏项还是靠审查抓出来的。push-ticket.sh 现在对「diff 触及 md 目录但无确认标记」
+    # 硬拒绝；这里跑它的 selftest（临时 git 仓库，覆盖触及判定 / 严格拒绝 / 逃生口 /
+    # 按票号隔离 / 空标记），不碰工作区、不使用真实 .cache。
+    "$PYTHON" "$ROOT/scripts/md_lock_marker.py" --selftest
+}
+
 check_review_marker() {
     # 只读验证轮的机器标记（#289 AC6）：#253 的「修复后只读验证轮被宿主 turn 错误中止 →
     # 未验证即合并」只靠文档约束无效（动作点看不见）。脚本把「哪个轴上跑过验证、验证的是
@@ -323,8 +333,21 @@ check_frontend() {
         echo "error: npm not found; install Node.js or run --c-only" >&2
         return 2
     fi
+    # `-L` 必须先判（R1 finding 9）：`-d` 跟随符号链接，`ln -s <主仓>/node_modules` 会让
+    # `-d` 为真而直接进 type-check/lint/test——AGENTS 却写着「preflight 会硬拒」。符号链接
+    # 在这里不是「能用」，而是危险状态本身：`npm ci` 会清空链接目标（#480 / #471 实测）。
+    if [ -L "$fe/node_modules" ]; then
+        echo "error: $fe/node_modules is a symlink; worktrees must install deps locally (#480)" >&2
+        echo "       npm ci would empty the link target (the main workspace's node_modules)" >&2
+        echo "       fix: rm \"$fe/node_modules\" && cd \"$fe\" && npm ci" >&2
+        return 2
+    fi
     if [ ! -d "$fe/node_modules" ]; then
-        echo "error: $fe/node_modules missing; run ./scripts/build.sh first" >&2
+        # worktree 里的前端依赖不能靠 ln -s 共享：npm ci 会清空符号链接的目标目录
+        # （主工作区的 node_modules，见 #480）。给本地安装命令，别让 agent 去猜。
+        echo "error: $fe/node_modules missing" >&2
+        echo "       install locally (worktrees must not share it via symlink, #480):" >&2
+        echo "       cd \"$fe\" && npm ci" >&2
         return 2
     fi
 
@@ -394,6 +417,7 @@ run_step "orphan exports (#274)" check_orphan_exports
 run_step "ci scope fast path (#289)" check_ci_scope
 run_step "sysmon metric key set (#309)" check_sysmon_metric_keys
 run_step "push ticket discipline (#309)" check_push_ticket
+run_step "md production lock marker (#480)" check_md_lock_marker
 run_step "review verification marker (#289)" check_review_marker
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend

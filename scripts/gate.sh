@@ -99,30 +99,71 @@ if [ "$CMD" = "--selftest" ]; then
     (
         cd "$sel_tmp" || exit 1
         git init -q -b main .
+        # 与真实仓库同形态：`.cache/` 必须 gitignore。gate.sh 自己会往 .cache/gate 写日志，
+        # 不 ignore 的话 `add -A` 会把日志算进内容树，记录值就永远对不上被提交的树。
+        printf '.cache/\n' > .gitignore
+        # 脚本副本一并入库：否则它们是 untracked（内容树里必然包含，但期望值无从对照）。
+        git add -A
         git -c user.name=gate-selftest -c user.email=selftest@example.invalid \
-            -c commit.gpgsign=false commit -q --allow-empty -m "chore(#999): selftest baseline"
+            -c commit.gpgsign=false commit -q -m "chore(#999): selftest baseline"
         ./scripts/gate.sh ledger >/dev/null 2>&1
     )
     sel_head_rc=$?
     sel_tmp_head="$(git -C "$sel_tmp" rev-parse HEAD 2>/dev/null)"
+    # 内容树哈希（#480）：干净工作区时，工作区内容树 == HEAD 树。
+    sel_tmp_tree="$(git -C "$sel_tmp" rev-parse HEAD^{tree} 2>/dev/null)"
     for sel_slot in last-status-ledger last-status; do
         if [ ! -f "$sel_tmp/.cache/gate/$sel_slot" ]; then
             echo "selftest FAIL slot not written: .cache/gate/$sel_slot" >&2
             sel_fails=$((sel_fails + 1))
             continue
         fi
-        # 断言内容真的来自本次 ledger 运行（cmd/rc/head 三项都对）：只判存在会让
+        # 断言内容真的来自本次 ledger 运行（cmd/rc/head/tree 四项都对）：只判存在会让
         # 「分槽写成了空文件」或「cmd 名写错」照样绿（code-review finding）。
         sel_cmd="$(sed -n 's/^cmd=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
         sel_rc="$(sed -n 's/^rc=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
         sel_sha="$(sed -n 's/^head=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
-        if [ "$sel_cmd" = "ledger" ] && [ "$sel_rc" = "0" ] && [ "$sel_sha" = "$sel_tmp_head" ]; then
-            echo "selftest ok slot-written $sel_slot (cmd=$sel_cmd rc=$sel_rc head=${sel_sha:0:12})"
+        sel_tree="$(sed -n 's/^tree=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
+        if [ "$sel_cmd" = "ledger" ] && [ "$sel_rc" = "0" ] && [ "$sel_sha" = "$sel_tmp_head" ] &&
+            [ "$sel_tree" = "$sel_tmp_tree" ]; then
+            echo "selftest ok slot-written $sel_slot (cmd=$sel_cmd rc=$sel_rc head=${sel_sha:0:12} tree=${sel_tree:0:12})"
         else
-            echo "selftest FAIL slot content $sel_slot: cmd=$sel_cmd rc=$sel_rc head=${sel_sha:-<none>} (expected ledger/0/$sel_tmp_head)" >&2
+            echo "selftest FAIL slot content $sel_slot: cmd=$sel_cmd rc=$sel_rc head=${sel_sha:-<none>} tree=${sel_tree:-<none>} (expected ledger/0/$sel_tmp_head/$sel_tmp_tree)" >&2
             sel_fails=$((sel_fails + 1))
         fi
     done
+    # 端到端（#480 R1 审查 blocking）：closeout §2→§3 的真实顺序是「**脏工作区**跑门禁 →
+    # 提交 → 推送」。记录里的 tree= 必须是「被验证的工作区内容」，提交后应等于新 commit
+    # 的树；若沿用 `HEAD^{tree}`（父提交树），这条用例必红——而这正是 R1 审查抓到的缺陷。
+    #
+    # 注意捕获文件必须放在**仓库外**：放 repo 里会成为 untracked 文件、被算进内容树，
+    # 但提交时不会带上 → 用例自己制造假失败（首版即踩，实测 recorded≠pushed）。
+    sel_e2e_file="$(mktemp)"
+    sel_e2e_tree=""
+    if (
+        cd "$sel_tmp" || exit 1
+        printf 'int x = 0;\n' > selftest_dirty.cpp
+        git add selftest_dirty.cpp
+        git -c user.name=gate-selftest -c user.email=selftest@example.invalid \
+            -c commit.gpgsign=false commit -q -m "chore(#999): selftest dirty base"
+        printf 'int x = 1;\n' >> selftest_dirty.cpp   # 提交后还要改：模拟「门禁跑在提交前」
+        ./scripts/gate.sh ledger >/dev/null 2>&1
+        git add selftest_dirty.cpp
+        git -c user.name=gate-selftest -c user.email=selftest@example.invalid \
+            -c commit.gpgsign=false commit -q -m "chore(#999): selftest commit after gate"
+        # 被推送的 commit 的树
+        git rev-parse HEAD^{tree}
+    ) >"$sel_e2e_file" 2>&1; then
+        sel_e2e_tree="$(tail -1 "$sel_e2e_file" 2>/dev/null)"
+    fi
+    rm -f "$sel_e2e_file"
+    sel_recorded_e2e="$(sed -n 's/^tree=//p' "$sel_tmp/.cache/gate/last-status-ledger" 2>/dev/null | head -1)"
+    if [ -n "$sel_e2e_tree" ] && [ "$sel_recorded_e2e" = "$sel_e2e_tree" ]; then
+        echo "selftest ok dirty-worktree gate then commit records the pushed tree (tree=${sel_e2e_tree:0:12})"
+    else
+        echo "selftest FAIL recorded tree=${sel_recorded_e2e:-<none>} != pushed tree=${sel_e2e_tree:-<none>}; a gate run before the commit must still cover the commit (closeout §2→§3)" >&2
+        sel_fails=$((sel_fails + 1))
+    fi
     if [ "$sel_head_rc" -ne 0 ]; then
         echo "selftest FAIL gate.sh ledger in the temp repo exited rc=$sel_head_rc" >&2
         sel_fails=$((sel_fails + 1))
@@ -197,21 +238,48 @@ LOG="$LOG_DIR/${CMD}-$(date +%Y%m%d-%H%M%S)-$$.log"
 # 变成推不出去的机器事实（详见 issue #190）。
 record_last_status() {
     local cmd="$1" rc="$2"
-    local head ts tmp legacy_tmp
+    local head tree ts tmp legacy_tmp
     head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+    # 内容树哈希（#480）：门禁验证的是**工作区内容**，而 closeout §2→§3 的顺序是
+    # 「门禁绿 → 提交 → 推送」，所以门禁跑在**脏工作区**上、`HEAD^{tree}` 只是父提交树。
+    # 记 HEAD^{tree} 的话，提交后必然不等于被推 commit 的树 ⇒ 「record is from <parent>」
+    # 警告照旧（#471 实测，R1 审查两轴共同判 blocking）。这里算的是**工作区实际内容**的
+    # 树：临时 index `read-tree HEAD` + `add -A` + `write-tree`——include 已 gitignore 的
+    # 构建产物不会进树，与「提交后的树」等价；`git stash create` 不能用于此（不含 untracked，
+    # untracked-only 时返回空串，R1 审查实测）。
+    tree="$(worktree_content_tree)"
     ts="$(date +%s)"
     # 唯一 tmp 名（`$$`）：preflight 可与 build 重叠，两个进程共用固定名会互相覆盖/撕裂。
     # 分命令槽（#316 AC2）：build / test / preflight / ledger 各写一份，放行判定按票型读
     # 对应槽（scripts/gate_status.py）；`last-status` 仍是「最近一次任意门禁」的兼容视图，
     # 只有提示用途，不参与放行判定（否则 ledger 覆盖 build 红的闭环漏洞会复活）。
     local content
-    content="$(printf 'cmd=%s\nrc=%s\nhead=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$ts")"
+    content="$(printf 'cmd=%s\nrc=%s\nhead=%s\ntree=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$tree" "$ts")"
     tmp="$LOG_DIR/.last-status-$cmd.$$.tmp"
     legacy_tmp="$LOG_DIR/.last-status.$$.tmp"
     printf '%s\n' "$content" >"$tmp" &&
         mv -f "$tmp" "$LOG_DIR/last-status-$cmd" || return 1
     printf '%s\n' "$content" >"$legacy_tmp" &&
         mv -f "$legacy_tmp" "$LOG_DIR/last-status" || return 1
+}
+
+# 工作区内容树（#480）：把当前工作区（含已跟踪修改与 untracked、排除 gitignore）写成
+# 一个 tree 对象并返回其哈希。不改 HEAD、不动真实 index、不产生提交——临时 index 文件
+# 用完即删。算不出来时返回 unknown（gate_status 侧退回只比 head，只会多警告不误拦）。
+worktree_content_tree() {
+    local tmp_idx tree_hash
+    tmp_idx="$(mktemp "${TMPDIR:-/tmp}/dz_gate_index.XXXXXX" 2>/dev/null)" || {
+        echo unknown
+        return
+    }
+    # mktemp 建的是空文件；git 需要一个不存在的路径或有效 index，先删掉再让 git 自建。
+    rm -f "$tmp_idx"
+    if GIT_INDEX_FILE="$tmp_idx" git -C "$ROOT" read-tree HEAD 2>/dev/null &&
+        GIT_INDEX_FILE="$tmp_idx" git -C "$ROOT" add -A 2>/dev/null; then
+        tree_hash="$(GIT_INDEX_FILE="$tmp_idx" git -C "$ROOT" write-tree 2>/dev/null)"
+    fi
+    rm -f "$tmp_idx"
+    echo "${tree_hash:-unknown}"
 }
 
 run_and_report() {

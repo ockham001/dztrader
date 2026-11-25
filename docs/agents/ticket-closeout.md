@@ -95,12 +95,13 @@
 > **push / 建 PR 的硬前置（#284 AC2）**：先确认**最后一轮只读验证已返回且无 BLOCKING**。未返回时先 `wait_agent` 阻塞等待（`subagent` 等 `subagent-settled` 通知），**不得先 push / 建 PR 再验**——#252 因此把一次修复放大成两个串行 CI 周期（≈56min，时间线见 §1 第 11 条）。只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3。
 
 ```bash
-./scripts/push-ticket.sh <issue> -u origin <branch>   # scope + 审查验证标记 + git push 串行（#309 AC6）
+./scripts/push-ticket.sh <issue> -u origin <branch>   # scope + 审查标记 + md 生产锁定 + git push 串行（#309/#480）
 gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）" --body-file <body 文件>
 ./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（后台作业启动，见下）
 ```
 
-- **push 用 `scripts/push-ticket.sh <issue> [-u origin <branch>]`，不要裸 `git push`**（#309 AC6）：它串行做三件事——`./scripts/check-push-scope.sh <issue>` → `python3 scripts/review_marker.py check <issue>` **严格判定**（该票任一轴无标记 / 标记 sha 与 HEAD 不一致 → **默认拒绝**，exit 3）→ `git push "$@"`。逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1`：拒绝时先打印两个轴缺失/不匹配的标记与当前 HEAD，再放行。**worktree / 非标准分支**或需要推多个 ref 的场合才退回裸 `git push`（并手工跑前两条命令确认）。背景：#297 是本波唯一违例——`git push` 距首个 `spawn_teammate` 仅 19 s，`pre-push` 的 warning 被无视，随后 `--force-with-lease` 产生第二个 CI run（19 min）。
+- **push 用 `scripts/push-ticket.sh <issue> [-u origin <branch>]`，不要裸 `git push`**（#309 AC6）：它串行做四件事——`./scripts/check-push-scope.sh <issue>` → `python3 scripts/review_marker.py check <issue>` **严格判定**（该票任一轴无标记 / 标记 sha 与 HEAD 不一致 → **默认拒绝**，exit 3）→ `python3 scripts/md_lock_marker.py check <issue> --strict`（diff 触及 `apps/ctp/md/` 且无确认标记 → **拒绝**，见下条）→ `git push "$@"`。逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1` / `DZ_ALLOW_MD_LOCK=1`：拒绝时先打印缺失/不匹配的标记与当前 HEAD，再放行。**worktree / 非标准分支**或需要推多个 ref 的场合才退回裸 `git push`（并手工跑前三条命令确认）。背景：#297 是本波唯一违例——`git push` 距首个 `spawn_teammate` 仅 19 s，`pre-push` 的 warning 被无视，随后 `--force-with-lease` 产生第二个 CI run（19 min）。
+- **改 `apps/ctp/md/` 的票先写确认标记**（#480）：AGENTS §一硬门禁 1 的确认原先只有 opencode 的 permission 机器化（DSH 没有），且 #471 实测确认被留到实现全部完成之后、漏项靠审查抓出。用户确认后立刻跑 `python3 scripts/md_lock_marker.py write <issue>`（写 `.cache/lock/<issue>-md-lock.done`，gitignore）；标记不判 sha（确认通常早于首个 commit）。**确认要在动手前完成**，不是在 PR 前补。
 
 - 本仓用 PR 落地（`ci.yml` 只在 PR / main 触发）；main 有 GitHub ruleset `main-protection`（require PR、禁非快进、禁删除、`bypass_actors=[]`，admins 也无绕过）。payload 见 `.github/rulesets/main-protection.json`，查看/重建：`gh api repos/<owner>/<repo>/rulesets`、`gh api --method POST repos/<owner>/<repo>/rulesets --input .github/rulesets/main-protection.json`；仓库同时开启 `delete_branch_on_merge=true`。应急直推 main 需临时禁用 ruleset（`DZ_ALLOW_MAIN_PUSH=1` 只绕过本地 hook）。
 - **push 分级**（[ADR 0036](../adr/0036-push-authorization-tiered-with-guardrails.md)，AGENTS 硬门禁的细化）：feature 分支 push / PR 创建更新免逐次确认，前置是本票门禁绿 + `check-push-scope` 通过 + 一轮修复一次 push；**合并 PR 到 main 仍需确认**（可按票或按波一次授权，且必须在开工/PR 创建时一次性提出——见 §5）；删除非本票分支、打 tag 逐次确认；**force push 禁止**（`pre-push` 非快进拦截 + `.opencode` deny）。本地 `.githooks/pre-push`、main ruleset 与 `.opencode` 权限是机器守卫。
@@ -257,6 +258,7 @@ R6 跳过带 `⏳` 的未勾项——如实标注优于虚假勾选，规则必�
 AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，避免常驻上下文重复）：
 
 - **等待与门禁**：长命令（门禁 / CI / 子代理）用**后台作业**启动（`run_in_background`），需要结果时 `job_output(wait=true)`；等待期做只读准备，不要 `sleep` 轮询或前台空等（AGENTS §五「等待一律后台作业」）。CI 用 `./scripts/wait-ci.sh --pr <n>`（随时查状态加 `--status`，0 绿 / 1 红 / 2 错误 / 3 仍在跑）；门禁用 `./scripts/gate.sh build|test|preflight|ledger`（短输出用 `--tail N`；管道规则见 §2）。
+  **实测代价（本段是唯一详述处，#480）**：不看这条的票在 `sleep` 上花掉 **10%–28% 墙钟**（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。反例还包含 `gh run watch` 全量输出与反复 tail 后台日志；子代理完成会自动通知，不需要轮询。
 - **`job_output(wait=true)` 有宿主侧等待上限（默认 600s，上限值随宿主配置，以 `job_output` 的实际返回文案为准）**：传更大的 `timeout_ms` 会被宿主静默截断，返回 `[status: running]`——不是作业出错，也不是结束。#253 因此丢了 600s 并错过只读验证轮的入口；本波（#294–#298）再撞顶 3 次、每次空转 10 min。**等一个可能超过 10 分钟的作业要分段**：每次 `running` 返回后做一件只读工作（读 diff / 拟关闭评论 / 查 `wait-ci.sh --status`）再等下一段；**不要**用一次超长 wait 假装能阻塞到底。宿主侧放开该上限的交接片段见 #309 AC8（需改 `~/.dsh` 的 `tool-jobs` config，沙箱只读，由用户执行）。
 - **仓内搜索用 `git grep`（#289 AC8）**：它只扫版本控制内文件，天然跳过 `build/`、`install/`、`.cache/`。`grep -rn --include=*` 全仓跑会把编译产物与缓存一起扫（#253 实测单次 131.8s，`find .cache` 另花 94.2s）；要搜运行产物就显式给 `.cache/` 路径。
 - **跨调用文件与缓存**：每次 bash 调用的 `/tmp` 相互隔离，跨调用产物写 `.cache/`（已 gitignore）；`~/.conan2` / `~/.cache/gh` / `~/.npm` 只读时相关脚本已回退仓库 `.cache/`，仍被拒时一次性申请更高权限，不要反复重试。

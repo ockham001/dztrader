@@ -7,17 +7,22 @@
 # #297; the read-only verification round may not have run」，但它是 warning-only，被无视。
 #
 # 规则写成文档挡不住动作点跳过，所以把「检查 → 拒绝 → 才 push」串成一个脚本：绕过它需要
-# 显式设逃生口。串行三步，任一步没通过就停止（不执行 git push）：
+# 显式设逃生口。串行四步，任一步没通过就停止（不执行 git push）：
 #   1) bash scripts/check-push-scope.sh <issue>      上游区间只含本票 commit / CI-busy 判定
 #   2) python3 scripts/review_marker.py check <issue> --strict
 #      --expect-axis standards --expect-axis spec   两个审查轴的标记必须存在且停在 HEAD
 #      （`--strict` 与 `--expect-axis` 是 #309 AC6 给本脚本加的，默认 check 仍是恒 0 的
 #      warning-only，pre-push 依赖那个行为——见 review_marker.py 的 docstring）
-#   3) git push "$@"                                 原样透传真实退出码
+#   3) python3 scripts/md_lock_marker.py check <issue> --strict（#480）
+#      diff 触及 apps/ctp/md/ 时要求生产锁定确认标记；不触及时整步跳过（不打扰）。
+#      为什么要有这一步：AGENTS §一硬门禁 1 原先只有 opencode 的 permission 机器化，
+#      DSH 等宿主没有——#471 是「实现全做完才问」，且漏项由审查抓出而不是实现者。
+#   4) git push "$@"                                 原样透传真实退出码
 #
 # sha 前缀比较口径**只有一处**：review_marker.py 的 same_commit()。本脚本不自己解析
 # `.cache/review/*.done`，也不在 sh 里另写一套正则——两套判定漂移时，被挡下的推送会
-# 给出互相矛盾的结论（同形教训见 check-push-scope.sh 的 BASE 解析）。
+# 给出互相矛盾的结论（同形教训见 check-push-scope.sh 的 BASE 解析）。md-lock 的
+# 「diff 是否触及锁定目录」同理走 md_lock_marker.py，不在这里另写 glob。
 #
 # 用法:
 #   ./scripts/push-ticket.sh <issue> [git-push-args...]
@@ -29,11 +34,13 @@
 # 逃生口:
 #   DZ_ALLOW_UNREVIEWED_PUSH=1 —— review 标记缺失/为空/sha 不匹配时，把两个轴的标记状态与
 #   当前 HEAD 一起打印，然后仍放行到 git push（仅覆盖 review 轴；push scope 违规仍是硬拒绝）。
-#   只在真故障时用，用完在报告里写明（AGENTS §五「push 分级授权」）。
+#   DZ_ALLOW_MD_LOCK=1        —— 缺 apps/ctp/md 生产锁定确认标记时仍放行（仅覆盖 md-lock 轴）。
+#   两者都只在真故障时用，用完在报告里写明（AGENTS §五「push 分级授权」）。
 #
 # 退出码:
 #   0=检查通过且 git push 成功；非 0=原样透传 git push 的真实退出码
-#   3=检查拒绝（push scope 违规 / review 标记缺失、为空或不是 HEAD；已设逃生口时不算）
+#   3=检查拒绝（push scope 违规 / review 标记缺失、为空或不是 HEAD / 缺 md 生产锁定确认；
+#     已设对应逃生口时不算）
 #   2=参数或环境错误（缺票号 / 非数字票号 / 不在 git 仓库 / 缺依赖脚本）
 
 set -uo pipefail
@@ -95,6 +102,7 @@ FAKE_GH
     cp "$ROOT/scripts/push-ticket.sh" "$repo/scripts/push-ticket.sh"
     cp "$ROOT/scripts/check-push-scope.sh" "$repo/scripts/check-push-scope.sh"
     cp "$ROOT/scripts/review_marker.py" "$repo/scripts/review_marker.py"
+    cp "$ROOT/scripts/md_lock_marker.py" "$repo/scripts/md_lock_marker.py"
     chmod +x "$repo/scripts/push-ticket.sh"
 
     _se_git() {
@@ -118,7 +126,7 @@ FAKE_GH
 
     # 清理标记目录（每个用例自己写）。
     _se_clear_markers() {
-        rm -rf "$repo/.cache/review"
+        rm -rf "$repo/.cache/review" "$repo/.cache/lock"
     }
 
     # 写标记：<axis> <sha>
@@ -128,17 +136,25 @@ FAKE_GH
         printf '%s\n' "$sha" >"$repo/.cache/review/999-$axis.done"
     }
 
+    # 写 md 生产锁定确认标记（#480）
+    _se_write_md_lock() {
+        mkdir -p "$repo/.cache/lock"
+        printf '%s\n' "${1:-$head_sha}" >"$repo/.cache/lock/999-md-lock.done"
+    }
+
     # 跑 push-ticket 副本：<allow_unreviewed 0|1> <fake_push_rc> <args...>；stdout+stderr 合并返回
+    # `_SE_MD_ALLOW=1` 额外打开 md-lock 逃生口（#480 用例专用，默认关闭）。
     _se_run() {
         local allow="$1" push_rc="$2"
         shift 2
         (
             cd "$repo" || exit 1
-            unset DZ_ALLOW_UNREVIEWED_PUSH DZ_FAKE_PUSH_RC
+            unset DZ_ALLOW_UNREVIEWED_PUSH DZ_FAKE_PUSH_RC DZ_ALLOW_MD_LOCK
             export PATH="$bin:$PATH"
             export DZ_FAKE_DIR="$fake_dir" DZ_REAL_GIT="$real_git"
             export DZ_FAKE_PUSH_RC="$push_rc"
             [ "$allow" = "1" ] && export DZ_ALLOW_UNREVIEWED_PUSH=1
+            [ "${_SE_MD_ALLOW:-0}" = "1" ] && export DZ_ALLOW_MD_LOCK=1
             bash "$repo/scripts/push-ticket.sh" "$@"
         ) </dev/null 2>&1
     }
@@ -236,6 +252,41 @@ FAKE_GH
         _se_git reset -q --hard "$head_sha"
     ) >/dev/null 2>&1
 
+    # ---- #480：apps/ctp/md 生产锁定确认（标记缺失即拒绝推送）------------------
+    # 先造一个真正改到锁定目录的提交（subject 含 #999，否则会被 push scope 先挡下）。
+    (
+        cd "$repo" || exit 1
+        mkdir -p apps/ctp/md
+        printf 'int x = 0;\n' >apps/ctp/md/md_api.cpp
+        _se_git add apps/ctp/md/md_api.cpp
+        _se_git commit -q -m "feat(#999): touch md gateway"
+        _se_git update-ref refs/remotes/origin/main "$base_sha"
+    ) >/dev/null 2>&1
+    md_touch_sha="$(cd "$repo" && "$real_git" rev-parse HEAD)"
+
+    _se_clear_markers
+    _se_write_marker standards "$md_touch_sha"
+    _se_write_marker spec "$md_touch_sha"
+    _se_case "md path touched without lock marker -> refuse" 3 0 "hard gate 1" 0 0 999 -u origin main
+    _se_case "md path touched -> push did not run" 3 0 "nothing was pushed" 0 0 999 -u origin main
+
+    _se_write_md_lock "$md_touch_sha"
+    _se_case "md lock marker present -> push" 0 1 "md-lock: confirmed" 0 0 999 -u origin main
+
+    _se_clear_markers
+    _se_write_marker standards "$md_touch_sha"
+    _se_write_marker spec "$md_touch_sha"
+    _SE_MD_ALLOW=1 _se_case "md lock escape hatch -> push" 0 1 "DZ_ALLOW_MD_LOCK=1" 0 0 999 -u origin main
+    _SE_MD_ALLOW=0
+
+    # 复位：回到无 md 改动的 head，避免影响后续/重复运行
+    (
+        cd "$repo" || exit 1
+        _se_git reset -q --hard "$head_sha"
+        _se_git update-ref refs/remotes/origin/main "$base_sha"
+    ) >/dev/null 2>&1
+    _se_clear_markers
+
     if [ "$fails" -ne 0 ]; then
         echo "selftest FAILED: $fails case(s)" >&2
         return 1
@@ -284,6 +335,10 @@ if [ ! -f "$ROOT/scripts/check-push-scope.sh" ]; then
 fi
 if [ ! -f "$ROOT/scripts/review_marker.py" ]; then
     echo "error: missing $ROOT/scripts/review_marker.py" >&2
+    exit "$ENV_ERROR"
+fi
+if [ ! -f "$ROOT/scripts/md_lock_marker.py" ]; then
+    echo "error: missing $ROOT/scripts/md_lock_marker.py" >&2
     exit "$ENV_ERROR"
 fi
 
@@ -349,7 +404,36 @@ else
     exit "$ENV_ERROR"
 fi
 
-# 3) git push：纪律检查全过之后才执行，退出码原样透传（推送结果由 git 自己报告）。
+# 3) md 生产锁定（#480）：diff 触及 apps/ctp/md/ 时要求确认标记。
+#    「是否触及」与「标记是否存在」都由 md_lock_marker.py 单点判定——本脚本不另写 glob，
+#    否则两处口径漂移时会出现「scope 认为改了 md、md-lock 认为没改」的矛盾结论。
+#    逃生口 DZ_ALLOW_MD_LOCK **只在这一处**：md_lock_marker.py 不读环境变量，只报事实
+#    （R1 finding 7：两处都实现时，脚本会自己放行、下面的 rc=3 分支永不触发）。
+mdlock_out="$("$PYTHON" "$ROOT/scripts/md_lock_marker.py" check "$ISSUE" --strict </dev/null 2>&1)"
+mdlock_rc=$?
+if [ "$mdlock_rc" = "0" ]; then
+    printf '%s\n' "$mdlock_out" | sed 's/^md-lock: /push-ticket: md-lock: /'
+elif [ "$mdlock_rc" = "3" ]; then
+    if [ "${DZ_ALLOW_MD_LOCK:-0}" = "1" ]; then
+        echo "push-ticket: warning: md production-lock confirmation bypassed by DZ_ALLOW_MD_LOCK=1 (emergency only)" >&2
+        printf '%s\n' "$mdlock_out" >&2
+        echo "push-ticket: proceeding to git push; record this override in the close-out report" >&2
+    else
+        echo "push-ticket: refused: apps/ctp/md production-lock confirmation is missing for #$ISSUE" >&2
+        printf '%s\n' "$mdlock_out" >&2
+        echo "push-ticket: nothing was pushed; AGENTS §一 hard gate 1: tell the user what changes in" >&2
+        echo "push-ticket:   apps/ctp/md/ and get their confirmation, then run:" >&2
+        echo "push-ticket:   python3 scripts/md_lock_marker.py write $ISSUE" >&2
+        echo "push-ticket:   emergency only: DZ_ALLOW_MD_LOCK=1 ./scripts/push-ticket.sh $ISSUE ..." >&2
+        exit "$REFUSED"
+    fi
+else
+    printf '%s\n' "$mdlock_out" >&2
+    echo "error: md production-lock check could not run (exit $mdlock_rc)" >&2
+    exit "$ENV_ERROR"
+fi
+
+# 4) git push：纪律检查全过之后才执行，退出码原样透传（推送结果由 git 自己报告）。
 if [ "${#GIT_PUSH_ARGS[@]}" -gt 0 ]; then
     echo "push-ticket: git push ${GIT_PUSH_ARGS[*]}"
     git push "${GIT_PUSH_ARGS[@]}"
