@@ -475,7 +475,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(tdApi.removeAccount).toHaveBeenCalledWith('account_001')
   })
 
-  it('登录中的账户删除同样必须先确认：确认框与登录状态无关，确认后才发 DELETE', async () => {
+  it('已登录（Ready）账户删除同样必须先确认：确认框与登录状态无关，确认后才发 DELETE', async () => {
     // 契约 rest §4：无论账户是否登录，删除都必须先弹一次确认（防误删）；网关侧
     // RemoveAccount 不受状态保护（契约 td-config §2.1），不做「先登出才能删」的前置。
     const store = await prepare()
@@ -501,7 +501,10 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
 
     const modal = wrapper.find('.modal-stub')
     expect(modal.exists()).toBe(true)
+    // 契约 rest §4：确认框写清三段影响范围（配置移除 / 会话销毁并推 Offline / 交易数据不删）
+    expect(modal.text()).toContain('配置将从该交易接口的配置文件中移除')
     expect(modal.text()).toContain('若该账户当前有活跃会话，会话会被销毁并推送离线状态')
+    expect(modal.text()).toContain('已存在的交易数据不会被删除')
     expect(tdApi.removeAccount).not.toHaveBeenCalled()
 
     await wrapper.find('[data-test="td-remove-confirm"]').trigger('click')
