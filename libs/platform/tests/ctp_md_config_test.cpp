@@ -333,6 +333,7 @@ TEST(ApplyConfigOp, AddBroker) {
     ASSERT_EQ(cfg.brokers.size(), 1u);
     EXPECT_EQ(cfg.brokers[0].name, "simnow");
     EXPECT_EQ(cfg.brokers[0].broker_id, "9999");
+    EXPECT_EQ(cfg.brokers[0].account_id, "00001");
     EXPECT_EQ(cfg.brokers[0].password, "123456");
 }
 
@@ -687,9 +688,9 @@ TEST_F(CtpMdConfigTest, LoadFromFile) {
 }
 
 TEST_F(CtpMdConfigTest, LoadLegacyUserIdFieldIsIgnored) {
-    // ADR 0056 硬切后的旧配置（BrokerEntry 里只有 user_id、没有 account_id）：md 侧契约
-    // 未改致命/自愈口径，未知字段按总则 §8 忽略——解码成功、进程照常启动，账号为空串，
-    // 需用户在 UI 重新填写账户 ID。不写回/不静默截断（degraded 不置位）。
+    // ADR 0056 硬切后的旧配置（BrokerEntry 里只有 user_id、没有 account_id）：md 侧不做迁移，
+    // 未知字段按总则 §8 忽略——解码成功、进程照常启动，账号为空串，加载期仅记 WARN，
+    // 需用户在 UI 重新填写账户 ID。不写回（degraded 不置位）。
     write_cfg_file(R"({"md": {
         "brokers": [{"name": "simnow", "broker_id": "9999", "user_id": "00001",
                        "password": "123456", "product_info": "", "frontends": []}],

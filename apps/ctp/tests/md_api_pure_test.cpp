@@ -173,14 +173,18 @@ TEST(FindCurrentBrokerInTest, FindsFirstMatch) {
     EXPECT_EQ(found->broker_id, "first");
 }
 
-TEST(FindCurrentBrokerInTest, LoginCredentialIsAccountId) {
+TEST(FindCurrentBrokerInTest, LoginCredentialComesFromAccountIdKey) {
     // ADR 0056 决策 2 / 契约 md-config BrokerEntry.account_id：行情登录账号就是经纪商的
-    // account_id（唯一填充点 MdApi::req_user_login 的 copy_string(req.UserID, ...)）。
-    // 本测试锚定查找入口返回的登录凭据字段，防止将来又在 broker 上拆出第二个账号字段。
-    std::vector<dztrader::platform::CtpBrokerEntry> brokers = {make_broker("b1", "9999", "00001")};
+    // account_id——SET payload 的 `account_id` 键解码进 broker 条目后，由唯一填充点
+    // MdApi::req_user_login 填 CTP ReqUserLogin.UserID。本测试走「契约键 → 解码 → 查找」
+    // 全链路：键回退成已删除的 user_id 时解码出的 account_id 为空串，用例必红。
+    const auto params = nlohmann::json::parse(
+        R"({"name":"b1","broker_id":"9999","account_id":"00001","password":"p"})");
+    std::vector<dztrader::platform::CtpBrokerEntry> brokers = {
+        params.get<dztrader::platform::CtpBrokerEntry>()};
     const auto* found = find_current_broker_in(brokers, "b1");
     ASSERT_NE(found, nullptr);
-    EXPECT_EQ(found->account_id, "00001");
+    EXPECT_EQ(found->account_id, "00001");  // req_user_login 用它填 req.UserID
 }
 
 // ============================================================================

@@ -1062,6 +1062,7 @@ TEST_F(MarketSourceControllerTest, UpdateBrokerDefaultsPasswordToMask) {
     ASSERT_TRUE(cap.found);
     ASSERT_EQ(cap.payload["op"], "UpdateBroker");
     EXPECT_EQ(cap.payload["params"]["name"], "b1");
+    EXPECT_EQ(cap.payload["params"]["account_id"], "u1");
     EXPECT_EQ(cap.payload["params"]["password"], "****");
 }
 

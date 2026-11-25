@@ -347,6 +347,18 @@ CtpMdConfigData CtpMdConfig::load_cfg_from_file(bool& degraded) const {
             degraded = true;
         }
     }
+    // ADR 0056 硬切：旧配置的 brokers[].user_id 已删除（总则 §8 未知字段忽略）。md 侧不做迁移
+    // （不致命、不自愈重置），只在加载期告警，提示运维在 UI 重新填写账户 ID。
+    if (raw.is_object() && raw.contains("brokers") && raw["brokers"].is_array()) {
+        for (const auto& b : raw["brokers"]) {
+            if (b.is_object() && b.contains("user_id")) {
+                spdlog::warn(
+                    "ctp md config has removed field, re-enter account id in ui | broker=\"{}\"",
+                    b.value("name", ""));
+                break;
+            }
+        }
+    }
     // 反序列化为 CtpMdConfigData，校验后返回
     CtpMdConfigData result{};  // 默认值
     if (raw.is_object()) {
