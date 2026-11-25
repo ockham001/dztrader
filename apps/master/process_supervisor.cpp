@@ -755,7 +755,7 @@ void ProcessSupervisor::notify_removed_for_inactive(const std::string& name, Cat
     }
     if (category == Category::GatewayTd) {
         // 契约 account-status: remove 三路径统一走 notify_td_stopped —— 推 Offline
-        // (gateway_name=真实网关名) 后清镜像, 与 on_child_exit 退出路径语义一致
+        // (gateway_name="" = 平台生成帧, ADR 0057) 后清镜像, 与 on_child_exit 退出路径语义一致
         shm_mgr_.notify_td_stopped(name);
     }
     // 清理订阅者注册 (子进程可能曾注册过, 退出后残留)

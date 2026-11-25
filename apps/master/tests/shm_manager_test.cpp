@@ -1972,9 +1972,9 @@ TEST_F(ShmManagerTest, FallbackEchoSkippedFromMirror) {
     EXPECT_EQ(frames[0].state, DZ_ACCOUNT_OFFLINE);
 }
 
-// td 退出兜底: notify_td_stopped 对镜像内账户逐账户写 Offline (gateway_name=真实网关名),
-// 且写完即清镜像 (新语义: 运行中网关当前管理的账户集; td 退出后 2115 查询走 master 兜底,
-// 消除 dead-td + 镜像保留导致的静默自锁窗口)
+// td 退出兜底 (ADR 0057): notify_td_stopped 对镜像内账户逐账户写 Offline
+// (gateway_name 空串 = 平台生成帧), 且写完即清镜像 (新语义: 运行中网关当前管理的账户集;
+// td 退出后 2115 查询走 master 兜底, 消除 dead-td + 镜像保留导致的静默自锁窗口)
 TEST_F(ShmManagerTest, NotifyTdStoppedWritesOfflineAndClearsMirror) {
     ShmManager mgr(make_default_shm_global(), cfg_path_);
 
@@ -1991,12 +1991,12 @@ TEST_F(ShmManagerTest, NotifyTdStoppedWritesOfflineAndClearsMirror) {
         shm::Reader::create(shm::channel_name("dzevent"), dztrader::paths::shm(), "td_stop_probe");
     mgr.notify_td_stopped("dztd_ctp");
 
-    // 逐账户 2 条 Offline 帧, gateway_name=真实网关名
+    // 逐账户 2 条 Offline 帧, gateway_name 为空串 (平台生成帧: 空串 ⇔ 非 td 写, ADR 0057)
     auto frames = collect_account_status_frames(reader);
     ASSERT_EQ(frames.size(), 2u);
     std::set<std::string> accounts;
     for (const auto& st : frames) {
-        EXPECT_STREQ(st.gateway_name, "dztd_ctp");
+        EXPECT_STREQ(st.gateway_name, "");
         EXPECT_EQ(st.state, DZ_ACCOUNT_OFFLINE);
         EXPECT_EQ(st.date, 0);
         accounts.insert(std::string(st.account_id));

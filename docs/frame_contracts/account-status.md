@@ -13,7 +13,7 @@
 | 端 | `DZ_FRAME_ACCOUNT_STATUS`（推送） | `DZ_FRAME_TD_QUERY_ACCOUNT_STATUS`（查询） |
 |---|---|---|
 | td 网关 | 写端（权威） | 读端（权威应答） |
-| master | 写端（兜底）+ 读端（建镜像） | 读端（兜底应答） |
+| master | 写端（平台兜底 / td 退出代推）+ 读端（建镜像） | 读端（兜底应答） |
 | 策略 SDK | 读端（全量透传 → `on_account_status`） | 写端（`dz_query_account_status`） |
 | dzweb | 消费（维护在线账户集合与日切感知；Ready/Offline 与日切变化广播 `data_changed`，详见《帧契约：TD 数据同步》§8） | 不消费 |
 
@@ -22,7 +22,7 @@
 ## DZ_FRAME_ACCOUNT_STATUS
 
 **语义**：账户登录状态推送（td 内部 11 态聚合为三态）
-**数据流**：形态 5（总则 §4.2）——basic 广播帧（身份在 payload `account_id` + `gateway_name`）；写端 = td 网关（权威）与 master（兜底）；读端 = 策略 SDK（全量透传 → `on_account_status`）、master（建镜像）与 dzweb（维护在线账户集合与日切感知，见《帧契约：TD 数据同步》§8）
+**数据流**：形态 5（总则 §4.2）——basic 广播帧（身份在 payload `account_id` + `gateway_name`）；写端 = td 网关（权威回报）与 master（平台兜底应答 / td 退出代推）；读端 = 策略 SDK（全量透传 → `on_account_status`）、master（建镜像）与 dzweb（维护在线账户集合与日切感知，见《帧契约：TD 数据同步》§8）
 **Payload**：struct `DzAccountStatus`（104B，真相源：`libs/strategy_api/include/dztrader/struct.h`，非 JSON；字段表不重复）
 
 **三态**（`DzAccountState`，真相源 `libs/strategy_api/include/dztrader/data_type.h`）：
@@ -46,7 +46,7 @@
 5. 盘中配置变更致账户集变化（如新增未连接账户）：全量重推，无会话账户推 Offline（策略立即感知新账户存在且未登录）
 6. `QUERY_FULL_SNAPSHOT` 响应（总则 §7）：全量重推，重启自愈
 7. `TD_QUERY_ACCOUNT_STATUS` 查询应答（td 权威，应答规则见下节）
-8. master 兜底：td 退出（崩溃/停止/移除，经 `notify_td_stopped` 统一）代推 Offline（`gateway_name` = 真实网关名，推完即清镜像，见"镜像"）；`TD_QUERY_ACCOUNT_STATUS` 非空查询镜像未命中回 Offline（`gateway_name` = ""，非权威应答标记）
+8. master 兜底：td 退出（崩溃/停止/移除，经 `notify_td_stopped` 统一）代推 Offline（`gateway_name` = ""，平台生成帧，推完即清镜像，见"镜像"）；`TD_QUERY_ACCOUNT_STATUS` 非空查询镜像未命中回 Offline（`gateway_name` = ""，平台生成帧）
 
 **重推与去重**：启动快照、日切、账户集变化、快照查询响应、状态查询应答为全量重推路径，**绕过三态去重**（全量重推必达——重启快照/日切/查询应答必须到达重启后的新订阅者，稳态 READY 账户也不例外）；仅场景 2 的翻转推送去重。
 
@@ -55,16 +55,17 @@
 **字段语义**：
 
 - `date`：距纪元天数（`DzDate`，语义 = 会话交易日，不是自然日）；Ready 时 = 登录返回交易日，Offline 与 LoggingIn 时 = 0（非法/缺失交易日回落 0）
-- `gateway_name`：td 权威帧 = 网关进程名（如 `dztd_ctp`）；空串 = master 兜底应答（非权威标记），消费方据此区分权威/兜底
+- `gateway_name`：报告该账户状态的网关进程名（如 `dztd_ctp`）；**空串 ⇔ 该帧由平台（master）生成**（查询兜底应答与 td 退出代推两类，均属非权威兜底），非空 ⇔ td 网关权威回报（ADR 0057）。策略侧只读用法与能力边界见"约束"
 
 **约束**：
 
 - basic 广播帧，所有事件通道读者可见；策略侧由 SDK 全量透传（不按策略过滤，见《帧契约：策略》拦截总则）
+- `gateway_name` 的能力边界（事实陈述，ADR 0057）：① 只读运行态信息，账户身份恒为 `account_id`；② 不是稳定标识——网关名是运行期实例名（改名 / 换实例 / 账户迁移即变），跨重启不承诺连续；③ 只覆盖「当前有网关在报」的账户，不是账户全集（未启动接口的账户、以及策略重启前的历史帧都拿不到）；④ 不改变下单路由——`TD_ORDER_REQ` / `TD_ORDER_CANCEL_REQ` 是 basic 广播帧，按 payload `account_id` 归属路由，平台不支持按网关下单
 - 与 `TD_RTN_STATUS` 并行分工：后者面向 dzweb UI 全量细节（11 态细状态 + 登录信息 + 登录进度，`instance_id` = 账户 ID，见《帧契约：交易网关状态》），`ACCOUNT_STATUS` 面向策略/master 三态聚合
 - master 兜底与 td 权威应答可能重复，消费方幂等取最新
-- 竞态窗口：td 启动快照未到时 master 可能假阴性 Offline（td 快照到达自愈）；td 崩溃到 master 补推之间策略可能已下单（Offline 仅通知，不改变订单路径）。td 退出后 `TD_QUERY_ACCOUNT_STATUS` 查询由 master 兜底回 Offline（`gateway_name` = ""）——不存在静默窗口
+- 竞态窗口：td 启动快照未到时 master 可能假阴性 Offline（td 快照到达自愈）；td 崩溃到 master 补推之间策略可能已下单（Offline 仅通知，不改变订单路径）。td 退出后 `TD_QUERY_ACCOUNT_STATUS` 查询由 master 兜底回 Offline（`gateway_name` = ""，平台生成帧；td 退出代推帧同样为空串）——不存在静默窗口
 
-**镜像**：不进 dzweb 交易记录镜像；master 维护内存镜像 `网关名→账户集` = **运行中网关当前管理的账户集**（非空 `gateway_name` 且非 Offline 帧加入镜像；Offline 帧从镜像移除——td 自身断开/退出推的 Offline 与 master 代推的 Offline 回流均使账户退出镜像，兜底应答回声 `gateway_name` = "" 不入镜像，防自锁）。td 退出（崩溃/停止/移除）推 Offline 后清镜像（新语义：已退出的 td 不再"管理"任何账户，保留镜像会抑制 DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 兜底、dead-td 下策略静默挂死）；重启后 td 快照（LoggingIn/Ready 帧）重建镜像。
+**镜像**：不进 dzweb 交易记录镜像；master 维护内存镜像 `网关名→账户集` = **运行中网关当前管理的账户集**（非空 `gateway_name` 且非 Offline 帧加入镜像；Offline 帧从镜像移除——td 断开 / 删账户 / 退出前自推的 Offline 均使账户退出镜像；`gateway_name` 为空的平台生成帧整帧不入镜像，因此 master 兜底应答与 td 退出代推自身的回声都不会污染镜像）。td 退出（崩溃/停止/移除）推 Offline 后清镜像（新语义：已退出的 td 不再"管理"任何账户，保留镜像会抑制 DZ_FRAME_TD_QUERY_ACCOUNT_STATUS 兜底、dead-td 下策略静默挂死）；重启后 td 快照（LoggingIn/Ready 帧）重建镜像。
 
 dzweb 消费本帧维护**在线账户集合**（Ready = 在线；Offline/LoggingIn 下线）：Ready/Offline 翻转、日切与在线集合变化时广播 `data_changed`（`scope="td"`）让前端清空重拉；dzweb 不保留交易记录镜像，记录由 REST 直查交易库（语义见《帧契约：TD 数据同步》§8）。
 
@@ -81,7 +82,7 @@ dzweb 消费本帧维护**在线账户集合**（Ready = 在线；Offline/Loggin
 **应答规则**：
 
 - td（权威）：`account_id` 空 = 对 `config_.accounts` 全量应答；非空且在配置 = 应答该账户（含无会话 Offline）；非空且不在配置 = 不回（归属判断交 master）
-- master（兜底）：非空且不在任何镜像 = 回 Offline（`gateway_name` = ""）；空 `account_id` = 不兜底（全量查询由各 td 权威应答覆盖，td 对自身配置有最终解释权）
+- master（兜底）：非空且不在任何镜像 = 回 Offline（`gateway_name` = ""，平台生成帧）；空 `account_id` = 不兜底（全量查询由各 td 权威应答覆盖，td 对自身配置有最终解释权）
 
 **约束**：
 
