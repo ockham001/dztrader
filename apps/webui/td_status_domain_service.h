@@ -27,8 +27,9 @@ namespace dztrader::webui {
 /// `interface_type` 派生（契约 td-status §1）：payload 不含类型字段，`instance_id` 是账户 ID
 /// → 必须先经**账户注册表**解析归属网关再从网关名派生。本服务只负责镜像与透传，解析与派生
 /// 由前端解析层完成，数据源是 `GET /api/td/accounts` 的 `account_id → gateway`（契约 rest
-/// §2.9.9，即 td-status §1 所说的「查账户注册表」）；注册表未命中时按已收到的 `ext` 原样透传，
-/// 不猜接口类型。
+/// §2.9.9，即 td-status §1 所说的「查账户注册表」）；注册表未命中（账户已删 / 注册表降级）
+/// 时前端回落配置镜像 `td_config`（唯一包含该账户的网关，契约 webui-ws §2.2），两者都未命中
+/// 才按已收到的 `ext` 原样使用，不猜接口类型。
 ///
 /// 线程安全：依赖 dzweb 固定单线程事件循环（thread_num=1），所有访问串行执行，不加锁。
 class TdStatusDomainService {

@@ -129,12 +129,14 @@ master 是唯一发起方（周期 `check_interval_min` tick / `preload_points` 
 - **`interface_type` 派生**：账户级帧的 `instance_id` 是账户 ID，本身不含接口类型，必须先用
   注册表解析出归属网关再派生（td-status §1）。后端只负责提供映射与透传（payload 原样广播，
   不改写 `ext`），派生点在前端解析层：用 `GET /api/td/accounts` 的 `account_id → gateway`
-  派生（该端点即 td-status §1 所称的「查账户注册表」，契约 rest §2.9.9）；注册表未命中时按
-  已收到的 `ext` 原样透传，不猜。
+  派生（该端点即 td-status §1 所称的「查账户注册表」，契约 rest §2.9.9）；注册表未命中
+  （账户已删 / 注册表降级）时回落配置镜像 `td_config`（唯一包含该账户的网关，契约
+  webui-ws §2.2），两者都未命中才按已收到的 `ext` 原样使用，不猜。
 - **账户注册表**（`apps/webui/td_account_registry.{h,cpp}`，契约 td-config §5 / rest §2.9.9）：
   `account_id → {gateway, account_name, enabled}` 的平台侧**投影**，`account_id` 全局唯一（跨网关，
-  ADR 0045 / ADR 0056）。它同时是**账户显示名的唯一来源**（`account_name` 不进交易推送帧、
-  不进交易库）。
+  ADR 0045 / ADR 0056）。它同时是**账户显示名的服务端权威来源**（`account_name` 不进交易推送帧、
+  不进交易库）；前端解析层在本端点 + `td_rtn_config` 配置镜像上建映射（配置镜像整值覆盖注册表，
+  改名即时生效；契约 webui-ws §5 第 16 条）。
   - **内存优先 + platform.db 尽力持久化**（表 `td_account_registry`：`account_id` / `gateway` /
     `account_name` 三列，`account_name` 由加列迁移补上）：写失败只记 ERROR、不抛、不阻塞账户
     操作；启动加载失败则从空开始、随各网关配置回报重建（已知降级：最多少覆盖一个网关）。
