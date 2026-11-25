@@ -524,7 +524,7 @@ export type TdDegradedReason = 'not_found' | 'schema_mismatch' | 'open_failed' |
 
 // 委托行（契约 rest §2.9.3；WS td_order_report 与 REST items 同一 schema）
 export interface TdOrderRow {
-    /** 账户标识 */
+    /** 账户 ID */
     account_id: string
     /** 交易日 YYYYMMDD（= 信封 trading_day） */
     date: string
@@ -564,7 +564,7 @@ export interface TdOrderRow {
 
 // 成交行（契约 rest §2.9.3；WS td_trade_report 与 REST items 同一 schema；业务键 = account_id|date|exchange_id|trade_id）
 export interface TdTradeRow {
-    /** 账户标识 */
+    /** 账户 ID */
     account_id: string
     /** 交易日 YYYYMMDD */
     date: string
@@ -638,7 +638,7 @@ export interface TdTradeDegradedResponse {
 
 // 持仓行（契约 rest §2.9.4；WS td_position_info 与 REST items 同一 schema；业务键 = account_id|instrument_id|direction；**没有 sort_key**，列表顺序 = 服务端 (account_id, instrument_id, direction) 升序）
 export interface TdPositionRow {
-    /** 账户标识 */
+    /** 账户 ID */
     account_id: string
     /** 该账户锚点日 YYYYMMDD（不是全局当前交易日；可能早于信封 trading_day） */
     date: string
@@ -686,7 +686,7 @@ export interface TdPositionDegradedResponse {
 
 // 资金行（契约 rest §2.9.4；WS td_trading_account 与 REST items 同一 schema，WS 行 has_data 恒 true；业务键 = account_id；date = 该账户锚点日）
 export interface TdTradingAccountRow {
-    /** 账户标识（业务键，契约 rest §2.9.6） */
+    /** 账户 ID（业务键，契约 rest §2.9.6） */
     account_id: string
     /** 该账户锚点日 YYYYMMDD（不是全局当前交易日；无资金记录时 null） */
     date: string | null
@@ -816,7 +816,7 @@ export interface TdCtpProcessExt {
 
 // 交易账户配置（契约 td-config §2.2 通用层 + §2.3 接口类型 ext）：通用层字段缺失时按该节默认值，ext 由目标网关按接口类型校验
 export interface TdAccountConfig {
-    /** 账户标识（柜台真实投资者代码），不可变 key，全局唯一（跨接口类型，ADR 0045/ADR 0056） */
+    /** 账户 ID（柜台真实投资者代码），不可变 key，全局唯一（跨接口类型，ADR 0045/ADR 0056） */
     account_id: string
     /** 展示名，选填；留空 = 显示时回落 account_id（不做写入时规范化，ADR 0056）。纯展示字段，不参与路由、不进交易库 */
     account_name?: string
@@ -842,7 +842,7 @@ export interface TdConfigPayload {
 
 // GET /api/td/accounts 的 accounts[] 条目（契约 rest §2.9.9 账户注册表条目）：gateway 是当前已知归属，enabled 来自最近一次配置帧的通用层，account_name 空串 = 未设置
 export interface TdConfigAccountList {
-    /** 账户标识（全局唯一） */
+    /** 账户 ID（全局唯一） */
     account_id: string
     /** 展示名；空串 = 未设置（展示回落 account_id，不在服务端规范化） */
     account_name: string
@@ -891,7 +891,7 @@ export interface TdCtpStatusExt {
 
 // 交易网关账户级细状态全量结构（契约 td-status §2.1；WS td_rtn_status 的 data，始终全量、后到覆盖先到）
 export interface TdStatusPayload {
-    /** 账户标识（与 instance_id 冒号后半段一致） */
+    /** 账户 ID（柜台真实投资者代码，与帧头 instance_id 同值；payload 冗余携带供消费方定位与自校验，契约 td-status §3） */
     account_id: string
     state: TdState
     /** 会话交易日 YYYYMMDD（交易日，不是自然日）；未登录/进入 Idle 时为空串 */
