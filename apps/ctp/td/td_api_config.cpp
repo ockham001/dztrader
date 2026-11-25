@@ -52,9 +52,10 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
         return;
     }
 
-    // 3. 状态保护（契约 td-config §2.1）：仅要求 Idle 的 op（RemoveAccount / 触及连接参数的
-    //    UpdateAccount）在 session 活跃时拒绝。只改通用层字段（如 account_name）不受保护
-    //    ——展示名不是连接参数，改名不该逼用户先登出（ADR 0056 决策 3）。
+    // 3. 状态保护（契约 td-config §2.1）：仅要求 Idle 的 op（触及连接参数的 UpdateAccount）
+    //    在 session 活跃时拒绝。只改通用层字段（如 account_name）不受保护——展示名不是连接
+    //    参数，改名不该逼用户先登出（ADR 0056 决策 3）。RemoveAccount 不受状态保护，其会话
+    //    销毁在持久化成功之后执行（第 4.1 步）。
     if (requires_idle(req.op, req.params)) {
         auto account_id = req.params.value("account_id", "");
         if (!account_id.empty()) {
@@ -84,6 +85,18 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
         return;
     }
 
+    // 4.1 RemoveAccount 不受状态保护（契约 td-config §2.1）：配置已落盘，若目标账户仍有活跃
+    //     会话，立即销毁会话并推终态 Offline（ADR 0045 决策 5；交易数据不删）。放在持久化
+    //     成功之后——保存失败已回滚，不能先拆会话再报"操作失败"。
+    if (req.op == TdConfigOp::RemoveAccount) {
+        const auto account_id = req.params.value("account_id", "");
+        if (!account_id.empty() && find_session(account_id) != nullptr) {
+            SPDLOG_INFO("td account session dissolved by config op | op=RemoveAccount account={}",
+                        account_id);
+            disconnect_account_by_id(account_id);
+        }
+    }
+
     // 5. 审计日志: 关键字段 old->new (不记录敏感值如 password)
     // 注: enable_auto_login_logout 已随契约 auto-login 迁移（SET/RTN_AUTO_LOGIN 帧）
     if (old_config.ext.enable_lock_mode != new_config.ext.enable_lock_mode) {
@@ -109,7 +122,7 @@ void TdApi::apply_config_change(const TdConfigOpReq& req) {
 
     // 契约 account-status: 配置账户集变化 (含盘中新加未连接账户) -> 全量重推 2018,
     // 无会话账户推 Offline, 让策略立即感知新账户存在且未登录
-    // (删配置账户走 disconnect 路径已有 Offline 补推, 此处全量重推幂等无害)
+    // (删配置账户的会话已在第 4.1 步销毁并推过 Offline/终态, 此处只覆盖仍配置的账户)
     report_account_status_all();
 
     // 6. 成功路径必须上报 RTN_TD_CONFIG (脱敏), 让 dzweb 镜像更新

@@ -254,6 +254,8 @@ async function toggleEnabled(row: TdAccountRow): Promise<void> {
 }
 
 // ===== 删除账户二次确认（含影响范围，ADR 0045：不删交易数据）=====
+// 与登录状态无关：任何会话状态都先确认（契约 rest §4）；网关侧 RemoveAccount 不受状态保护，
+// 有活跃会话时由网关销毁会话并推 Offline（契约 td-config §2.1）。
 const removingRow = ref<TdAccountRow | null>(null)
 const removeSubmitting = ref(false)
 
