@@ -144,7 +144,8 @@ std::optional<std::string> validate(const TdConfig& cfg) {
 
     for (const auto& acct : cfg.accounts) {
         // account_id = 柜台真实投资者代码（ADR 0056）：非空、CTP 侧 ≤12 字节、ASCII 可见
-        // 字符且禁 `:`（契约 td-config §2.2 / §7）；超长必须报错，禁止静默截断。
+        // 字符且禁 `:` 与路径分隔符 / 点号（契约 td-config §2.2 / §7、ADR 0057）；超长必须
+        // 报错，禁止静默截断。
         if (acct.account_id.empty()) {
             return "account_id empty";
         }

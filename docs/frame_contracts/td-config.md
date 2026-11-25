@@ -65,7 +65,7 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `account_id` | string | **柜台真实投资者代码**，不可变 key，全局唯一（跨接口类型，ADR 0045 / ADR 0056）。它是账户身份：下单 / 撤单路由键、交易库四表唯一键、账户级 `instance_id`（总则 §5）。字符集 ASCII 可见字符 `0x21`–`0x7E`（禁空格、禁 `:`）；平台侧 ≤ 31 字节，CTP 侧 ≤ 12 字节（§2.3） |
+| `account_id` | string | **柜台真实投资者代码**，不可变 key，全局唯一（跨接口类型，ADR 0045 / ADR 0056）。它是账户身份：下单 / 撤单路由键、交易库四表唯一键、账户级 `instance_id`（总则 §5）。字符集 ASCII 可见字符 `0x21`–`0x7E`（禁空格、禁 `:`、禁 `/`、禁 `\`、禁 `.`；后三者因 td 网关以 `account_id` 作每账户 CTP 流文件目录名，ADR 0057）；平台侧 ≤ 31 字节，CTP 侧 ≤ 12 字节（§2.3） |
 | `account_name` | string | **展示名**，选填。留空 = 显示时回落 `account_id`（**不做写入时规范化**）。`trim` 后 ≤ 64 字节 UTF-8，无控制字符；比较前 NFC 规范化、字节精确比较（大小写敏感）。全局唯一且与 `account_id` **展平判定**（任意两账户的 id 与 name 两两不等；留空按 `account_id` 参与判定）。纯展示字段：**不参与路由、不进交易库、任何情况下不得影响交易**；取不到就回落 `account_id`。可修改 |
 | `enabled` | bool | 是否启用，默认 `true`；禁用后连接请求被拒 |
 | `risk_control_enabled` | bool | 账户级风控开关，默认 `false` |
@@ -84,7 +84,7 @@
 | `frontends` | array\<Frontend\> | 否 | 前置地址列表，默认空数组；连接时至少一个 `enabled` 且地址非空的前置，否则拒连 |
 | `auth_code` | string | 否 | CTP 认证码，可空 |
 | `app_id` | string | 否 | CTP AppID，可空 |
-| `flow_dir` | string | 否 | 流文件目录；空 = 由网关自动构造 |
+| `flow_dir` | string | 否 | 流文件目录；空 = 由网关自动构造 `$DZTRADER_HOME/flow/<进程名>/<account_id>/`（`account_id` 字符集已排除路径分隔符与点号，可直接作单级目录名，ADR 0057） |
 
 > CTP 的 `UserID`（登录 / 认证）与 `InvestorID`（下单 / 撤单 / 结算确认）**都取通用层 `account_id`**，没有独立字段（ADR 0056）。**CTP 层校验**：`account_id` ≤ 12 字节（`TThostFtdcInvestorIDType[13]` 可用长度）、`broker_id` 非空；超长必须报错拒绝，**不得静默截断**（截断会把订单打到不存在的账户）。配置加载与每次 `AddAccount`/`UpdateAccount` 都校验，手改配置文件不能绕过；失败走总则 §8 四件套。
 
@@ -216,7 +216,7 @@ payload 为 2.4 结构的安全 JSON（每个账户 `ext.password` → `"****"`�
 
 ## 7. 校验（仅写与总则不同的规则）
 
-- `account_id`：非空、ASCII 可见字符 `0x21`–`0x7E`（禁空格、禁 `:`、禁控制字符），平台侧 ≤ 31 字节；CTP 侧 ≤ 12 字节（§2.3）。**分层**：dzweb 校验通用层（长度 / 字符集 / 全局唯一），td 网关校验 CTP 层（12 字节）——dzweb 不解析 `ext`（§1 分层约定），因此 CTP 超限只能由网关报（四件套）。
+- `account_id`：非空、ASCII 可见字符 `0x21`–`0x7E`（禁空格、禁 `:`、禁 `/`、禁 `\`、禁 `.`、禁控制字符；后三个禁字符因 td 网关以它作每账户 CTP 流文件目录名，见 ADR 0057），平台侧 ≤ 31 字节；CTP 侧 ≤ 12 字节（§2.3）。**分层**：dzweb 校验通用层（长度 / 字符集 / 全局唯一），td 网关校验 CTP 层（12 字节）——dzweb 不解析 `ext`（§1 分层约定），因此 CTP 超限只能由网关报（四件套）。
 - `account_name`（通用层，dzweb 权威校验；td 侧也自检同一份配置内不重复）：`trim` 后 ≤ 64 字节 UTF-8、无控制字符（ASCII < 0x20 与 `\t\r\n` 非法）；比较前 NFC 规范化、之后字节精确比较（大小写敏感）；与 `account_id` 展平判定唯一。
 - `account_id` **不得等于任何已注册进程名**（`dztraderd` / `dzsysmon` / `dzmd_*` / `dztd_*` / `stg.*`）：账户级帧的 `instance_id` 就是 `account_id`，与进程级 `instance_id` 共用同一个镜像顶层键空间，同名会让两类实例的 `progress` 域互相覆盖。
 - `frontends` 元素：`address` 非空才注册；无任何 `enabled` 且地址非空的前置时连接请求被拒（WARN + NOTIFY_UI）。

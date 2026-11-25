@@ -172,8 +172,9 @@ struct TdConfig {
 };
 
 /// 集中校验 (与 mdctp validate 模式一致): 返回错误消息, 校验通过返回 std::nullopt。
-/// 覆盖契约 td-config §7 的 td 侧规则：`account_id` 非空 / ≤12 字节 / 字符集，
-/// `account_name` 的 trim 长度 / 控制字符 / NFC 展平唯一，以及本配置内的 id 重复。
+/// 覆盖契约 td-config §7 的 td 侧规则：`account_id` 非空 / ≤12 字节 / 字符集（禁 `:`、
+/// `/`、`\`、`.`，ADR 0057），`account_name` 的 trim 长度 / 控制字符 / NFC 展平唯一，
+/// 以及本配置内的 id 重复。
 std::optional<std::string> validate(const TdConfig& cfg);
 }  // namespace dztrader::ctp
 

@@ -35,11 +35,15 @@ inline constexpr std::string_view kAccountNameWhitespace = " \t\r\n\f\v";
 /// @return 去空白后的视图（指向原串，不拷贝）
 [[nodiscard]] std::string_view trim_account_name(std::string_view text) noexcept;
 
-/// `account_id` 字符集校验（契约 td-config §7）：ASCII 可见字符 `0x21`–`0x7E`，且不含 `:`。
+/// `account_id` 字符集校验（契约 td-config §7 / ADR 0057）：ASCII 可见字符 `0x21`–`0x7E`，
+/// 且不含 `:`、`/`、`\`、`.`。
 ///
 /// 空串在本函数下恒为合法——"非空"是调用方的判定（两层另有各自的长度约束，ADR 0056
 /// 决策 6）。`:` 被禁的理由是它曾作复合键分隔符（ADR 0056 已取消），保留禁用以避免
-/// `key:account` 形态重新混进日志 / 展示层。
+/// `key:account` 形态重新混进日志 / 展示层。`/`、`\`、`.` 被禁的理由：td 网关把
+/// `account_id` 直接作为每账户 CTP 流文件目录名（`flow_dir_ / account_id`，契约 td-config
+/// §2.3）——分隔符可穿越目录，`.` / `..` 与 Windows 尾点归一可造成目录碰撞（ADR 0057）。
+/// md 侧的 `account_id` 是纯配置字段（契约 md-config），不通过本函数校验。
 [[nodiscard]] bool account_id_charset_valid(std::string_view account_id) noexcept;
 
 /// `account_name` 校验失败原因（成功 = None）。

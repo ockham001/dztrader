@@ -154,8 +154,9 @@ const isCtp = computed(() => {
 const ACCOUNT_ID_MAX_BYTES = 31
 /** account_name trim 后字节上限（契约 td-config §2.2 / §7） */
 const ACCOUNT_NAME_MAX_BYTES = 64
-/** account_id 字符集：ASCII 可见字符 `0x21`–`0x7E`，且不含 `:`（契约 td-config §2.2 / §7） */
-const ACCOUNT_ID_CHARSET = /^[\x21-\x39\x3B-\x7E]*$/
+/** account_id 字符集：ASCII 可见字符 `0x21`–`0x7E`，不含 `:`、`/`、`\`、`.`（契约 td-config
+ *  §2.2 / §7、ADR 0057：后三者会破坏网关按 account_id 构造的 CTP 流文件目录） */
+const ACCOUNT_ID_CHARSET = /^[\x21-\x2D\x30-\x39\x3B-\x5B\x5D-\x7E]*$/
 /** UTF-8 字节数：长度上限是**字节**不是字符（中文名 3 字节/字），必须按字节拦 */
 function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).length
@@ -199,7 +200,7 @@ const accountNameControlChar = computed(() => hasControlChars(accountNameTrimmed
  */
 const validationText = computed<string>(() => {
   if (!isEditing.value && accountIdEmpty.value) return '账户 ID 不能为空'
-  if (accountIdCharsetInvalid.value) return '账户 ID 只能使用可见 ASCII 字符（不含空格与「:」）'
+  if (accountIdCharsetInvalid.value) return '账户 ID 只能使用可见 ASCII 字符（不含空格、冒号、点号与路径分隔符「/」「\\」）'
   if (accountIdTooLong.value) return `账户 ID 不能超过 ${ACCOUNT_ID_MAX_BYTES} 字节（当前 ${accountIdBytes.value}）`
   if (accountNameControlChar.value) return '账户名称不能包含控制字符'
   if (accountNameTooLong.value) return `账户名称不能超过 ${ACCOUNT_NAME_MAX_BYTES} 字节（当前 ${accountNameBytes.value}）`
@@ -280,7 +281,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
         >
           <template v-if="isEditing">账户 ID 是柜台真实账户号，创建后不可修改</template>
           <template v-else>
-            柜台真实账户号，创建后不可修改；全平台唯一，仅限可见 ASCII 字符（不含空格与「:」），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节
+            柜台真实账户号，创建后不可修改；全平台唯一，仅限可见 ASCII 字符（不含空格、冒号、点号与路径分隔符），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节
             · 当前 {{ accountIdBytes }}/{{ ACCOUNT_ID_MAX_BYTES }}
           </template>
           <template v-if="isCtp">；CTP 账户号另有 12 字节上限（超限由网关报错，平台不会截断）</template>

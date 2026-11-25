@@ -65,7 +65,8 @@ bool TdAccountCtrl::is_registered_process_name(const std::string& name) const {
 
 drogon::HttpResponsePtr TdAccountCtrl::check_account_id(const std::string& account_id) const {
     // 契约 rest §2.9.7 预检 4（规则真相源：td-config §2.2 / §7）。CTP 的 12 字节上限不在
-    // 这里——dzweb 不解析 `ext`，超限由网关走四件套报（ADR 0056 决策 6）。
+    // 这里——dzweb 不解析 `ext`，超限由网关走四件套报（ADR 0056 决策 6）。字符集（含路径
+    // 分隔符与点号，ADR 0057）与 td 网关自检共用 `platform::account_id_charset_valid`。
     const bool invalid = account_id.empty() || account_id.size() > kMaxAccountIdBytes ||
                          !dztrader::platform::account_id_charset_valid(account_id) ||
                          is_registered_process_name(account_id);

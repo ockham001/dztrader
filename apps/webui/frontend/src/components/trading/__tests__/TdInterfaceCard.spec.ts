@@ -761,7 +761,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(patch.account_name).toBe('')
   })
 
-  it('表单本地校验：account_id 字符集（空白 / 冒号）与长度、account_name 长度（契约 rest §2.9.7 预检 4）', async () => {
+  it('表单本地校验：account_id 字符集（空白 / 冒号 / 点号 / 路径分隔符）与长度、account_name 长度（契约 rest §2.9.7 预检 4）', async () => {
     const store = await prepare({ accounts: [] })
     const { wrapper } = mountCard(store)
     await wrapper.find('[data-test="td-card-add-account"]').trigger('click')
@@ -779,6 +779,14 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     await flushPromises()
     expect(disabled()).toBeUndefined()
 
+    // 字符集只禁 `:`、`/`、`\`、`.`——紧邻字节（`;`、`[`、`]`）必须仍放行，防正则区间误禁
+    await idInput.setValue('a-b_c;[1]')
+    await flushPromises()
+    expect(wrapper.find('[data-test="td-form-validation"]').exists()).toBe(false)
+    expect(disabled()).toBeUndefined()
+    await idInput.setValue('00001')
+    await flushPromises()
+
     // 冒号是历史复合键分隔符，契约 §2.2 明确禁用
     await idInput.setValue('000:01')
     await flushPromises()
@@ -789,6 +797,15 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     await idInput.setValue('000 01')
     await flushPromises()
     expect(validation().text()).toContain('账户 ID 只能使用可见 ASCII 字符')
+
+    // 点号与路径分隔符会破坏网关按 account_id 构造的 CTP 流目录（契约 td-config §2.2 /
+    // §7、ADR 0057：`/`、`\` 可穿越目录，`.`/`..`/Windows 尾点归一造成目录碰撞）
+    for (const id of ['000.01', '000/01', '000\\01', '..']) {
+      await idInput.setValue(id)
+      await flushPromises()
+      expect(validation().text()).toContain('账户 ID 只能使用可见 ASCII 字符')
+      expect(disabled()).toBeDefined()
+    }
 
     // 超过 31 字节（32 个字符）
     await idInput.setValue('a'.repeat(32))

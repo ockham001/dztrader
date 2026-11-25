@@ -452,6 +452,18 @@ TEST_F(TdConfigTest, ValidateRejectsAccountIdWithColon) {
     EXPECT_NE(err->find("charset invalid"), std::string::npos) << *err;
 }
 
+/// 契约 td-config §2.2 / §7、ADR 0057：account_id 是 td 网关的 CTP 流文件目录名——
+/// `/`、`\` 可穿越目录，`.` / `..` 与 Windows 尾点归一可造成目录碰撞，一律拒绝。
+TEST_F(TdConfigTest, ValidateRejectsAccountIdWithPathSeparatorOrDot) {
+    for (const char* id : {"000/01", "000\\01", "000.01", ".", "..", "00001.", ".00001"}) {
+        TdConfig cfg;
+        cfg.accounts.push_back(make_valid_account(id));
+        auto err = validate(cfg);
+        ASSERT_TRUE(err.has_value()) << "id=" << id;
+        EXPECT_NE(err->find("charset invalid"), std::string::npos) << "id=" << id << " " << *err;
+    }
+}
+
 TEST_F(TdConfigTest, ValidateRejectsNonAsciiAccountId) {
     TdConfig cfg;
     cfg.accounts.push_back(make_valid_account("00001账户"));

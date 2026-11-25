@@ -48,11 +48,13 @@ describe('tdAccountErrors（契约 rest §2.9.7 预检 code 全集）', () => {
     expect(tdAccountErrorText('invalid_account_name')).toContain('64 字节')
   })
 
-  it('invalid_account_id 文案带上契约 §2.9.7 预检 4 的三条硬约束（用户可自查）', () => {
+  it('invalid_account_id 文案带上契约 §2.9.7 预检 4 的硬约束（用户可自查）', () => {
     const text = tdAccountErrorText('invalid_account_id')
     expect(text).toContain('账户 ID')
     expect(text).toContain('31 字节')
-    expect(text).toContain(':')
+    // ADR 0057：字符集禁用的不只是空格与 `:`，文案必须把点号 / 路径分隔符也告知用户
+    expect(text).toContain('点号')
+    expect(text).toContain('路径分隔符')
   })
 
   it('未知码 / 非字符串 / 缺失 → 兜底文案，绝不回显 code 本身', () => {

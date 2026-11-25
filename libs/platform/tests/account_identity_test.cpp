@@ -17,11 +17,12 @@ namespace dztrader::platform {
 namespace {
 
 // ============================================================================
-// account_id 字符集（契约 td-config §7）
+// account_id 字符集（契约 td-config §7 / ADR 0057）
 // ============================================================================
 
 TEST(AccountIdentityTest, AccountIdAcceptsAsciiVisibleCharset) {
-    for (const char* id : {"00001", "A-z_0.9", "!~", "account_001"}) {
+    // `a-b_c;[1]` 取被禁字符（`:` / `/` / `\` / `.`）的紧邻字节，防止区间打错误禁合法 id。
+    for (const char* id : {"00001", "A-z_09", "!~", "account_001", "a-b_c;[1]"}) {
         EXPECT_TRUE(account_id_charset_valid(id)) << "id=" << id;
     }
 }
@@ -42,6 +43,14 @@ TEST(AccountIdentityTest, AccountIdRejectsColon) {
     // ADR 0056 取消了 `网关名:账户ID` 复合键：`:` 不再出现在账户 ID 里，避免旧形态回流。
     EXPECT_FALSE(account_id_charset_valid("00001:x"));
     EXPECT_FALSE(account_id_charset_valid(":"));
+}
+
+TEST(AccountIdentityTest, AccountIdRejectsPathSeparatorAndDot) {
+    // ADR 0057：account_id 直接作 td 网关的 CTP 流文件目录名——`/`、`\` 可穿越目录；
+    // `.` / `..` 与 Windows 尾点归一可造成目录碰撞，三者一律不合法。
+    for (const char* id : {"000/01", "000\\01", "000.01", ".", "..", "00001.", ".00001"}) {
+        EXPECT_FALSE(account_id_charset_valid(id)) << "id=" << id;
+    }
 }
 
 TEST(AccountIdentityTest, AccountIdRejectsControlAndNonAscii) {
