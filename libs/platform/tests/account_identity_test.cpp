@@ -21,7 +21,8 @@ namespace {
 // ============================================================================
 
 TEST(AccountIdentityTest, AccountIdAcceptsAsciiVisibleCharset) {
-    for (const char* id : {"00001", "A-z_09", "!~", "account_001"}) {
+    // `a-b_c;[1]` 取被禁字符（`:` / `/` / `\` / `.`）的紧邻字节，防止区间打错误禁合法 id。
+    for (const char* id : {"00001", "A-z_09", "!~", "account_001", "a-b_c;[1]"}) {
         EXPECT_TRUE(account_id_charset_valid(id)) << "id=" << id;
     }
 }

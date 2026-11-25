@@ -342,7 +342,7 @@ TEST_F(TdAccountControllerTest, CreateRejectsEmptyAccountIdAsInvalidAccountId) {
 
 TEST_F(TdAccountControllerTest, CreateRejectsAccountIdWithSpaceOrColon) {
     // AC4 / 契约 td-config §7：ASCII 可见字符 0x21–0x7E，禁空格、禁 `:`（复合键已取消，
-    // 不让旧形态回流）。
+    // 不让旧形态回流）；路径分隔符与点号见下一个用例（ADR 0057）。
     prime_gateway("dztd_ctp");
     for (const char* id : {"000 01", "00001:x", " 00001", "00001\t"}) {
         auto resp = invoke(&TdAccountCtrl::create, admin_req(add_body("dztd_ctp", id)));

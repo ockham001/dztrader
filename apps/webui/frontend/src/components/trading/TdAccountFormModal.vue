@@ -281,7 +281,7 @@ const hasFrontendWarning = computed(() => isCtp.value && activeFrontendCount.val
         >
           <template v-if="isEditing">账户 ID 是柜台真实账户号，创建后不可修改</template>
           <template v-else>
-            柜台真实账户号，创建后不可修改；全平台唯一，仅限可见 ASCII 字符（不含空格与「:」），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节
+            柜台真实账户号，创建后不可修改；全平台唯一，仅限可见 ASCII 字符（不含空格、冒号、点号与路径分隔符），最多 {{ ACCOUNT_ID_MAX_BYTES }} 字节
             · 当前 {{ accountIdBytes }}/{{ ACCOUNT_ID_MAX_BYTES }}
           </template>
           <template v-if="isCtp">；CTP 账户号另有 12 字节上限（超限由网关报错，平台不会截断）</template>

@@ -779,6 +779,14 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     await flushPromises()
     expect(disabled()).toBeUndefined()
 
+    // 字符集只禁 `:`、`/`、`\`、`.`——紧邻字节（`;`、`[`、`]`）必须仍放行，防正则区间误禁
+    await idInput.setValue('a-b_c;[1]')
+    await flushPromises()
+    expect(wrapper.find('[data-test="td-form-validation"]').exists()).toBe(false)
+    expect(disabled()).toBeUndefined()
+    await idInput.setValue('00001')
+    await flushPromises()
+
     // 冒号是历史复合键分隔符，契约 §2.2 明确禁用
     await idInput.setValue('000:01')
     await flushPromises()

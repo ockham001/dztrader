@@ -33,7 +33,7 @@ export const TD_ACCOUNT_ERROR_TEXT: Record<TdAccountErrorCode, string> = {
   admin_required: '需要管理员权限才能修改交易账户',
   invalid_gateway: '目标交易接口不存在或未注册',
   gateway_not_running: '目标交易接口未运行，请先启动进程',
-  invalid_account_id: '账户 ID 不合法：仅限可见 ASCII 字符（不含空格与「:」），最多 31 字节，且不能与已有进程名相同',
+  invalid_account_id: '账户 ID 不合法：仅限可见 ASCII 字符（不含空格、冒号、点号与路径分隔符），最多 31 字节，且不能与已有进程名相同',
   invalid_account_name: '账户名称不合法：最多 64 字节，且不能包含控制字符',
   account_exists: '该账户 ID 已被占用（可能属于其它交易接口），请换一个账户 ID',
   account_name_exists: '该账户名称已被占用（与其它账户的账户 ID 或账户名称冲突），请换一个名称',
