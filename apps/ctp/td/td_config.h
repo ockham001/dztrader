@@ -23,7 +23,7 @@ using BrokerFrontend = dztrader::platform::CtpBrokerFrontend;
 enum class TdConfigOp {
     // 进程级 op
     AddAccount,     // 添加账户 ID + 创建账户配置
-    RemoveAccount,  // 移除账户 (仅校验 state==Idle, 不校验持仓)
+    RemoveAccount,  // 移除账户 (不受状态保护: 有活跃会话时销毁会话并推 Offline)
     // 注: AddSchedule/RemoveSchedule/SetAutoLogin 已随契约 auto-login 迁移移除
     // (排程单一真相源为 SET/RTN_AUTO_LOGIN 帧, 见 td_api_scheduled.cpp)
     SetExt,           // 进程级柜台特有配置的字段级补丁 (契约 td-config §2.1)
@@ -40,15 +40,16 @@ enum class TdConfigOp {
 DZ_JSON_ENUM(TdConfigOp)
 
 /// 判断 op 是否要求目标账户处于 Idle（契约 td-config §2.1 状态保护）。
-/// - `RemoveAccount`：沿用既有 Idle 保护——契约 §2.1 要求「删除时销毁会话并推 Offline」，
-///   与现状的差异是既存漂移，不在 ADR 0056 范围内，已单独开票跟进（#474）。
+/// - `RemoveAccount`：不受状态保护——删除时若有活跃会话，销毁会话并推 Offline
+///   （契约 §2.1、ADR 0045 决策 5；交易数据不删）。会话销毁在编排层完成，见
+///   `TdApi::apply_config_change`。
 /// - `UpdateAccount`：仅当请求触及连接参数（`ext` 内任何键）时要求 Idle；只改通用层字段
 ///   （如 `account_name`）任意会话状态可改——展示名不是连接参数（ADR 0056 决策 3）。
 /// switch 覆盖所有枚举值, 新增枚举时编译器 (-Wswitch) 会警告。
 inline bool requires_idle(TdConfigOp op, const nlohmann::json& params) {
     switch (op) {
         case TdConfigOp::RemoveAccount:
-            return true;
+            return false;
         case TdConfigOp::UpdateAccount: {
             if (!params.contains("ext")) {
                 return false;

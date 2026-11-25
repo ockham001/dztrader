@@ -475,6 +475,41 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     expect(tdApi.removeAccount).toHaveBeenCalledWith('account_001')
   })
 
+  it('登录中的账户删除同样必须先确认：确认框与登录状态无关，确认后才发 DELETE', async () => {
+    // 契约 rest §4：无论账户是否登录，删除都必须先弹一次确认（防误删）；网关侧
+    // RemoveAccount 不受状态保护（契约 td-config §2.1），不做「先登出才能删」的前置。
+    const store = await prepare()
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'Ready',
+      date: '20260808',
+      login_time: '2026-08-08 08:45:32',
+      progress_desc: 'ready',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 10,
+      ext: {},
+    })
+    vi.mocked(tdApi.removeAccount).mockResolvedValue({ ok: true })
+    const { wrapper } = mountCard(store)
+
+    expect(wrapper.find('[data-test="td-account-state"]').text()).toBe('就绪')
+    expect(wrapper.find('.modal-stub').exists()).toBe(false)
+
+    await wrapper.find('[data-test="td-remove-account_001"]').trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('.modal-stub')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toContain('若该账户当前有活跃会话，会话会被销毁并推送离线状态')
+    expect(tdApi.removeAccount).not.toHaveBeenCalled()
+
+    await wrapper.find('[data-test="td-remove-confirm"]').trigger('click')
+    await flushPromises()
+
+    expect(tdApi.removeAccount).toHaveBeenCalledWith('account_001')
+  })
+
   it('会话控制双按钮（ADR 0051）：未登录仅登录可点，就绪仅登出可点；点击下发对应 REST', async () => {
     const store = await prepare()
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })

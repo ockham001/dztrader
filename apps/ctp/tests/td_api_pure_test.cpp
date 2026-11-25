@@ -519,8 +519,10 @@ TEST(FindAccountInTest, EmptyAccountsReturnsNull) {
 // requires_idle（契约 td-config §2.1 状态保护）
 // ============================================================================
 
-TEST(RequiresIdleTest, RemoveAccountAlwaysRequiresIdle) {
-    EXPECT_TRUE(requires_idle(TdConfigOp::RemoveAccount, nlohmann::json::object()));
+/// 契约 td-config §2.1：`RemoveAccount` 不受状态保护——有活跃会话时照样删除，
+/// 由编排层销毁会话并推 Offline（ADR 0045 决策 5），不得要求用户先登出。
+TEST(RequiresIdleTest, RemoveAccountDoesNotRequireIdle) {
+    EXPECT_FALSE(requires_idle(TdConfigOp::RemoveAccount, nlohmann::json::object()));
 }
 
 /// ADR 0056 决策 3：只改 account_name 等通用层字段时任意会话状态可改（不要求 Idle）。
