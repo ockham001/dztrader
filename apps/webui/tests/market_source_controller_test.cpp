@@ -522,7 +522,7 @@ TEST_F(MarketSourceControllerTest, AddBrokerAsNonAdminReturns403) {
     const int64_t id = create_source("ctp_add1");
     auto req = user_req();
     req->setBody(
-        R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
+        R"({"name":"b1","broker_id":"B1","account_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k403Forbidden);
 }
@@ -546,7 +546,7 @@ TEST_F(MarketSourceControllerTest, AddBrokerRejectsWhenProcessNotRunning) {
     const int64_t id = create_source("ctp_add3");
     auto req = admin_req();
     req->setBody(
-        R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
+        R"({"name":"b1","broker_id":"B1","account_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
@@ -559,7 +559,7 @@ TEST_F(MarketSourceControllerTest, AddBrokerReturns503WhenWriterNotReady) {
 
     auto req = admin_req();
     req->setBody(
-        R"({"name":"b1","broker_id":"B1","user_id":"u","password":"p","product_info":"pi"})");
+        R"({"name":"b1","broker_id":"B1","account_id":"u","password":"p","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     EXPECT_EQ(resp->getStatusCode(), drogon::k503ServiceUnavailable);
 }
@@ -764,7 +764,7 @@ TEST_F(MarketSourceControllerTest, GetConfigRedactsTopLevelAndBrokerPasswords) {
                         nlohmann::json{
                             {"name", "b1"},
                             {"broker_id", "B1"},
-                            {"user_id", "u1"},
+                            {"account_id", "u1"},
                             {"password", "broker_secret"},
                             {"product_info", "pi"},
                             {"frontends", nlohmann::json::array()},
@@ -1018,7 +1018,7 @@ TEST_F(MarketSourceControllerTest, AddBrokerDispatchesAddBrokerOp) {
 
     auto req = admin_req();
     req->setBody(
-        R"({"name":"b1","broker_id":"B1","user_id":"u1","password":"p1","product_info":"pi"})");
+        R"({"name":"b1","broker_id":"B1","account_id":"u1","password":"p1","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::add_broker, req, id);
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
     EXPECT_EQ(parse_body(resp)["message"], "dispatched");
@@ -1028,7 +1028,7 @@ TEST_F(MarketSourceControllerTest, AddBrokerDispatchesAddBrokerOp) {
     ASSERT_EQ(cap.payload["op"], "AddBroker");
     EXPECT_EQ(cap.payload["params"]["name"], "b1");
     EXPECT_EQ(cap.payload["params"]["broker_id"], "B1");
-    EXPECT_EQ(cap.payload["params"]["user_id"], "u1");
+    EXPECT_EQ(cap.payload["params"]["account_id"], "u1");
     EXPECT_EQ(cap.payload["params"]["password"], "p1");
     EXPECT_EQ(cap.payload["params"]["product_info"], "pi");
 }
@@ -1054,7 +1054,7 @@ TEST_F(MarketSourceControllerTest, UpdateBrokerDefaultsPasswordToMask) {
     const int64_t id = prepare_ready_dispatch(shm, "ctp_op_upd");
 
     auto req = admin_req();
-    req->setBody(R"({"name":"b1","broker_id":"B1","user_id":"u1","product_info":"pi"})");
+    req->setBody(R"({"name":"b1","broker_id":"B1","account_id":"u1","product_info":"pi"})");
     auto resp = invoke(&MarketSourceCtrl::update_broker, req, id, std::string{"b1"});
     ASSERT_EQ(resp->getStatusCode(), drogon::k200OK);
 
@@ -1062,6 +1062,7 @@ TEST_F(MarketSourceControllerTest, UpdateBrokerDefaultsPasswordToMask) {
     ASSERT_TRUE(cap.found);
     ASSERT_EQ(cap.payload["op"], "UpdateBroker");
     EXPECT_EQ(cap.payload["params"]["name"], "b1");
+    EXPECT_EQ(cap.payload["params"]["account_id"], "u1");
     EXPECT_EQ(cap.payload["params"]["password"], "****");
 }
 

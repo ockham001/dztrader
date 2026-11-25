@@ -83,7 +83,7 @@ describe('useFieldId', () => {
     const BrokerCardLike = defineComponent({
       setup() {
         const fieldId = useFieldId()
-        return () => h('div', ['broker-id', 'user-id', 'password', 'product-info']
+        return () => h('div', ['broker-id', 'account-id', 'password', 'product-info']
           .map(slug => h('input', { key: slug, id: fieldId(slug) })))
       },
     })

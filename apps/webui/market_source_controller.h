@@ -101,7 +101,7 @@ public:
                         std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                         int64_t id);
     /// POST /api/market-sources/{id}/brokers - 添加经纪商 (走 SHM 配置变更流程)
-    /// Body: {name, broker_id, user_id, password, product_info}
+    /// Body: {name, broker_id, account_id, password, product_info}
     /// frontends 默认空数组, 子进程校验名称唯一性 (重复走失败路径 D)
     void add_broker(const drogon::HttpRequestPtr& req,
                     std::function<void(const drogon::HttpResponsePtr&)>&& callback,

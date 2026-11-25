@@ -70,13 +70,15 @@ struct CtpBrokerFrontend {
 struct CtpBrokerEntry {
     std::string name;
     std::string broker_id;
-    std::string user_id;
+    /// 账户 ID（柜台真实账户号，行情登录账号）。纯配置字段：不参与唯一性判定——
+    /// 行情不按账户路由，md 的业务键仍是 name（契约 md-config BrokerEntry / ADR 0056）
+    std::string account_id;
     std::string password;
     std::string product_info;
     std::vector<CtpBrokerFrontend> frontends;
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(
-        CtpBrokerEntry, name, broker_id, user_id, password, product_info, frontends)
+        CtpBrokerEntry, name, broker_id, account_id, password, product_info, frontends)
 };
 
 /// MD 网关配置（契约 md-config CtpMdConfigData，RTN payload 用）

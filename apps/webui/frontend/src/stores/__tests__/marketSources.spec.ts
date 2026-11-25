@@ -66,7 +66,7 @@ const configPayload = {
     {
       name: 'b1',
       broker_id: 'bid1',
-      user_id: 'uid1',
+      account_id: 'uid1',
       password: 'pwd1',
       product_info: 'pi1',
       frontends: [{ address: 'a1', label: 'L1', enabled: false }],
@@ -677,7 +677,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await loadDb()
       vi.mocked(marketSourcesApi.addBroker).mockRejectedValue(new Error('boom'))
       const store = useMarketSourcesStore()
-      await expect(store.addBroker(1, { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' })).rejects.toThrow('add broker failed')
+      await expect(store.addBroker(1, { name: 'b2', broker_id: 'x', account_id: 'u', password: 'p', product_info: 'pi' })).rejects.toThrow('add broker failed')
       expect(store.error).toBe('add broker failed')
       expect(store.sources[0].brokerAddPending).toBe(false)
     })
@@ -686,7 +686,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await loadDb()
       vi.mocked(marketSourcesApi.addBroker).mockResolvedValue({ ok: true })
       const store = useMarketSourcesStore()
-      const p = store.addBroker(1, { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' })
+      const p = store.addBroker(1, { name: 'b2', broker_id: 'x', account_id: 'u', password: 'p', product_info: 'pi' })
       expect(store.sources[0].brokerAddPending).toBe(true)
       await p
       expect(store.sources[0].brokerAddPending).toBe(true)

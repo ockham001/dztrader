@@ -74,7 +74,7 @@ std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req,
                 return "AddBroker: name must not be empty";
             }
             if (auto err = check_optional_strings(
-                    req.params, {"broker_id", "user_id", "password", "product_info"})) {
+                    req.params, {"broker_id", "account_id", "password", "product_info"})) {
                 return err;
             }
             if (find_broker(cfg, name) != nullptr) {
@@ -104,7 +104,7 @@ std::optional<std::string> validate_ctp_op_req(const CtpMdConfigOpReq& req,
                 return "UpdateBroker: name must not be empty";
             }
             if (auto err = check_optional_strings(
-                    req.params, {"broker_id", "user_id", "password", "product_info"})) {
+                    req.params, {"broker_id", "account_id", "password", "product_info"})) {
                 return err;
             }
             if (find_broker(cfg, name) == nullptr) {
@@ -192,7 +192,7 @@ void apply_ctp_config_op(CtpMdConfigData& cfg, const CtpMdConfigOpReq& req) {
             CtpBrokerEntry b;
             b.name = req.params.value("name", "");
             b.broker_id = req.params.value("broker_id", "");
-            b.user_id = req.params.value("user_id", "");
+            b.account_id = req.params.value("account_id", "");
             b.password = req.params.value("password", "");
             b.product_info = req.params.value("product_info", "");
             cfg.brokers.push_back(std::move(b));
@@ -215,7 +215,7 @@ void apply_ctp_config_op(CtpMdConfigData& cfg, const CtpMdConfigOpReq& req) {
             for (auto& b : cfg.brokers) {
                 if (b.name == name) {
                     b.broker_id = req.params.value("broker_id", b.broker_id);
-                    b.user_id = req.params.value("user_id", b.user_id);
+                    b.account_id = req.params.value("account_id", b.account_id);
                     b.product_info = req.params.value("product_info", b.product_info);
                     auto pwd = req.params.value("password", "");
                     if (pwd != "****" && !pwd.empty()) {
@@ -345,6 +345,18 @@ CtpMdConfigData CtpMdConfig::load_cfg_from_file(bool& degraded) const {
             }
         } else {
             degraded = true;
+        }
+    }
+    // ADR 0056 硬切：旧配置的 brokers[].user_id 已删除（总则 §8 未知字段忽略）。md 侧不做迁移
+    // （不致命、不自愈重置），只在加载期告警，提示运维在 UI 重新填写账户 ID。
+    if (raw.is_object() && raw.contains("brokers") && raw["brokers"].is_array()) {
+        for (const auto& b : raw["brokers"]) {
+            if (b.is_object() && b.contains("user_id")) {
+                spdlog::warn(
+                    "ctp md config has removed field, re-enter account id in ui | broker=\"{}\"",
+                    b.value("name", ""));
+                break;
+            }
         }
     }
     // 反序列化为 CtpMdConfigData，校验后返回

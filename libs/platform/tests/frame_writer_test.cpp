@@ -112,7 +112,7 @@ TEST_F(PlatformFrameWriterTest, WriteSetMdConfig) {
                           {"params",
                            {{"name", "simnow"},
                             {"broker_id", "9999"},
-                            {"user_id", "00001"},
+                            {"account_id", "00001"},
                             {"password", "123456"},
                             {"product_info", ""}}}};
     dztrader::platform::write_ext_inst_json_obj(*writer_, DZ_FRAME_SET_MD_CONFIG, "dzmd_ctp", req);

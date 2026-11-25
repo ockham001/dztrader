@@ -78,8 +78,8 @@ export interface BrokerEntry {
     name: string
     /** 经纪公司代码 */
     broker_id: string
-    /** 用户代码 */
-    user_id: string
+    /** 账户 ID（柜台真实账户号，登录行情会话用）。纯配置字段：不参与任何唯一性判定（行情不按账户路由，md 的业务键仍是 name），命名与 td 侧统一（ADR 0056） */
+    account_id: string
     /** 登录密码（生产/RTN 脱敏为 ****） */
     password: string
     /** 产品信息 */

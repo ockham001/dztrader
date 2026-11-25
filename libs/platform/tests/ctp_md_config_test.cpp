@@ -57,7 +57,7 @@ TEST(CtpMdConfigDataSerialization, RoundTripWithBrokers) {
     CtpBrokerEntry b;
     b.name = "simnow";
     b.broker_id = "9999";
-    b.user_id = "00001";
+    b.account_id = "00001";
     b.password = "123456";
     b.product_info = "";
     b.frontends.push_back({"tcp://180.168.146.187:10131", "电信", true});
@@ -153,9 +153,9 @@ TEST(ValidateOpReq, AddBrokerBrokerIdWrongType) {
     ASSERT_TRUE(err.has_value());
 }
 
-TEST(ValidateOpReq, AddBrokerUserIdWrongType) {
+TEST(ValidateOpReq, AddBrokerAccountIdWrongType) {
     CtpMdConfigData cfg;
-    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {{"name", "x"}, {"user_id", 123}}};
+    CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker, {{"name", "x"}, {"account_id", 123}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
     ASSERT_TRUE(err.has_value());
 }
@@ -175,7 +175,7 @@ TEST(ValidateOpReq, AddBrokerOptionalStringFieldsValid) {
     CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker,
                          {{"name", "x"},
                           {"broker_id", "9999"},
-                          {"user_id", "u"},
+                          {"account_id", "u"},
                           {"password", "p"},
                           {"product_info", "pi"}}};
     auto err = dztrader::platform::validate_ctp_op_req(req, cfg);
@@ -326,13 +326,14 @@ TEST(ApplyConfigOp, AddBroker) {
     CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker,
                          {{"name", "simnow"},
                           {"broker_id", "9999"},
-                          {"user_id", "00001"},
+                          {"account_id", "00001"},
                           {"password", "123456"},
                           {"product_info", ""}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
     ASSERT_EQ(cfg.brokers.size(), 1u);
     EXPECT_EQ(cfg.brokers[0].name, "simnow");
     EXPECT_EQ(cfg.brokers[0].broker_id, "9999");
+    EXPECT_EQ(cfg.brokers[0].account_id, "00001");
     EXPECT_EQ(cfg.brokers[0].password, "123456");
 }
 
@@ -373,7 +374,7 @@ TEST(ApplyConfigOp, UpdateBrokerPasswordMask) {
     CtpBrokerEntry b;
     b.name = "simnow";
     b.password = "old_pwd";
-    b.user_id = "00001";
+    b.account_id = "00001";
     cfg.brokers.push_back(b);
     CtpMdConfigOpReq req{CtpMdConfigOp::UpdateBroker, {{"name", "simnow"}, {"password", "****"}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
@@ -407,12 +408,13 @@ TEST(ApplyConfigOp, UpdateBrokerMissingFieldsKeepOld) {
     CtpMdConfigData cfg;
     CtpBrokerEntry b;
     b.name = "simnow";
-    b.user_id = "00001";
+    b.account_id = "00001";
     b.broker_id = "9999";
     cfg.brokers.push_back(b);
-    CtpMdConfigOpReq req{CtpMdConfigOp::UpdateBroker, {{"name", "simnow"}, {"user_id", "00002"}}};
+    CtpMdConfigOpReq req{CtpMdConfigOp::UpdateBroker,
+                         {{"name", "simnow"}, {"account_id", "00002"}}};
     dztrader::platform::apply_ctp_config_op(cfg, req);
-    EXPECT_EQ(cfg.brokers[0].user_id, "00002");
+    EXPECT_EQ(cfg.brokers[0].account_id, "00002");
     EXPECT_EQ(cfg.brokers[0].broker_id, "9999");
 }
 
@@ -669,7 +671,7 @@ TEST_F(CtpMdConfigTest, LoadDefaultWhenFileMissing) {
 
 TEST_F(CtpMdConfigTest, LoadFromFile) {
     write_cfg_file(R"({"md": {
-        "brokers": [{"name": "simnow", "broker_id": "9999", "user_id": "00001",
+        "brokers": [{"name": "simnow", "broker_id": "9999", "account_id": "00001",
                        "password": "123456", "product_info": "", "frontends": []}],
         "current_broker_name": "simnow",
         "subscribe_batch_size": 500,
@@ -685,9 +687,40 @@ TEST_F(CtpMdConfigTest, LoadFromFile) {
     EXPECT_EQ(cfg.subscribe_batch_size, 500);
 }
 
-TEST_F(CtpMdConfigTest, LoadStaleCurrentBrokerHealed) {
+TEST_F(CtpMdConfigTest, LoadLegacyUserIdFieldIsIgnored) {
+    // ADR 0056 硬切后的旧配置（BrokerEntry 里只有 user_id、没有 account_id）：md 侧不做迁移，
+    // 未知字段按总则 §8 忽略——解码成功、进程照常启动，账号为空串，加载期仅记 WARN，
+    // 需用户在 UI 重新填写账户 ID。不写回（degraded 不置位）。
     write_cfg_file(R"({"md": {
         "brokers": [{"name": "simnow", "broker_id": "9999", "user_id": "00001",
+                       "password": "123456", "product_info": "", "frontends": []}],
+        "current_broker_name": "simnow",
+        "subscribe_batch_size": 1000,
+        "subscribe_batch_delay_ms": 1000,
+        "sub_check_interval_ms": 3000,
+        "sub_max_retry": 3
+    }})");
+    const std::string legacy_content = read_cfg_file();
+    CtpMdConfig md("dzmd_ctp", cfg_path_, *writer_);
+    md.load();
+    const auto& cfg = md.config();
+    ASSERT_EQ(cfg.brokers.size(), 1u);
+    EXPECT_EQ(cfg.brokers[0].name, "simnow");
+    EXPECT_EQ(cfg.brokers[0].broker_id, "9999");
+    EXPECT_TRUE(cfg.brokers[0].account_id.empty());  // 已删除的 user_id 不映射
+    EXPECT_EQ(cfg.brokers[0].password, "123456");
+    // 未降级 → 文件保持原样（自愈修复只在内容非法时发生）
+    EXPECT_EQ(read_cfg_file(), legacy_content);
+    // RTN 全量脱敏 JSON 只按新字段名输出
+    const auto safe = dztrader::platform::ctp_config_to_safe_json(cfg);
+    ASSERT_EQ(safe["brokers"].size(), 1u);
+    EXPECT_TRUE(safe["brokers"][0].contains("account_id"));
+    EXPECT_FALSE(safe["brokers"][0].contains("user_id"));
+}
+
+TEST_F(CtpMdConfigTest, LoadStaleCurrentBrokerHealed) {
+    write_cfg_file(R"({"md": {
+        "brokers": [{"name": "simnow", "broker_id": "9999", "account_id": "00001",
                        "password": "123456", "product_info": "", "frontends": []}],
         "current_broker_name": "ghost",
         "subscribe_batch_size": 1000,
@@ -722,7 +755,7 @@ TEST_F(CtpMdConfigTest, SetMdConfigAddBroker) {
     CtpMdConfigOpReq req{CtpMdConfigOp::AddBroker,
                          {{"name", "simnow"},
                           {"broker_id", "9999"},
-                          {"user_id", "00001"},
+                          {"account_id", "00001"},
                           {"password", "123456"},
                           {"product_info", ""}}};
     md.set_md_config(req);
@@ -787,7 +820,7 @@ TEST_F(CtpMdConfigTest, RemoveBrokerClearsCurrent) {
 TEST_F(CtpMdConfigTest, CoexistsWithOtherSections) {
     // 先写入含 log 和 md 两个 section 的配置文件
     write_cfg_file(R"({"log": {"level": "info", "flush_on": "warning"}, "md": {
-        "brokers": [{"name": "simnow", "broker_id": "9999", "user_id": "00001",
+        "brokers": [{"name": "simnow", "broker_id": "9999", "account_id": "00001",
                        "password": "123456", "product_info": "", "frontends": []}],
         "current_broker_name": "simnow",
         "subscribe_batch_size": 1000,
@@ -850,7 +883,7 @@ TEST_F(CtpMdConfigTest, SetMdConfigSaveFailureRollsBackAndRtnOldValue) {
     {
         std::ofstream ofs(save_path, std::ios::binary | std::ios::trunc);
         ofs << R"({"md": {
-            "brokers": [{"name": "simnow", "broker_id": "9999", "user_id": "00001",
+            "brokers": [{"name": "simnow", "broker_id": "9999", "account_id": "00001",
                            "password": "old_pwd", "product_info": "", "frontends": []}],
             "current_broker_name": "simnow",
             "subscribe_batch_size": 1000,

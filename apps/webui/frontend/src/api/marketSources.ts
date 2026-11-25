@@ -30,7 +30,7 @@ export interface AutoLoginBody {
 export interface AddBrokerBody {
   name: string
   broker_id: string
-  user_id: string
+  account_id: string
   password: string
   product_info: string
 }

@@ -26,12 +26,12 @@ const src = computed(() => props.source)
 // TimePicker 根节点是 div、可标注元素是内部 button，故其 id 走 prop 传入
 const fieldId = useFieldId()
 
-// ===== Add broker modal (F-C10: name 创建后不可改 + broker_id/user_id/password/product_info) =====
+// ===== Add broker modal (F-C10: name 创建后不可改 + broker_id/account_id/password/product_info) =====
 const brokerModalOpen = ref(false)
 const brokerModalSourceId = ref<number | null>(null)
 const newBrokerName = ref('')
 const newBrokerBrokerId = ref('')
-const newBrokerUserId = ref('')
+const newBrokerAccountId = ref('')
 const newBrokerPassword = ref('')
 const newBrokerProductInfo = ref('')
 const brokerSubmitting = ref(false)
@@ -40,7 +40,7 @@ function openBrokerModal(sourceId: number): void {
   brokerModalSourceId.value = sourceId
   newBrokerName.value = ''
   newBrokerBrokerId.value = ''
-  newBrokerUserId.value = ''
+  newBrokerAccountId.value = ''
   newBrokerPassword.value = ''
   newBrokerProductInfo.value = ''
   brokerModalOpen.value = true
@@ -51,7 +51,7 @@ function closeBrokerModal(): void {
   brokerModalSourceId.value = null
   newBrokerName.value = ''
   newBrokerBrokerId.value = ''
-  newBrokerUserId.value = ''
+  newBrokerAccountId.value = ''
   newBrokerPassword.value = ''
   newBrokerProductInfo.value = ''
   brokerSubmitting.value = false
@@ -72,7 +72,7 @@ async function confirmAddBroker(): Promise<void> {
     await store.addBroker(brokerModalSourceId.value, {
       name: newBrokerName.value.trim(),
       broker_id: newBrokerBrokerId.value.trim(),
-      user_id: newBrokerUserId.value.trim(),
+      account_id: newBrokerAccountId.value.trim(),
       password: newBrokerPassword.value,
       product_info: newBrokerProductInfo.value.trim(),
     })
@@ -470,9 +470,9 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           </div>
         </div>
         <div class="dialog-row">
-          <label class="dialog-row__label" :for="fieldId('add-broker-user-id')">UserID</label>
+          <label class="dialog-row__label" :for="fieldId('add-broker-account-id')">账户 ID</label>
           <div class="ds-input dialog-row__control">
-            <input :id="fieldId('add-broker-user-id')" v-model="newBrokerUserId" type="text" placeholder="用户代码">
+            <input :id="fieldId('add-broker-account-id')" v-model="newBrokerAccountId" type="text" placeholder="账户 ID">
           </div>
         </div>
         <div class="dialog-row">
