@@ -27,8 +27,17 @@
 每条要求的语义（沿用 #190 的保守口径）：
 
   - 记录缺失 / 文件不可读 → **只警告**（agent 常在 commit 前跑门禁、commit 后直接推）
-  - 记录在**当前 HEAD** 且 `rc!=0` → **拒绝推送**
-  - 记录来自别的 HEAD → **只警告**（结论不是关于被推 commit 的）
+  - 记录在同一**内容树**（`tree=` 相等，见下）且 `rc!=0` → **拒绝推送**
+  - 记录来自别的内容树 → **只警告**（结论不是关于被推 commit 的）
+
+### 内容树对齐（#480）
+
+closeout §2→§3 的顺序是「门禁绿 → 提交 → 推送」，于是记录里的 `head=` 必然是**被推
+commit 的父提交**——只比 commit sha 会让每次合规推送都打印
+`record is from <parent>, not HEAD`（#471 实测），并诱导 agent 为「对齐」重复跑整门禁
+（一次 build ≈ 20 分钟）。门禁验证的是**工作区内容**，所以记录里同时写 `tree=`
+（`git rev-parse HEAD^{tree}`）：tree 相等 ⇒ 内容没变 ⇒ 结论仍成立。判定顺序是
+「同 tree 即视为当前内容」→ 再看 `rc`；旧槽位没有 `tree=` 字段时退回只比 `head=`（向后兼容）。
 
 应急逃生口 `DZ_ALLOW_RED_GATE=1`：拒绝态降级为 WARNING 并放行（沿用既有含义）。
 
@@ -77,12 +86,13 @@ class EnvError(Exception):
 
 @dataclass(frozen=True)
 class Status:
-    """一条门禁记录：命令、退出码、HEAD、时间戳。"""
+    """一条门禁记录：命令、退出码、HEAD、内容树、时间戳。"""
 
     cmd: str
     rc: int
     head: str
     time: str
+    tree: str = ""
 
 
 def _git(*args: str, cwd: Path | str | None = None) -> subprocess.CompletedProcess[str]:
@@ -99,7 +109,8 @@ def repo_root() -> Path:
 def parse_status(text: str, cmd: str) -> Status | None:
     """解析 `record_last_status` 写出的 k=v 纯文本；格式不可读返回 None。
 
-    格式由 scripts/gate.sh 单一写入（cmd/rc/head/time），这里只读解析。
+    格式由 scripts/gate.sh 单一写入（cmd/rc/head/tree/time），这里只读解析。
+    `tree=` 是 #480 新增字段：旧槽位没有它时留空串，判定退回只比 `head=`。
     """
     fields: dict[str, str] = {}
     for line in text.splitlines():
@@ -114,6 +125,7 @@ def parse_status(text: str, cmd: str) -> Status | None:
         rc=int(rc_text),
         head=fields.get("head", ""),
         time=fields.get("time", ""),
+        tree=fields.get("tree", ""),
     )
 
 
@@ -161,11 +173,32 @@ def classify_ticket(base_sha: str | None, head: str, root: Path) -> tuple[str, s
     return mode, reason
 
 
+def resolve_tree(sha: str, root: Path) -> str:
+    """取某 commit 的内容树哈希；不可解析返回空串（判定退回只比 sha）。"""
+    result = _git("rev-parse", "--verify", "--quiet", f"{sha}^{{tree}}", cwd=root)
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        return ""
+    return value
+
+
+def _covers(status: Status, head: str, tree: str) -> bool:
+    """记录是否描述「被推 commit 的内容」（#480）。
+
+    同 commit，或同内容树（提交只改提交、不改内容——closeout §2→§3 的规范顺序）都算覆盖。
+    记录里没有 `tree=`（旧槽位）或 tree 解析不出时，退回只比 `head=`。
+    """
+    if status.head == head:
+        return True
+    return bool(status.tree) and bool(tree) and status.tree == tree
+
+
 def judge(
     gate_dir: Path,
     head: str,
     mode: str,
     *,
+    tree: str = "",
     allow_red_gate: bool = False,
 ) -> tuple[list[str], list[str]]:
     """按票型判定放行；返回 (blocking, warnings)。`unknown` 票型零要求、只给提示。"""
@@ -187,10 +220,10 @@ def judge(
                 f"run ./scripts/gate.sh {cmd} before pushing"
             )
             continue
-        if status.head == head and status.rc != 0:
+        if _covers(status, head, tree) and status.rc != 0:
             blocking.append(f"{cmd} gate FAILED (rc={status.rc}) at HEAD {head[:SHORT_SHA_LEN]}")
             continue
-        if status.head != head:
+        if not _covers(status, head, tree):
             warnings.append(
                 f"{cmd} gate record is from {status.head[:SHORT_SHA_LEN] or 'unknown'}, "
                 f"not HEAD {head[:SHORT_SHA_LEN]}; its result is not about the pushed commit"
@@ -215,7 +248,10 @@ def check(
     head = resolve_head(head_ref, root)
     base_sha, base_note = resolve_base(base_ref, root)
     mode, reason = classify_ticket(base_sha, head, root)
-    blocking, warnings = judge(gate_dir, head, mode, allow_red_gate=allow_red_gate)
+    tree = resolve_tree(head, root)
+    blocking, warnings = judge(
+        gate_dir, head, mode, tree=tree, allow_red_gate=allow_red_gate
+    )
     if mode == "unknown":
         print(f"gate-status: ticket unknown ({base_note or reason}); no required gate records")
     else:
@@ -257,10 +293,14 @@ def _selftest_git(root: Path, *args: str) -> str:
 
 
 def _selftest_write_status(
-    gate_dir: Path, name: str, *, rc: int, head: str, cmd: str
+    gate_dir: Path, name: str, *, rc: int, head: str, cmd: str, tree: str | None = None
 ) -> None:
+    """写一条假门禁记录。`tree=None` 模拟**旧槽位**（没有 `tree=` 字段，向后兼容路径）。"""
     gate_dir.mkdir(parents=True, exist_ok=True)
-    content = f"cmd={cmd}\nrc={rc}\nhead={head}\ntime=1000\n"
+    content = f"cmd={cmd}\nrc={rc}\nhead={head}\n"
+    if tree is not None:
+        content += f"tree={tree}\n"
+    content += "time=1000\n"
     (gate_dir / f"{STATUS_PREFIX}{name}").write_text(content, encoding="utf-8")
 
 
@@ -376,10 +416,66 @@ def selftest() -> int:
         rc, out = _selftest_cli(repo, "--head", code_head, "--base", "origin/does-not-exist")
         expect("unknown ticket type only warns", rc == 0, f"rc={rc} out={out!r}")
 
+        # ---- #480：内容树对齐（closeout §2→§3 = 门禁绿 → 提交 → 推送）------------
+        # 造一个「只改提交、不改内容」的 commit：门禁记录的 head= 是父提交，tree 相同。
+        tree_of_head = _selftest_git(repo, "rev-parse", "HEAD^{tree}")
+        _selftest_git(repo, "commit", "-q", "--allow-empty", "-m", "chore: same tree, new sha")
+        same_tree_head = _selftest_git(repo, "rev-parse", "HEAD")
+        expect(
+            "commit-only commit keeps the tree (precondition for the case below)",
+            _selftest_git(repo, "rev-parse", "HEAD^{tree}") == tree_of_head,
+            "trees must match",
+        )
+
+        # 态 7：记录 head=父提交、tree 与被推 tree 相同 → 视为覆盖当前内容，**不再警告**
+        _selftest_clear(gate_dir)
+        _selftest_write_status(
+            gate_dir, "build", rc=0, head=code_head, cmd="build", tree=tree_of_head
+        )
+        _selftest_write_status(
+            gate_dir, "test", rc=0, head=code_head, cmd="test", tree=tree_of_head
+        )
+        rc, out = _selftest_cli(repo, "--head", same_tree_head, "--base", docs_head)
+        expect("same-tree record is accepted", rc == 0, f"rc={rc} out={out!r}")
+        expect(
+            "same-tree record raises no stale warning",
+            "not HEAD" not in out,
+            f"out={out!r}",
+        )
+
+        # 态 8：同 tree 但记录 rc!=0 → 拒绝（内容没变，红结论仍然成立）
+        _selftest_write_status(
+            gate_dir, "build", rc=1, head=code_head, cmd="build", tree=tree_of_head
+        )
+        rc, out = _selftest_cli(repo, "--head", same_tree_head, "--base", docs_head)
+        expect("same-tree red record is refused", rc == 1, f"rc={rc} out={out!r}")
+
+        # 态 9：tree 不同（内容变了）→ 只警告不拦（结论不是关于被推内容的）
+        _selftest_clear(gate_dir)
+        stale_tree = _selftest_git(repo, "rev-parse", "HEAD~2^{tree}")
+        _selftest_write_status(gate_dir, "build", rc=1, head=code_head, cmd="build", tree=stale_tree)
+        _selftest_write_status(gate_dir, "test", rc=1, head=code_head, cmd="test", tree=stale_tree)
+        rc, out = _selftest_cli(repo, "--head", same_tree_head, "--base", docs_head)
+        expect("different-tree record only warns", rc == 0, f"rc={rc} out={out!r}")
+        expect("stale warning is raised", "not HEAD" in out, f"out={out!r}")
+
+        # 态 10：旧槽位没有 tree= 字段（向后兼容）→ 退回只比 head，异 head 仍只警告
+        _selftest_clear(gate_dir)
+        _selftest_write_status(gate_dir, "build", rc=0, head=code_head, cmd="build")
+        _selftest_write_status(gate_dir, "test", rc=0, head=code_head, cmd="test")
+        rc, out = _selftest_cli(repo, "--head", same_tree_head, "--base", docs_head)
+        expect("legacy record without tree= still only warns", rc == 0, f"rc={rc} out={out!r}")
+
         # 解析器：k=v 形态与 rc 非数字
         expect(
             "parse_status accepts the gate.sh format",
             parse_status("cmd=build\nrc=0\nhead=abc\ntime=1\n", "build") == Status("build", 0, "abc", "1"),
+        )
+        expect(
+            "parse_status reads the tree= field",
+            (lambda s: s is not None and s.tree == "t1")(
+                parse_status("cmd=build\nrc=0\nhead=abc\ntree=t1\ntime=1\n", "build")
+            ),
         )
         expect("parse_status rejects non-numeric rc", parse_status("rc=oops\n", "build") is None)
         # 不带 head 的合法记录：解析必须成功且 head 为空串。写成 `or Status(...)` 兜底会
@@ -398,7 +494,7 @@ def selftest() -> int:
         return 1
     print(
         f"selftest: {checks} cases (ledger-vs-build / stale HEAD / docs-only / "
-        "missing / unreadable / unknown ticket)"
+        "missing / unreadable / unknown ticket / same-tree coverage / legacy record)"
     )
     return 0
 

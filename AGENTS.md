@@ -20,6 +20,8 @@
 
 这条规则的原始载体（一个锁定的说明文件）已在历史提交中删除；本条是全仓**权威**记录（`CONTRIBUTING.md` 的同类表述指向本节）。不要以"顺手改一下"绕过。已由 `.opencode/opencode.json` 权限机器化：编辑 `apps/ctp/md/` 会先要求确认。
 
+**机器守卫（#480，全宿主生效）**：确认后写标记 `python3 scripts/md_lock_marker.py write <issue>`；`scripts/push-ticket.sh` 在 diff 触及 `apps/ctp/md/` 且该标记缺失时**拒绝推送**（exit 3，逃生口 `DZ_ALLOW_MD_LOCK=1`）。标记落在 `.cache/lock/<issue>-md-lock.done`（gitignore），语义是「用户已确认这次要改 md 目录」——不判 sha，因为确认通常发生在写代码之前。
+
 ### 2. `DZTRADER_HOME` 必须指向项目内
 
 测试/调试期间**所有** `DZTRADER_HOME` 必须指向项目内目录，禁止落到真实 home：
@@ -160,7 +162,7 @@
 ### 日常工作流（单人 + AI 协作）
 
 1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
-2. **每票 1–2 个提交**（实现 + 审查收敛）：冻结审查后只 push 不 amend；提交前门禁绿。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`。**票号必须写进作用域**（`fix(#246): ...`），不要写 `fix: #246 ...`——后者是 GitHub 的 closing keyword 形态，PR 合并即提前关掉 issue，使关闭评论被静默丢弃（`scripts/check_commit_subject.py` 强制，见 [ticket-closeout](docs/agents/ticket-closeout.md) §6）
+2. **每票 1–2 个提交**（实现 + 审查收敛）：冻结审查后只 push 不 amend；提交前门禁绿。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`，标题 **≤72 字符**（`scripts/check_commit_subject.py` 强制；#468 实测 91 字符被拒、改写后重提）。**票号必须写进作用域**（`fix(#246): ...`），不要写 `fix: #246 ...`——后者是 GitHub 的 closing keyword 形态，PR 合并即提前关掉 issue，使关闭评论被静默丢弃（同脚本 R3 强制，见 [ticket-closeout](docs/agents/ticket-closeout.md) §6）
 3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（权威且更全 —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备，CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
 5. **收尾**：工作区保持干净（运行产物已 gitignore；临时诊断脚本要么通用化提交、要么删除）。每波改动结束 `git status` 干净 + `git log` 可读 + CI 绿
@@ -194,6 +196,7 @@
 - worktree 由 `create_worktree` 建在 **`.agents/worktrees/<branch>`**（实际约定；`.worktrees/` 是历史路径，目录若存在同样受 `.gitignore` 保护）。手动建 worktree 时沿用 `.agents/worktrees/<branch>`：`git worktree add .agents/worktrees/<branch> -b <branch> main`（#316 AC5）
 - **`create_worktree` 的 `name` 必须写完整分支名（含 `/`）**：`name: fix/issue-411-today-position` → 分支 `fix/issue-411-today-position`、目录 `.agents/worktrees/fix/issue-411-today-position`。工具描述的「hyphens」示例只保证目录能建出来；写成 flat 的 `fix-issue-411-today-position` 在 #411 时一路拖到 **pre-push** 才被拒（到收尾才发现）。现在 Linux 的 `setup.sh` 开头就会早检并打印修复命令（判定在 `scripts/check_branch_name.py`）；已建错用 `git branch -m fix/issue-<n>-<slug>` 改名（worktree 目录可不动）。
 - worktree 内**需重新跑 `setup`**（conan 缓存按 git common dir 共享：`~/.conan2` 只读时 `setup.sh` 自动回退到**共享**仓库 `.cache/conan2`（跨 worktree 复用，播种加 flock），见 [build-appendix](docs/agents/build-appendix.md)）
+- **前端依赖不能跨 worktree 共享**（与 conan 缓存相反）：worktree 里跑 `cd apps/webui/frontend && npm ci`（约 1 分钟）。**禁止 `ln -s` 指到主仓的 `node_modules`**——`npm ci` 会先删内容再重建，删的是**符号链接目标**里的东西，等于静默清空主工作区依赖（#471 实测 299 个包归零、破坏面跨会话）；`npm-ci-if-needed.cmake` 与 `preflight` 都会硬拒并提示本地安装
 - **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
@@ -211,10 +214,10 @@
 
 ### 本机沙箱（DSH）
 
-- **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；**不要 `sleep` 轮询、不要前台空等**。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价：不看这条的票在 `sleep` 上花掉 10%–28% 墙钟（#162 1760s、#163 1985s），遵守的票只有 3s（#165）。
-- **`job_output(wait=true)` 有宿主侧等待上限**（**上限值随宿主配置**，以 `job_output` 实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
+- **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；不要 `sleep` 轮询、不要前台空等。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价与分段方法见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处，此处不重复）。
+- **`job_output(wait=true)` 有宿主侧等待上限**（上限值随宿主配置，以实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
 - **仓内搜索用 `git grep`**（只扫版本控制内的文件，天然跳过 `build/`、`install/`、`.cache/`）：`grep -rn --include=*` 全仓跑会扫到编译产物与缓存（#253 实测单次 131.8s、`find .cache` 94.2s）。要搜运行产物再显式指定 `.cache/` 路径。
-- **门禁判绿**：给 `gate.sh` 接 `| tail` / `| head` 只丢退出码，判绿看 `gate: OK` 行或对应分命令槽 `.cache/gate/last-status-<cmd>`，不要只看 shell 退出码；`wait-ci.sh` 例外（退出码即 CI 结论，不接管道）。细节见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
+- **门禁判绿看 `gate: OK` 行或分命令槽**，不要只看 shell 退出码（`wait-ci.sh` 例外：退出码即 CI 结论，别接管道）；管道与槽位口径见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
@@ -225,7 +228,7 @@
 
 **`.agents/worktrees/` 内不要走 codegraph**：索引按**主工作区**建，worktree 下 codegraph 会提示 stale/查不到本分支（#465 复盘实测）；改用 Read/grep（见本文开头的读文件规则）。
 
-**按节取契约用 `python3 scripts/contract_slice.py <stem> §N [--children]`**；**列单份的大纲用 `--outline <stem | docs 路径>`**（`--list` 只列**全部**契约的编号标题，**不接受 stem**）；大文档同样可按节切与列大纲（`--outline docs/agents/ticket-closeout.md`、`ticket-closeout §1`、`docs/components/dzweb.md` 都接受）。**不要用 `sed -n` 按行号分页**——行号在改契约后即失效，契约已 105 KB 级；`sed -n` 只允许用在**非契约、非大文档**的小文件上（#316 AC3）。
+**按节取契约用 `python3 scripts/contract_slice.py <stem> §N [--children]`**；**无编号契约按标题名切：`contract_slice.py <stem> <标题名>`**（`docs/frame_contracts/` 25 份里 17 份没有编号小节，如 `md-config` / `md-status` / `process`；工具会剥编号前缀并给候选标题）；**列单份的大纲用 `--outline [<stem | docs 路径>]`**（值可省略，`<stem> --outline` 等价；`--list` 只列**全部**契约的编号标题，**不接受 stem**）；大文档同样可按节切与列大纲（`--outline docs/agents/ticket-closeout.md`、`ticket-closeout §1`、`docs/components/dzweb.md` 都接受）。**不要用 `sed -n` 按行号分页**——行号在改契约后即失效，契约已 105 KB 级；`sed -n` 只允许用在**非契约、非大文档**的小文件上（#316 AC3）。
 
 ---
 

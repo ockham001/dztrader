@@ -32,7 +32,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PUSH_TICKET = REPO_ROOT / "scripts" / "push-ticket.sh"
-SCRIPTS = ("push-ticket.sh", "check-push-scope.sh", "review_marker.py")
+SCRIPTS = ("push-ticket.sh", "check-push-scope.sh", "review_marker.py", "md_lock_marker.py")
 ISSUE = "309"
 
 REAL_GIT = shutil.which("git")

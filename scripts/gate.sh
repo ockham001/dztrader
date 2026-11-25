@@ -105,21 +105,25 @@ if [ "$CMD" = "--selftest" ]; then
     )
     sel_head_rc=$?
     sel_tmp_head="$(git -C "$sel_tmp" rev-parse HEAD 2>/dev/null)"
+    # 内容树哈希同样必须落盘（#480）：gate_status.py 靠 `tree=` 判「提交只改提交、不改内容」。
+    sel_tmp_tree="$(git -C "$sel_tmp" rev-parse HEAD^{tree} 2>/dev/null)"
     for sel_slot in last-status-ledger last-status; do
         if [ ! -f "$sel_tmp/.cache/gate/$sel_slot" ]; then
             echo "selftest FAIL slot not written: .cache/gate/$sel_slot" >&2
             sel_fails=$((sel_fails + 1))
             continue
         fi
-        # 断言内容真的来自本次 ledger 运行（cmd/rc/head 三项都对）：只判存在会让
+        # 断言内容真的来自本次 ledger 运行（cmd/rc/head/tree 四项都对）：只判存在会让
         # 「分槽写成了空文件」或「cmd 名写错」照样绿（code-review finding）。
         sel_cmd="$(sed -n 's/^cmd=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
         sel_rc="$(sed -n 's/^rc=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
         sel_sha="$(sed -n 's/^head=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
-        if [ "$sel_cmd" = "ledger" ] && [ "$sel_rc" = "0" ] && [ "$sel_sha" = "$sel_tmp_head" ]; then
-            echo "selftest ok slot-written $sel_slot (cmd=$sel_cmd rc=$sel_rc head=${sel_sha:0:12})"
+        sel_tree="$(sed -n 's/^tree=//p' "$sel_tmp/.cache/gate/$sel_slot" | head -1)"
+        if [ "$sel_cmd" = "ledger" ] && [ "$sel_rc" = "0" ] && [ "$sel_sha" = "$sel_tmp_head" ] &&
+            [ "$sel_tree" = "$sel_tmp_tree" ]; then
+            echo "selftest ok slot-written $sel_slot (cmd=$sel_cmd rc=$sel_rc head=${sel_sha:0:12} tree=${sel_tree:0:12})"
         else
-            echo "selftest FAIL slot content $sel_slot: cmd=$sel_cmd rc=$sel_rc head=${sel_sha:-<none>} (expected ledger/0/$sel_tmp_head)" >&2
+            echo "selftest FAIL slot content $sel_slot: cmd=$sel_cmd rc=$sel_rc head=${sel_sha:-<none>} tree=${sel_tree:-<none>} (expected ledger/0/$sel_tmp_head/$sel_tmp_tree)" >&2
             sel_fails=$((sel_fails + 1))
         fi
     done
@@ -197,15 +201,20 @@ LOG="$LOG_DIR/${CMD}-$(date +%Y%m%d-%H%M%S)-$$.log"
 # 变成推不出去的机器事实（详见 issue #190）。
 record_last_status() {
     local cmd="$1" rc="$2"
-    local head ts tmp legacy_tmp
+    local head tree ts tmp legacy_tmp
     head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+    # 内容树哈希（#480）：门禁验证的是**工作区内容**，而 closeout §2→§3 的顺序是
+    # 「门禁绿 → 提交 → 推送」，于是提交后 head= 永远指向父提交。只比 commit sha 会让
+    # 每次推送都打「record is from <parent>, not HEAD」的警告（#471 实测），并诱导为
+    # 「对齐」重复跑整门禁。tree 相等即「内容没变、结论仍成立」，判定在 gate_status.py。
+    tree="$(git -C "$ROOT" rev-parse HEAD^{tree} 2>/dev/null || echo unknown)"
     ts="$(date +%s)"
     # 唯一 tmp 名（`$$`）：preflight 可与 build 重叠，两个进程共用固定名会互相覆盖/撕裂。
     # 分命令槽（#316 AC2）：build / test / preflight / ledger 各写一份，放行判定按票型读
     # 对应槽（scripts/gate_status.py）；`last-status` 仍是「最近一次任意门禁」的兼容视图，
     # 只有提示用途，不参与放行判定（否则 ledger 覆盖 build 红的闭环漏洞会复活）。
     local content
-    content="$(printf 'cmd=%s\nrc=%s\nhead=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$ts")"
+    content="$(printf 'cmd=%s\nrc=%s\nhead=%s\ntree=%s\ntime=%s\n' "$cmd" "$rc" "$head" "$tree" "$ts")"
     tmp="$LOG_DIR/.last-status-$cmd.$$.tmp"
     legacy_tmp="$LOG_DIR/.last-status.$$.tmp"
     printf '%s\n' "$content" >"$tmp" &&

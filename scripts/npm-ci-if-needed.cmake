@@ -35,6 +35,21 @@ if(NOT EXISTS "${_lock_file}")
     message(FATAL_ERROR "npm-ci-if-needed: package-lock.json not found: ${_lock_file}")
 endif()
 
+# 符号链接的 node_modules 必须硬拒（#480）。为什么不是"跳过一次安装"就够了：
+# `npm ci` 会先递归删除 node_modules 内容再重建，遇到符号链接时**删的是目标目录里的
+# 东西**，然后把它替换成真实目录——于是「worktree 里 ln -s 主仓 node_modules 图快」
+# 会静默清空**主工作区**的 299 个包（#471 实测：主仓 `.package-lock.json` 消失、
+# node_modules 归零，破坏面跨会话，主工作区下一个会话的 preflight 直接红）。
+# 判据只看 `_node_modules` 本身是否 IS_SYMLINK：目录内容里出现符号链接（pnpm 布局）
+# 不受影响。worktree 的正确做法是本地 `npm ci`（约 1 分钟），不能像 conan 缓存那样共享。
+if(IS_SYMLINK "${_node_modules}")
+    message(FATAL_ERROR
+        "npm-ci-if-needed: ${_node_modules} is a symlink; refusing to run npm ci "
+        "(it would empty the link target, e.g. the main workspace's node_modules - "
+        "see #480). Install frontend deps locally instead: "
+        "cd ${FRONTEND_DIR} && npm ci")
+endif()
+
 file(SHA256 "${_lock_file}" _lock_hash)
 set(_need_install FALSE)
 
