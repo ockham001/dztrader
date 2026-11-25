@@ -152,7 +152,7 @@ void MarketSourceCtrl::add_broker(const drogon::HttpRequestPtr& req,
     const Json params = {
         {"name", name},
         {"broker_id", body.value("broker_id", "")},
-        {"user_id", body.value("user_id", "")},
+        {"account_id", body.value("account_id", "")},
         {"password", body.value("password", "")},
         {"product_info", body.value("product_info", "")},
     };
@@ -219,7 +219,7 @@ void MarketSourceCtrl::update_broker(
     const Json params = {
         {"name", broker_name},
         {"broker_id", body.value("broker_id", "")},
-        {"user_id", body.value("user_id", "")},
+        {"account_id", body.value("account_id", "")},
         {"product_info", body.value("product_info", "")},
         {"password", body.value("password", "****")},
     };

@@ -7,8 +7,8 @@ import { useMarketSourcesStore } from '@/stores/marketSources'
 import { makeSource } from '@/composables/marketSourceView'
 import type { BrokerEntry } from '@/types/api'
 
-const brokerA: BrokerEntry = { name: 'A', broker_id: '1', user_id: 'u', password: '****', product_info: '', frontends: [] }
-const brokerB: BrokerEntry = { name: 'B', broker_id: '2', user_id: 'u', password: '****', product_info: '', frontends: [] }
+const brokerA: BrokerEntry = { name: 'A', broker_id: '1', account_id: 'u', password: '****', product_info: '', frontends: [] }
+const brokerB: BrokerEntry = { name: 'B', broker_id: '2', account_id: 'u', password: '****', product_info: '', frontends: [] }
 
 // 全量 stub 子组件, 只验证经纪商折叠/展开编排 + 添加经纪商 Modal
 const stubs = {
@@ -163,7 +163,7 @@ describe('CtpCard 经纪商折叠', () => {
 
     await w.find('input[placeholder*="创建后不可修改"]').setValue(' 上海中期 ')
     await w.find('input[placeholder="经纪商编号"]').setValue('0001')
-    await w.find('input[placeholder="用户代码"]').setValue('u1')
+    await w.find('input[placeholder="账户 ID"]').setValue('u1')
     await w.find('input[type="password"]').setValue('pw')
     await w.find('input[placeholder*="客户端产品信息"]').setValue('pi')
     await w.findAll('button').find(b => b.text() === '确认')!.trigger('click')
@@ -172,7 +172,7 @@ describe('CtpCard 经纪商折叠', () => {
     expect(spy).toHaveBeenCalledWith(1, {
       name: '上海中期',
       broker_id: '0001',
-      user_id: 'u1',
+      account_id: 'u1',
       password: 'pw',
       product_info: 'pi',
     })

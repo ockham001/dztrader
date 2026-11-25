@@ -16,7 +16,7 @@ const stubs = {
 const broker: BrokerEntry = {
   name: 'A券商',
   broker_id: '0001',
-  user_id: 'u1',
+  account_id: 'u1',
   password: '****',
   product_info: '',
   frontends: [

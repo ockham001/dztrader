@@ -31,7 +31,7 @@ const configPayload = {
     {
       name: 'b1',
       broker_id: 'bid1',
-      user_id: 'uid1',
+      account_id: 'uid1',
       password: 'pwd1',
       product_info: 'pi1',
       frontends: [{ address: 'a1', label: 'L1', enabled: false }],
@@ -667,8 +667,8 @@ describe('useMdConfigStore', () => {
       vi.mocked(marketSourcesApi.updateBroker).mockResolvedValue({ ok: true })
       vi.mocked(marketSourcesApi.setCurrentBroker).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
-      const addBody = { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' }
-      const updateBody = { name: 'b1', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi', frontends: [] }
+      const addBody = { name: 'b2', broker_id: 'x', account_id: 'u', password: 'p', product_info: 'pi' }
+      const updateBody = { name: 'b1', broker_id: 'x', account_id: 'u', password: 'p', product_info: 'pi', frontends: [] }
       await store.addBroker(1, 'dzmd_ctp', addBody)
       await store.removeBroker(1, 'dzmd_ctp', 'b1')
       await store.updateBroker(1, 'dzmd_ctp', 'b1', updateBody)
@@ -696,7 +696,7 @@ describe('useMdConfigStore', () => {
     it('broker 操作 HTTP 失败清 pending 并返回 false', async () => {
       vi.mocked(marketSourcesApi.addBroker).mockRejectedValue(new Error('add broker failed'))
       const store = useMdConfigStore()
-      expect(await store.addBroker(1, 'dzmd_ctp', { name: 'b2', broker_id: 'x', user_id: 'u', password: 'p', product_info: 'pi' })).toBe(false)
+      expect(await store.addBroker(1, 'dzmd_ctp', { name: 'b2', broker_id: 'x', account_id: 'u', password: 'p', product_info: 'pi' })).toBe(false)
       expect(marketSourcePending.pending['source:1:broker_add']).toBe(false)
     })
   })

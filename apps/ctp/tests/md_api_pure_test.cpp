@@ -32,12 +32,12 @@ namespace {
 // -Wmissing-field-initializers, 测试目标已 -Wno-missing-field-initializers)
 dztrader::platform::CtpBrokerEntry make_broker(const std::string& name,
                                                const std::string& broker_id = "",
-                                               const std::string& user_id = "",
+                                               const std::string& account_id = "",
                                                const std::string& password = "") {
     dztrader::platform::CtpBrokerEntry b;
     b.name = name;
     b.broker_id = broker_id;
-    b.user_id = user_id;
+    b.account_id = account_id;
     b.password = password;
     return b;
 }
@@ -171,6 +171,16 @@ TEST(FindCurrentBrokerInTest, FindsFirstMatch) {
     const auto* found = find_current_broker_in(brokers, "dup");
     ASSERT_NE(found, nullptr);
     EXPECT_EQ(found->broker_id, "first");
+}
+
+TEST(FindCurrentBrokerInTest, LoginCredentialIsAccountId) {
+    // ADR 0056 决策 2 / 契约 md-config BrokerEntry.account_id：行情登录账号就是经纪商的
+    // account_id（唯一填充点 MdApi::req_user_login 的 copy_string(req.UserID, ...)）。
+    // 本测试锚定查找入口返回的登录凭据字段，防止将来又在 broker 上拆出第二个账号字段。
+    std::vector<dztrader::platform::CtpBrokerEntry> brokers = {make_broker("b1", "9999", "00001")};
+    const auto* found = find_current_broker_in(brokers, "b1");
+    ASSERT_NE(found, nullptr);
+    EXPECT_EQ(found->account_id, "00001");
 }
 
 // ============================================================================

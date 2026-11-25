@@ -16,7 +16,7 @@ const stubs = {
 const brokerA: BrokerEntry = {
   name: 'A券商',
   broker_id: '0001',
-  user_id: 'u1',
+  account_id: 'u1',
   password: '****',
   product_info: '',
   frontends: [{ address: 'tcp://1.2.3.4:10211', label: '电信', enabled: true }],

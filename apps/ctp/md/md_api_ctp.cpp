@@ -144,13 +144,15 @@ void MdApi::req_user_login(bool user_initiated) {
 
     CThostFtdcReqUserLoginField req{};
     copy_string(req.BrokerID, current_broker->broker_id.c_str(), true);
-    copy_string(req.UserID, current_broker->user_id.c_str(), true);
+    // ADR 0056 决策 2 / 契约 md-config BrokerEntry.account_id：CTP 登录账号就是经纪商的
+    // account_id（唯一填充点），不存独立 user_id 字段。
+    copy_string(req.UserID, current_broker->account_id.c_str(), true);
     copy_string(req.Password, current_broker->password.c_str(), true);
 
     ++request_id_;
     auto ret = api_->ReqUserLogin(&req, request_id_);
     if (ret != 0) {
-        SPDLOG_WARN("login req failed | ret={} request_id={} user_id={}", ret, request_id_,
+        SPDLOG_WARN("login req failed | ret={} request_id={} account_id={}", ret, request_id_,
                     req.UserID);
         // 请求被 CTP API 同步拒绝：用户请求路径给 UI 反馈，避免只写日志（#203）；
         // 自动调度/重连补登路径只记日志避免重复打扰。状态未转移，仍在 Connected/LoginFailed，
@@ -178,7 +180,7 @@ void MdApi::req_user_login(bool user_initiated) {
             }
         });
     report_progress();
-    SPDLOG_DEBUG("login req sent | request_id={} user_id={}", request_id_, req.UserID);
+    SPDLOG_DEBUG("login req sent | request_id={} account_id={}", request_id_, req.UserID);
 }
 
 void MdApi::on_front_connected(const OnFrontConnectedField& rsp [[maybe_unused]]) {

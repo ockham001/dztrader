@@ -84,9 +84,9 @@ void MdApi::apply_config_change(const dztrader::platform::CtpMdConfigOpReq& req)
                 SPDLOG_INFO("broker_id changed | broker=\"{}\" old=\"{}\" new=\"{}\"", old_b.name,
                             old_b.broker_id, new_b.broker_id);
             }
-            if (old_b.user_id != new_b.user_id) {
-                SPDLOG_INFO("user_id changed | broker=\"{}\" old=\"{}\" new=\"{}\"", old_b.name,
-                            old_b.user_id, new_b.user_id);
+            if (old_b.account_id != new_b.account_id) {
+                SPDLOG_INFO("account_id changed | broker=\"{}\" old=\"{}\" new=\"{}\"", old_b.name,
+                            old_b.account_id, new_b.account_id);
             }
             if (old_b.product_info != new_b.product_info) {
                 SPDLOG_INFO("product_info changed | broker=\"{}\" old=\"{}\" new=\"{}\"",

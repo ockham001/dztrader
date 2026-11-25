@@ -70,7 +70,7 @@ async function confirmDeleteBroker(): Promise<void> {
 function onBrokerFieldBlur(
   sourceId: number,
   broker: BrokerEntry,
-  field: 'broker_id' | 'user_id' | 'password' | 'product_info',
+  field: 'broker_id' | 'account_id' | 'password' | 'product_info',
   event: Event
 ): void {
   const newValue = (event.target as HTMLInputElement).value
@@ -147,15 +147,15 @@ function onBrokerFieldBlur(
             </div>
           </div>
           <div class="login-field">
-            <label class="login-field__label" :for="fieldId('user-id')">UserID</label>
+            <label class="login-field__label" :for="fieldId('account-id')">账户 ID</label>
             <div class="ds-input">
               <input
-                :id="fieldId('user-id')"
+                :id="fieldId('account-id')"
                 type="text"
-                :value="broker.user_id"
+                :value="broker.account_id"
                 :disabled="!isStateIdle(src.process_state, src.loginState) || src.brokerFieldEditPending"
                 :title="!isStateIdle(src.process_state, src.loginState) ? '需在未登录状态下操作' : ''"
-                @blur="onBrokerFieldBlur(src.id, broker, 'user_id', $event)"
+                @blur="onBrokerFieldBlur(src.id, broker, 'account_id', $event)"
               >
             </div>
           </div>

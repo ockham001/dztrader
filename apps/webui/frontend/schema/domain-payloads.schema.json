@@ -85,11 +85,11 @@
     },
     "BrokerEntry": {
       "type": "object",
-      "required": ["name", "broker_id", "user_id", "password", "product_info", "frontends"],
+      "required": ["name", "broker_id", "account_id", "password", "product_info", "frontends"],
       "properties": {
         "name": { "type": "string", "description": "经纪商不可变 key" },
         "broker_id": { "type": "string", "description": "经纪公司代码" },
-        "user_id": { "type": "string", "description": "用户代码" },
+        "account_id": { "type": "string", "description": "账户 ID（柜台真实账户号，登录行情会话用）。纯配置字段：不参与任何唯一性判定（行情不按账户路由，md 的业务键仍是 name），命名与 td 侧统一（ADR 0056）" },
         "password": { "type": "string", "description": "登录密码（生产/RTN 脱敏为 ****）" },
         "product_info": { "type": "string", "description": "产品信息" },
         "frontends": { "type": "array", "items": { "$ref": "#/$defs/BrokerFrontend" }, "description": "前置地址列表" }
