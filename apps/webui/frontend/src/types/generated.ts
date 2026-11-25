@@ -891,7 +891,7 @@ export interface TdCtpStatusExt {
 
 // 交易网关账户级细状态全量结构（契约 td-status §2.1；WS td_rtn_status 的 data，始终全量、后到覆盖先到）
 export interface TdStatusPayload {
-    /** 账户标识（与 instance_id 冒号后半段一致） */
+    /** 账户 ID（柜台真实投资者代码，与帧头 instance_id 同值；payload 冗余携带供消费方定位与自校验，契约 td-status §3） */
     account_id: string
     state: TdState
     /** 会话交易日 YYYYMMDD（交易日，不是自然日）；未登录/进入 Idle 时为空串 */

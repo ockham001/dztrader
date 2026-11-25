@@ -14,7 +14,8 @@
 
 帧 payload 格式由**接口类型**决定，**payload 中不携带类型字段**。与《帧契约：交易网关配置》§1 的派生算法相同（去掉 `dztd_` 前缀 → tail 第一个 `_` 之前即 `interface_type`），但**输入不再是 `instance_id`**——`instance_id` 现在是账户 ID，本身不含接口类型信息：
 
-- **dzweb**：用 `instance_id`（= 账户 ID）查**账户注册表**得到归属网关（契约 td-config §5 / rest §2.9.9），再按上面的算法从网关名派生 `interface_type`，据此选择前端卡片 schema。注册表未命中（账户已删 / 注册表降级）时**按已收到的 `ext` 原样透传**，不猜接口类型（未知字段忽略，总则 §8）。
+- **dzweb**：只提供映射与透传——`GET /api/td/accounts`（契约 rest §2.9.9）给出 `account_id → gateway` 的注册表投影，账户级帧 payload 原样广播、不改写 `ext`；dzweb 本身不派生 `interface_type`。
+- **前端解析层**：用帧头 `instance_id`（= 账户 ID）在已加载的账户注册表里查归属网关（契约 td-config §5），再按上面的算法从网关名派生 `interface_type`，据此选择卡片 schema；注册表未命中（账户已删 / 注册表降级）时回落配置镜像 `td_config`（唯一包含该账户的网关，契约 webui-ws §2.2），两者都未命中时按已收到的 `ext` 原样使用、不猜接口类型（未知字段忽略，总则 §8）。
 - **后台进程**：每个交易网关进程只发自己的账户、只按自身接口类型构造 payload，不涉及识别。
 
 | instance_id（账户 ID） | 注册表解析出的网关 | interface_type |

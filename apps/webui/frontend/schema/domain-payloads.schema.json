@@ -916,7 +916,7 @@
       "required": ["account_id", "state", "date", "login_time", "progress_desc", "progress_min", "progress_max", "progress_current", "ext"],
       "description": "交易网关账户级细状态全量结构（契约 td-status §2.1；WS td_rtn_status 的 data，始终全量、后到覆盖先到）",
       "properties": {
-        "account_id": { "type": "string", "description": "账户标识（与 instance_id 冒号后半段一致）" },
+        "account_id": { "type": "string", "description": "账户 ID（柜台真实投资者代码，与帧头 instance_id 同值；payload 冗余携带供消费方定位与自校验，契约 td-status §3）" },
         "state": { "$ref": "#/$defs/TdState" },
         "date": { "type": "string", "description": "会话交易日 YYYYMMDD（交易日，不是自然日）；未登录/进入 Idle 时为空串" },
         "login_time": { "type": "string", "description": "登录时间 YYYY-MM-DD HH:MM:SS（服务器本地时间）；未登录/进入 Idle 时为空串" },
