@@ -1736,7 +1736,11 @@ TEST_F(TdPositionLifecycleTest, AuthRejectedStopsAtAuthFailedAndNotifies) {
     OnRspAuthenticateField failed{};
     CThostFtdcRspInfoField info{};
     info.ErrorID = 3;
-    std::strcpy(info.ErrorMsg, "CTP:用户认证失败");
+    // **ASCII 正文**: CTP 的 ErrorMsg 在 Windows 上是 GBK、Linux 上是 UTF-8, 本进程用
+    // to_utf8_from_gbk 按平台解码 —— 写非 ASCII 字面量会让 Windows 上解码结果与字面量不符
+    // (编码转换本身由 libs/core 的 encoding_test 覆盖, 不是本用例的断言对象)。
+    // 这里要钉的是「柜台拒绝 → 停 AuthFailed + 写 last_error + 推通知」这条链。
+    std::strcpy(info.ErrorMsg, "CTP:auth rejected");
     failed.rsp_info = info;
     session_->on_rsp_authenticate(failed);
 
@@ -1751,14 +1755,14 @@ TEST_F(TdPositionLifecycleTest, AuthRejectedStopsAtAuthFailedAndNotifies) {
     EXPECT_EQ(last_error->error_id, 3);
     // message = CTP ErrorMsg 原文（与 md 的 LoginRejected 同口径）；错误码走 error_id 字段
     // （前端作为「上次失败」的 tooltip），不在正文里重复。
-    EXPECT_EQ(last_error->message, "CTP:用户认证失败");
+    EXPECT_EQ(last_error->message, "CTP:auth rejected");
     // 通知不再被丢弃 (AC: 各推出一条 ERROR 级通知)
     ASSERT_EQ(notifications_.size(), 1u)
         << "an auth rejection must reach the user (the whole point of #489)";
     EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(notifications_.front().popup);
     // 文案逐字锁定在 td_account_session_pure_test; 这里钉会话确实推了这一条.
-    EXPECT_NE(notifications_.front().message.find("认证失败（CTP:用户认证失败）"),
+    EXPECT_NE(notifications_.front().message.find("认证失败（CTP:auth rejected）"),
               std::string::npos)
         << notifications_.front().message;
     // 响应到达必须取消 10s 定时器, 不留残留
@@ -1868,7 +1872,7 @@ TEST_F(TdPositionLifecycleTest, AuthFailureOutsideAuthenticatingIsSilent) {
     OnRspAuthenticateField failed{};
     CThostFtdcRspInfoField info{};
     info.ErrorID = 3;
-    std::strcpy(info.ErrorMsg, "CTP:用户认证失败");
+    std::strcpy(info.ErrorMsg, "CTP:auth rejected");
     failed.rsp_info = info;
     session_->on_rsp_authenticate(failed);
 
