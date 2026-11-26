@@ -212,14 +212,16 @@ void MdStateMachine::set_state(MdState new_state) {
 
     status_.state = new_state;
 
-    // progress_max=4: Idle=0, Connecting/Disconnected=1, Connected/LoginFailed=2,
-    // LoggingIn=3, LoggedIn=4
+    // progress_max=4: Idle=0, Connecting/Disconnected=1, Connected=2,
+    // LoggingIn/LoginFailed=3, LoggedIn=4
     // progress 仅反映连接/登录阶段, 不依赖订阅完成
     // 契约 progress 消费者约定（跨进程稳定契约）: 前端以 current 数值映射驱动登录态判定
     //   (current==max → 登录完成; current==min → 已登出; 其余 → 中间态),
     //   数值映射不可变更; desc 仅为展示文案, 前端不得依赖 desc 做状态判定。
-    //   LoginFailed 与 Connected 同为 current=2（失败原因由 RTN_MD_STATUS.last_error 承载，
-    //   见契约 md-status 失败语义），前端不据数值区分两者。
+    //   LoginFailed 停在登录阶段（current=3，与 LoggingIn 同格）、不回退到 Connected
+    //   （ADR 0059 决策 1）；段内原因由 RTN_MD_STATUS.last_error 承载（见契约 md-status
+    //   失败语义）， 前端据 last_error 清登录 pending，不据 current 数值区分 LoggingIn 与
+    //   LoginFailed。
     switch (new_state) {
         case MdState::Idle:
             status_.progress_desc = "未登录";
@@ -259,7 +261,8 @@ void MdStateMachine::set_state(MdState new_state) {
             status_.progress_desc = "登录失败";
             status_.progress_min = 0;
             status_.progress_max = 4;
-            status_.progress_current = 2;
+            // 失败停在登录段，不回退到 Connected（ADR 0059 决策 1）
+            status_.progress_current = 3;
             break;
         case MdState::Disconnected:
             status_.progress_desc = "重连中...";

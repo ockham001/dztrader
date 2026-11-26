@@ -48,14 +48,14 @@ describe('LoginPanel 登录按钮可用性（ADR 0051 统一两段式）', () =>
     expect(loginButton(w).attributes('disabled')).toBeDefined()
   })
 
-  it('失败态（current=2）禁用登录：恢复走「先登出、再登录」，不提供原地重试', () => {
+  it('失败态（current=3）禁用登录：恢复走「先登出、再登录」，不提供原地重试', () => {
     const w = mount(LoginPanel, {
       props: {
         source: sourceWith({
           loginState: 'pending',
           loginPending: false,
-          // 契约 md-status 失败语义: 失败态 RTN_PROGRESS 映射与 Connected 相同（current=2）
-          progressView: { current: 2, min: 0, max: 4, desc: '登录失败' },
+          // 契约 md-status 失败语义: 失败态停在登录阶段 3/4（ADR 0059）、不回退到 Connected
+          progressView: { current: 3, min: 0, max: 4, desc: '登录失败' },
           lastLoginError: { code: 'login_rejected', message: 'CTP:用户密码错误', errorId: 3, timestamp: 1_700_000_000 },
         }),
       },
@@ -86,7 +86,7 @@ describe('LoginPanel 登录按钮可用性（ADR 0051 统一两段式）', () =>
       props: {
         source: sourceWith({
           loginState: 'pending',
-          progressView: { current: 2, min: 0, max: 4 },
+          progressView: { current: 3, min: 0, max: 4 },
           lastLoginError: { code: 'login_timeout', message: '', errorId: 0, timestamp: 1_700_000_000 },
         }),
       },
