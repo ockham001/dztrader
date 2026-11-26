@@ -350,7 +350,7 @@ async function confirmRemoveInterface(): Promise<void> {
 
 // ===== 展示辅助（细状态/交易日/登录时间/进度；口径同 #251 页面）=====
 
-/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 13 态映射） */
+/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 15 态映射） */
 function statusText(row: TdAccountRow): string {
   return tdStateText(row.status?.state ?? null)
 }

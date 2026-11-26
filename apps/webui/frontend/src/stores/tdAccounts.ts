@@ -174,7 +174,7 @@ export function tdInterfaceType(gateway: string): string {
   return underscore < 0 ? tail : tail.slice(0, underscore)
 }
 
-/** 细状态展示文案（契约 td-status §2.2 十三态；未知值原样显示，不吞掉事实） */
+/** 细状态展示文案（契约 td-status §2.2 十五态；未知值原样显示，不吞掉事实） */
 const TD_STATE_TEXT: Record<TdState, string> = {
   Idle: '未启动',
   Connecting: '连接中',
@@ -186,7 +186,9 @@ const TD_STATE_TEXT: Record<TdState, string> = {
   LoginFailed: '登录失败',
   LoggedIn: '已登录',
   Confirming: '确认结算单',
+  SettlementConfirmFailed: '结算单确认失败',
   LoadingInstruments: '加载合约',
+  InstrumentsLoadFailed: '合约加载失败',
   Ready: '就绪',
   Disconnected: '连接断开',
 }
@@ -203,7 +205,7 @@ export function tdStateText(state: TdState | string | null | undefined): string 
  * 转换只发生在 {@link parseTdLastError}，组件不接触后端字段形状。
  */
 export interface TdLastErrorView {
-  code: string // connect_timeout | auth_rejected | auth_timeout | login_rejected | login_timeout | login_parse_error | day_load_failed | login_send_failed（未知码也保留原文，仅用于映射兜底）
+  code: string // connect_timeout | auth_rejected | auth_timeout | login_rejected | login_timeout | login_parse_error | day_load_failed | login_send_failed | settlement_rejected | settlement_timeout | instruments_rejected | instruments_timeout（未知码也保留原文，仅用于映射兜底）
   message: string // 中文用户可读原因；空串 = 无详情，展示时按 code 映射固定文案
   errorId: number // CTP ErrorID；仅 *_rejected 非 0
   timestamp: number // 失败发生时间，Unix 秒
@@ -245,6 +247,10 @@ const TD_LAST_ERROR_TEXT: Record<string, string> = {
   login_parse_error: '登录响应解析失败',
   day_load_failed: '当日订单/成交基准装载失败',
   login_send_failed: '登录请求发送失败',
+  settlement_rejected: '结算单确认被拒',
+  settlement_timeout: '结算单确认超时（60 秒内未收到响应）',
+  instruments_rejected: '合约加载被拒',
+  instruments_timeout: '合约加载超时（5 分钟内未收到最后一批响应）',
 }
 
 export function tdLastErrorText(e: TdLastErrorView | null): string {
@@ -1064,7 +1070,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     // payload 冗余携带 account_id 供消费方定位与自校验（契约 td-status §3）：与帧头不一致
     // 说明来源错乱，按非法帧丢弃，避免把 A 账户的状态挂到 B 账户行上。
     if (payload.account_id !== instanceId) return
-    // state 是契约 td-status §2.2 的 13 态枚举名；运行时不可信，非字符串/空串的帧丢弃
+    // state 是契约 td-status §2.2 的 15 态枚举名；运行时不可信，非字符串/空串的帧丢弃
     //（类型声明已收窄为 TdState，因此先转 unknown 再判，避免与类型系统打架）
     const rawState: unknown = payload.state
     if (typeof rawState !== 'string' || rawState === '') return

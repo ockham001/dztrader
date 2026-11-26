@@ -4,7 +4,7 @@
 
 帧使用 `DzExtInstFrameHeader` 扩展头，**账户级帧**：`instance_id` = **账户 ID**（如 `"00001"`，柜台真实投资者代码，总则 §5），不携带网关名（[ADR 0056](../adr/0056-td-account-identity-investor-code-and-display-name.md)）。仅 RTN 推送，无 SET、无持久化、无文件 IO；交易网关在状态或状态字段变化时主动推送。
 
-与《帧契约：账户登录状态》的分工：`ACCOUNT_STATUS` 面向策略/master 的三态聚合（Offline/LoggingIn/Ready）；本帧面向 UI 的细状态（13 态 + 登录信息 + 进度 + 最近一次失败），按账户上报。
+与《帧契约：账户登录状态》的分工：`ACCOUNT_STATUS` 面向策略/master 的三态聚合（Offline/LoggingIn/Ready）；本帧面向 UI 的细状态（15 态 + 登录信息 + 进度 + 最近一次失败），按账户上报。
 
 **实现注记**：扁平结构（`date`/`api_version`/`sys_version` 在顶层、无 `ext`）与通用化 schema（`interface_type` + `ext`）的分层已随 #251 落地（`date` 改名随 #243）；dzweb 已消费本帧：按 `instance_id`（= 账户 ID）维护镜像 domain `td_status` 并 WS 推送 `td_rtn_status`（映射见契约 webui-ws §2.2）。
 
@@ -75,7 +75,7 @@ JSON 示例：
 
 ### 2.2 状态枚举（`state`）
 
-`state` 取值为交易网关内部状态机（13 态，值以发送方进程状态机定义为唯一真相源；CTP：`apps/ctp/td/td_state.h` 的 `TdState`，JSON 为枚举名字符串）：
+`state` 取值为交易网关内部状态机（15 态，值以发送方进程状态机定义为唯一真相源；CTP：`apps/ctp/td/td_state.h` 的 `TdState`，JSON 为枚举名字符串）：
 
 | 值 | 说明 |
 |---|---|
@@ -89,22 +89,30 @@ JSON 示例：
 | `LoginFailed` | **登录失败态**：停在 5/10，原因见 2.5 `last_error` |
 | `LoggedIn` | 登录成功，准备确认结算单 |
 | `Confirming` | 结算单确认已发，等待响应 |
+| `SettlementConfirmFailed` | **结算单确认失败态**：停在 7/10，原因见 2.5 `last_error` |
 | `LoadingInstruments` | 合约加载进行中 |
+| `InstrumentsLoadFailed` | **合约加载失败态**：停在 8/10，原因见 2.5 `last_error` |
 | `Ready` | 初始化完成，可下单可查询 |
 | `Disconnected` | 网络断开，接口库自动重连中 |
 
 **失败态语义**（ADR 0059）：登录链上任一段失败后**停在它自己那一段**——`progress_current` 取该段的数值、**不回退**到上一段，`desc` 描述该段失败。失败态只回答「在哪一段失败」，段内具体原因由 `last_error` 承载（2.5），二者在同一次状态转移写出、同一帧发布。失败态**不占端点**：既不是 `progress_min` 也不是 `progress_max`。
 
-**失败态集合与取值**（已落认证段与登录段；结算确认 / 合约加载两段随 #496 补齐）：
+**失败态集合与取值**（四条可失败段各一个，已是完整集合）：
 
 | 失败态 | `progress_current` | `progress_desc` | 原先回退到 |
 |---|---|---|---|
 | `AuthFailed` | 3 | 认证失败 | `Connected`（2） |
 | `LoginFailed` | 5 | 登录失败 | `Authenticated`（4），无认证路径时 `Connected`（2） |
+| `SettlementConfirmFailed` | 7 | 结算单确认失败 | `LoggedIn`（6） |
+| `InstrumentsLoadFailed` | 8 | 合约加载失败 | `LoggedIn`（6） |
+
+**链内失败一律不回退**：上表四段覆盖登录链上全部可失败的段，四条路径都停在各自的失败态，没有一条仍回退到上一段。`progress_current` 回退只剩两类含义（ADR 0059 决策 3）：**主动中止**（登出 → 0、前置断线 → 1）与**前置连接超时**（→ 0，见下方例外）——两者都表示「这次会话尝试打出链外就结束了」，不是链内失败。
 
 **`LoginFailed` 的失败位置与「是否经过认证」无关**：链走到 `LoggingIn` 就停在同一格（5/10），无认证路径（`auth_code` 为空，`Connected` 直接进登录）与有认证路径的失败态完全一致——失败只回答「在哪一段」，不回答「从哪来」。
 
-三态聚合映射（Offline/LoggingIn/Ready）以《帧契约：账户登录状态》为准：失败态归 `LoggingIn`（会话未就绪）。
+**`InstrumentsLoadFailed` 的三种拒绝来源同格**：查询发送被拒、`OnRspError` 错误响应、`is_last` 带错误都停在 8/10，`last_error.code` 统一为 `instruments_rejected`——对用户是同一件事（柜台侧拒绝了这次加载），不必按来源分摊到不同文案。
+
+三态聚合映射（Offline/LoggingIn/Ready）以《帧契约：账户登录状态》为准：四个失败态都归 `LoggingIn`（会话未就绪）。
 
 **连接超时是唯一的例外：不进失败态**（ADR 0059 决策 7）。前置连接超时（30 秒内未收到 `OnFrontConnected`）发生在登录链第一段之前，没有失败阶段可停——进程回 `Idle`（`progress_current` = 0、三态为 Offline），**不产生任何失败态**，因此：
 
@@ -148,10 +156,10 @@ JSON 示例：
 |---|---|---|
 | `code` | string | 机器码，取值见下表 |
 | `message` | string | 用户可读原因（中文）。CTP 返回的 `ErrorMsg` 原文（已转 UTF-8）；空串表示无详情，前端按 `code` 映射固定文案 |
-| `error_id` | int | CTP `ErrorID`；仅 `auth_rejected` / `login_rejected` 携带（无 `rsp_info` 时为 `-1`），其余为 0 |
+| `error_id` | int | CTP `ErrorID`；仅 `auth_rejected` / `login_rejected` / `settlement_rejected` / `instruments_rejected` 携带（无 `rsp_info` 时为 `-1`），其余为 0 |
 | `timestamp` | int | 失败发生时间，Unix 秒级时间戳 |
 
-`code` 取值（已接通认证段与登录段；结算确认 / 合约加载两段的码随 #496 补齐）：
+`code` 取值（12 项，全部可达）：
 
 | code | 触发场景 | 对应失败态 |
 |---|---|---|
@@ -163,6 +171,12 @@ JSON 示例：
 | `login_parse_error` | 登录响应**缺少登录数据**（无 `rsp_user_login`）/ 交易日无效（响应解析失败） | `LoginFailed` |
 | `day_load_failed` | 当日订单/成交基准装载失败 | `LoginFailed` |
 | `login_send_failed` | `ReqUserLogin` 返回非 0（发送被拒：网络 / 未登录 / 流控），非柜台裁决 | `LoginFailed` |
+| `settlement_rejected` | `OnRspSettlementInfoConfirm` 的 `ErrorID != 0`（柜台拒绝，缺 `rsp_info` 时 `error_id` = `-1`）；`ReqSettlementInfoConfirm` 返回非 0（发送被拒）也归此码，`error_id` = 0 | `SettlementConfirmFailed` |
+| `settlement_timeout` | 60 秒内未收到结算单确认响应（响应看门狗） | `SettlementConfirmFailed` |
+| `instruments_rejected` | 合约查询三种拒绝来源：`ReqQryInstrument` 返回非 0（发送被拒，`error_id` = 0）/ `OnRspError` 的错误响应 / `is_last` 带错误或未携带合约数据（后两者 `error_id` 为 CTP `ErrorID`，无 `rsp_info` 时 `-1`） | `InstrumentsLoadFailed` |
+| `instruments_timeout` | 合约加载超时（查询发出后未收到最后一批响应，默认 5 分钟） | `InstrumentsLoadFailed` |
+
+**发送被拒与柜台拒绝同码**（`settlement_rejected` / `instruments_rejected`）：发送被拒（`ret != 0`：网络 / 未登录 / 流控）不是柜台裁决，但对用户是同一件事——**这次请求被拒了**。区分它们只对排查方有意义，靠 `error_id`（发送被拒为 0）+ `message` 里已带出的 `ret=` 读；为它单开码会让码表按「谁的锅」分裂，而 ADR 0059 决策 5 要的正是「不必关心是谁没成」。登录段是唯一例外（`login_send_failed` 与 `login_rejected` 分开）：那里「发送根本没出去」与「柜台看过并拒绝」在**处置**上不同（前者多为网络/流控，值得稍后重试；后者要改密码/权限），且该码已随 #495 落地。
 
 **超时与柜台拒绝同等对待**（ADR 0059 决策 5）：两者进同一失败态、写同一 `last_error`，靠 `code` 区分。用户不需要关心「柜台拒了」还是「没人理」——两者对处置的差别远小于「停在哪一段」。
 

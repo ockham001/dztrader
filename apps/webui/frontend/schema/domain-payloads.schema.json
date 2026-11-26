@@ -896,8 +896,8 @@
     },
     "TdState": {
       "type": "string",
-      "enum": ["Idle", "Connecting", "Connected", "Authenticating", "AuthFailed", "Authenticated", "LoggingIn", "LoginFailed", "LoggedIn", "Confirming", "LoadingInstruments", "Ready", "Disconnected"],
-      "description": "交易网关账户级细状态（契约 td-status §2.2，13 态；值 = 发送方状态机的枚举名）"
+      "enum": ["Idle", "Connecting", "Connected", "Authenticating", "AuthFailed", "Authenticated", "LoggingIn", "LoginFailed", "LoggedIn", "Confirming", "SettlementConfirmFailed", "LoadingInstruments", "InstrumentsLoadFailed", "Ready", "Disconnected"],
+      "description": "交易网关账户级细状态（契约 td-status §2.2，15 态；值 = 发送方状态机的枚举名）"
     },
     "TdLastError": {
       "type": "object",

@@ -49,7 +49,8 @@ describe('sessionStateOfTdState（td_status.state 兜底）', () => {
     expect(sessionStateOfTdState('Ready')).toBe('ready')
     for (const state of ['Connecting', 'Connected', 'Authenticating', 'AuthFailed',
       'Authenticated', 'LoggingIn', 'LoginFailed', 'LoggedIn', 'Confirming',
-      'LoadingInstruments', 'Disconnected'] as const) {
+      'SettlementConfirmFailed', 'LoadingInstruments', 'InstrumentsLoadFailed',
+      'Disconnected'] as const) {
       expect(sessionStateOfTdState(state)).toBe('forming')
     }
   })

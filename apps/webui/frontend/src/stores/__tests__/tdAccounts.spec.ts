@@ -127,11 +127,12 @@ describe('tdInterfaceType（契约 td-config §1 接口类型派生）', () => {
   })
 })
 
-describe('tdStateText（契约 td-status §2.2 十三态）', () => {
-  it('13 个状态值都有中文文案，且互不相同（不漏映射、不撞文案）', () => {
+describe('tdStateText（契约 td-status §2.2 十五态）', () => {
+  it('15 个状态值都有中文文案，且互不相同（不漏映射、不撞文案）', () => {
     const states = ['Idle', 'Connecting', 'Connected', 'Authenticating', 'AuthFailed',
-      'Authenticated', 'LoggingIn', 'LoginFailed', 'LoggedIn', 'Confirming', 'LoadingInstruments',
-      'Ready', 'Disconnected'] as const
+      'Authenticated', 'LoggingIn', 'LoginFailed', 'LoggedIn', 'Confirming',
+      'SettlementConfirmFailed', 'LoadingInstruments', 'InstrumentsLoadFailed', 'Ready',
+      'Disconnected'] as const
     const texts = states.map(state => tdStateText(state))
     for (const text of texts) {
       expect(text).not.toBe('')
@@ -158,6 +159,20 @@ describe('tdStateText（契约 td-status §2.2 十三态）', () => {
     expect(tdStateText('LoginFailed')).toBe('登录失败')
     expect(tdStateText('LoginFailed')).not.toBe(tdStateText('LoggingIn'))
     expect(tdStateText('LoginFailed')).not.toBe(tdStateText('AuthFailed'))
+  })
+
+  it('SettlementConfirmFailed / InstrumentsLoadFailed 各自有独立文案（停在 7/10、8/10 的失败态）', () => {
+    // #496 / ADR 0059 决策 1: 结算确认与合约加载失败停在各自失败态, 不再回退「已登录」。
+    // 界面必须能区分「正在确认/正在加载」与「那一段失败了」—— 各自进度同格, 只有
+    // state 与文案不同。
+    expect(tdStateText('SettlementConfirmFailed')).toBe('结算单确认失败')
+    expect(tdStateText('SettlementConfirmFailed')).not.toBe(tdStateText('Confirming'))
+    expect(tdStateText('SettlementConfirmFailed')).not.toBe(tdStateText('LoggedIn'))
+    expect(tdStateText('InstrumentsLoadFailed')).toBe('合约加载失败')
+    expect(tdStateText('InstrumentsLoadFailed')).not.toBe(tdStateText('LoadingInstruments'))
+    expect(tdStateText('InstrumentsLoadFailed')).not.toBe(tdStateText('LoggedIn'))
+    // 两个失败态互不相同: 用户要能看出卡在哪一段 (两段恢复动作相同, 根因不同)
+    expect(tdStateText('SettlementConfirmFailed')).not.toBe(tdStateText('InstrumentsLoadFailed'))
   })
 })
 
@@ -209,6 +224,18 @@ describe('parseTdLastError / tdLastErrorText（契约 td-status §2.5）', () =>
       .toBe('当日订单/成交基准装载失败')
     expect(tdLastErrorText({ code: 'login_send_failed', message: '', errorId: 0, timestamp: 1 }))
       .toBe('登录请求发送失败')
+  })
+
+  it('结算确认 / 合约加载段四码各有中文兜底（契约 td-status §2.5 码表）', () => {
+    // #496: 后两段的码补进前端兜底映射 —— 后端 message 为空时用户仍能看到是哪一步出错。
+    expect(tdLastErrorText({ code: 'settlement_rejected', message: '', errorId: 3, timestamp: 1 }))
+      .toBe('结算单确认被拒')
+    expect(tdLastErrorText({ code: 'settlement_timeout', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('结算单确认超时（60 秒内未收到响应）')
+    expect(tdLastErrorText({ code: 'instruments_rejected', message: '', errorId: 7, timestamp: 1 }))
+      .toBe('合约加载被拒')
+    expect(tdLastErrorText({ code: 'instruments_timeout', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('合约加载超时（5 分钟内未收到最后一批响应）')
   })
 
   it('connect_timeout 文案说「连接超时」而不是「登录失败」（它不是失败态）', () => {

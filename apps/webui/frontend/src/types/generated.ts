@@ -870,8 +870,8 @@ export interface TdAccountsDegradedResponse {
     reason: TdAccountsDegradedReason
 }
 
-// 交易网关账户级细状态（契约 td-status §2.2，13 态；值 = 发送方状态机的枚举名）
-export type TdState = 'Idle' | 'Connecting' | 'Connected' | 'Authenticating' | 'AuthFailed' | 'Authenticated' | 'LoggingIn' | 'LoginFailed' | 'LoggedIn' | 'Confirming' | 'LoadingInstruments' | 'Ready' | 'Disconnected'
+// 交易网关账户级细状态（契约 td-status §2.2，15 态；值 = 发送方状态机的枚举名）
+export type TdState = 'Idle' | 'Connecting' | 'Connected' | 'Authenticating' | 'AuthFailed' | 'Authenticated' | 'LoggingIn' | 'LoginFailed' | 'LoggedIn' | 'Confirming' | 'SettlementConfirmFailed' | 'LoadingInstruments' | 'InstrumentsLoadFailed' | 'Ready' | 'Disconnected'
 
 // 最近一次登录链失败（契约 td-status §2.5）
 export interface TdLastError {

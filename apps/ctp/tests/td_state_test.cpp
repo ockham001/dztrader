@@ -283,9 +283,9 @@ TEST_F(TdStateMachineTest, LoginFailedDoesNotRollBackProgress) {
         << "failure is not an endpoint";
 }
 
-// --- 合约加载失败回退 ---
+// --- 合约加载失败: 停在失败阶段 (#496 / ADR 0059 决策 1) ---
 
-TEST_F(TdStateMachineTest, InstrumentsLoadFailedRollback) {
+TEST_F(TdStateMachineTest, InstrumentsLoadFailedStopsAtFailedStage) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_authenticate();
@@ -294,19 +294,60 @@ TEST_F(TdStateMachineTest, InstrumentsLoadFailedRollback) {
     sm.on_login_success("v", "d", "t");
     sm.on_req_settlement_confirm();
     sm.on_settlement_confirmed();
-    auto notif = sm.on_instruments_load_failed("未到合约加载时段");
-    EXPECT_EQ(sm.state(), TdState::LoggedIn);
+    ASSERT_EQ(sm.status().progress_current, 8) << "premise: LoadingInstruments is 8/10";
+    auto notif =
+        sm.on_instruments_load_failed(TdFailureCode::InstrumentsRejected, "未到合约加载时段", 7);
+    // 停在失败阶段: 与 LoadingInstruments 同格 (8/10), 不回退到 LoggedIn (6)。
+    EXPECT_EQ(sm.state(), TdState::InstrumentsLoadFailed);
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(notif->popup);
-    EXPECT_EQ(notif->message, "合约加载失败: 未到合约加载时段");
-    EXPECT_EQ(sm.status().progress_current, 6);
-    EXPECT_EQ(sm.status().progress_desc, "已登录");
+    // 段内原因写入 last_error (契约 td-status §2.5)
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "instruments_rejected");
+    EXPECT_EQ(sm.status().last_error->message, "未到合约加载时段");
+    EXPECT_EQ(sm.status().last_error->error_id, 7);
+    EXPECT_GT(sm.status().last_error->timestamp, 0);
+    EXPECT_EQ(sm.status().progress_current, 8);
+    EXPECT_EQ(sm.status().progress_desc, "合约加载失败");
+    // 失败态不占端点 (ADR 0059 决策 1)
+    EXPECT_LT(sm.status().progress_current, sm.status().progress_max);
+    EXPECT_GT(sm.status().progress_current, sm.status().progress_min);
 }
 
-// --- 结算单确认失败回退 (C6: 回退 LoggedIn 等待重试) ---
+TEST_F(TdStateMachineTest, InstrumentsLoadTimeoutStopsAtFailedStage) {
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5): 同一失败态、同一 last_error 写入,
+    // 只靠 code 区分。
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v", "d", "t");
+    sm.on_req_settlement_confirm();
+    sm.on_settlement_confirmed();
+    sm.on_instruments_load_failed(TdFailureCode::InstrumentsTimeout, "", 0);
+    EXPECT_EQ(sm.state(), TdState::InstrumentsLoadFailed);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "instruments_timeout");
+    EXPECT_EQ(sm.status().last_error->error_id, 0) << "a timeout has no CTP error id";
+    EXPECT_EQ(sm.status().progress_current, 8);
+    EXPECT_EQ(sm.status().progress_desc, "合约加载失败");
+}
 
-TEST_F(TdStateMachineTest, SettlementConfirmFailedRollsBackToLoggedIn) {
+TEST_F(TdStateMachineTest, InstrumentsLoadFailedFromNonLoadingRejected) {
+    sm.on_connect();
+    sm.on_front_connected();
+    auto notif =
+        sm.on_instruments_load_failed(TdFailureCode::InstrumentsRejected, "err", 1);  // Connected
+    EXPECT_EQ(sm.state(), TdState::Connected);
+    EXPECT_FALSE(notif.has_value());
+    EXPECT_FALSE(sm.status().last_error.has_value()) << "a rejected transfer must not record";
+}
+
+// --- 结算单确认失败: 停在失败阶段 (#496 / ADR 0059 决策 1) ---
+
+TEST_F(TdStateMachineTest, SettlementConfirmFailedStopsAtFailedStage) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_authenticate();
@@ -314,17 +355,41 @@ TEST_F(TdStateMachineTest, SettlementConfirmFailedRollsBackToLoggedIn) {
     sm.on_req_login();
     sm.on_login_success("v", "20260726", "09:00:00");
     sm.on_req_settlement_confirm();
-    auto notif = sm.on_settlement_confirm_failed("结算单未确认");
-    EXPECT_EQ(sm.state(), TdState::LoggedIn);
+    ASSERT_EQ(sm.status().progress_current, 7) << "premise: Confirming is 7/10";
+    auto notif =
+        sm.on_settlement_confirm_failed(TdFailureCode::SettlementRejected, "结算单未确认", 3);
+    // 停在失败阶段: 与 Confirming 同格 (7/10), 不回退到 LoggedIn (6)。
+    EXPECT_EQ(sm.state(), TdState::SettlementConfirmFailed);
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(notif->popup);
-    EXPECT_EQ(notif->message, "结算单确认失败: 结算单未确认");
-    EXPECT_EQ(sm.status().progress_current, 6);
-    EXPECT_EQ(sm.status().progress_desc, "已登录");
-    // 回退不移除登录信息 (仅 Confirming 失败, 会话仍有效)
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "settlement_rejected");
+    EXPECT_EQ(sm.status().last_error->message, "结算单未确认");
+    EXPECT_EQ(sm.status().last_error->error_id, 3);
+    EXPECT_EQ(sm.status().progress_current, 7);
+    EXPECT_EQ(sm.status().progress_desc, "结算单确认失败");
+    EXPECT_LT(sm.status().progress_current, sm.status().progress_max);
+    EXPECT_GT(sm.status().progress_current, sm.status().progress_min);
+    // 失败态不移除登录信息 (会话仍有效, 只是链没走完)
     EXPECT_EQ(sm.status().date, "20260726");
     EXPECT_EQ(sm.status().login_time, "09:00:00");
+}
+
+TEST_F(TdStateMachineTest, SettlementConfirmTimeoutStopsAtFailedStage) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v", "20260726", "09:00:00");
+    sm.on_req_settlement_confirm();
+    sm.on_settlement_confirm_failed(TdFailureCode::SettlementTimeout, "", 0);
+    EXPECT_EQ(sm.state(), TdState::SettlementConfirmFailed);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "settlement_timeout");
+    EXPECT_EQ(sm.status().progress_current, 7);
+    EXPECT_EQ(sm.status().progress_desc, "结算单确认失败");
 }
 
 TEST_F(TdStateMachineTest, SettlementConfirmFailedFromNonConfirmingRejected) {
@@ -335,13 +400,15 @@ TEST_F(TdStateMachineTest, SettlementConfirmFailedFromNonConfirmingRejected) {
     sm.on_req_login();
     sm.on_login_success("v", "20260726", "09:00:00");
     // LoggedIn (非 Confirming) 拒绝
-    auto notif = sm.on_settlement_confirm_failed("err");
+    auto notif = sm.on_settlement_confirm_failed(TdFailureCode::SettlementRejected, "err");
     EXPECT_EQ(sm.state(), TdState::LoggedIn);
     EXPECT_FALSE(notif.has_value());
     EXPECT_EQ(sm.status().progress_current, 6);
+    EXPECT_FALSE(sm.status().last_error.has_value());
     // Idle 同样拒绝
     TdStateMachine idle_sm;
-    EXPECT_FALSE(idle_sm.on_settlement_confirm_failed("err").has_value());
+    EXPECT_FALSE(
+        idle_sm.on_settlement_confirm_failed(TdFailureCode::SettlementRejected, "err").has_value());
     EXPECT_EQ(idle_sm.state(), TdState::Idle);
 }
 
@@ -623,7 +690,9 @@ TEST(AccountStateMapping, TripleStateAggregation) {
     EXPECT_EQ(account_state_of(TdState::LoginFailed), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoggedIn), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Confirming), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::SettlementConfirmFailed), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoadingInstruments), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::InstrumentsLoadFailed), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Ready), DZ_ACCOUNT_READY);
 }
 

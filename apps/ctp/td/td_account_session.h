@@ -385,27 +385,40 @@ private:
     /// push_notification 的 `!notif` 说明。
     void notify_login_failed(TdFailureCode code, const std::string& reason, int error_id = 0);
 
-    /// 结算单确认失败统一出口 (#488): 取消看门狗 + 状态机回滚 + 失败原因上浮 UI 通知.
+    /// 结算单确认失败统一出口 (#488 / #496): 取消看门狗 + 状态机转失败态 + 失败原因上浮 UI.
     ///
-    /// 与 notify_login_failed 同一问题形态: on_settlement_confirm_failed() 回滚到 LoggedIn
-    /// (进度 6/10「已登录」), 那是**正常中间态**, 界面看不出异常。而本进程不自动重试登录链
-    /// (#406), 不上浮就是静默卡在 6/10。调用方不再各自处置状态机返回值 (此前 5 个调用点
-    /// 全部丢弃了通知, 失败无痕)。
+    /// 与 notify_login_failed 同一问题形态: on_settlement_confirm_failed() 停在
+    /// `SettlementConfirmFailed` (进度 7/10「结算单确认失败」, #496 起不再回退 LoggedIn)。
+    /// 本进程不自动重试登录链 (#406), 不上浮就是静默停下。调用方不再各自处置状态机返回值
+    /// (此前 5 个调用点全部丢弃了通知, 失败无痕)。
     ///
-    /// @param reason 失败场景 (中文, 供通知正文; 如「柜台拒绝，错误码 3：...」/「60 秒内未收到
-    ///   柜台的结算单确认响应」)。不复用状态机的「结算单确认失败: ...」——那是日志口径。
+    /// @param code 段内原因码 (settlement_rejected / settlement_timeout)。它与 reason 一起
+    ///   写进 last_error, 并决定通知前缀措辞。
+    /// @param reason 失败场景 (中文, 供 last_error.message 与通知正文; 如「柜台拒绝，错误码
+    ///   3：...」/「60 秒内未收到柜台的结算单确认响应」)。柜台拒绝以外的发送被拒也归
+    ///   `settlement_rejected` (契约 td-status §2.5: 发送被拒不是柜台裁决, 但同属「被拒」)。
+    /// @param error_id CTP ErrorID (仅柜台拒绝响应有意义, 其余传 0)
     /// 时序: 必须先 on_settlement_confirm_failed() 转状态再通知 (与 md 一致)。异常不逃逸。
     /// 状态机拒绝转移 (此刻不在 Confirming: 已断线 / 已登出 / 看门狗已收口后又来了迟到失败)
     /// 时不推送, 见 push_notification 的 `!notif` 说明。
-    void notify_settlement_confirm_failed(const std::string& reason);
+    void notify_settlement_confirm_failed(TdFailureCode code,
+                                          const std::string& reason,
+                                          int error_id = 0);
 
-    /// 合约加载失败统一出口 (#488): 取消加载定时器 + 状态机回滚 + 失败原因上浮 UI 通知.
+    /// 合约加载失败统一出口 (#488 / #496): 取消加载定时器 + 状态机转失败态 + 失败原因上浮.
     ///
-    /// 同上: 回滚到 LoggedIn 是正常中间态, 且不会有下一次尝试 —— 必须让用户看见。
+    /// 同上: 停在 `InstrumentsLoadFailed` (8/10「合约加载失败」), 且不会有下一次尝试 ——
+    /// 必须让用户看见。
+    /// @param code 段内原因码 (instruments_rejected / instruments_timeout)。其中
+    ///   `instruments_rejected` 覆盖三种来源 (查询发送被拒 / `OnRspError` 错误响应 /
+    ///   `is_last` 带错误) —— 三者对用户是同一件事: 柜台侧拒绝了这次加载。
     /// @param reason 失败场景 (中文; 如「柜台拒绝，错误码 3：...」/「查询 5 分钟未收到最后一批
-    ///   响应」)。状态机拒绝转移 (此刻不在 LoadingInstruments) 时不推送, 见 push_notification
-    ///   的 `!notif` 说明。
-    void notify_instruments_load_failed(const std::string& reason);
+    ///   响应」/「发送合约查询请求失败（ret=-2）」)。状态机拒绝转移 (此刻不在
+    ///   LoadingInstruments) 时不推送, 见 push_notification 的 `!notif` 说明。
+    /// @param error_id CTP ErrorID (仅柜台错误响应有意义, 其余传 0)
+    void notify_instruments_load_failed(TdFailureCode code,
+                                        const std::string& reason,
+                                        int error_id = 0);
 
     /// 认证 10 s 超时收口 (#489 并入 #494): 生产由 TimerQueue 回调, 测试经
     /// `expire_auth_timeout_for_test` 注入同一条路径 (不 sleep)。

@@ -33,6 +33,14 @@ const char* td_failure_code_str(TdFailureCode code) {
             return "day_load_failed";
         case TdFailureCode::LoginSendFailed:
             return "login_send_failed";
+        case TdFailureCode::SettlementRejected:
+            return "settlement_rejected";
+        case TdFailureCode::SettlementTimeout:
+            return "settlement_timeout";
+        case TdFailureCode::InstrumentsRejected:
+            return "instruments_rejected";
+        case TdFailureCode::InstrumentsTimeout:
+            return "instruments_timeout";
     }
     return "unknown";
 }
@@ -214,21 +222,24 @@ std::optional<TdNotification> TdStateMachine::on_settlement_confirmed() {
     return std::nullopt;
 }
 
-std::optional<TdNotification> TdStateMachine::on_settlement_confirm_failed(const std::string& err) {
+std::optional<TdNotification> TdStateMachine::on_settlement_confirm_failed(
+    TdFailureCode code, const std::string& message, int error_id) {
     if (status_.state != TdState::Confirming) {
         SPDLOG_WARN("settlement confirm failed: unexpected state | state={}",
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    // C6: 回退到 LoggedIn (不卡死在 Confirming). 回退后本进程不自动重试该账户
-    // (#406); 恢复路径 = 先登出再登录 (ADR 0051 决策 4). 失败原因由调用方上浮 UI (#488).
-    set_state(TdState::LoggedIn);
-    SPDLOG_ERROR("settlement confirm failed | error=\"{}\"", err);
-    return TdNotification{
-        .level = DZ_NOTIFY_ERROR,
-        .popup = true,
-        .message = std::format("结算单确认失败: {}", err),
-    };
+    // ADR 0059 决策 1: 停在失败阶段 (SettlementConfirmFailed, 7/10「结算单确认失败」),
+    // 不回退到 LoggedIn (6) —— 后者是正常中间态, 界面看不出异常, 用户会以为「已登录、
+    // 只是还没就绪」而实际上不会有下一次尝试 (#406)。
+    // 段内原因写 last_error (契约 td-status §2.5); message 空串 = 无详情, 前端按 code 兜底.
+    set_last_error(code, message, error_id);
+    set_state(TdState::SettlementConfirmFailed);
+    SPDLOG_ERROR("settlement confirm failed | code={} error_id={}", td_failure_code_str(code),
+                 error_id);
+    // message 保留通用文案: AccountSession 侧改用 settlement_confirm_failed_message()
+    // 构造带场景的正文, 只取本结构的 level/popup (#488)。
+    return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "结算单确认失败"};
 }
 
 std::optional<TdNotification> TdStateMachine::on_instruments_loaded() {
@@ -244,21 +255,22 @@ std::optional<TdNotification> TdStateMachine::on_instruments_loaded() {
     return TdNotification{.level = DZ_NOTIFY_INFO, .popup = false, .message = "交易就绪"};
 }
 
-std::optional<TdNotification> TdStateMachine::on_instruments_load_failed(const std::string& err) {
+std::optional<TdNotification> TdStateMachine::on_instruments_load_failed(TdFailureCode code,
+                                                                         const std::string& message,
+                                                                         int error_id) {
     if (status_.state != TdState::LoadingInstruments) {
         SPDLOG_WARN("instruments load failed: unexpected state | state={}",
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    // 回退到 LoggedIn (不进入 Ready, 不接受下单). 同样不自动重试 (#406); 恢复路径 =
-    // 先登出再登录. 失败原因由调用方上浮 UI (#488).
-    set_state(TdState::LoggedIn);
-    SPDLOG_ERROR("instruments load failed | error=\"{}\"", err);
-    return TdNotification{
-        .level = DZ_NOTIFY_ERROR,
-        .popup = true,
-        .message = std::format("合约加载失败: {}", err),
-    };
+    // ADR 0059 决策 1: 停在失败阶段 (InstrumentsLoadFailed, 8/10「合约加载失败」),
+    // 不回退到 LoggedIn (6)。不进入 Ready、不接受下单, 同样不自动重试 (#406)。
+    // 段内原因写 last_error (契约 td-status §2.5)。
+    set_last_error(code, message, error_id);
+    set_state(TdState::InstrumentsLoadFailed);
+    SPDLOG_ERROR("instruments load failed | code={} error_id={}", td_failure_code_str(code),
+                 error_id);
+    return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "合约加载失败"};
 }
 
 void TdStateMachine::set_state(TdState new_state) {
@@ -273,7 +285,7 @@ void TdStateMachine::set_state(TdState new_state) {
 
     // progress_max=10: Idle=0, Connecting/Disconnected=1, Connected=2,
     // Authenticating/AuthFailed=3, Authenticated=4, LoggingIn/LoginFailed=5, LoggedIn=6,
-    // Confirming=7, LoadingInstruments=8, Ready=10
+    // Confirming/SettlementConfirmFailed=7, LoadingInstruments/InstrumentsLoadFailed=8, Ready=10
     // 失败态取**它停住的那一段**的数值 (ADR 0059 决策 1): 不回退到上一段, 也不占用端点.
     switch (new_state) {
         case TdState::Idle:
@@ -341,8 +353,22 @@ void TdStateMachine::set_state(TdState new_state) {
             status_.progress_max = 10;
             status_.progress_current = 7;
             break;
+        case TdState::SettlementConfirmFailed:
+            // 与 Confirming 同格 (7/10): 停在失败发生的那一段, 不回退到 LoggedIn (6).
+            status_.progress_desc = "结算单确认失败";
+            status_.progress_min = 0;
+            status_.progress_max = 10;
+            status_.progress_current = 7;
+            break;
         case TdState::LoadingInstruments:
             status_.progress_desc = "加载合约...";
+            status_.progress_min = 0;
+            status_.progress_max = 10;
+            status_.progress_current = 8;
+            break;
+        case TdState::InstrumentsLoadFailed:
+            // 与 LoadingInstruments 同格 (8/10): 停在失败发生的那一段, 不回退到 LoggedIn (6).
+            status_.progress_desc = "合约加载失败";
             status_.progress_min = 0;
             status_.progress_max = 10;
             status_.progress_current = 8;
@@ -376,7 +402,9 @@ DzAccountState account_state_of(TdState state) noexcept {
         case TdState::LoginFailed:  // 失败态属会话未就绪 (契约 account-status 三态聚合)
         case TdState::LoggedIn:
         case TdState::Confirming:
+        case TdState::SettlementConfirmFailed:  // 失败态属会话未就绪
         case TdState::LoadingInstruments:
+        case TdState::InstrumentsLoadFailed:  // 失败态属会话未就绪
             return DZ_ACCOUNT_LOGGING_IN;
         case TdState::Ready:
             return DZ_ACCOUNT_READY;

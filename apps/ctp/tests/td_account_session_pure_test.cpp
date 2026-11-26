@@ -471,49 +471,64 @@ TEST(AuthFailedMessageTest, EmptyReasonOmitsParentheses) {
 
 // ============================================================================
 // settlement_confirm_failed_message / instruments_load_failed_message
-// (登录链后段失败的通知正文, #488)
+// (登录链后段失败的通知正文, #488 / #496)
 // ============================================================================
 
 TEST(SettlementConfirmFailedMessageTest, IncludesReasonConsequenceAndRecovery) {
-    // 失败后状态回滚到 LoggedIn —— 那是**正常中间态** (6/10「已登录」), 前端无法与
-    // 「登录成功、还在初始化」区分; 且本进程不自动重试登录链 (#406)。正文因此必须自带
-    // 「发生了什么 + 会怎样 + 下一步」。
-    const std::string msg = settlement_confirm_failed_message("60 秒内未收到柜台的结算单确认响应");
+    // #496 起状态机停在 SettlementConfirmFailed (7/10「结算单确认失败」) —— 界面本身已显示
+    // 失败阶段, 因此正文不再需要解释「看起来像正常」(那是 #488 回滚到 LoggedIn 时的说法);
+    // 但它仍必须交代「会怎样 + 下一步」: 本进程不自动重试登录链 (#406)。
+    const std::string msg = settlement_confirm_failed_message(TdFailureCode::SettlementRejected,
+                                                              "60 秒内未收到柜台的结算单确认响应");
     EXPECT_EQ(msg,
-              "结算单确认失败（60 秒内未收到柜台的结算单确认响应），账户停在「已登录」不能交易，"
-              "本进程不会自动重试；请先登出再重新登录");
-    // 「会怎样」不能只说失败: 账户实际停在 6/10 且不能交易, 这一句是用户唯一的后果线索.
-    EXPECT_NE(msg.find("不能交易"), std::string::npos);
+              "结算单确认失败（60 秒内未收到柜台的结算单确认响应），"
+              "本进程不会自动重试该账户；请先登出再重新登录");
     // 恢复路径必须可执行 (#409 落地后 WebUI 有登出/登录入口).
     EXPECT_NE(msg.find("请先登出再重新登录"), std::string::npos);
 }
 
+TEST(SettlementConfirmFailedMessageTest, TimeoutUsesTimeoutPrefix) {
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5), 只有前缀措辞区分「谁没响应」。
+    EXPECT_EQ(settlement_confirm_failed_message(TdFailureCode::SettlementTimeout, "60 秒"),
+              "结算单确认超时（60 秒），本进程不会自动重试该账户；请先登出再重新登录");
+}
+
 TEST(SettlementConfirmFailedMessageTest, EmptyReasonOmitsParentheses) {
     // 空原因不得产出「（）」这种残缺文案; 逐字锁定, 防止改成 ASCII () 后静默通过.
-    EXPECT_EQ(settlement_confirm_failed_message(""),
-              "结算单确认失败，账户停在「已登录」不能交易，本进程不会自动重试；"
-              "请先登出再重新登录");
+    EXPECT_EQ(settlement_confirm_failed_message(TdFailureCode::SettlementRejected, ""),
+              "结算单确认失败，本进程不会自动重试该账户；请先登出再重新登录");
+    EXPECT_EQ(settlement_confirm_failed_message(TdFailureCode::SettlementTimeout, ""),
+              "结算单确认超时，本进程不会自动重试该账户；请先登出再重新登录");
 }
 
 TEST(InstrumentsLoadFailedMessageTest, IncludesReasonConsequenceAndRecovery) {
-    const std::string msg = instruments_load_failed_message("查询 300 秒未收到最后一批响应");
+    const std::string msg = instruments_load_failed_message(TdFailureCode::InstrumentsRejected,
+                                                            "查询 300 秒未收到最后一批响应");
     EXPECT_EQ(msg,
-              "合约加载失败（查询 300 秒未收到最后一批响应），账户停在「已登录」不能交易，"
-              "本进程不会自动重试；请先登出再重新登录");
+              "合约加载失败（查询 300 秒未收到最后一批响应），"
+              "本进程不会自动重试该账户；请先登出再重新登录");
     EXPECT_NE(msg.find("请先登出再重新登录"), std::string::npos);
 }
 
+TEST(InstrumentsLoadFailedMessageTest, TimeoutUsesTimeoutPrefix) {
+    EXPECT_EQ(instruments_load_failed_message(TdFailureCode::InstrumentsTimeout, "300 秒"),
+              "合约加载超时（300 秒），本进程不会自动重试该账户；请先登出再重新登录");
+}
+
 TEST(InstrumentsLoadFailedMessageTest, EmptyReasonOmitsParentheses) {
-    EXPECT_EQ(instruments_load_failed_message(""),
-              "合约加载失败，账户停在「已登录」不能交易，本进程不会自动重试；"
-              "请先登出再重新登录");
+    EXPECT_EQ(instruments_load_failed_message(TdFailureCode::InstrumentsRejected, ""),
+              "合约加载失败，本进程不会自动重试该账户；请先登出再重新登录");
+    EXPECT_EQ(instruments_load_failed_message(TdFailureCode::InstrumentsTimeout, ""),
+              "合约加载超时，本进程不会自动重试该账户；请先登出再重新登录");
 }
 
 TEST(LoginChainFailureMessageTest, SettlementAndInstrumentsMessagesAreDistinct) {
-    // 两个阶段的两条文案不得串味: 用户在 6/10 上看到的必须能区分「卡在结算确认」
-    // 还是「卡在合约加载」——两者恢复动作相同但根因不同, 混成一句等于丢失定位信息.
-    const std::string settlement = settlement_confirm_failed_message("x");
-    const std::string instruments = instruments_load_failed_message("x");
+    // 两个阶段的两条文案不得串味: 用户看到的必须能区分「卡在结算确认」还是「卡在合约加载」
+    // ——两者恢复动作相同但根因不同, 混成一句等于丢失定位信息.
+    const std::string settlement =
+        settlement_confirm_failed_message(TdFailureCode::SettlementRejected, "x");
+    const std::string instruments =
+        instruments_load_failed_message(TdFailureCode::InstrumentsRejected, "x");
     EXPECT_NE(settlement, instruments);
     EXPECT_NE(settlement.find("结算单确认失败"), std::string::npos);
     EXPECT_EQ(settlement.find("合约加载失败"), std::string::npos);

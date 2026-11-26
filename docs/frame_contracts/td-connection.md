@@ -42,7 +42,7 @@
 - 目标账户已有会话：幂等跳过（不重建会话、不产生新登录链、不推送）。
 - 登录失败（柜台拒绝 / 交易日无效 / 基准装载失败 / 登录超时）：状态**停在失败阶段** `LoginFailed`（5/10「登录失败」，不回退到 `Authenticated` / `Connected`；ADR 0059 决策 1），本进程**不自动重试**（#406）；失败原因进 `RTN_TD_STATUS.last_error`（契约 td-status §2.5，五种场景分别是 `login_rejected` / `login_parse_error` / `day_load_failed` / `login_timeout` / `login_send_failed`），并经 `NOTIFY_UI` 错误级弹窗上浮（#407 / #408）。恢复路径 = 先登出、再登录（ADR 0051）。
 - **前置连接超时例外**（ADR 0059 决策 7）：30 秒内未连上前置时账户回 `Idle`（`current == min`、Offline 三态，**不是**失败态），因此三态判据这里读作「未登录」而不是「建立中」；失败原因同样进 `last_error`（`code` = `connect_timeout`），通知照推。**网关随即销毁该账户的会话**，使下一次 `TD_CONNECT` 正常重建（契约 td-status §2.2 例外段「会话拆除」）——这样用户可直接重新发起登录，不必先登出；若会话不拆，`TD_CONNECT` 会被幂等守卫静默跳过而账户卡死。
-- 登录链后段失败（结算确认被拒 / 结算确认看门狗超时 / 合约查询被拒或超时 / 合约加载失败）：同样回滚到 `LoggedIn` 并停住、不自动重试，失败原因同样经 `NOTIFY_UI` 错误级弹窗上浮（#488）。**注意 `RTN_PROGRESS.current` 由此回退**（交易网关当前实现回到 6）——回退后的 `LoggedIn` 与「登录成功、正在初始化」是同一个状态，消费方不得据此推断登录成功，就绪判据只有一个：`RTN_PROGRESS.current == progress.max`。
+- 登录链后段失败（结算确认被拒 / 结算确认看门狗超时 / 合约查询被拒或超时 / 合约加载失败）：同样**停在失败阶段**——结算确认失败停 `SettlementConfirmFailed`（7/10「结算单确认失败」）、合约加载失败停 `InstrumentsLoadFailed`（8/10「合约加载失败」），**不回退**到 `LoggedIn`（6）（ADR 0059 决策 1，#496）；失败原因进 `last_error`（`settlement_rejected` / `settlement_timeout` / `instruments_rejected` / `instruments_timeout`，契约 td-status §2.5）并经 `NOTIFY_UI` 错误级弹窗上浮（#488）。本进程不自动重试，恢复路径 = 先登出、再登录。就绪判据只有一个：`RTN_PROGRESS.current == progress.max`。
 - 登录成功判据：该账户 `RTN_PROGRESS.current == progress.max`（契约 progress「网关会话进度骨架」）。
 
 **约束**：

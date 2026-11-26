@@ -175,12 +175,13 @@ std::string auth_failed_message(TdFailureCode code, const std::string& reason);
 // ============================================================================
 // 登录链后段失败的通知正文 (结算确认 / 合约加载, #488)
 // ============================================================================
-// 与 login_failed_message 同一问题形态: 状态机把失败回滚到 LoggedIn (进度 6/10
-// 「已登录」), 那是**正常中间态**——前端与用户无法与「登录成功、还在初始化」区分,
-// 而本进程不会自动重试登录链 (#406)。因此正文同样要说清「发生了什么 + 会怎样 +
-// 下一步」, 不能只转发状态机的通用文案「结算单确认失败: ...」。
+// 与 login_failed_message 同一问题形态, 但两票的落点不同:
+// - #488 先解决「失败无痕」(通知出口统一, 五个调用点不再丢弃状态机返回值);
+// - #496 再解决「位置说谎」——状态机停在各自失败态 (7/10「结算单确认失败」/
+//   8/10「合约加载失败」, ADR 0059 决策 1), 不再回退到 `LoggedIn` 这个正常中间态。
 //
-// 两者的「会怎样」相同: 停在 6/10、不进 Ready、不接受下单; 恢复路径同样 = 先登出再登录。
+// 因此正文不再需要解释「界面看起来像正常」(界面上现在显示的就是失败态), 只需
+// 「发生了什么 + 会怎样 + 下一步」; 恢复路径同链内失败 = 先登出再登录 (本进程不自动重试, #406)。
 
 /// 结算单确认的响应看门狗时长 (#488).
 ///
@@ -190,19 +191,21 @@ std::string auth_failed_message(TdFailureCode code, const std::string& reason);
 /// 误判代价 = 用户被迫重登且本进程不自动恢复, 故宁可偏长。
 inline constexpr std::chrono::seconds kSettlementConfirmTimeout{60};
 
-/// 结算单确认失败的通知正文 (纯构造便于断言, #488).
+/// 结算单确认失败的通知正文 (纯构造便于断言, #488 / #496).
+/// @param code 段内原因码 (settlement_rejected / settlement_timeout; 决定前缀措辞)
 /// @param reason 失败场景的中文说明 (如「柜台拒绝，错误码 3：CTP:结算单确认失败」/
 ///   「60 秒内未收到柜台的结算单确认响应」)
-/// @return 形如「结算单确认失败（<原因>），账户停在「已登录」不能交易，本进程不会自动重试；
-///   请先登出再重新登录」; reason 为空时不产出残缺括号
-std::string settlement_confirm_failed_message(const std::string& reason);
+/// @return 形如「结算单确认失败（<原因>），本进程不会自动重试该账户；请先登出再重新登录」;
+///   reason 为空时不产出残缺括号
+std::string settlement_confirm_failed_message(TdFailureCode code, const std::string& reason);
 
-/// 合约加载失败的通知正文 (纯构造便于断言, #488).
+/// 合约加载失败的通知正文 (纯构造便于断言, #488 / #496).
+/// @param code 段内原因码 (instruments_rejected / instruments_timeout; 决定前缀措辞)
 /// @param reason 失败场景的中文说明 (如「柜台拒绝，错误码 3：CTP:未到合约加载时段」/
 ///   「查询 300 秒未收到最后一批响应」)
-/// @return 形如「合约加载失败（<原因>），账户停在「已登录」不能交易，本进程不会自动重试；
-///   请先登出再重新登录」; reason 为空时不产出残缺括号
-std::string instruments_load_failed_message(const std::string& reason);
+/// @return 形如「合约加载失败（<原因>），本进程不会自动重试该账户；请先登出再重新登录」;
+///   reason 为空时不产出残缺括号
+std::string instruments_load_failed_message(TdFailureCode code, const std::string& reason);
 
 // ============================================================================
 // 基准持仓查询的有限重试策略 (ADR 0049 决策 3)
