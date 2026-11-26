@@ -685,13 +685,16 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
 }
 
 void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmField& f) {
-    cancel_settlement_confirm_timer();
     // #488 迟到响应窗口: 看门狗超时已把状态回滚到 LoggedIn (并通知了用户), 此后真响应
     // 才到 —— 不能再驱动后续链条, 否则会发起一次没有收尾归属的合约查询, 把账户拖成
     // 一个既非「已通知失败」也非「正常初始化」的中间态。
     // 判据 = 状态 + request_id 双校验 (同 on_rsp_qry_instrument 的 query_gen_/request_id):
     // 只判状态不够 —— 断线重连后新链进入 Confirming 时, 旧链的迟到响应会以「状态正确」
     // 蒙混过关。
+    //
+    // 取消看门狗必须排在守卫**之后**: 排在前面会让一条被丢弃的外来响应把本链的定时器
+    // 撤掉, 会话留在 Confirming 却再无回调 —— 正是本票要消灭的静默卡死形态。
+    // 合法响应在这里之后才收口, 那时 cancel 才有意义 (cancel 对已失效 id 是 no-op)。
     if (state_machine_.state() != TdState::Confirming ||
         f.request_id != settlement_confirm_request_id_) {
         SPDLOG_WARN(
@@ -699,6 +702,7 @@ void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmF
             account_id_, magic_enum::enum_name(state_machine_.state()), f.request_id);
         return;
     }
+    cancel_settlement_confirm_timer();
     // 本链收口: 在途 request id 作废 (成功与失败两条分支都走这里)。
     settlement_confirm_request_id_ = 0;
     // I8: 统一 rsp_info 处理: 缺失视为失败 (与 on_rsp_authenticate / on_rsp_user_login 一致)

@@ -1683,6 +1683,11 @@ TEST_F(TdPositionLifecycleTest, WrongRequestIdResponseWhileConfirmingIsDropped) 
     EXPECT_EQ(session_->state(), TdState::Confirming)
         << "a foreign request id must not advance the chain";
     EXPECT_TRUE(notifications_.empty()) << "a foreign request id must not notify";
+    // 关键的一条: 被丢弃的响应绝不能顺手把本链的看门狗撤掉 —— 否则会话留在 Confirming
+    // 却再无任何回调, 正是本票要消灭的静默卡死形态 (cancel 若排在守卫之前就会发生)。
+    EXPECT_FALSE(timer_queue_.empty())
+        << "a dropped response must leave the watchdog armed for the real one";
+    EXPECT_LE(timer_queue_.next_timeout(), kSettlementConfirmTimeout);
 }
 
 TEST_F(TdPositionLifecycleTest, NotifyThrowIsCaughtAndStateStillRollsBack) {
