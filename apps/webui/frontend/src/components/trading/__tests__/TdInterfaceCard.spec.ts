@@ -338,6 +338,73 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(row.text()).not.toContain('login_rejected')
   })
 
+  it('进度停在 7/10 并显示「结算单确认失败」（不回退「已登录」）；原因行照常展示', async () => {
+    // #496 / ADR 0059 决策 1: 结算确认失败停在 7/10, 不再回退 LoggedIn (6) 这个正常中间态
+    // —— 此前用户看到「已登录」却下不了单, 分不清是初始化中还是已经失败。
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'SettlementConfirmFailed',
+      date: '20260726',
+      login_time: '2026-07-26 09:00:00',
+      progress_desc: '结算单确认失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 7,
+      last_error: {
+        code: 'settlement_timeout', message: '', error_id: 0, timestamp: 1_700_000_000,
+      },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 7, desc: '结算单确认失败' })
+    const { wrapper } = mountCard(store)
+
+    const row = wrapper.find('[data-test="td-account-row-account_001"]')
+    expect(row.find('[data-test="td-account-state"]').text()).toBe('结算单确认失败')
+    // 进度停在失败阶段，不回退到 6/10（LoggedIn 那一格）
+    expect(row.text()).toContain('结算单确认失败 · 7/10')
+    expect(row.text()).not.toContain('6/10')
+    expect(row.text()).not.toContain('已登录')
+
+    const failed = row.find('[data-test="td-last-error-account_001"]')
+    expect(failed.exists()).toBe(true)
+    // message 为空 -> 按 code 兜底中文, 绝不展示机器码
+    expect(failed.text()).toMatch(/^上次失败：结算单确认超时（60 秒内未收到响应）（\d{2}:\d{2}:\d{2}）$/)
+    expect(row.text()).not.toContain('settlement_timeout')
+  })
+
+  it('进度停在 8/10 并显示「合约加载失败」（不回退「已登录」）；原因行照常展示', async () => {
+    // #496: 合约加载失败停在 8/10, 同样不再回退 LoggedIn (6)。
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'InstrumentsLoadFailed',
+      date: '20260726',
+      login_time: '2026-07-26 09:00:00',
+      progress_desc: '合约加载失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 8,
+      last_error: {
+        code: 'instruments_rejected', message: '柜台拒绝，错误码 7：CTP:未到合约加载时段',
+        error_id: 7, timestamp: 1_700_000_000,
+      },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 8, desc: '合约加载失败' })
+    const { wrapper } = mountCard(store)
+
+    const row = wrapper.find('[data-test="td-account-row-account_001"]')
+    expect(row.find('[data-test="td-account-state"]').text()).toBe('合约加载失败')
+    expect(row.text()).toContain('合约加载失败 · 8/10')
+    expect(row.text()).not.toContain('6/10')
+
+    const failed = row.find('[data-test="td-last-error-account_001"]')
+    expect(failed.exists()).toBe(true)
+    expect(failed.text()).toMatch(/^上次失败：柜台拒绝，错误码 7：CTP:未到合约加载时段（\d{2}:\d{2}:\d{2}）$/)
+    expect(row.text()).not.toContain('instruments_rejected')
+  })
+
   it('connect_timeout 后状态是未登录（不是登录失败），原因行展示「连接超时」', async () => {
     // ADR 0059 决策 7 的决定性后果: 连接超时不进失败态, 状态字段与「从未发起过登录」相同;
     // 唯一能看出区别的地方是 last_error。若前端把状态说成「登录失败」, 就把「从未连上」

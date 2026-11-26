@@ -644,8 +644,8 @@ TEST(SessionShouldBeReapedTest, LiveStatesAreNotReaped) {
     for (const TdState state :
          {TdState::Connecting, TdState::Connected, TdState::Authenticating, TdState::AuthFailed,
           TdState::Authenticated, TdState::LoggingIn, TdState::LoginFailed, TdState::LoggedIn,
-          TdState::Confirming, TdState::LoadingInstruments, TdState::Ready,
-          TdState::Disconnected}) {
+          TdState::Confirming, TdState::SettlementConfirmFailed, TdState::LoadingInstruments,
+          TdState::InstrumentsLoadFailed, TdState::Ready, TdState::Disconnected}) {
         EXPECT_FALSE(session_should_be_reaped(state))
             << "must not reap a live session: " << magic_enum::enum_name(state);
     }

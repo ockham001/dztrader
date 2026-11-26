@@ -30,12 +30,13 @@ struct UnknownEnumCounts {
     }
 };
 
-/// CTP 交易网关状态机状态 (13 状态: 连接/登录链 11 段 + 认证失败态 + 登录失败态)。
+/// CTP 交易网关状态机状态 (15 状态: 连接/登录链 11 段 + 四个失败态)。
 /// 参考 mdctp MdState, 扩展以覆盖认证/结算确认/合约加载。
 ///
 /// 失败态 (ADR 0059 / 契约 td-status §2.2): 登录链上任一段失败后**停在它自己那一段**,
 /// `progress.current` 取该段数值、不回退到上一段 —— 失败只回答「在哪一段」, 段内原因由
-/// `last_error` 承载。已落地 `AuthFailed` 与 `LoginFailed`, 其余两段随 #496 补齐。
+/// `last_error` 承载。四条可失败段各有一个失败态, 常量为 11 + 4 = 15; 链上再没有
+/// 「失败就退回上一段」的路径 (连接超时是唯一例外, 它回 `Idle` 且无失败态)。
 enum class TdState {
     Idle,            ///< 未启动, 初始状态
     Connecting,      ///< API 已 Init, 等待 OnFrontConnected
@@ -47,9 +48,11 @@ enum class TdState {
     LoginFailed,     ///< 登录失败, 停在 5/10 (不再回退 Authenticated/Connected); 原因见 last_error
     LoggedIn,        ///< 登录成功, 准备确认结算单
     Confirming,      ///< ReqSettlementInfoConfirm 已发, 等待响应
-    LoadingInstruments,  ///< ReqQryInstrument 进行中 (流控重试)
-    Ready,               ///< 合约加载完成, 可下单
-    Disconnected         ///< 网络断开, CTP 自动重连中
+    SettlementConfirmFailed,  ///< 结算单确认失败, 停在 7/10 (不再回退 LoggedIn); 原因见 last_error
+    LoadingInstruments,       ///< ReqQryInstrument 进行中 (流控重试)
+    InstrumentsLoadFailed,    ///< 合约加载失败, 停在 8/10 (不再回退 LoggedIn); 原因见 last_error
+    Ready,                    ///< 合约加载完成, 可下单
+    Disconnected              ///< 网络断开, CTP 自动重连中
 };
 
 /// 基于 magic_enum 自动派生 TdState 的 JSON 序列化, 字符串与日志一致。
@@ -57,16 +60,20 @@ DZ_JSON_ENUM(TdState)
 
 /// 登录链失败原因码 (契约 td-status §2.5 `last_error.code`)。
 /// 一个码 = 同一失败阶段里的一种原因; 超时与柜台拒绝同等对待, 靠本枚举区分 (ADR 0059 决策 5)。
-/// 已落地认证段两个码 + 登录段五个码 + 连接超时例外; 后两段的码随 #496 补齐。
+/// 12 个码全部可达: 连接超时例外 1 + 认证段 2 + 登录段 5 + 结算确认段 2 + 合约加载段 2。
 enum class TdFailureCode {
-    ConnectTimeout,   ///< connect_timeout: 30 秒内未收到 OnFrontConnected (回 Idle, 不进失败态)
-    AuthRejected,     ///< auth_rejected: OnRspAuthenticate 的 ErrorID != 0 (柜台拒绝认证)
-    AuthTimeout,      ///< auth_timeout: 10 秒内未收到认证响应
-    LoginRejected,    ///< login_rejected: OnRspUserLogin 的 ErrorID != 0 (柜台拒绝登录)
-    LoginTimeout,     ///< login_timeout: 10 秒内未收到登录响应
-    LoginParseError,  ///< login_parse_error: 登录响应缺失 / 交易日无效
-    DayLoadFailed,    ///< day_load_failed: 当日订单/成交基准装载失败
-    LoginSendFailed,  ///< login_send_failed: ReqUserLogin 返回非 0 (发送被拒, 非柜台裁决)
+    ConnectTimeout,       ///< connect_timeout: 30 秒内未收到 OnFrontConnected (回 Idle, 不进失败态)
+    AuthRejected,         ///< auth_rejected: OnRspAuthenticate 的 ErrorID != 0 (柜台拒绝认证)
+    AuthTimeout,          ///< auth_timeout: 10 秒内未收到认证响应
+    LoginRejected,        ///< login_rejected: OnRspUserLogin 的 ErrorID != 0 (柜台拒绝登录)
+    LoginTimeout,         ///< login_timeout: 10 秒内未收到登录响应
+    LoginParseError,      ///< login_parse_error: 登录响应缺失 / 交易日无效
+    DayLoadFailed,        ///< day_load_failed: 当日订单/成交基准装载失败
+    LoginSendFailed,      ///< login_send_failed: ReqUserLogin 返回非 0 (发送被拒, 非柜台裁决)
+    SettlementRejected,   ///< settlement_rejected: 结算确认被柜台拒绝 / 发送被拒
+    SettlementTimeout,    ///< settlement_timeout: 60 秒看门狗未收到结算确认响应
+    InstrumentsRejected,  ///< instruments_rejected: 合约查询发送被拒 / OnRspError / is_last 带错误
+    InstrumentsTimeout,   ///< instruments_timeout: 合约加载 5 分钟超时
 };
 
 /// 失败原因码的线上字符串 (契约 td-status §2.5 码表)。
@@ -239,15 +246,30 @@ public:
     /// 结算单确认成功时调用。
     std::optional<TdNotification> on_settlement_confirmed();
 
-    /// 结算单确认失败时调用 (ErrorID != 0 / 看门狗超时). 回退到 LoggedIn.
-    /// 回退后本进程**不自动重试** (见 #406); 恢复路径 = 先登出再登录 (ADR 0051 决策 4).
-    std::optional<TdNotification> on_settlement_confirm_failed(const std::string& err);
+    /// 结算单确认失败时调用 (柜台拒绝 ErrorID != 0 / 发送被拒 / 60 秒看门狗超时)。
+    /// 停在 `SettlementConfirmFailed` (7/10「结算单确认失败」), **不再回退到 `LoggedIn`(6)**
+    /// (ADR 0059 决策 1)。回退后的 `LoggedIn` 是正常中间态, 界面看不出异常 —— 这正是本票
+    /// 要消灭的「已登录却下不了单」形态。
+    /// 段内原因写入 `last_error` (契约 td-status §2.5):
+    /// @param code 失败原因码 (settlement_rejected / settlement_timeout)
+    /// @param message 用户可读原因 (中文; CTP ErrorMsg 原文或空串 = 无详情)
+    /// @param error_id CTP ErrorID (仅 settlement_rejected 有意义, 超时 / 发送被拒传 0)
+    std::optional<TdNotification> on_settlement_confirm_failed(TdFailureCode code,
+                                                               const std::string& message,
+                                                               int error_id = 0);
 
     /// 合约加载完成时调用。
     std::optional<TdNotification> on_instruments_loaded();
 
-    /// 合约加载失败时调用 (ErrorID != 0 或流控超时)。
-    std::optional<TdNotification> on_instruments_load_failed(const std::string& err);
+    /// 合约加载失败时调用 (查询发送被拒 / `OnRspError` 错误响应 / `is_last` 带错误 / 5 分钟超时)。
+    /// 停在 `InstrumentsLoadFailed` (8/10「合约加载失败」), **不再回退到 `LoggedIn`(6)**
+    /// (ADR 0059 决策 1)。段内原因写入 `last_error` (契约 td-status §2.5):
+    /// @param code 失败原因码 (instruments_rejected / instruments_timeout)
+    /// @param message 用户可读原因 (中文; 柜台 ErrorMsg 原文或空串 = 无详情)
+    /// @param error_id CTP ErrorID (仅 instruments_rejected 的柜台响应有意义, 其余传 0)
+    std::optional<TdNotification> on_instruments_load_failed(TdFailureCode code,
+                                                             const std::string& message,
+                                                             int error_id = 0);
 
 private:
     void set_state(TdState new_state);

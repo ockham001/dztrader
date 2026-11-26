@@ -143,6 +143,25 @@ TEST(TdStatusPublishKeyTest, LoginFailedIsDistinctFromLoggingInDespiteSameProgre
     EXPECT_FALSE(logging_in == login_failed) << "the state alone must republish";
 }
 
+TEST(TdStatusPublishKeyTest, SettlementAndInstrumentsFailuresAreDistinctFromTheirStages) {
+    // #496 / ADR 0059 决策 1: 结算确认失败与合约加载失败各自与「正常阶段」同格
+    // (7/10、8/10)。若重推键只看进度, 这两次翻转推不出去, 界面会一直停在
+    // 「结算单确认...」/「加载合约...」而看不到失败 —— state 进键是这条的保证。
+    const auto confirming = td_status_publish_key(make_status(TdState::Confirming, 7, "", ""));
+    const auto settlement_failed = td_status_publish_key(
+        make_status(TdState::SettlementConfirmFailed, 7, "", "", "结算单确认失败"));
+    EXPECT_EQ(confirming.progress_current, settlement_failed.progress_current)
+        << "premise: the two states share the same progress cell";
+    EXPECT_FALSE(confirming == settlement_failed) << "the state alone must republish";
+
+    const auto loading = td_status_publish_key(make_status(TdState::LoadingInstruments, 8, "", ""));
+    const auto instruments_failed = td_status_publish_key(
+        make_status(TdState::InstrumentsLoadFailed, 8, "", "", "合约加载失败"));
+    EXPECT_EQ(loading.progress_current, instruments_failed.progress_current)
+        << "premise: the two states share the same progress cell";
+    EXPECT_FALSE(loading == instruments_failed) << "the state alone must republish";
+}
+
 TEST(TdStatusPublishKeyTest, ConnectTimeoutPublishesThroughLastErrorAlone) {
     // #495 / ADR 0059 决策 7: 连接超时回 Idle —— state/progress/date/login_time 与
     // 「从未发起过登录」完全相同, 只有 last_error 能表达「刚刚失败过」。若 last_error

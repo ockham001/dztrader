@@ -737,9 +737,9 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
 }
 
 void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmField& f) {
-    // #488 迟到响应窗口: 看门狗超时已把状态回滚到 LoggedIn (并通知了用户), 此后真响应
-    // 才到 —— 不能再驱动后续链条, 否则会发起一次没有收尾归属的合约查询, 把账户拖成
-    // 一个既非「已通知失败」也非「正常初始化」的中间态。
+    // #488 迟到响应窗口: 看门狗超时已把状态转到 SettlementConfirmFailed (并通知了用户),
+    // 此后真响应才到 —— 不能再驱动后续链条, 否则会发起一次没有收尾归属的合约查询, 把账户
+    // 拖成一个既非「已通知失败」也非「正常初始化」的中间态。
     // 判据 = 状态 + request_id 双校验 (同 on_rsp_qry_instrument 的 query_gen_/request_id):
     // 只判状态不够 —— 断线重连后新链进入 Confirming 时, 旧链的迟到响应会以「状态正确」
     // 蒙混过关。
@@ -763,11 +763,13 @@ void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmF
             f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg) : "rsp_info is null";
         SPDLOG_ERROR("td settlement confirm failed | account={} error_id={} error=\"{}\"",
                      account_id_, f.rsp_info ? f.rsp_info->ErrorID : -1, err);
-        // C6: 回退到 LoggedIn (#488: 同时把失败原因上浮 —— 回滚后的 LoggedIn 是正常中间态,
-        // 不上浮就是静默卡在 6/10)。
+        // #496: 停在 SettlementConfirmFailed (7/10「结算单确认失败」), 不再回退 LoggedIn。
+        // 缺 rsp_info 也归 settlement_rejected —— 与 login_rejected 的缺信息口径一致。
         notify_settlement_confirm_failed(
+            TdFailureCode::SettlementRejected,
             f.rsp_info ? std::format("柜台拒绝，错误码 {}：{}", f.rsp_info->ErrorID, err)
-                       : std::string("柜台未返回错误信息"));
+                       : std::string("柜台未返回错误信息"),
+            f.rsp_info ? f.rsp_info->ErrorID : -1);
         return;
     }
     state_machine_.on_settlement_confirmed();
@@ -837,13 +839,16 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         // 进入登录收尾查询阶段: 发起持仓查询 (CTP 流控 1 次/秒, 串行 -> 资金).
         bool failed = (f.rsp_info && f.rsp_info->ErrorID != 0) || !f.instrument;
         if (failed) {
-            // 合约加载失败: 回退到 LoggedIn, 不进入 Ready (设计 §2.4.1).
+            // 合约加载失败: 停在 InstrumentsLoadFailed (8/10「合约加载失败」), 不进 Ready (#496).
             // #488: 原因改中文 —— 它会进用户弹窗 (notify_instruments_load_failed)。
             const std::string err =
                 f.rsp_info ? std::format("柜台拒绝，错误码 {}：{}", f.rsp_info->ErrorID,
                                          dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg))
                            : std::string("最后一批响应未携带合约数据");
-            notify_instruments_load_failed(err);
+            // is_last 带错误是 instruments_rejected 的三种来源之一 (契约 td-status §2.5);
+            // 缺 rsp_info 而只有「无合约数据」也算柜台侧拒绝 (与缺 rsp_info 的通用口径一致)。
+            notify_instruments_load_failed(TdFailureCode::InstrumentsRejected, err,
+                                           f.rsp_info ? f.rsp_info->ErrorID : -1);
             return;
         }
         // 合约加载成功: 停留在 LoadingInstruments, 发起持仓查询.
@@ -1468,23 +1473,28 @@ void AccountSession::notify_login_failed(TdFailureCode code,
     push_notification(notif, login_failed_message(code, reason), "td login failed notify failed");
 }
 
-void AccountSession::notify_settlement_confirm_failed(const std::string& reason) {
-    // #488: 与 notify_login_failed 同结构 —— 先收定时器, 再转状态 (回滚到 LoggedIn), 再通知.
+void AccountSession::notify_settlement_confirm_failed(TdFailureCode code,
+                                                      const std::string& reason,
+                                                      int error_id) {
+    // #488: 与 notify_login_failed 同结构 —— 先收定时器, 再转状态 (停在失败态), 再通知.
     // 看门狗收口在失败出口统一取消: 每个调用点各写一遍只会漏一处 (此前 5 个调用点
     // 全部丢弃状态机返回值, 失败无痕)。
     cancel_settlement_confirm_timer();
     settlement_confirm_request_id_ = 0;  // 出链即作废, 迟到响应的 request_id 校验依赖它
-    const auto notif = state_machine_.on_settlement_confirm_failed(reason);
-    push_notification(notif, settlement_confirm_failed_message(reason),
+    const auto notif = state_machine_.on_settlement_confirm_failed(code, reason, error_id);
+    push_notification(notif, settlement_confirm_failed_message(code, reason),
                       "td settlement confirm failed notify failed");
 }
 
-void AccountSession::notify_instruments_load_failed(const std::string& reason) {
-    // #488: 同上 —— 收定时器 + 转状态 + 通知. on_instruments_load_failed 回滚到 LoggedIn
-    // (6/10「已登录」这个正常中间态), 且不会有下一次尝试 —— 不上浮就是静默卡住.
+void AccountSession::notify_instruments_load_failed(TdFailureCode code,
+                                                    const std::string& reason,
+                                                    int error_id) {
+    // #488: 同上 —— 收定时器 + 转状态 + 通知. #496 起 on_instruments_load_failed 停在
+    // InstrumentsLoadFailed (8/10「合约加载失败」), 不再回退 LoggedIn 这个正常中间态,
+    // 且不会有下一次尝试 —— 不上浮就是静默卡住.
     cancel_instruments_load_timer();
-    const auto notif = state_machine_.on_instruments_load_failed(reason);
-    push_notification(notif, instruments_load_failed_message(reason),
+    const auto notif = state_machine_.on_instruments_load_failed(code, reason, error_id);
+    push_notification(notif, instruments_load_failed_message(code, reason),
                       "td instruments load failed notify failed");
 }
 
@@ -1535,7 +1545,7 @@ void AccountSession::req_settlement_confirm() {
     CThostFtdcSettlementInfoConfirmField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
     fill_account_id(f.InvestorID, sizeof(f.InvestorID), account_id_);
-    // #488: 先转状态再发送 —— 发送被拒与响应失败/超时从同一状态 (Confirming) 回滚,
+    // #488: 先转状态再发送 —— 发送被拒与响应失败/超时从同一状态 (Confirming) 出链,
     // 失败出口因此唯一 (notify_settlement_confirm_failed)。此前 ret != 0 只记日志:
     // 状态停在 LoggedIn、回调永不到来, 账户静默停在 6/10。
     (void)state_machine_.on_req_settlement_confirm();
@@ -1561,7 +1571,7 @@ void AccountSession::req_settlement_confirm() {
             on_settlement_confirm_timeout();
         });
     // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_query_send_hook 同形态 ——
-    // 没有它, 本函数的看门狗排定与 ret != 0 回滚只能靠读代码确认 (失效测试形态)。
+    // 没有它, 本函数的看门狗排定与 ret != 0 失败出口只能靠读代码确认 (失效测试形态)。
     settlement_confirm_request_id_ = ++request_id_;
     int ret = settlement_send_hook_
                   ? settlement_send_hook_(f, settlement_confirm_request_id_)
@@ -1569,8 +1579,11 @@ void AccountSession::req_settlement_confirm() {
     if (ret != 0) {
         SPDLOG_ERROR("td req settlement confirm failed | account={} ret={}", account_id_, ret);
         // ret 是 CTP API 返回码 (-1 网络 / -2 未登录 / -3 流控), 不是柜台裁决 —— 文案不写成
-        // 「柜台拒绝」。看门狗由统一失败出口取消。
-        notify_settlement_confirm_failed(std::format("发送结算单确认请求失败（ret={}）", ret));
+        // 「柜台拒绝」。码仍归 settlement_rejected: 契约 td-status §2.5 把「发送被拒」与
+        // 「柜台拒绝」并列为同一码 (用户看到的是同一件事: 这次确认被拒了)。
+        // 看门狗由统一失败出口取消。
+        notify_settlement_confirm_failed(TdFailureCode::SettlementRejected,
+                                         std::format("发送结算单确认请求失败（ret={}）", ret));
         return;
     }
 }
@@ -1580,11 +1593,14 @@ void AccountSession::on_settlement_confirm_timeout() {
     // expire_settlement_confirm_timeout_for_test 直接注入同一收口, 或用 0 延迟时长 +
     // TimerQueue::tick() 走真回调 (都不 sleep)。
     // 迟到超时 (响应已到 / 已断线 / 已登出) 一律忽略: 状态已离开 Confirming,
-    // 此时回滚与弹窗都会对不上界面状态。
+    // 此时转失败态与弹窗都会对不上界面状态。
     if (state_machine_.state() != TdState::Confirming) return;
     SPDLOG_ERROR("td settlement confirm timeout | account={} timeout_s={}", account_id_,
                  settlement_confirm_timeout_.count());
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5): 同一失败态、同一 last_error 写入, 只靠
+    // code 区分。
     notify_settlement_confirm_failed(
+        TdFailureCode::SettlementTimeout,
         std::format("{} 秒内未收到柜台的结算单确认响应", settlement_confirm_timeout_.count()));
 }
 
@@ -1625,10 +1641,13 @@ void AccountSession::req_qry_instrument() {
             });
             return;
         }
-        // C2: 非 -3 错误, 回退到 LoggedIn (设计 §2.4.1); #488 失败原因上浮 UI。
+        // C2: 非 -3 错误, 停在 InstrumentsLoadFailed (8/10「合约加载失败」), 不进 Ready (#496);
+        // #488 失败原因上浮 UI。
         // ret 是 CTP API 返回码 (-1 网络 / -2 未登录 / -3 流控), 不是柜台裁决。
+        // instruments_rejected 的第一种来源 = 查询发送被拒 (契约 td-status §2.5)。
         SPDLOG_ERROR("td req qry instrument failed | account={} ret={}", account_id_, ret);
-        notify_instruments_load_failed(std::format("发送合约查询请求失败（ret={}）", ret));
+        notify_instruments_load_failed(TdFailureCode::InstrumentsRejected,
+                                       std::format("发送合约查询请求失败（ret={}）", ret));
         return;
     }
     note_query_sent();
@@ -1645,6 +1664,7 @@ void AccountSession::req_qry_instrument() {
                 instrument_query_request_id_ = 0;
                 // #488: 原因改中文 —— 它会进用户弹窗。时长随实际配置, 与看门狗同源。
                 notify_instruments_load_failed(
+                    TdFailureCode::InstrumentsTimeout,
                     std::format("查询 {} 秒未收到最后一批响应", instruments_load_timeout_.count()));
             }
         });
@@ -2907,8 +2927,10 @@ void AccountSession::on_rsp_error(const OnRspErrorTdField& f) {
             instrument_query_request_id_ = 0;
             // #488: on_instruments_load_failed 的通知从 notify_instruments_load_failed 统一上浮;
             // 原因用柜台原文 (中文弹窗)。
+            // #496: instruments_rejected 的第二种来源 = OnRspError 错误响应 (契约 td-status §2.5)。
             notify_instruments_load_failed(
-                std::format("柜台返回错误，错误码 {}：{}", error_id, error_msg));
+                TdFailureCode::InstrumentsRejected,
+                std::format("柜台返回错误，错误码 {}：{}", error_id, error_msg), error_id);
             return;
         case QueryErrorTarget::Position:
             if (!position_query_in_flight_ || finalizer_.phase() != Phase::kQueryPosition) {

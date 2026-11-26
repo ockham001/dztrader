@@ -13,22 +13,33 @@ namespace dztrader::ctp {
 
 namespace {
 
-/// 登录链后段失败之后的「会怎样 + 下一步」(#488).
+/// 登录链失败之后的「会怎样 + 下一步」(认证 / 登录 / 结算确认 / 合约加载共用).
 ///
-/// 结算确认失败与合约加载失败都会回滚到 `LoggedIn` —— 那是**正常中间态**, 界面看不出
-/// 异常, 而本进程不会自动重试登录链 (#406)。两条文案共用这一句, 只有前缀不同:
-/// 分开各写一份会让改一处漏一处的漂移成为可能 (两条文案的后果本来就是同一件事)。
-constexpr std::string_view kLoginChainStuckConsequence =
-    "账户停在「已登录」不能交易，本进程不会自动重试；请先登出再重新登录";
-
-/// 认证/登录失败之后的「会怎样 + 下一步」(#407 与 #494 共用).
-///
-/// 与 kLoginChainStuckConsequence 的区别只在**是否交代停在哪一段**: 认证/登录失败停在
-/// 失败态 (界面本身已显示异常), 不必再说「看起来像正常」; 后段（结算确认 / 合约加载）
-/// 停在「已登录」这个正常中间态, 必须交代。两条路径的「本进程不会自动重试该账户 +
-/// 恢复方式」是同一件事, 抽出来避免改一处漏一处。
+/// #496 起四个可失败段都停在各自失败态 (ADR 0059 决策 1), 界面本身已显示异常, 所以
+/// 四条文案不再需要交代「停在哪个正常中间态」——(#488 时结算/合约会回滚到 `LoggedIn`
+/// 这个正常中间态, 必须额外解释「看起来像正常」, 现在不成立了)。剩下的「本进程不会自动
+/// 重试该账户 + 恢复方式」四段完全一致, 单源化避免改一处漏一处。
 constexpr std::string_view kAccountNotRetriedConsequence =
     "本进程不会自动重试该账户；请先登出再重新登录";
+
+/// 登录链失败通知正文的统一拼装 (四条文案的唯一形状).
+///
+/// 四个失败出口的正文只有「前缀」不同, 其余完全一致 —— 各自写一遍
+/// `if (reason.empty()) ... else ...` 会让「空原因不产出残缺括号」这条规则
+/// 有四个可能漏改的副本。抽在这里之后, 下面四个函数只剩各自的前缀取值。
+/// @param is_timeout true = 用超时前缀 (ADR 0059 决策 5: 超时与柜台拒绝同等对待,
+///   只有「谁没响应」不同, 处置完全一致, 因此不分裂成两套文案模板)
+std::string failure_message(bool is_timeout,
+                            const char* failure_prefix,
+                            const char* timeout_prefix,
+                            const std::string& reason) {
+    const char* prefix = is_timeout ? timeout_prefix : failure_prefix;
+    if (reason.empty()) {
+        // 空原因不产出「（）」这种残缺文案.
+        return std::format("{}，{}", prefix, kAccountNotRetriedConsequence);
+    }
+    return std::format("{}（{}），{}", prefix, reason, kAccountNotRetriedConsequence);
+}
 
 /// 解析 CTP 回报自带的 8 位 "YYYYMMDD" (委托/成交回报的 TradingDay 字段).
 /// 先做长度与字符校验再交给 Date: 回报字段是定长字符数组, 空位填充 / 分隔符 / 缓冲区
@@ -292,12 +303,7 @@ std::string auth_failed_message(TdFailureCode code, const std::string& reason) {
     // 界面本身已显示失败态, 多说一句反而让用户以为要自己判断。
     // 超时与柜台拒绝同等对待 (ADR 0059 决策 5), 只有前缀措辞区分——原因是「谁没响应」不同,
     // 处置完全一致, 所以不分裂成两条文案模板。
-    const char* prefix = code == TdFailureCode::AuthTimeout ? "认证超时" : "认证失败";
-    if (reason.empty()) {
-        // 空原因不产出「（）」这种残缺文案.
-        return std::format("{}，{}", prefix, kAccountNotRetriedConsequence);
-    }
-    return std::format("{}（{}），{}", prefix, reason, kAccountNotRetriedConsequence);
+    return failure_message(code == TdFailureCode::AuthTimeout, "认证失败", "认证超时", reason);
 }
 
 std::string login_failed_message(TdFailureCode code, const std::string& reason) {
@@ -306,29 +312,25 @@ std::string login_failed_message(TdFailureCode code, const std::string& reason) 
     // 文案陈述「发生了什么 + 会怎样 + 下一步」; 不再让用户去界面上做不到的事.
     // 前缀措辞与 auth_failed_message 同构: 超时与柜台拒绝同等对待 (ADR 0059 决策 5),
     // 只有「谁没响应」不同, 处置完全一致, 因此不分裂成两条文案模板.
-    const char* prefix = code == TdFailureCode::LoginTimeout ? "交易登录超时" : "交易登录失败";
-    if (reason.empty()) {
-        // 空原因不产出「（）」这种残缺文案.
-        return std::format("{}，{}", prefix, kAccountNotRetriedConsequence);
-    }
-    return std::format("{}（{}），{}", prefix, reason, kAccountNotRetriedConsequence);
+    return failure_message(code == TdFailureCode::LoginTimeout, "交易登录失败", "交易登录超时",
+                           reason);
 }
 
-std::string settlement_confirm_failed_message(const std::string& reason) {
+std::string settlement_confirm_failed_message(TdFailureCode code, const std::string& reason) {
     // 口径同 login_failed_message: 「发生了什么 + 会怎样 + 下一步」.
-    // 「会怎样」必须写清, 因为状态机只回滚到 LoggedIn (6/10「已登录」) 这个正常中间态,
-    // 界面看不出异常; 「下一步」= 先登出再登录 (ADR 0051 决策 4, WebUI 已有该入口, #409).
-    if (reason.empty()) {
-        return std::format("结算单确认失败，{}", kLoginChainStuckConsequence);
-    }
-    return std::format("结算单确认失败（{}），{}", reason, kLoginChainStuckConsequence);
+    // #496 起状态机停在 SettlementConfirmFailed (7/10「结算单确认失败」), 界面本身已显示
+    // 失败阶段, 所以不再需要解释「看起来像正常」(那是 #488 回滚到 LoggedIn 时的说法);
+    // 保留的后果是**本进程不会自动重试**, 下一步 = 先登出再登录 (ADR 0051 决策 4)。
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5): 只有「谁没响应」不同, 处置完全一致,
+    // 因此不分裂成两条文案模板。
+    return failure_message(code == TdFailureCode::SettlementTimeout, "结算单确认失败",
+                           "结算单确认超时", reason);
 }
 
-std::string instruments_load_failed_message(const std::string& reason) {
-    if (reason.empty()) {
-        return std::format("合约加载失败，{}", kLoginChainStuckConsequence);
-    }
-    return std::format("合约加载失败（{}），{}", reason, kLoginChainStuckConsequence);
+std::string instruments_load_failed_message(TdFailureCode code, const std::string& reason) {
+    // 同上 (#496): 停在 InstrumentsLoadFailed (8/10「合约加载失败」), 界面已显示失败阶段。
+    return failure_message(code == TdFailureCode::InstrumentsTimeout, "合约加载失败",
+                           "合约加载超时", reason);
 }
 
 bool position_query_retry_allowed(int retries_done) noexcept {
