@@ -1494,7 +1494,7 @@ void AccountSession::req_login() {
     fill_account_id(f.UserID, sizeof(f.UserID), account_id_);
     copy_string(f.Password, password_.c_str(), true);
     // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_auth_send_hook 同形态 ——
-    // 没有它, 登录段的四条失败出口只能靠读代码确认 (docs/unit-test-standard.md §1.1).
+    // 没有它, 登录段的五条失败出口只能靠读代码确认 (docs/unit-test-standard.md §1.1).
     int ret = login_send_hook_ ? login_send_hook_(f, ++request_id_)
                                : api_->ReqUserLogin(&f, ++request_id_);
     if (ret != 0) {

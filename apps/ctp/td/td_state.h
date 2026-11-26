@@ -57,7 +57,7 @@ DZ_JSON_ENUM(TdState)
 
 /// 登录链失败原因码 (契约 td-status §2.5 `last_error.code`)。
 /// 一个码 = 同一失败阶段里的一种原因; 超时与柜台拒绝同等对待, 靠本枚举区分 (ADR 0059 决策 5)。
-/// 已落地认证段两个码 + 登录段四个码 + 连接超时例外; 后两段的码随 #496 补齐。
+/// 已落地认证段两个码 + 登录段五个码 + 连接超时例外; 后两段的码随 #496 补齐。
 enum class TdFailureCode {
     ConnectTimeout,   ///< connect_timeout: 30 秒内未收到 OnFrontConnected (回 Idle, 不进失败态)
     AuthRejected,     ///< auth_rejected: OnRspAuthenticate 的 ErrorID != 0 (柜台拒绝认证)
@@ -226,7 +226,7 @@ public:
     /// (ADR 0059 决策 1)。失败位置与「是否经过认证」无关——链走到哪一段就停在哪一段。
     /// 段内原因写入 `last_error` (契约 td-status §2.5):
     /// @param code 失败原因码 (login_rejected / login_timeout / login_parse_error /
-    /// day_load_failed)
+    /// day_load_failed / login_send_failed)
     /// @param message 用户可读原因 (中文; CTP ErrorMsg 原文或空串 = 无详情)
     /// @param error_id CTP ErrorID (仅 login_rejected 有意义, 其余传 0)
     std::optional<TdNotification> on_login_failed(TdFailureCode code,

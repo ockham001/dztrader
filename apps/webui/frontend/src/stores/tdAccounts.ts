@@ -203,7 +203,7 @@ export function tdStateText(state: TdState | string | null | undefined): string 
  * 转换只发生在 {@link parseTdLastError}，组件不接触后端字段形状。
  */
 export interface TdLastErrorView {
-  code: string // connect_timeout | auth_rejected | auth_timeout | login_rejected | login_timeout | login_parse_error | day_load_failed（未知码也保留原文，仅用于映射兜底）
+  code: string // connect_timeout | auth_rejected | auth_timeout | login_rejected | login_timeout | login_parse_error | day_load_failed | login_send_failed（未知码也保留原文，仅用于映射兜底）
   message: string // 中文用户可读原因；空串 = 无详情，展示时按 code 映射固定文案
   errorId: number // CTP ErrorID；仅 *_rejected 非 0
   timestamp: number // 失败发生时间，Unix 秒

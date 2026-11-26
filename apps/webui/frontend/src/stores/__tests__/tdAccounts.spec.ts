@@ -197,7 +197,7 @@ describe('parseTdLastError / tdLastErrorText（契约 td-status §2.5）', () =>
     expect(tdLastErrorText(null)).toBe('')
   })
 
-  it('登录段四个码各有中文兜底（契约 td-status §2.5 码表）', () => {
+  it('登录段五个码各有中文兜底（契约 td-status §2.5 码表）', () => {
     // 机器码不展示；每种原因说得清是哪一步出错，用户才知道该改什么。
     expect(tdLastErrorText({ code: 'login_rejected', message: '', errorId: 3, timestamp: 1 }))
       .toBe('登录被柜台拒绝')

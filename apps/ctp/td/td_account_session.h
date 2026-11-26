@@ -235,8 +235,9 @@ public:
     void set_auth_timeout_for_test(std::chrono::seconds timeout);
     /// 登录发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqUserLogin` 返回码。
     /// 与 `set_auth_send_hook` 同形态：`req_login()` 直接解引用 `api_`，而 `api_` 只能由
-    /// `open()` 创建真实 `CThostFtdcTraderApi`（需连柜台）。没有它，登录段的四条失败出口
-    /// （柜台拒绝 / 10 秒超时 / 交易日无效 / 基准装载失败）在真会话上无法驱动。
+    /// `open()` 创建真实 `CThostFtdcTraderApi`（需连柜台）。没有它，登录段的五条失败出口
+    /// （柜台拒绝 / 10 秒超时 / 交易日无效 / 基准装载失败 / 发送被拒）在真会话上无法驱动；
+    /// 发送被拒这条更依赖它 —— 它本身就是「发送返回非 0」。
     using LoginSendFn = std::function<int(CThostFtdcReqUserLoginField&, int)>;
     void set_login_send_hook(LoginSendFn hook);
     /// 测试夹具专用：驱动生产 `req_login()`（会话须已在 `Connected` / `Authenticated`）。
@@ -370,7 +371,8 @@ private:
     /// 本进程不会自动重发登录 (见 #406), 所以失败也必须让用户看见, 否则账户会静默卡住。
     ///
     /// @param code 段内原因码 (login_rejected / login_timeout / login_parse_error /
-    ///   day_load_failed)。它与 reason 一起写进 last_error, 并决定通知前缀措辞。
+    ///   day_load_failed / login_send_failed)。它与 reason 一起写进 last_error,
+    ///   并决定通知前缀措辞。
     /// @param reason 失败场景 (中文, 供 last_error.message 与通知正文)。柜台拒绝时传 CTP
     ///   `ErrorMsg` 原文 (错误码走 error_id 字段, 不在正文重复); 超时 / 解析 / 装载失败传
     ///   固定文案; 无详情传空串 (前端按 code 兜底)。不复用状态机的通用文案
