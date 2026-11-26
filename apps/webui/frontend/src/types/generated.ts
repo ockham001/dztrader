@@ -870,8 +870,20 @@ export interface TdAccountsDegradedResponse {
     reason: TdAccountsDegradedReason
 }
 
-// 交易网关账户级细状态（契约 td-status §2.2，11 态；值 = 发送方状态机的枚举名）
-export type TdState = 'Idle' | 'Connecting' | 'Connected' | 'Authenticating' | 'Authenticated' | 'LoggingIn' | 'LoggedIn' | 'Confirming' | 'LoadingInstruments' | 'Ready' | 'Disconnected'
+// 交易网关账户级细状态（契约 td-status §2.2，12 态；值 = 发送方状态机的枚举名）
+export type TdState = 'Idle' | 'Connecting' | 'Connected' | 'Authenticating' | 'AuthFailed' | 'Authenticated' | 'LoggingIn' | 'LoggedIn' | 'Confirming' | 'LoadingInstruments' | 'Ready' | 'Disconnected'
+
+// 最近一次登录链失败（契约 td-status §2.5）
+export interface TdLastError {
+    /** 机器码（契约 td-status §2.5 码表）；前端按它映射固定文案，不得直接展示给用户 */
+    code: string
+    /** 用户可读原因（中文）；空串 = 无详情，由前端按 code 兜底 */
+    message: string
+    /** CTP ErrorID（仅 auth_rejected 有意义，无 rsp_info 时为 -1），其余为 0 */
+    error_id: number
+    /** 失败发生时间，Unix 秒级时间戳；非法/缺失时前端不展示时间 */
+    timestamp: number
+}
 
 // CTP 细状态 ext（契约 td-status §2.3）
 export interface TdCtpStatusExt {
@@ -906,6 +918,8 @@ export interface TdStatusPayload {
     progress_max: number
     /** 当前进度值 */
     progress_current: number
+    /** 最近一次登录链失败；null = 无未清空的失败（契约 td-status §2.5） */
+    last_error: TdLastError | null
     /** 柜台特有字段 */
     ext: TdCtpStatusExt
 }

@@ -2,13 +2,13 @@
  * 网关会话进度判定的**唯一实现**（ADR 0051 / 契约 progress「网关会话进度骨架」）。
  *
  * 端点语义跨接口类型固定：`current <= min` = 未登录、`current >= max` = 就绪、
- * 中间 = 建立中/重连中/失败回滚；数值不固定（行情网关 max=4、交易网关 max=10）。
+ * 中间 = 建立中/重连中/失败停在失败阶段（ADR 0059）；数值不固定（行情网关 max=4、交易网关 max=10）。
  * 行情侧 `progressLoginState`、交易侧 `tdSessionState` 与两个 store 的「回退清登录 pending」
  * 都委托到这里——同一事实只允许一处定义（#409 审查 B1）。
  */
 import type { ProgressView } from '@/stores/progress'
 
-/** 会话状态：未登录 / 建立中（含重连中、失败回滚）/ 就绪 */
+/** 会话状态：未登录 / 建立中（含重连中、失败停在失败阶段）/ 就绪 */
 export type SessionState = 'absent' | 'forming' | 'ready'
 
 export interface ProgressLike {

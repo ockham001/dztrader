@@ -1,6 +1,7 @@
 #ifndef DZTRADER_CTP_TD_TD_STATUS_PUBLISH_H_
 #define DZTRADER_CTP_TD_TD_STATUS_PUBLISH_H_
 
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,16 +19,36 @@ struct TdStatusPublishKey {
     int progress_current = 0;
     std::string date;
     std::string login_time;
+    /// 最近一次失败的**身份**（契约 td-status §2.5；空串 = 无未清空失败）。
+    /// 必须进键：同一失败态下「原因变了」（先柜台拒绝、重试后超时）时 state 与进度都不变，
+    /// 只靠其余字段判定会让新原因永远到不了前端。
+    /// 取值见 td_last_error_identity（code + timestamp，避秒级精度漏判）。
+    std::string last_error_identity;
 
     bool operator==(const TdStatusPublishKey&) const = default;
 };
+
+/// 最近一次失败的**身份**（契约 td-status §2.5；空串 = 无未清空失败）。
+///
+/// 为什么是 `code@timestamp` 而不是只比 timestamp：时间戳只有秒级精度，同一秒内连发两次
+/// 失败（重试很快被拒）会让新原因既不重推、前端也不清 pending —— 正是本判据存在的场景。
+/// 带上 `code` 后，「原因种类变了」在同一秒内也能被区分。
+/// `message` / `error_id` 不进身份：它们随全量帧带出；同一 code + 同一秒视为同一次失败
+/// 已经足够（更细会让每次重推都换键、制造灌帧）。
+inline std::string td_last_error_identity(const TdStatus& status) {
+    if (!status.last_error.has_value()) {
+        return {};
+    }
+    return std::format("{}@{}", status.last_error->code, status.last_error->timestamp);
+}
 
 /// 从 TdStatus 提取重推键（纯函数）。
 inline TdStatusPublishKey td_status_publish_key(const TdStatus& status) {
     return {.state = status.state,
             .progress_current = status.progress_current,
             .date = status.date,
-            .login_time = status.login_time};
+            .login_time = status.login_time,
+            .last_error_identity = td_last_error_identity(status)};
 }
 
 /// 主循环 sweep 的输入：一个会话的 account_id + 当前重推键。

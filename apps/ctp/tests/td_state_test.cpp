@@ -101,19 +101,51 @@ TEST_F(TdStateMachineTest, LoginWithoutAuth) {
     EXPECT_FALSE(notif.has_value());
 }
 
-// --- 认证失败回退 ---
+// --- 认证失败: 停在失败阶段 (ADR 0059 决策 1) ---
 
-TEST_F(TdStateMachineTest, AuthenticateFailedRollback) {
+TEST_F(TdStateMachineTest, AuthenticateFailedStopsAtAuthFailed) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_authenticate();
-    auto notif = sm.on_authenticate_failed();
-    EXPECT_EQ(sm.state(), TdState::Connected);
+    ASSERT_EQ(sm.status().progress_current, 3);
+    auto notif = sm.on_authenticate_failed(TdFailureCode::AuthRejected, "CTP:用户认证失败", 3);
+    // 停在失败阶段: 与 Authenticating 同格 (3/10), 不回退到 Connected (2)。
+    EXPECT_EQ(sm.state(), TdState::AuthFailed);
+    EXPECT_EQ(sm.status().progress_current, 3);
+    EXPECT_EQ(sm.status().progress_desc, "认证失败");
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(notif->popup);
-    EXPECT_EQ(notif->message, "认证失败");
-    EXPECT_EQ(sm.status().progress_current, 2);
+    // 段内原因写入 last_error (契约 td-status §2.5)
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "auth_rejected");
+    EXPECT_EQ(sm.status().last_error->message, "CTP:用户认证失败");
+    EXPECT_EQ(sm.status().last_error->error_id, 3);
+    EXPECT_GT(sm.status().last_error->timestamp, 0);
+}
+
+TEST_F(TdStateMachineTest, AuthTimeoutWritesSameFailurePathAsRejection) {
+    // ADR 0059 决策 5: 超时与柜台拒绝同失败态、同 last_error 写入, 只靠 code 区分。
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    auto notif = sm.on_authenticate_failed(TdFailureCode::AuthTimeout, "", 0);
+    EXPECT_EQ(sm.state(), TdState::AuthFailed);
+    EXPECT_EQ(sm.status().progress_current, 3);
+    ASSERT_TRUE(notif.has_value());
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "auth_timeout");
+    EXPECT_EQ(sm.status().last_error->message, "");  // 空串 = 无详情, 前端按 code 兜底
+    EXPECT_EQ(sm.status().last_error->error_id, 0);
+}
+
+TEST_F(TdStateMachineTest, AuthenticateFailedOutsideAuthenticatingIsSilentAndDoesNotTransfer) {
+    // 非预期状态下收到认证失败: 不转移、不写 last_error、不推通知 (保持既有语义)。
+    ASSERT_EQ(sm.state(), TdState::Idle);
+    auto notif = sm.on_authenticate_failed(TdFailureCode::AuthRejected, "late", 3);
+    EXPECT_FALSE(notif.has_value());
+    EXPECT_EQ(sm.state(), TdState::Idle);
+    EXPECT_FALSE(sm.status().last_error.has_value());
 }
 
 // --- 登录失败回退 ---
@@ -382,7 +414,82 @@ TEST_F(TdStateMachineTest, ReadyStateProgressIsMax) {
     EXPECT_EQ(sm.status().progress_current, 10);
 }
 
-// --- TdState 11 态 -> DzAccountState 三态聚合映射 (契约 account-status) ---
+// --- last_error 清空时机 (契约 td-status §2.5) ---
+
+namespace {
+
+/// 把状态机推进到 AuthFailed 并返回 (夹具: on_connect 会清 last_error, 故先转再写)。
+void drive_to_auth_failed(TdStateMachine& sm, int error_id = 3) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_failed(TdFailureCode::AuthRejected, "CTP:用户认证失败", error_id);
+}
+
+}  // namespace
+
+TEST_F(TdStateMachineTest, LastErrorClearedOnNextLoginAttempt) {
+    drive_to_auth_failed(sm);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    // 先登出 (进 Idle): last_error 不清空 —— 保留供回看 (ADR 0059 决策 6)
+    sm.on_disconnect();
+    EXPECT_EQ(sm.state(), TdState::Idle);
+    ASSERT_TRUE(sm.status().last_error.has_value()) << "logout must keep the last failure";
+    EXPECT_EQ(sm.status().last_error->code, "auth_rejected");
+
+    // 下一次登录尝试被受理 = on_connect: 清空
+    sm.on_connect();
+    EXPECT_FALSE(sm.status().last_error.has_value());
+}
+
+TEST_F(TdStateMachineTest, LastErrorClearedOnReady) {
+    drive_to_auth_failed(sm);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+
+    // 重来一遍走到 Ready: 转 Ready 时清空
+    sm.on_disconnect();
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v1.0", "20260726", "09:00:00");
+    sm.on_req_settlement_confirm();
+    sm.on_settlement_confirmed();
+    sm.on_instruments_loaded();
+    ASSERT_EQ(sm.state(), TdState::Ready);
+    EXPECT_FALSE(sm.status().last_error.has_value());
+}
+
+TEST_F(TdStateMachineTest, LastErrorKeptAcrossDisconnect) {
+    // 断线 (Disconnected) 不是「新尝试受理」也不是「就绪」: last_error 保留,
+    // 用户仍能看到上次失败的原因。
+    drive_to_auth_failed(sm);
+    sm.on_front_disconnected(0x1001);
+    EXPECT_EQ(sm.state(), TdState::Disconnected);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "auth_rejected");
+}
+
+TEST_F(TdStateMachineTest, AuthFailedDoesNotRollBackProgress) {
+    // 核心回归: 失败态的 current 必须等于它停住那一段的数值, 不得回退到上一段。
+    sm.on_connect();
+    sm.on_front_connected();
+    const int at_connected = sm.status().progress_current;
+    sm.on_req_authenticate();
+    const int at_authenticating = sm.status().progress_current;
+    sm.on_authenticate_failed(TdFailureCode::AuthTimeout, "", 0);
+    EXPECT_EQ(sm.status().progress_current, at_authenticating);
+    EXPECT_NE(at_authenticating, at_connected)
+        << "test premise: auth stage must differ from connected";
+    EXPECT_LT(sm.status().progress_current, sm.status().progress_max)
+        << "failure is not an endpoint";
+    EXPECT_GT(sm.status().progress_current, sm.status().progress_min)
+        << "failure is not an endpoint";
+}
+
+// --- TdState -> DzAccountState 三态聚合映射 (契约 account-status) ---
 
 TEST(AccountStateMapping, TripleStateAggregation) {
     using namespace dztrader::ctp;
@@ -391,6 +498,7 @@ TEST(AccountStateMapping, TripleStateAggregation) {
     EXPECT_EQ(account_state_of(TdState::Connecting), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Connected), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Authenticating), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::AuthFailed), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Authenticated), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoggingIn), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoggedIn), DZ_ACCOUNT_LOGGING_IN);
@@ -486,4 +594,54 @@ TEST(TdStatusPayloadTest, ZeroCountsStillEmitted) {
     EXPECT_EQ(j["ext"]["unknown_direction"], 0);
     EXPECT_EQ(j["ext"]["unknown_price_type"], 0);
     EXPECT_EQ(j["ext"]["unknown_position_effect"], 0);
+}
+
+// ============================================================================
+// RTN_TD_STATUS payload: last_error（契约 td-status §2.5）
+// ============================================================================
+
+TEST(TdStatusPayloadTest, LastErrorIsNullWhenNoFailure) {
+    using namespace dztrader::ctp;
+    // 无未清空失败时必须是显式 null（不是缺键、不是空对象）：前端用「非 null + timestamp
+    // 变化」作登录 pending 清除信号，缺键与 null 必须同义。
+    const nlohmann::json j = td_status_payload(TdStatus{}, UnknownEnumCounts{});
+    ASSERT_TRUE(j.contains("last_error"));
+    EXPECT_TRUE(j["last_error"].is_null());
+}
+
+TEST(TdStatusPayloadTest, LastErrorCarriesCodeMessageErrorIdAndTimestamp) {
+    using namespace dztrader::ctp;
+    TdStatus status;
+    status.account_id = "acc1";
+    status.state = TdState::AuthFailed;
+    status.last_error = TdLastError{"auth_rejected", "CTP:用户认证失败", 3, 1'700'000'000};
+
+    const nlohmann::json j = td_status_payload(status, UnknownEnumCounts{});
+    ASSERT_TRUE(j["last_error"].is_object());
+    EXPECT_EQ(j["last_error"]["code"], "auth_rejected");
+    EXPECT_EQ(j["last_error"]["message"], "CTP:用户认证失败");
+    EXPECT_EQ(j["last_error"]["error_id"], 3);
+    EXPECT_EQ(j["last_error"]["timestamp"], 1'700'000'000);
+}
+
+TEST(TdStatusJsonTest, LastErrorIsSerializedWithStatus) {
+    using namespace dztrader::ctp;
+    // NLOHMANN 宏路径也要能带出 last_error（Payload 构造里 json = status 走这条）。
+    TdStateMachine sm;
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_failed(TdFailureCode::AuthTimeout, "10 秒内未收到响应", 0);
+
+    const nlohmann::json j = sm.status();
+    ASSERT_TRUE(j["last_error"].is_object());
+    EXPECT_EQ(j["last_error"]["code"], "auth_timeout");
+    EXPECT_EQ(j["last_error"]["error_id"], 0);
+}
+
+TEST(TdFailureCodeTest, CodeStringsMatchContract) {
+    using namespace dztrader::ctp;
+    // 线上码表（契约 td-status §2.5）：字符串即协议, 改名是破坏性变更。
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::AuthRejected)), "auth_rejected");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::AuthTimeout)), "auth_timeout");
 }

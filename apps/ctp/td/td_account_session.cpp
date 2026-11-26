@@ -198,7 +198,9 @@ void AccountSession::advance_login_chain_for_test(TdState target) {
     state_machine_ = TdStateMachine{};
     state_machine_.on_connect();
     state_machine_.on_front_connected();
+    if (stop_at(TdState::Connected)) return;
     state_machine_.on_req_authenticate();
+    if (stop_at(TdState::Authenticating)) return;
     state_machine_.on_authenticate_success();
     state_machine_.on_req_login();
     state_machine_.on_login_success(
@@ -620,12 +622,30 @@ void AccountSession::on_front_disconnected(int reason) {
 }
 
 void AccountSession::on_rsp_authenticate(const OnRspAuthenticateField& f) {
+    // 迟到响应窗口 (与 #488 的 on_rsp_settlement_confirm 同一形态、同一理由):
+    // 10 秒认证超时已把状态转到 AuthFailed 之后, 真响应才到。此时若继续按成功分支走:
+    //   on_authenticate_success() 会被状态机拒绝 (不在 Authenticating) → 状态仍是 AuthFailed,
+    //   但 req_login() 照发 —— 一个没有归属的登录请求。柜台若回成功, on_login_success 的
+    //   守卫同样拒绝 (不在 LoggingIn), 响应被丢弃; 账户就卡在 AuthFailed 且没人知道为什么。
+    // 判据 = 状态 (此刻必须还在 Authenticating), 与 settlement 一致。
+    // 守卫必须排在 cancel 之前: 排在前面会让一条被丢弃的外来响应把本链的超时定时器撤掉。
+    if (state_machine_.state() != TdState::Authenticating) {
+        SPDLOG_WARN("td stale authenticate response ignored | account={} state={}", account_id_,
+                    magic_enum::enum_name(state_machine_.state()));
+        return;
+    }
     cancel_login_timer();
     bool ok = f.rsp_info && f.rsp_info->ErrorID == 0;
     if (!ok) {
-        SPDLOG_ERROR("td authenticate failed | account={} error_id={}", account_id_,
-                     f.rsp_info ? f.rsp_info->ErrorID : -1);
-        state_machine_.on_authenticate_failed();
+        const int error_id = f.rsp_info ? f.rsp_info->ErrorID : -1;
+        SPDLOG_ERROR("td authenticate failed | account={} error_id={}", account_id_, error_id);
+        // #489 并入 #494: 此前丢弃状态机返回的通知, 认证失败对用户完全无痕。现在经统一
+        // 出口 (#493) 上浮, 并把段内原因写进 last_error (契约 td-status §2.5)。
+        // 文案不复用状态机的通用「认证失败」: 用户需要知道柜台给了什么。
+        notify_auth_failed(TdFailureCode::AuthRejected,
+                           f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
+                                      : std::string("柜台未返回错误信息"),
+                           error_id);
         return;
     }
     state_machine_.on_authenticate_success();
@@ -1326,21 +1346,42 @@ void AccountSession::req_authenticate() {
     fill_account_id(f.UserID, sizeof(f.UserID), account_id_);
     copy_string(f.AppID, app_id_.c_str(), true);
     copy_string(f.AuthCode, auth_code_.c_str(), true);
-    int ret = api_->ReqAuthenticate(&f, ++request_id_);
+    // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_settlement_send_hook 同形态 ——
+    // 没有它, 两条认证失败出口只能靠读代码确认 (docs/unit-test-standard.md §1.1).
+    int ret = auth_send_hook_ ? auth_send_hook_(f, ++request_id_)
+                              : api_->ReqAuthenticate(&f, ++request_id_);
     if (ret != 0) {
         SPDLOG_ERROR("td req authenticate failed | account={} ret={}", account_id_, ret);
         return;
     }
     state_machine_.on_req_authenticate();
-    // 10s 认证超时
+    // 认证超时（生产 10s；测试可缩短到 0 走真 TimerQueue 回调）
     uint64_t gen = generation_;
-    login_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(10), [this, gen]() {
+    login_timer_id_ = timer_queue_.schedule_after(auth_timeout_, [this, gen]() {
         if (gen != generation_) return;
-        if (state_machine_.state() == TdState::Authenticating) {
-            SPDLOG_ERROR("td authenticate timeout | account={}", account_id_);
-            state_machine_.on_authenticate_failed();
-        }
+        on_auth_timeout();
     });
+}
+
+void AccountSession::on_auth_timeout() {
+    // 生产由 TimerQueue 在 10s 后回调; 测试经 expire_auth_timeout_for_test 注入同一收口.
+    // 已离开 Authenticating (响应已到 / 已断线 / 已登出) 时忽略迟到超时: 此时弹窗对不上
+    // 界面状态, 也不该把已前进的链硬拽回失败态。
+    if (state_machine_.state() != TdState::Authenticating) return;
+    SPDLOG_ERROR("td authenticate timeout | account={}", account_id_);
+    // #489 并入 #494: 超时与柜台拒绝同等对待 (ADR 0059 决策 5) —— 同一失败态、
+    // 同一 last_error 写入、同一条通知出口, 只靠 code 区分。
+    notify_auth_failed(TdFailureCode::AuthTimeout, "10 秒内未收到柜台的认证响应");
+}
+
+void AccountSession::set_auth_send_hook(AuthSendFn hook) { auth_send_hook_ = std::move(hook); }
+
+void AccountSession::request_authenticate_for_test() { req_authenticate(); }
+
+void AccountSession::expire_auth_timeout_for_test() { on_auth_timeout(); }
+
+void AccountSession::set_auth_timeout_for_test(std::chrono::seconds timeout) {
+    auth_timeout_ = timeout;
 }
 
 void AccountSession::push_notification(const std::optional<TdNotification>& notif,
@@ -1361,6 +1402,17 @@ void AccountSession::push_notification(const std::optional<TdNotification>& noti
     } catch (...) {
         SPDLOG_ERROR("{} | account={} error=unknown_exception", prose, account_id_);
     }
+}
+
+void AccountSession::notify_auth_failed(TdFailureCode code,
+                                        const std::string& reason,
+                                        int error_id) {
+    // #489 并入 #494: 认证失败的两处调用点 (响应被拒 / 10 秒超时) 此前都丢弃状态机返回值,
+    // 账户静默停在 2/10「已连接」。现在统一走本出口: 转状态 (停在 AuthFailed 3/10) +
+    // 写 last_error + 弹窗, 与 #407 / #488 同类缺陷的处置一致。
+    // 先转状态再通知 (与 md 一致): last_error 与状态在同一次转移写出 (ADR 0059 决策 2)。
+    const auto notif = state_machine_.on_authenticate_failed(code, reason, error_id);
+    push_notification(notif, auth_failed_message(code, reason), "td auth failed notify failed");
 }
 
 void AccountSession::notify_login_failed(const std::string& reason) {

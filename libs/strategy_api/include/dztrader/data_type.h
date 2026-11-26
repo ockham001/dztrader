@@ -349,7 +349,7 @@ typedef int8_t DzNotifyLevel;
  *  账户登录状态
  * ========================================================== */
 
-/** @brief 账户登录状态（三态，td 内部 11 态聚合映射，契约 account-status） */
+/** @brief 账户登录状态（三态，td 内部细状态聚合映射，契约 account-status） */
 typedef int8_t DzAccountState;
 
 /** @brief 未登录（未启动/断开/登出/账户已移除） */

@@ -21,7 +21,7 @@
 
 ## DZ_FRAME_ACCOUNT_STATUS
 
-**语义**：账户登录状态推送（td 内部 11 态聚合为三态）
+**语义**：账户登录状态推送（td 内部细状态聚合为三态）
 **数据流**：形态 5（总则 §4.2）——basic 广播帧（身份在 payload `account_id` + `gateway_name`）；写端 = td 网关（权威回报）与 master（平台兜底应答 / td 退出代推）；读端 = 策略 SDK（全量透传 → `on_account_status`）、master（建镜像）与 dzweb（维护在线账户集合与日切感知，见《帧契约：TD 数据同步》§8）
 **Payload**：struct `DzAccountStatus`（104B，真相源：`libs/strategy_api/include/dztrader/struct.h`，非 JSON；字段表不重复）
 
@@ -34,13 +34,13 @@
 | 三态 | td 内部态（TdState） |
 |---|---|
 | Offline | Idle、Disconnected |
-| LoggingIn | Connecting、Connected、Authenticating、Authenticated、LoggingIn、LoggedIn、Confirming、LoadingInstruments（登录全过程） |
+| LoggingIn | Connecting、Connected、Authenticating、AuthFailed、Authenticated、LoggingIn、LoggedIn、Confirming、LoadingInstruments（登录全过程，含失败态） |
 | Ready | Ready（= TdHealth::Up，可下单可查询） |
 
 **触发场景**（写端 = td 网关，场景 8 为 master）：
 
 1. td 启动读完配置：`config_.accounts` 全量各推一条（无会话 = Offline）
-2. 三态翻转（状态转移驱动 `ACCOUNT_STATUS` 与快照驱动 `TD_RTN_STATUS` 触发点不同）：内部 11 态细变不推；三态去重（per-account 推送缓存）；Offline 例外恒推（断开/删除语义依赖必达）；连接超时经会话状态通知回调走统一写出口推 Offline
+2. 三态翻转（状态转移驱动 `ACCOUNT_STATUS` 与快照驱动 `TD_RTN_STATUS` 触发点不同）：内部细状态变化不推；三态去重（per-account 推送缓存）；Offline 例外恒推（断开/删除语义依赖必达）；连接超时经会话状态通知回调走统一写出口推 Offline
 3. **会话交易日变化（日切，含日切后重新登录）**：强制重推一次（`date` 更新为新交易日），使 dzweb 感知日切并广播 `data_changed`（`scope="td"`）让前端清空重拉
 4. 盘中连接/断开/移除账户：新会话建立即推 LoggingIn；断开删会话前先推 Offline；remove 路径同样推 Offline（退出三路径统一：崩溃/停止/移除均推 Offline + master 清镜像）
 5. 盘中配置变更致账户集变化（如新增未连接账户）：全量重推，无会话账户推 Offline（策略立即感知新账户存在且未登录）
@@ -61,7 +61,7 @@
 
 - basic 广播帧，所有事件通道读者可见；策略侧由 SDK 全量透传（不按策略过滤，见《帧契约：策略》拦截总则）
 - `gateway_name` 的能力边界（事实陈述，ADR 0058）：① 只读运行态信息，账户身份恒为 `account_id`；② 不是稳定标识——网关名是运行期实例名（改名 / 换实例 / 账户迁移即变），跨重启不承诺连续；③ 只覆盖「当前有网关在报」的账户，不是账户全集（未启动接口的账户、以及策略重启前的历史帧都拿不到）；④ 不改变下单路由——`TD_ORDER_REQ` / `TD_ORDER_CANCEL_REQ` 是 basic 广播帧，按 payload `account_id` 归属路由，平台不支持按网关下单
-- 与 `TD_RTN_STATUS` 并行分工：后者面向 dzweb UI 全量细节（11 态细状态 + 登录信息 + 登录进度，`instance_id` = 账户 ID，见《帧契约：交易网关状态》），`ACCOUNT_STATUS` 面向策略/master 三态聚合
+- 与 `TD_RTN_STATUS` 并行分工：后者面向 dzweb UI 全量细节（12 态细状态 + 登录信息 + 登录进度 + 最近一次失败，`instance_id` = 账户 ID，见《帧契约：交易网关状态》），`ACCOUNT_STATUS` 面向策略/master 三态聚合
 - master 兜底与 td 权威应答可能重复，消费方幂等取最新
 - 竞态窗口：td 启动快照未到时 master 可能假阴性 Offline（td 快照到达自愈）；td 崩溃到 master 补推之间策略可能已下单（Offline 仅通知，不改变订单路径）。td 退出后 `TD_QUERY_ACCOUNT_STATUS` 查询由 master 兜底回 Offline（`gateway_name` = ""，平台生成帧；td 退出代推帧同样为空串）——不存在静默窗口
 

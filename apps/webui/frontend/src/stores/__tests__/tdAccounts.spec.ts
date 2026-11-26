@@ -7,6 +7,8 @@ import {
   tdGatewayPending,
   tdInterfaceType,
   tdStateText,
+  tdLastErrorText,
+  parseTdLastError,
   TD_ACCOUNT_OP_TIMEOUT_MS,
   TD_GATEWAY_OP_TIMEOUT_MS,
   TD_SESSION_LOGIN_TIMEOUT_MS,
@@ -94,6 +96,9 @@ function statusPayload(overrides: Partial<TdStatusPayload> = {}): TdStatusPayloa
     progress_current: 10,
     ext: { api_version: 'v6.7.2', sys_version: 'v6.7.2_20240105' },
     ...overrides,
+    // 显式收口：`Partial<TdStatusPayload>` 的 last_error 是可选，展开后会带 undefined，
+    // 而线上契约恒为 `TdLastError | null`（契约 td-status §2.5：缺键与 null 同义）。
+    last_error: overrides.last_error ?? null,
   }
 }
 
@@ -122,10 +127,11 @@ describe('tdInterfaceType（契约 td-config §1 接口类型派生）', () => {
   })
 })
 
-describe('tdStateText（契约 td-status §2.2 十一态）', () => {
-  it('11 个状态值都有中文文案，且互不相同（不漏映射、不撞文案）', () => {
-    const states = ['Idle', 'Connecting', 'Connected', 'Authenticating', 'Authenticated',
-      'LoggingIn', 'LoggedIn', 'Confirming', 'LoadingInstruments', 'Ready', 'Disconnected'] as const
+describe('tdStateText（契约 td-status §2.2 十二态）', () => {
+  it('12 个状态值都有中文文案，且互不相同（不漏映射、不撞文案）', () => {
+    const states = ['Idle', 'Connecting', 'Connected', 'Authenticating', 'AuthFailed',
+      'Authenticated', 'LoggingIn', 'LoggedIn', 'Confirming', 'LoadingInstruments', 'Ready',
+      'Disconnected'] as const
     const texts = states.map(state => tdStateText(state))
     for (const text of texts) {
       expect(text).not.toBe('')
@@ -139,6 +145,88 @@ describe('tdStateText（契约 td-status §2.2 十一态）', () => {
     expect(tdStateText(null)).toBe('—')
     expect(tdStateText(undefined)).toBe('—')
     expect(tdStateText('SomeFutureState')).toBe('SomeFutureState')
+  })
+
+  it('AuthFailed 有独立文案（与 Authenticating 不同，用户能看出「在认证」还是「认证失败」）', () => {
+    expect(tdStateText('AuthFailed')).toBe('认证失败')
+    expect(tdStateText('AuthFailed')).not.toBe(tdStateText('Authenticating'))
+  })
+})
+
+// ============================================================================
+// last_error 解析与文案（契约 td-status §2.5 前端义务③）
+// ============================================================================
+
+describe('parseTdLastError / tdLastErrorText（契约 td-status §2.5）', () => {
+  it('对象且 code 为 string 才采纳；其余字段逐字段防御回落', () => {
+    expect(parseTdLastError({
+      code: 'auth_rejected', message: 'CTP:用户认证失败', error_id: 3, timestamp: 1_700_000_000,
+    })).toEqual({ code: 'auth_rejected', message: 'CTP:用户认证失败', errorId: 3, timestamp: 1_700_000_000 })
+
+    // message 非 string → ''；error_id/timestamp 非有限 number → 0
+    expect(parseTdLastError({ code: 'auth_timeout', message: 7, error_id: 'x', timestamp: NaN }))
+      .toEqual({ code: 'auth_timeout', message: '', errorId: 0, timestamp: 0 })
+  })
+
+  it('null / 非对象 / code 非 string → null（不构成一次失败）', () => {
+    expect(parseTdLastError(null)).toBeNull()
+    expect(parseTdLastError(undefined)).toBeNull()
+    expect(parseTdLastError('auth_rejected')).toBeNull()
+    expect(parseTdLastError({ message: 'x' })).toBeNull()
+    expect(parseTdLastError({ code: 7, message: 'x', timestamp: 1 })).toBeNull()
+  })
+
+  it('message 优先；空则按 code 映射固定中文，绝不展示 snake_case 机器码', () => {
+    expect(tdLastErrorText({ code: 'auth_rejected', message: 'CTP:用户认证失败', errorId: 3, timestamp: 1 }))
+      .toBe('CTP:用户认证失败')
+    expect(tdLastErrorText({ code: 'auth_rejected', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('认证被柜台拒绝')
+    expect(tdLastErrorText({ code: 'auth_timeout', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('认证超时（10 秒内未收到响应）')
+    // 未知 code 也不外泄机器码
+    expect(tdLastErrorText({ code: 'some_future_code', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('认证失败')
+    expect(tdLastErrorText(null)).toBe('')
+  })
+})
+
+describe('useTdAccountsStore · 账户行的 lastError（契约 td-status §2.5）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    tdAccountsPending.__resetForTests()
+    registerGateway('dztd_ctp')
+  })
+
+  afterEach(() => {
+    useTdAccountsStore().dispose()
+  })
+
+  it('status.last_error 解析进 row.lastError；无失败/镜像未到达为 null', async () => {
+    const store = useTdAccountsStore()
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [{ account_id: 'account_001', account_name: '', gateway: 'dztd_ctp', enabled: true }],
+    })
+    await store.init()
+
+    // 镜像未到达：null
+    expect(store.rows[0].lastError).toBeNull()
+
+    store.applyTdStatus('account_001', statusPayload({
+      state: 'AuthFailed', progress_current: 3, progress_desc: '认证失败', last_error: null,
+    }))
+    await nextTick()
+    expect(store.rows[0].lastError).toBeNull()
+
+    store.applyTdStatus('account_001', statusPayload({
+      state: 'AuthFailed', progress_current: 3, progress_desc: '认证失败',
+      last_error: { code: 'auth_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
+    }))
+    await nextTick()
+    expect(store.rows[0].lastError).toEqual({
+      code: 'auth_timeout', message: '', errorId: 0, timestamp: 1_700_000_000,
+    })
   })
 })
 
@@ -824,7 +912,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await Promise.all([login, logout])
   })
 
-  it('progress 回退（一次登录尝试失败/中止）清登录 pending，中间态停留不清', async () => {
+  it('progress 回退（主动中止）清登录 pending，中间态停留不清', async () => {
     const store = useTdAccountsStore()
     const pending = store.login('account_001')
 
@@ -833,7 +921,8 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(true)
 
-    // 回退到 2/10：失败回滚（契约 progress 骨架：建立期 current 单调、失败回退）
+    // 回退到 2/10：主动中止（ADR 0059 把回退收窄为登出/前置断线；链内失败停在失败阶段、
+    // 不回退，那条路径由上面的 last_error 用例覆盖）
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 2 })
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(false)
@@ -856,6 +945,129 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     // 收尾：progress 到 min 清掉，避免留下定时器
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
     await nextTick()
+    await pending
+  })
+
+  // ===== 链内失败：pending 由 status.last_error.timestamp 清除（契约 td-status §2.5）=====
+  // ADR 0059 起链内失败停在失败阶段、current 不回退 —— 进度 watcher 的回退判据在失败路径上
+  // 不再触发，本组用例钉住「失败仍能立即清 pending、不等 45s 兜底」。
+
+  function failedStatus(timestamp: number): TdStatusPayload {
+    return statusPayload({
+      state: 'AuthFailed',
+      progress_desc: '认证失败',
+      progress_current: 3,
+      login_time: '',
+      date: '',
+      last_error: { code: 'auth_rejected', message: 'CTP:用户认证失败', error_id: 3, timestamp },
+    })
+  }
+
+  it('登录 pending 在 last_error 到达时立即清除（进度停在 3/10、不回退）', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 进度停在失败阶段（3/10），不回退：回退判据在此不成立
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 3 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // status 帧带 last_error 到达 → 立即清，不等 45s
+    store.applyTdStatus('account_001', failedStatus(1_700_000_000))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await pending
+  })
+
+  it('last_error.timestamp 变化再次清除（重试后再失败）；同一次失败重复推送不重复清', async () => {
+    const store = useTdAccountsStore()
+    const first = store.login('account_001')
+    store.applyTdStatus('account_001', failedStatus(1_700_000_000))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await first
+
+    // 用户按恢复路径重新登录（先登出再登录 → 这里直接再发一次登录）
+    const second = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+    // 同一次失败重复推送（订阅统计等无关字段变化会重推整帧）：timestamp 未变 → 不清新 pending
+    store.applyTdStatus('account_001', failedStatus(1_700_000_000))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 新的失败（新 timestamp）→ 清
+    store.applyTdStatus('account_001', failedStatus(1_700_000_100))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await second
+  })
+
+  it('last_error 变 null（下一次尝试被受理 / 转 Ready）不清 pending', async () => {
+    const store = useTdAccountsStore()
+    // 先制造一次已见过的失败，使去重记录存在
+    store.applyTdStatus('account_001', failedStatus(1_700_000_000))
+    await nextTick()
+
+    const pending = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+    // 登录尝试被受理 → 网关清空 last_error 并推帧：这不是「一次尝试结束」，不得清 pending
+    store.applyTdStatus('account_001', statusPayload({
+      state: 'Connecting', progress_desc: '前置连接...', progress_current: 1, last_error: null,
+    }))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    // 收尾：progress 到 min 清掉，避免留下定时器
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
+    await nextTick()
+    await pending
+  })
+
+  it('同一秒内原因种类变化也清 pending（时间戳只有秒级精度）', async () => {
+    // 后端重推键与前端去重键都是 code@timestamp（td_status_publish.h / 本 store），
+    // 只比 timestamp 会让「同一秒内先拒绝、后超时」既不重推也不清 pending。
+    const store = useTdAccountsStore()
+    const first = store.login('account_001')
+    store.applyTdStatus('account_001', failedStatus(1_700_000_000))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await first
+
+    const second = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+    // 同一秒、不同原因码 → 是一次新的失败，必须再清
+    store.applyTdStatus('account_001', statusPayload({
+      state: 'AuthFailed', progress_desc: '认证失败', progress_current: 3, login_time: '', date: '',
+      last_error: { code: 'auth_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
+    }))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await second
+  })
+
+  it('last_error.timestamp 非法（<=0）不清 pending（前端义务③：非法时间不构成一次失败）', async () => {
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+    store.applyTdStatus('account_001', failedStatus(0))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
+    await nextTick()
+    await pending
+  })
+
+  it('progress 回退仍能清登录 pending（主动中止路径不回归）', async () => {
+    // ADR 0059 把回退收窄为「主动中止」（登出 / 前置断线），该路径必须继续有效。
+    const store = useTdAccountsStore()
+    const pending = store.login('account_001')
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 5 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 1 })
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
     await pending
   })
 
