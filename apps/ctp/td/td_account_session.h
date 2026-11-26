@@ -277,21 +277,29 @@ private:
     /// + 拼消息 + 调本函数」。
     ///
     /// 两个早退对应原本各写一遍的两处判断:
-    /// - `!notif`: 状态机拒绝了这次转移 (此刻不在该段状态, 典型为已断线 / 已登出, 状态机已记
-    ///   WARN) —— 此刻弹窗对不上界面状态, 不推送。注意这不等于「只有真实登录尝试才推送」:
-    ///   该情形同样静默, 是有意取舍 (断线场景由 Offline / 重连反馈兜底)。
+    /// - `!notif`: 状态机拒绝了这次转移 (此刻不在该出口对应的那一段状态, 具体是哪一段由各
+    ///   调用点说明; 典型为已断线 / 已登出, 状态机已记 WARN) —— 此刻弹窗对不上界面状态,
+    ///   不推送。注意这不等于「只有真实登录尝试才推送」: 该情形同样静默, 是有意取舍
+    ///   (断线场景由 Offline / 重连反馈兜底)。
     /// - `!notify_`: 未注入 (测试 / 无 UI) —— 状态已回滚, 仅少一条通知, 不产生日志噪音。
     ///
     /// 异常兜底: `notify_` 可能抛 (UI 通道故障), 必须在此吞掉 —— 调用点在 TdApi 主循环与
     /// TimerQueue 回调上, 异常逃逸会中断状态机流程 / 打穿主循环。
     ///
+    /// **范围**: 只覆盖「消费状态机转移返回值」的登录链失败出口。本类另有若干直接
+    /// `notify_(字面量 level, ...)` 的通知 (运行期资金刷新 / 持仓基准查询 / 未知枚举 /
+    /// 跨日登出 / 回放外部告警) —— 它们没有状态机通知可消费, 形态不同, 不在本 helper 范围。
+    ///
     /// @param notif 状态机转移返回的通知 (level / popup 由状态机决定)
     /// @param message 已拼好的中文通知正文 (各出口用对应的 `*_failed_message` 纯函数构造)
-    /// @param log_context 异常兜底日志的 prose 前缀 (各出口沿用自己收敛前那句 lower-case
-    ///   English 措辞, 使日志行与收敛前逐字一致)
+    /// @param prose 异常兜底日志格式串的 prose 部分 (各出口沿用自己收敛前那句 lower-case
+    ///   English 措辞, 使日志行与收敛前逐字一致)。
+    ///   **已知限制**: 因为 prose 走格式串占位符 (`"{} | account={} ..."`),
+    ///   `check_log_format.py` 的 R3/R5 (非英文 / prose 大小写与句号) 只看得到 `"{}"`,
+    ///   对这三句不再生效 —— 改措辞时需人工保证 lower-case English、无句号。
     void push_notification(const std::optional<TdNotification>& notif,
                            const std::string& message,
-                           std::string_view log_context);
+                           std::string_view prose);
 
     /// 登录失败统一出口 (#407): 状态机回滚 + 失败原因上浮 UI 通知.
     ///
@@ -302,7 +310,8 @@ private:
     /// @param reason 失败场景 (中文, 供通知正文; 如「交易日无效（原始值 "00000000"）」)。不复用
     ///   on_login_failed() 的通用文案「交易登录失败」——只说失败不说原因, 用户拿不到可用信息。
     /// 时序: 必须先 on_login_failed() 转状态再通知 (与 md 一致)。异常不逃逸 (push_notification
-    /// 兜底)。状态机拒绝转移时由 push_notification 静默 (见该函数文档)。
+    /// 兜底)。状态机拒绝转移 (此刻不在 LoggingIn, 如前置已断线或已登出) 时不推送, 见
+    /// push_notification 的 `!notif` 说明。
     void notify_login_failed(const std::string& reason);
 
     /// 结算单确认失败统一出口 (#488): 取消看门狗 + 状态机回滚 + 失败原因上浮 UI 通知.
@@ -315,14 +324,16 @@ private:
     /// @param reason 失败场景 (中文, 供通知正文; 如「柜台拒绝，错误码 3：...」/「60 秒内未收到
     ///   柜台的结算单确认响应」)。不复用状态机的「结算单确认失败: ...」——那是日志口径。
     /// 时序: 必须先 on_settlement_confirm_failed() 转状态再通知 (与 md 一致)。异常不逃逸。
-    /// 状态机拒绝转移时由 push_notification 静默 (见该函数文档)。
+    /// 状态机拒绝转移 (此刻不在 Confirming: 已断线 / 已登出 / 看门狗已收口后又来了迟到失败)
+    /// 时不推送, 见 push_notification 的 `!notif` 说明。
     void notify_settlement_confirm_failed(const std::string& reason);
 
     /// 合约加载失败统一出口 (#488): 取消加载定时器 + 状态机回滚 + 失败原因上浮 UI 通知.
     ///
     /// 同上: 回滚到 LoggedIn 是正常中间态, 且不会有下一次尝试 —— 必须让用户看见。
     /// @param reason 失败场景 (中文; 如「柜台拒绝，错误码 3：...」/「查询 5 分钟未收到最后一批
-    ///   响应」)。状态机拒绝转移时由 push_notification 静默。
+    ///   响应」)。状态机拒绝转移 (此刻不在 LoadingInstruments) 时不推送, 见 push_notification
+    ///   的 `!notif` 说明。
     void notify_instruments_load_failed(const std::string& reason);
 
     /// 结算单确认看门狗超时收口 (#488): 生产由 TimerQueue 回调, 测试经

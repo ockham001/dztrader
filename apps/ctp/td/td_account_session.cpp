@@ -1345,10 +1345,9 @@ void AccountSession::req_authenticate() {
 
 void AccountSession::push_notification(const std::optional<TdNotification>& notif,
                                        const std::string& message,
-                                       std::string_view log_context) {
-    // 状态机拒绝了这次转移 (此刻不在该段状态: 典型为前置已断线 / 已登出, 已由状态机记 WARN):
-    // 此刻弹窗对不上界面状态, 不推送。注意这只是「不在该段状态」, 不保证「非真实尝试」——
-    // 该情形同样静默, 属有意取舍 (断线场景由 Offline / 重连反馈兜底)。
+                                       std::string_view prose) {
+    // 状态机拒绝了这次转移 (此刻不在该出口对应的那一段状态, 已由状态机记 WARN): 此刻弹窗
+    // 对不上界面状态, 不推送 (具体哪一段见各调用点)。
     if (!notif) {
         return;
     }
@@ -1358,9 +1357,9 @@ void AccountSession::push_notification(const std::optional<TdNotification>& noti
     try {
         notify_(notif->level, message, notif->popup);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("{} | account={} error=\"{}\"", log_context, account_id_, e.what());
+        SPDLOG_ERROR("{} | account={} error=\"{}\"", prose, account_id_, e.what());
     } catch (...) {
-        SPDLOG_ERROR("{} | account={} error=unknown_exception", log_context, account_id_);
+        SPDLOG_ERROR("{} | account={} error=unknown_exception", prose, account_id_);
     }
 }
 
