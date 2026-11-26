@@ -185,7 +185,8 @@ TEST_F(MdStateMachineTest, LoginRejectedTransitionsToLoginFailedWithReason) {
     EXPECT_EQ(sm.state(), MdState::LoginFailed);
     EXPECT_TRUE(sm.status().login_time.empty());
     EXPECT_EQ(sm.status().progress_desc, "登录失败");
-    EXPECT_EQ(sm.status().progress_current, 2);
+    // ADR 0059 决策 6: 失败停在登录段 3/4，不回退到 Connected 的 2
+    EXPECT_EQ(sm.status().progress_current, 3);
     ASSERT_TRUE(sm.status().last_error.has_value());
     EXPECT_EQ(sm.status().last_error->code, "login_rejected");
     EXPECT_EQ(sm.status().last_error->message, "CTP:不合法的登录");
@@ -440,16 +441,21 @@ TEST_F(MdStateMachineTest, ProgressMappingDisconnected) {
 }
 
 TEST_F(MdStateMachineTest, ProgressMappingLoginFailed) {
-    // 契约 md-status 失败语义: 登录失败态数值映射与 Connected 相同（current=2），
-    // 失败原因由 RTN_MD_STATUS.last_error 承载；desc 仅展示为「登录失败」
+    // 契约 md-status 失败语义 / ADR 0059 决策 6: 登录失败停在登录阶段（3/4）、不回退到
+    // Connected（2/4），失败原因由 RTN_MD_STATUS.last_error 承载；desc 仅展示为「登录失败」
     sm.on_connect();
     sm.on_front_connected();
+    const int connected_current = sm.status().progress_current;
     sm.on_req_login();
     sm.on_login_failed(MdFailureCode::LoginTimeout, "10 秒内未收到登录响应");
+    EXPECT_EQ(sm.state(), MdState::LoginFailed);
     EXPECT_EQ(sm.status().progress_desc, "登录失败");
     EXPECT_EQ(sm.status().progress_min, 0);
     EXPECT_EQ(sm.status().progress_max, 4);
-    EXPECT_EQ(sm.status().progress_current, 2);
+    EXPECT_EQ(sm.status().progress_current, 3);
+    // 防回退守卫: 失败态若被改回「与 Connected 同格」，用户看到的会是 2/4「已连接」
+    // 而不是 3/4「登录失败」——这条断言与上面的字面值 3 成对，缺一条都能被单侧改动蒙混。
+    EXPECT_NE(sm.status().progress_current, connected_current);
 }
 
 TEST(MdFailureCodeStrTest, MapsAllCodes) {

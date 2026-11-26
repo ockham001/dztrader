@@ -47,7 +47,8 @@ export type SessionPendingClear = 'none' | 'login' | 'both'
  * 一次进度变化应清除哪些 pending（契约 td-connection 前端义务 / 契约 md-status 义务①）：
  * - 到达 `ready`：一次登录尝试成功 → 清 login；
  * - 到达 `absent`：回到未登录 → 清 login + logout（登录在途时点登出也走这里）；
- * - 中间态且 `current` 相对上次回退：一次登录尝试失败/中止（失败态不是端点）→ 清 login。
+ * - 中间态且 `current` 相对上次回退：一次会话尝试被主动中止（登出/前置断线；ADR 0059 起
+ *   链内失败停在失败阶段、不回退，失败由状态帧 `last_error` 新时间戳清）→ 清 login。
  * 除此之外不清：端点未到达、无回退的中间态都表示尝试仍在进行。
  */
 export function sessionPendingClear(

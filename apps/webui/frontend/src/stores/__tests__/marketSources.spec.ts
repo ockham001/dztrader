@@ -813,12 +813,12 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       await store.batchLogin()
       expect(marketSourcesApi.login).not.toHaveBeenCalled()
 
-      // 登录失败态（current=2 + last_error）：ADR 0051 统一两段式——不提供原地重试，
+      // 登录失败态（current=3 + last_error）：ADR 0051 统一两段式——不提供原地重试，
       // 恢复走「先登出、再登录」，因此也不计入批量登录目标。
       useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: {
         last_error: { code: 'login_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
       } })
-      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 3 })
       await nextTick()
       expect(store.batchLoginTargets).toHaveLength(0)
       await store.batchLogin()

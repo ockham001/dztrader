@@ -59,9 +59,9 @@ describe('CLEAR_BY_RTN 声明完整性', () => {
   })
 
   it('各清理类互不重叠（同 op 不得归属多个 RTN）——login 例外：progress 端点/回退 + md_status 失败三触点', () => {
-    // 契约 md-status 前端义务①：登录失败态 RTN_PROGRESS 数值映射与 Connected 相同（不产生
-    // online/offline 转移），因此 login pending 除 progress_login 外还由 last_error.timestamp
-    // 变化清理（md_status_failure）。
+    // 契约 md-status 前端义务①：登录失败态 RTN_PROGRESS 停在登录阶段 3/4、不回退（ADR 0059），
+    // 既不产生 online/offline 转移也不产生回退信号，因此 login pending 除 progress_login 外
+    // 还由 last_error.timestamp 变化清理（md_status_failure）。
     // ADR 0051：登出在任意非未登录态可用，登录在途时点登出会让进度到 min；若该处不清 login，
     // 按钮会挂到 45s 兜底——因此 progress_logout 同时清 login。三处是有意登记的跨类多触点；
     // 其余 op 仍必须唯一归属。
@@ -417,7 +417,7 @@ describe('useMdConfigStore', () => {
       expect(marketSourcePending.pending['source:1:logout']).toBeUndefined()
     })
 
-    it('progress 回退（一次尝试失败/中止，进度骨架声明建立期单调）清 login pending', async () => {
+    it('progress 回退（主动中止：建立中前置断线 3→1）清 login pending', async () => {
       vi.mocked(marketSourcesApi.login).mockResolvedValue({ ok: true })
       const store = useMdConfigStore()
       await store.login(1, 'dzmd_ctp')
@@ -425,8 +425,9 @@ describe('useMdConfigStore', () => {
       useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 3 })
       await nextTick()
       expect(marketSourcePending.pending['source:1:login']).toBe(true)
-      // 回退到 2/4：登录失败回滚 → 清 login pending
-      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 2 })
+      // 回退到 1/4：前置断线 = 主动中止（ADR 0059 起链内失败停在 3/4、不回退，
+      // 失败清 pending 由 last_error.timestamp 承担）→ 清 login pending
+      useProgressStore().applyProgress('dzmd_ctp', { min: 0, max: 4, current: 1 })
       await nextTick()
       expect(marketSourcePending.pending['source:1:login']).toBeUndefined()
     })

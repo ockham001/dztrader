@@ -79,13 +79,13 @@ JSON 示例：
 - 设置：上述失败发生时随本帧推送（全量）。
 - 清空（置 `null` 并推送）：下一次连接/登录尝试开始时（`REQUEST_MD_CONNECT` 被受理即开始）；登录成功时。
 - 进入 `Idle`（用户主动登出）**不清空**：保留最近一次失败供用户查看；进程重启后为空（新进程状态）。
-- 失败后进程状态：`connect_timeout` 已断开回 `Idle`；其余失败仍持有前置连接，处于登录失败态。后端仍接受 `REQUEST_MD_CONNECT` 作为重登（自动调度 / `--recover` 使用），但 **WebUI 恢复路径统一为「先登出、再登录」**，不提供失败态原地重试（ADR 0051，前端义务③）。失败态 `RTN_PROGRESS` 的数值映射不变（与 `Connected` 同为 `current=2`），`desc` 为「登录失败」——状态判定仍以数值映射为准（契约 progress），`desc` 仅展示。
+- 失败后进程状态：`connect_timeout` 已断开回 `Idle`；其余失败仍持有前置连接，处于登录失败态。后端仍接受 `REQUEST_MD_CONNECT` 作为重登（自动调度 / `--recover` 使用），但 **WebUI 恢复路径统一为「先登出、再登录」**，不提供失败态原地重试（ADR 0051，前端义务③）。失败态 `RTN_PROGRESS` **停在登录阶段**（`current=3`，与 `LoggingIn` 同格、**不回退**到 `Connected` 的 `current=2`；ADR 0059 决策 6），`desc` 为「登录失败」——状态判定仍以数值映射为准（契约 progress），`desc` 仅展示。
 
 **前端义务**：
 
-1. `last_error.timestamp` 变化且非 `null` 表示一次登录失败已结束：清除该实例的登录 pending，不等待超时兜底。`RTN_PROGRESS.current` 相对上次推送回退（一次登录尝试失败/中止，契约 progress 会话骨架）同样是清除信号——登录失败态数值映射与 `Connected` 相同、不会产生端点转移，没有该信号时 pending 会悬挂到超时。
+1. **登录 pending 的清除主信号 = `last_error.timestamp` 变化且非 `null`**（表示一次登录尝试已结束）：立即清除该实例的登录 pending，不等待兜底超时（45s：连接 30s + 登录 10s + 余量）。失败态下 `RTN_PROGRESS.current` 停在登录阶段、不回退（ADR 0059）——链内失败不产生 `current` 回退，回退不再是失败信号，只表示**主动中止**（登出 → `min`、前置断线 → `Disconnected`，契约 progress 会话骨架）。
 2. 卡片持久展示「上次失败：`message` + 时间」；`message` 为空时按 `code` 映射固定文案；**不得把 `code` 原文直接展示给用户**。`timestamp` 非法/缺失时不展示时间（不得渲染 1970）。
-3. 失败态不提供原地重试（ADR 0051）：`last_error` 仅用于持久展示失败原因。登录资格只在 `RTN_PROGRESS.current <= progress.min`（Idle/完全未登录）；`LoginFailed`（`current=2`）与 `Disconnected`（`current=1`）下不可发起登录、可发起登出（登出即释放 API 回到 Idle），恢复路径统一为登出→登录（按钮形态/disabled 属前端设计，见 ADR 0051）。后端 `can_login()` 重登能力保留给自动调度 / `--recover`，不经前端触发。
+3. 失败态不提供原地重试（ADR 0051）：`last_error` 仅用于持久展示失败原因。登录资格只在 `RTN_PROGRESS.current <= progress.min`（Idle/完全未登录）；`LoginFailed`（`current=3`）与 `Disconnected`（`current=1`）下不可发起登录、可发起登出（登出即释放 API 回到 Idle），恢复路径统一为登出→登录（按钮形态/disabled 属前端设计，见 ADR 0051）。后端 `can_login()` 重登能力保留给自动调度 / `--recover`，不经前端触发。
 4. 登录成功后 `last_error` 清空，前端不得保留旧失败展示；断开/重连期间展示以本帧全量覆盖为准。
 
 ---

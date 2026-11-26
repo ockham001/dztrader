@@ -99,10 +99,11 @@ const OP_LABELS: Record<MdConfigOp, string> = {
 //   - progress_login / progress_logout：RTN_PROGRESS 状态转移驱动清（契约 progress）。
 //     logout 侧同时清 login：登录在途时用户点登出（ADR 0051：登出在任意非未登录态可用）会让
 //     进度直接到 min，若不在此清掉 login pending，按钮会挂到 45s 兜底；progress 回退
-//     （失败/中止，进度骨架声明建立期单调）同样清 login。
+//     （主动中止：前置断线等，ADR 0059 起链内失败不回退）同样清 login。
 //   - md_status_failure：RTN_MD_STATUS 的 last_error.timestamp 变化驱动清 login
-//     （契约 md-status「失败语义」前端义务①）——登录失败态 RTN_PROGRESS 数值映射与
-//     Connected 相同（current=2），不产生 online/offline 转移，仅靠 progress 清不掉 pending。
+//     （契约 md-status「失败语义」前端义务①）——登录失败态 RTN_PROGRESS 停在登录阶段
+//     （current=3，与 LoggingIn 同格、不回退），不产生 online/offline 转移也不产生回退信号，
+//     仅靠 progress 清不掉 pending。
 // 不含进程类 op（start/stop/remove 属 process store 领域，其 handleProcessEvent 另有声明）。
 // =====================================================================
 export type ClearKind =
@@ -255,9 +256,9 @@ export const useMdConfigStore = defineStore('mdConfig', () => {
 
   // ===== md_status 失败语义驱动 login pending 清理（契约 md-status 前端义务①）=====
   // last_error.timestamp 变化且非 null = 一次登录失败已结束 → 立刻清该实例 login pending，
-  // 不等待 45s 兜底（登录失败态 RTN_PROGRESS 仍为 current=2，与 Connected 同映射，不会产生
-  // progress 的 online/offline 转移）。记录已见 timestamp 防止 md_status 因订阅统计等变化
-  // 重复推送同一次失败时反复清理（可能误清用户重试后新一次登录的 pending）。
+  // 不等待 45s 兜底（登录失败态 RTN_PROGRESS 停在登录阶段 3/4、不回退，既不会产生
+  // progress 的 online/offline 转移也不会产生回退信号）。记录已见 timestamp 防止 md_status
+  // 因订阅统计等变化重复推送同一次失败时反复清理（可能误清用户重试后新一次登录的 pending）。
   // last_error 变 null（下一次尝试开始 / 登录成功）只丢弃去重记录、不清 pending。
   const seenLastErrorTimestamp = ref<Record<string, number>>({})
   watch(
