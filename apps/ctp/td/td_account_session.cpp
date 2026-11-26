@@ -622,6 +622,18 @@ void AccountSession::on_front_disconnected(int reason) {
 }
 
 void AccountSession::on_rsp_authenticate(const OnRspAuthenticateField& f) {
+    // 迟到响应窗口 (与 #488 的 on_rsp_settlement_confirm 同一形态、同一理由):
+    // 10 秒认证超时已把状态转到 AuthFailed 之后, 真响应才到。此时若继续按成功分支走:
+    //   on_authenticate_success() 会被状态机拒绝 (不在 Authenticating) → 状态仍是 AuthFailed,
+    //   但 req_login() 照发 —— 一个没有归属的登录请求。柜台若回成功, on_login_success 的
+    //   守卫同样拒绝 (不在 LoggingIn), 响应被丢弃; 账户就卡在 AuthFailed 且没人知道为什么。
+    // 判据 = 状态 (此刻必须还在 Authenticating), 与 settlement 一致。
+    // 守卫必须排在 cancel 之前: 排在前面会让一条被丢弃的外来响应把本链的超时定时器撤掉。
+    if (state_machine_.state() != TdState::Authenticating) {
+        SPDLOG_WARN("td stale authenticate response ignored | account={} state={}", account_id_,
+                    magic_enum::enum_name(state_machine_.state()));
+        return;
+    }
     cancel_login_timer();
     bool ok = f.rsp_info && f.rsp_info->ErrorID == 0;
     if (!ok) {
@@ -1343,9 +1355,9 @@ void AccountSession::req_authenticate() {
         return;
     }
     state_machine_.on_req_authenticate();
-    // 10s 认证超时
+    // 认证超时（生产 10s；测试可缩短到 0 走真 TimerQueue 回调）
     uint64_t gen = generation_;
-    login_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(10), [this, gen]() {
+    login_timer_id_ = timer_queue_.schedule_after(auth_timeout_, [this, gen]() {
         if (gen != generation_) return;
         on_auth_timeout();
     });
@@ -1367,6 +1379,10 @@ void AccountSession::set_auth_send_hook(AuthSendFn hook) { auth_send_hook_ = std
 void AccountSession::request_authenticate_for_test() { req_authenticate(); }
 
 void AccountSession::expire_auth_timeout_for_test() { on_auth_timeout(); }
+
+void AccountSession::set_auth_timeout_for_test(std::chrono::seconds timeout) {
+    auth_timeout_ = timeout;
+}
 
 void AccountSession::push_notification(const std::optional<TdNotification>& notif,
                                        const std::string& message,

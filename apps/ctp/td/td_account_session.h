@@ -223,11 +223,16 @@ public:
     using AuthSendFn = std::function<int(CThostFtdcReqAuthenticateField&, int)>;
     void set_auth_send_hook(AuthSendFn hook);
     /// 测试夹具专用：驱动生产 `req_authenticate()`（会话须已在 `Connected`）。
-    /// 与 `request_settlement_confirm_for_test` 配套：它才会**武装 10 s 认证超时定时器**。
+    /// 与 `request_settlement_confirm_for_test` 配套：它才会**武装认证超时定时器**。
     void request_authenticate_for_test();
-    /// 测试夹具专用：立即触发认证 10 s 超时的收口（生产由 TimerQueue 回调）。
+    /// 测试夹具专用：立即触发认证超时的收口（生产由 TimerQueue 回调）。
     /// 与 `expire_settlement_confirm_timeout_for_test` 同用途：走同一收口逻辑，不 sleep。
     void expire_auth_timeout_for_test();
+    /// 测试夹具专用：缩短认证超时时长（默认 10s）。
+    /// 与 `set_settlement_confirm_timeout_for_test` 同用途：让「真 TimerQueue 回调」可测——
+    /// 用 `0` 武装后 `timer_queue_.tick()` 即触发，否则只能验证「定时器排上了」，而排上的
+    /// lambda 是空壳也会绿（`docs/unit-test-standard.md` §1.1 断言能失败）。
+    void set_auth_timeout_for_test(std::chrono::seconds timeout);
     /// 合约查询发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqQryInstrument` 返回码。
     /// 与 `set_settlement_send_hook` 同形态，让「发送被拒」与 `on_rsp_error` 两条失败出口
     /// 在真会话上可驱动（否则只有 `api_` 非空的真机路径能到，测试无法证伪）。
@@ -326,9 +331,10 @@ private:
     /// 由 code 区分。
     ///
     /// @param code 段内原因码 (auth_rejected 带 CTP error_id / auth_timeout)
-    /// @param reason 失败场景 (中文, 供 last_error.message 与通知正文; 如「柜台拒绝，错误码
-    ///   3：CTP:认证失败」/「10 秒内未收到柜台的认证响应」)。不复用状态机的通用文案「认证失败」
-    ///   ——只说失败不说原因, 用户拿不到可用信息。
+    /// @param reason 失败场景 (中文, 供 last_error.message 与通知正文)。柜台拒绝时传 CTP
+    ///   `ErrorMsg` 原文 (如「CTP:用户认证失败」, 错误码走 error_id 字段不在正文重复);
+    ///   超时传固定文案「10 秒内未收到柜台的认证响应」; 无详情传空串 (前端按 code 兜底)。
+    ///   不复用状态机的通用文案「认证失败」——只说失败不说原因, 用户拿不到可用信息。
     /// 时序: 必须先 on_authenticate_failed() 转状态再通知 (与 md 一致)。异常不逃逸
     /// (push_notification 兜底)。状态机拒绝转移 (此刻不在 Authenticating, 如前置已断线或
     /// 已登出) 时不推送, 见 push_notification 的 `!notif` 说明。
@@ -701,6 +707,8 @@ private:
     SettlementSendFn settlement_send_hook_;
     InstrumentSendFn instrument_send_hook_;
     AuthSendFn auth_send_hook_;
+    /// 认证超时时长（生产 = 10s；测试可缩短）。
+    std::chrono::seconds auth_timeout_ = std::chrono::seconds(10);
     /// 结算单确认看门狗时长（生产 = kSettlementConfirmTimeout；测试可缩短）。
     std::chrono::seconds settlement_confirm_timeout_ = kSettlementConfirmTimeout;
     /// 合约加载超时时长（生产 = 5 分钟；测试可缩短）。

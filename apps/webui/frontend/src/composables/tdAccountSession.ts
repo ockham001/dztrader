@@ -3,7 +3,7 @@
  *
  * 统一规则（md/td 相同）：
  * - 登录按钮仅在 `current <= min`（完全未登录）可用；
- * - 登出按钮在 `current > min` 的任意状态可用（连接中/登录中/重连中/失败回滚/就绪）= 强制中断；
+ * - 登出按钮在 `current > min` 的任意状态可用（连接中/登录中/重连中/失败态/就绪）= 强制中断；
  * - 判定只看进度端点，`desc` 只作展示、`td_status.state` 只在进度未到达时兜底。
  */
 import type { TdState } from '@/types/api'
@@ -14,7 +14,7 @@ import { sessionStateOfProgress, type SessionState } from '@/composables/session
 // `td_status.state` 兜底与账户行推导。sessionStateOfProgress 重新导出，保持调用方稳定。
 export { sessionStateOfProgress } from '@/composables/sessionProgress'
 
-/** 会话状态：未登录 / 建立中（含重连中、失败回滚）/ 就绪 */
+/** 会话状态：未登录 / 建立中（含重连中、失败停在失败阶段）/ 就绪 */
 export type TdSessionState = SessionState
 
 /** 细状态兜底（进度镜像未到达时）：Idle = 未登录、Ready = 就绪、其余 = 建立中 */

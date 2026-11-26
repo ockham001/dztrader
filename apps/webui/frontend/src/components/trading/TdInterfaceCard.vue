@@ -388,7 +388,7 @@ function statusClass(row: TdAccountRow): string {
 
 // ===== 会话控制（ADR 0051 / 契约 td-connection / 契约 rest §2.9.10）=====
 // 双按钮固定位置：登录仅完全未登录可用（`current <= min`），登出在任意非未登录态可用
-// （连接中/登录中/重连中/失败回滚/就绪 = 强制中断）。判定在 composables/tdAccountSession。
+// （连接中/登录中/重连中/失败态/就绪 = 强制中断）。判定在 composables/tdAccountSession。
 
 /** 登录按钮可点：admin + 网关 Running + 账户启用 + 会话未登录 */
 function canLoginRow(row: TdAccountRow): boolean {

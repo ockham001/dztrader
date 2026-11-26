@@ -654,12 +654,14 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // 账户的登录 pending，不等待 45s 兜底。失败态下 `current` 停在失败阶段、不回退，进度 watcher
   // 的「回退清登录」判据在失败路径上不再触发——没有本 watcher，pending 会一直挂到超时。
   //
-  // 记录已见 timestamp 是去重：状态帧会因订阅统计等无关字段变化重复推送同一失败，
-  // 反复清理可能误清用户重试后新一次登录的 pending。
+  // 去重键 = `code@timestamp`，与后端重推键（td_status_publish.h 的
+  // td_last_error_identity）同构：状态帧会因订阅统计等无关字段变化重复推送同一失败，
+  // 反复清理会误清用户重试后新一次登录的 pending；但 timestamp 只有秒级精度，只比它会让
+  // 「同一秒内换了原因种类」既不重推、这里也不清 —— 正是本判据要覆盖的场景。
   // `last_error` 变 null（下一次尝试被受理 / 登录成功 / 转 Ready）只丢弃去重记录、不清 pending。
   //
   // 只看状态镜像、不解析进度：失败原因与「一次尝试结束」是同一事实的两面，都在状态帧里。
-  const seenLastErrorTimestamp = ref<Record<string, number>>({})
+  const seenLastErrorIdentity = ref<Record<string, string>>({})
   watch(
     () => statuses.value,
     (statusMap) => {
@@ -667,12 +669,13 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
         const lastError = parseTdLastError(payload?.last_error)
         if (!lastError) {
           // 失败已清空：丢弃去重记录，使后续失败（即使落在同一秒）仍能触发清理
-          delete seenLastErrorTimestamp.value[accountId]
+          delete seenLastErrorIdentity.value[accountId]
           continue
         }
         if (!lastError.timestamp) continue
-        if (seenLastErrorTimestamp.value[accountId] === lastError.timestamp) continue
-        seenLastErrorTimestamp.value[accountId] = lastError.timestamp
+        const identity = `${lastError.code}@${lastError.timestamp}`
+        if (seenLastErrorIdentity.value[accountId] === identity) continue
+        seenLastErrorIdentity.value[accountId] = identity
         const gateway = gatewayOf(accountId)
         if (gateway === null) continue
         clearSessionPending(gateway, accountId, 'login')

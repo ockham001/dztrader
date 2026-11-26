@@ -912,7 +912,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await Promise.all([login, logout])
   })
 
-  it('progress 回退（一次登录尝试失败/中止）清登录 pending，中间态停留不清', async () => {
+  it('progress 回退（主动中止）清登录 pending，中间态停留不清', async () => {
     const store = useTdAccountsStore()
     const pending = store.login('account_001')
 
@@ -921,7 +921,8 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(true)
 
-    // 回退到 2/10：失败回滚（契约 progress 骨架：建立期 current 单调、失败回退）
+    // 回退到 2/10：主动中止（ADR 0059 把回退收窄为登出/前置断线；链内失败停在失败阶段、
+    // 不回退，那条路径由上面的 last_error 用例覆盖）
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 2 })
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(false)
@@ -1021,6 +1022,28 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0 })
     await nextTick()
     await pending
+  })
+
+  it('同一秒内原因种类变化也清 pending（时间戳只有秒级精度）', async () => {
+    // 后端重推键与前端去重键都是 code@timestamp（td_status_publish.h / 本 store），
+    // 只比 timestamp 会让「同一秒内先拒绝、后超时」既不重推也不清 pending。
+    const store = useTdAccountsStore()
+    const first = store.login('account_001')
+    store.applyTdStatus('account_001', failedStatus(1_700_000_000))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await first
+
+    const second = store.login('account_001')
+    expect(isPending(SESSION_KEY('login'))).toBe(true)
+    // 同一秒、不同原因码 → 是一次新的失败，必须再清
+    store.applyTdStatus('account_001', statusPayload({
+      state: 'AuthFailed', progress_desc: '认证失败', progress_current: 3, login_time: '', date: '',
+      last_error: { code: 'auth_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
+    }))
+    await nextTick()
+    expect(isPending(SESSION_KEY('login'))).toBe(false)
+    await second
   })
 
   it('last_error.timestamp 非法（<=0）不清 pending（前端义务③：非法时间不构成一次失败）', async () => {

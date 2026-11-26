@@ -1715,11 +1715,12 @@ TEST_F(TdPositionLifecycleTest, NotifyThrowIsCaughtAndStateStillRollsBack) {
 //
 // 为什么必须在这个目标：AC 的核心是「两处调用点都不再丢弃状态机通知」。只测状态机
 // (td_state_test) 证明不了 notify_ 被接住; 只测纯函数 (文案) 证明不了真的推了。
-// 这里是全仓唯一「真 AccountSession + 已注入 notify 回调 + 真 TimerQueue」的夹具。
+// 这里具备三件事：真 `AccountSession` + 已注入 notify 回调 + 真 `TimerQueue`，因此
+// 「状态转移 → last_error 写入 → notify_ 被调用」与「排定的超时回调真的会跑」都能断言。
 //
-// 确定性来源: 认证发送经注入钩子 (不碰 api_; api_ 需连柜台才能创建), 10 s 超时经
-// expire_auth_timeout_for_test 注入同一收口逻辑, 以及 0 延迟定时器 + timer_queue_.tick()。
-// 不用 sleep。
+// 确定性来源: 认证发送经注入钩子 (不碰 api_; api_ 需连柜台才能创建), 超时收口两路都验
+// (`expire_auth_timeout_for_test` 注入收口, 与缩时到 0 后真 `timer_queue_.tick()` 执行
+// 排定的 lambda)。不用 sleep。
 // ============================================================================
 
 TEST_F(TdPositionLifecycleTest, AuthRejectedStopsAtAuthFailedAndNotifies) {
@@ -1793,12 +1794,68 @@ TEST_F(TdPositionLifecycleTest, AuthTimeoutStopsAtAuthFailedAndNotifies) {
 TEST_F(TdPositionLifecycleTest, AuthTimeoutThroughRealTimerQueueFiresTheQueuedCallback) {
     // 上一条走 expire_*_for_test (注入收口)。这一条钉**真回调**: 排进 TimerQueue 的
     // lambda 本身是否是空壳, 只有真 tick 才验证得了 (docs/unit-test-standard.md §1.1)。
+    // 做法与 WatchdogFiresThroughTimerQueueOnRealDeadline 一致: 把超时缩到 0 再 tick。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    session_->set_auth_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::Connected);
+    session_->request_authenticate_for_test();
+    ASSERT_EQ(session_->state(), TdState::Authenticating);
+
+    timer_queue_.tick();  // 到点: 排定的回调此刻执行
+
+    EXPECT_EQ(session_->state(), TdState::AuthFailed)
+        << "the queued callback itself must move the state to the failure stage";
+    ASSERT_EQ(notifications_.size(), 1u) << "the queued callback itself must notify";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "auth_timeout");
+}
+
+TEST_F(TdPositionLifecycleTest, LateAuthenticateSuccessAfterTimeoutIsIgnored) {
+    // 10 s 超时已把状态转到 AuthFailed 之后, 真的认证成功响应才到。
+    // 若不守状态, 会走成功分支: on_authenticate_success 被状态机拒绝 (状态仍 AuthFailed),
+    // 但 req_login 照发 —— 一个没有归属的登录请求, 柜台回成功也会被 on_login_success 丢弃,
+    // 账户卡在 AuthFailed 且无痕。与 #488 的迟到结算确认响应同一处置 (丢弃 + WARN)。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    // 走真定时器路径（缩时到 0 + tick）：这样超时回调被 TimerQueue 真正执行、定时器出队，
+    // 后面「没有新排的登录定时器」才有意义。expire_*_for_test 是直接注入，定时器仍挂在队列里。
+    session_->set_auth_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::Connected);
+    session_->request_authenticate_for_test();
+    ASSERT_EQ(session_->state(), TdState::Authenticating);
+    timer_queue_.tick();
+    ASSERT_EQ(session_->state(), TdState::AuthFailed);
+    ASSERT_EQ(notifications_.size(), 1u);
+    ASSERT_TRUE(timer_queue_.empty()) << "premise: the auth timeout timer fired and dequeued";
+    const auto failed_at = session_->state_machine().status().last_error;
+
+    // 迟到的成功响应
+    OnRspAuthenticateField late{};
+    CThostFtdcRspInfoField ok_info{};
+    ok_info.ErrorID = 0;
+    late.rsp_info = ok_info;
+    session_->on_rsp_authenticate(late);
+
+    // 状态不变、不追加通知、不发起登录 (登录请求会排 10s 登录定时器 —— 定时器必须仍为空)
+    EXPECT_EQ(session_->state(), TdState::AuthFailed)
+        << "a late success must not resurrect the login chain";
+    EXPECT_EQ(notifications_.size(), 1u) << "a late response must not raise another notification";
+    ASSERT_TRUE(session_->state_machine().status().last_error.has_value());
+    EXPECT_EQ(session_->state_machine().status().last_error->code, failed_at->code)
+        << "the recorded failure must be left untouched";
+    EXPECT_TRUE(timer_queue_.empty()) << "no login request may be sent for a stale response";
+}
+
+TEST_F(TdPositionLifecycleTest, AuthTimeoutNotFiredEarly) {
+    // 上一条把超时缩到 0 才触发。这一条反过来钉**排的是真延迟**: 未到点 tick 不得触发,
+    // 否则一次正常的慢响应会被误判成认证超时。
     session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
     session_->advance_login_chain_for_test(TdState::Connected);
     session_->request_authenticate_for_test();
     ASSERT_EQ(session_->state(), TdState::Authenticating);
 
-    // 排的是 10s 而不是 0: 现在就 tick 不该触发
     timer_queue_.tick();
     EXPECT_EQ(session_->state(), TdState::Authenticating) << "must not fire early";
     EXPECT_TRUE(notifications_.empty());
@@ -1857,17 +1914,18 @@ TEST_F(TdPositionLifecycleTest, AuthRejectionWithoutRspInfoRecordsErrorIdMinusOn
     ASSERT_EQ(notifications_.size(), 1u);
 }
 
-TEST_F(TdPositionLifecycleTest, NextLoginAttemptClearsLastError) {
-    // 清空时机 (契约 td-status §2.5): 下一次登录尝试被受理时清空; 登出不清空。
+TEST_F(TdPositionLifecycleTest, LastErrorSurvivesDisconnectForReview) {
+    // 清空时机 (契约 td-status §2.5): 只有「下一次登录尝试被受理」与「转 Ready」会清。
+    // 断线不是这两者 —— 必须保留最近一次失败供用户回看.
+    // (状态机侧的两个清空点由 td_state_test 的 LastErrorClearedOn* 直接钉住;
+    //  本用例补的是会话路径上「失败 → 断线」这一步不清。)
     session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
     session_->advance_login_chain_for_test(TdState::Connected);
     session_->request_authenticate_for_test();
     session_->expire_auth_timeout_for_test();
     ASSERT_TRUE(session_->state_machine().status().last_error.has_value());
 
-    // 登出: 保留 (供回看)
     session_->on_front_disconnected(0);
-    // 断线也不清 (不是「新尝试受理」也不是「就绪」)
     EXPECT_TRUE(session_->state_machine().status().last_error.has_value())
         << "disconnect must keep the last failure for review";
 }
