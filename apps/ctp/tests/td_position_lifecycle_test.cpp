@@ -106,11 +106,16 @@ protected:
     std::vector<int> sent_fund_query_ids_;
     int send_fund_ret_ = 0;  ///< 发送钩子返回码（0=成功；-3 等构造失败路径）
 
+    /// account_state_cb 收到过的三态推送 (连接超时是唯一走这条直调路径的状态转移;
+    /// 其余状态转移由 TdApi 主循环 sweep 推, 不经本回调)。
+    std::vector<DzAccountState> pushed_account_states_;
+
     /// 构造会话 (notify 转发到 notifications_; 各用例的重连/新会话也走这里).
     std::unique_ptr<AccountSession> make_session() {
         return std::make_unique<AccountSession>(
             "acc1", *order_id_meta_, *writer_, *persist_, queue_, timer_queue_,
-            /*account_state_cb=*/nullptr, /*seq_allocator=*/nullptr,
+            [this](DzAccountState state) { pushed_account_states_.push_back(state); },
+            /*seq_allocator=*/nullptr,
             [this](DzNotifyLevel level, const std::string& message, bool popup) {
                 notifications_.push_back(Notification{level, message, popup});
             });
@@ -1986,6 +1991,30 @@ TEST_F(TdPositionLifecycleTest, LoginRejectionWithoutRspInfoRecordsErrorIdMinusO
     ASSERT_EQ(notifications_.size(), 1u);
 }
 
+TEST_F(TdPositionLifecycleTest, LoginSendRejectedStopsAtLoginFailedAndNotifies) {
+    // #495 审查补齐: 发送被拒是登录段的第五种失败 —— 此前只记日志后 return, 状态停在
+    // Authenticated(4)、定时器未武装, 账户静默卡在链上, 前端清 pending 的唯一主信号
+    // (last_error 新身份) 永不产生, 只能等 45s 兜底。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return -3; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    ASSERT_EQ(session_->state(), TdState::Authenticated);
+
+    session_->request_login_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed)
+        << "a rejected send must not leave the session on the normal mid-state";
+    EXPECT_EQ(session_->state_machine().status().progress_current, 5);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value()) << "the reason must reach the frontend via last_error";
+    EXPECT_EQ(last_error->code, "login_send_failed");
+    EXPECT_EQ(last_error->error_id, 0) << "a send ret code is not a CTP error id";
+    EXPECT_NE(last_error->message.find("ret=-3"), std::string::npos) << last_error->message;
+    ASSERT_EQ(notifications_.size(), 1u) << "a rejected send must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(timer_queue_.empty())
+        << "no login watchdog may be armed for a send that never went out";
+}
+
 TEST_F(TdPositionLifecycleTest, LoginTimeoutStopsAtLoginFailedAndNotifies) {
     // 10 s 内没收到登录响应: 与柜台拒绝同等对待 (ADR 0059 决策 5)。
     session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
@@ -2192,6 +2221,11 @@ TEST_F(TdPositionLifecycleTest, ConnectTimeoutStaysIdleAndWritesConnectTimeoutCo
     EXPECT_EQ(session_->state_machine().status().progress_current, 0);
     EXPECT_EQ(account_state_of(session_->state()), DZ_ACCOUNT_OFFLINE)
         << "a failure stage here would report 'logging in' for a front that never connected";
+    // 三态推送必须真的发出: 连接超时是唯一不经 TdApi dispatch 的直调点, 少了这一次
+    // 策略侧/master 的 ACCOUNT_STATUS 就停在 LoggingIn (契约 account-status)。
+    ASSERT_EQ(pushed_account_states_.size(), 1u)
+        << "the connect timeout must push the triple state itself";
+    EXPECT_EQ(pushed_account_states_.front(), DZ_ACCOUNT_OFFLINE);
     // 原因只能从 last_error 读
     const auto& last_error = session_->state_machine().status().last_error;
     ASSERT_TRUE(last_error.has_value());

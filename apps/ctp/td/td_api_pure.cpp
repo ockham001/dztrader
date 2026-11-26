@@ -244,4 +244,10 @@ int32_t account_status_date(DzAccountState state, const std::string& date) {
     return epoch_day_from_yyyymmdd(date);
 }
 
+bool session_should_be_reaped(TdState state) noexcept {
+    // Idle 在 td 里只有两个来源: 从未 open (此时没有会话对象) 与连接超时后回退
+    // (用户登出走 disconnect_account_by_id, 那里自己 erase)。因此判据就是 Idle。
+    return state == TdState::Idle;
+}
+
 }  // namespace dztrader::ctp

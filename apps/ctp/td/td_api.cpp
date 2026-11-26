@@ -1043,7 +1043,7 @@ void TdApi::reap_terminated_sessions() {
     // (用户登出走 disconnect_account_by_id, 那里自己 erase)。因此这里只会命中超时会话。
     std::vector<std::string> expired;
     for (const auto& [account_id, session] : sessions_) {
-        if (session->state_machine().state() == TdState::Idle) {
+        if (session_should_be_reaped(session->state_machine().state())) {
             expired.push_back(account_id);
         }
     }

@@ -244,6 +244,7 @@ const TD_LAST_ERROR_TEXT: Record<string, string> = {
   login_timeout: '登录超时（10 秒内未收到响应）',
   login_parse_error: '登录响应解析失败',
   day_load_failed: '当日订单/成交基准装载失败',
+  login_send_failed: '登录请求发送失败',
 }
 
 export function tdLastErrorText(e: TdLastErrorView | null): string {

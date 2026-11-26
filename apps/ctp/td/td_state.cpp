@@ -31,6 +31,8 @@ const char* td_failure_code_str(TdFailureCode code) {
             return "login_parse_error";
         case TdFailureCode::DayLoadFailed:
             return "day_load_failed";
+        case TdFailureCode::LoginSendFailed:
+            return "login_send_failed";
     }
     return "unknown";
 }

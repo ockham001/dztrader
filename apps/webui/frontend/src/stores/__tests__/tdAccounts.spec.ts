@@ -207,6 +207,8 @@ describe('parseTdLastError / tdLastErrorText（契约 td-status §2.5）', () =>
       .toBe('登录响应解析失败')
     expect(tdLastErrorText({ code: 'day_load_failed', message: '', errorId: 0, timestamp: 1 }))
       .toBe('当日订单/成交基准装载失败')
+    expect(tdLastErrorText({ code: 'login_send_failed', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('登录请求发送失败')
   })
 
   it('connect_timeout 文案说「连接超时」而不是「登录失败」（它不是失败态）', () => {

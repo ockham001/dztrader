@@ -367,6 +367,34 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(row.text()).not.toContain('connect_timeout')
   })
 
+  it('errorId = -1（无 rsp_info 的哨兵）不给 tooltip（不得渲染成「错误码：-1」）', async () => {
+    // 契约 td-status §2.5: 无 rsp_info 时 error_id 记 -1, 语义是「无 CTP 错误码」。
+    // JS 里 -1 是真值, 用 truthiness 判断会把哨兵当机器码展示给用户。
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'LoginFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '登录失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 5,
+      last_error: {
+        code: 'login_rejected', message: '柜台未返回错误信息', error_id: -1, timestamp: 1_700_000_000,
+      },
+      ext: {},
+    })
+    const { wrapper } = mountCard(store)
+
+    const failed = wrapper.find('[data-test="td-last-error-account_001"]')
+    expect(failed.exists()).toBe(true)
+    // 原因照展; title 不得出现哨兵
+    expect(failed.text()).toContain('柜台未返回错误信息')
+    expect(failed.attributes('title')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('-1')
+  })
+
   it('无 last_error 时不展示「上次失败」行', async () => {
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {

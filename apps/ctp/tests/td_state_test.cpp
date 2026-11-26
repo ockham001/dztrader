@@ -770,4 +770,6 @@ TEST(TdFailureCodeTest, CodeStringsMatchContract) {
     EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginParseError)),
               "login_parse_error");
     EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::DayLoadFailed)), "day_load_failed");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginSendFailed)),
+              "login_send_failed");
 }

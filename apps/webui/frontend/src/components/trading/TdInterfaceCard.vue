@@ -373,9 +373,15 @@ function lastErrorText(e: TdLastErrorView): string {
   return time ? `${text}（${time}）` : text
 }
 
-/** 可选 tooltip：CTP ErrorID 仅 *_rejected 非 0，其余不给 title（避免误导） */
+/**
+ * 可选 tooltip：CTP ErrorID 仅 `*_rejected` 且**为正**时给 title。
+ *
+ * 判据必须是 `> 0` 而不是真值判断：`-1` 是契约约定的哨兵（无 `rsp_info` = 「无 CTP 错误码」，
+ * 契约 td-status §2.5），而 JS 里 `-1` 为真值 —— 用真值判断会把哨兵渲染成
+ * 「CTP 错误码：-1」，正是本函数要避免的误导。
+ */
 function lastErrorTitle(e: TdLastErrorView): string | undefined {
-  return e.errorId ? `CTP 错误码：${e.errorId}` : undefined
+  return e.errorId > 0 ? `CTP 错误码：${e.errorId}` : undefined
 }
 
 /** 状态样式：Ready 正常、Idle 中性、其余中间态提示（与进程状态色口径一致） */

@@ -59,7 +59,8 @@ TEST(TdStatusPublishKeyTest, DateAndLoginTimeChangesChangeKey) {
         td_status_publish_key(make_status(TdState::Ready, 10, "20261123", "2026-11-22 08:45:32"));
     EXPECT_FALSE(no_login == logged_in);
     EXPECT_FALSE(logged_in == next_day);
-    // 登出/失败回滚会清空 date 与 login_time（契约 td-connection：current 回到 min）
+    // 登出会清空 date 与 login_time（契约 td-connection：current 回到 min）；
+    // 链内失败停在失败阶段、不清这些字段也不回退（ADR 0059）
     EXPECT_FALSE(logged_in == no_login);
 }
 
@@ -198,7 +199,7 @@ TEST(PublishChangedAccountsTest, OnlyChangedSessionsArePublished) {
 }
 
 TEST(PublishChangedAccountsTest, LogoutRollbackChangesArePublished) {
-    // 登出/失败回滚：current 从 10 回到 0/1 也必须推（前端据此清 pending 并恢复登录按钮）
+    // 登出（主动中止）：current 从 10 回到 0 也必须推（前端据此清 pending 并恢复登录按钮）
     const std::vector<TdSessionStatusSnapshot> sessions{
         {"account_001", td_status_publish_key(make_status(TdState::Idle, 0, "", ""))},
     };

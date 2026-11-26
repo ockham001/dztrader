@@ -111,7 +111,7 @@ JSON 示例：
 - **可见性**：失败原因只能从 2.5 的 `last_error.code` = `connect_timeout` 读，`state` 与进度都是「未登录」的正常值，与「从未发起过登录」在状态字段上不可区分。
 - **理由**：`Idle` 是 Offline 三态成员，也是唯一允许直接发起登录的端点。给它失败态会把「从未连上」报成「登录中」，改变 `ACCOUNT_STATUS` 对策略侧的语义，并让「能否登录」的判定多一个特例。
 - **可观察后果**：前端看到的是「未启动 / 进度 0」+ 卡片上的「上次失败：连接超时」；用户可直接重新发起登录，**不需要先登出**（与链内失败的恢复路径不同）。
-- **会话拆除（实现约定）**：连接超时后网关**销毁该账户的会话对象**（与 md 的连接超时回收一致），使下一次 `TD_CONNECT` 走正常建会话路径。不拆会留下「会话还在、状态是未登录」的组合：`TD_CONNECT` 的幂等守卫会静默跳过它，而 `Idle` 下登出按钮又不可用——账户既登录不了也登不出。拆除时按登出同一口径推终态（`Idle` + `current = min`），**`last_error` 不在拆除时清空**（仍供回看，见 2.5 清空时机）。
+- **会话拆除（实现约定）**：连接超时后网关**销毁该账户的会话对象**（与 md 的连接超时回收一致），使下一次 `TD_CONNECT` 走正常建会话路径。不拆会留下「会话还在、状态是未登录」的组合：`TD_CONNECT` 的幂等守卫会静默跳过它，而 `Idle` 下登出按钮又不可用——账户既登录不了也登不出。拆除时按登出同一口径推终态（`Idle` + `current = min`），**`last_error` 不在那一帧清空**（推出去的最后一条状态帧仍带原因）；但会话随销毁从集合移除，此后 `QUERY_FULL_SNAPSHOT` 等快照不再重放该账户的细状态——「上次失败」只在该帧及前端镜像存活期内可见，这是已知限制。
 
 ### 2.3 CTP `ext`
 
@@ -158,10 +158,11 @@ JSON 示例：
 | `connect_timeout` | 30 秒内未收到 `OnFrontConnected`（前置连接超时） | **无**（回 `Idle`，见 2.2 例外） |
 | `auth_rejected` | CTP 拒绝认证（`OnRspAuthenticate` 的 `ErrorID != 0`），`error_id` 为 CTP 错误码 | `AuthFailed` |
 | `auth_timeout` | 10 秒内未收到认证响应（认证超时） | `AuthFailed` |
-| `login_rejected` | CTP 拒绝登录（`OnRspUserLogin` 的 `ErrorID != 0`，如密码错误），`error_id` 为 CTP 错误码 | `LoginFailed` |
+| `login_rejected` | CTP 拒绝登录（`OnRspUserLogin` 的 `ErrorID != 0`，如密码错误）；响应**缺少错误信息**（无 `rsp_info`）也归此码，`error_id` 记 `-1` | `LoginFailed` |
 | `login_timeout` | 10 秒内未收到登录响应（登录超时） | `LoginFailed` |
-| `login_parse_error` | 登录响应缺失 / 交易日无效（响应解析失败） | `LoginFailed` |
+| `login_parse_error` | 登录响应**缺少登录数据**（无 `rsp_user_login`）/ 交易日无效（响应解析失败） | `LoginFailed` |
 | `day_load_failed` | 当日订单/成交基准装载失败 | `LoginFailed` |
+| `login_send_failed` | `ReqUserLogin` 返回非 0（发送被拒：网络 / 未登录 / 流控），非柜台裁决 | `LoginFailed` |
 
 **超时与柜台拒绝同等对待**（ADR 0059 决策 5）：两者进同一失败态、写同一 `last_error`，靠 `code` 区分。用户不需要关心「柜台拒了」还是「没人理」——两者对处置的差别远小于「停在哪一段」。
 
@@ -192,7 +193,7 @@ JSON 示例：
 
 **触发场景**：
 
-1. 状态或任何状态字段变化时推送（状态机翻转、登录信息填充/清空、`date` 变化、进度变化、`last_error` 的 `timestamp` 变化）
+1. 状态或任何状态字段变化时推送（状态机翻转、登录信息填充/清空、`date` 变化、进度变化、`last_error` 的**身份**（`code` + `timestamp`）变化——判据见 2.5「重推判据」）
 2. 交易网关启动初始化完成后按账户各上报一次
 3. `QUERY_FULL_SNAPSHOT` 响应（总则 §7）
 

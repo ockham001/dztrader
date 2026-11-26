@@ -1437,7 +1437,7 @@ void AccountSession::push_notification(const std::optional<TdNotification>& noti
         return;
     }
     if (!notify_) {
-        return;  // 未注入 (测试 / 无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
+        return;  // 未注入 (测试 / 无 UI): 状态已转移, 仅少一条通知, 不产生日志噪音
     }
     try {
         notify_(notif->level, message, notif->popup);
@@ -1498,7 +1498,17 @@ void AccountSession::req_login() {
     int ret = login_send_hook_ ? login_send_hook_(f, ++request_id_)
                                : api_->ReqUserLogin(&f, ++request_id_);
     if (ret != 0) {
+        // #495: 发送被拒也是登录段的一种失败 —— 此前只记日志后 return, 状态停在
+        // Authenticated(4)/Connected(2)、定时器未武装, 账户静默卡在链上, 而前端清 pending
+        // 的唯一主信号是 last_error 新身份, 这条路径永不产生 → 只能等 45s 兜底。
+        // 与结算确认发送被拒同一处置 (notify_settlement_confirm_failed)。
+        // 先转 LoggingIn 再走失败出口: 失败出口只在 LoggingIn 有效 (与其它四条路径同一条缝)。
+        // ret 是 CTP API 返回码 (-1 网络 / -2 未登录 / -3 流控), 不是柜台裁决 —— 文案不写
+        // 「柜台拒绝」, 码也用独立的 login_send_failed (不与 login_rejected 混同)。
         SPDLOG_ERROR("td req login failed | account={} ret={}", account_id_, ret);
+        state_machine_.on_req_login();
+        notify_login_failed(TdFailureCode::LoginSendFailed,
+                            std::format("发送登录请求失败（ret={}）", ret));
         return;
     }
     state_machine_.on_req_login();

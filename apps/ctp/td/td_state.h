@@ -66,6 +66,7 @@ enum class TdFailureCode {
     LoginTimeout,     ///< login_timeout: 10 秒内未收到登录响应
     LoginParseError,  ///< login_parse_error: 登录响应缺失 / 交易日无效
     DayLoadFailed,    ///< day_load_failed: 当日订单/成交基准装载失败
+    LoginSendFailed,  ///< login_send_failed: ReqUserLogin 返回非 0 (发送被拒, 非柜台裁决)
 };
 
 /// 失败原因码的线上字符串 (契约 td-status §2.5 码表)。
