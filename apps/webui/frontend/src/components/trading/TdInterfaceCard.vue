@@ -350,7 +350,7 @@ async function confirmRemoveInterface(): Promise<void> {
 
 // ===== 展示辅助（细状态/交易日/登录时间/进度；口径同 #251 页面）=====
 
-/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 12 态映射） */
+/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 13 态映射） */
 function statusText(row: TdAccountRow): string {
   return tdStateText(row.status?.state ?? null)
 }
@@ -373,7 +373,7 @@ function lastErrorText(e: TdLastErrorView): string {
   return time ? `${text}（${time}）` : text
 }
 
-/** 可选 tooltip：CTP ErrorID 仅 auth_rejected 非 0，其余不给 title（避免误导） */
+/** 可选 tooltip：CTP ErrorID 仅 *_rejected 非 0，其余不给 title（避免误导） */
 function lastErrorTitle(e: TdLastErrorView): string | undefined {
   return e.errorId ? `CTP 错误码：${e.errorId}` : undefined
 }

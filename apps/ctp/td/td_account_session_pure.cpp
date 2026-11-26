@@ -277,6 +277,15 @@ std::string cross_day_logout_message(ReportTradingDayVerdict verdict,
     return std::format("回报交易日校验未通过{}", suffix);
 }
 
+std::string connect_timeout_message(const std::string& reason) {
+    // ADR 0059 决策 7: 连接超时回未登录 (唯一可直接发起登录的端点), 所以下一步是「重新登录」,
+    // 不是链内失败那句「请先登出再重新登录」—— 用户此刻本来就在未登录状态。
+    if (reason.empty()) {
+        return "交易连接超时，账户保持在未登录，可直接重新登录";
+    }
+    return std::format("交易连接超时（{}），账户保持在未登录，可直接重新登录", reason);
+}
+
 std::string auth_failed_message(TdFailureCode code, const std::string& reason) {
     // 恢复路径与 login_failed_message 相同 (ADR 0051 决策 4: 先登出、再登录; WebUI 已有入口).
     // 与它不同的是**不解释「界面看起来正常」**: 认证失败停在 AuthFailed (3/10「认证失败」),
@@ -291,15 +300,18 @@ std::string auth_failed_message(TdFailureCode code, const std::string& reason) {
     return std::format("{}（{}），{}", prefix, reason, kAccountNotRetriedConsequence);
 }
 
-std::string login_failed_message(const std::string& reason) {
+std::string login_failed_message(TdFailureCode code, const std::string& reason) {
     // 恢复路径 = 先登出、再登录 (ADR 0051 决策 4; #409 落地后 WebUI 已有该入口:
     // REST /api/td/accounts/{id}/logout|login 与 WS td_disconnect/td_connect).
     // 文案陈述「发生了什么 + 会怎样 + 下一步」; 不再让用户去界面上做不到的事.
+    // 前缀措辞与 auth_failed_message 同构: 超时与柜台拒绝同等对待 (ADR 0059 决策 5),
+    // 只有「谁没响应」不同, 处置完全一致, 因此不分裂成两条文案模板.
+    const char* prefix = code == TdFailureCode::LoginTimeout ? "交易登录超时" : "交易登录失败";
     if (reason.empty()) {
         // 空原因不产出「（）」这种残缺文案.
-        return std::format("交易登录失败，{}", kAccountNotRetriedConsequence);
+        return std::format("{}，{}", prefix, kAccountNotRetriedConsequence);
     }
-    return std::format("交易登录失败（{}），{}", reason, kAccountNotRetriedConsequence);
+    return std::format("{}（{}），{}", prefix, reason, kAccountNotRetriedConsequence);
 }
 
 std::string settlement_confirm_failed_message(const std::string& reason) {

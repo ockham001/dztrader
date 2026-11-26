@@ -45,6 +45,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1916,6 +1917,310 @@ TEST_F(TdPositionLifecycleTest, AuthRejectionWithoutRspInfoRecordsErrorIdMinusOn
     EXPECT_EQ(last_error->error_id, -1);
     EXPECT_EQ(last_error->message, "柜台未返回错误信息");
     ASSERT_EQ(notifications_.size(), 1u);
+}
+
+// ============================================================================
+// 登录失败：停在 5/10 + last_error + 通知 (#495)
+//
+// 与上一组的区别只在**停在哪一段**: 认证失败停 3/10, 登录失败停 5/10 —— 同一套
+// 失败态机制 (ADR 0059 决策 1)、同一条通知出口、同一个 last_error 结构。
+//
+// 确定性来源: 登录发送经注入钩子 (不碰 api_; api_ 需连柜台才能创建), 超时收口两路都验
+// (`expire_login_timeout_for_test` 注入收口, 与缩时到 0 后真 `timer_queue_.tick()`)。
+// 交易日/基准装载两条失败用真会话 + 真 SQLite 临时库驱动 (夹具已具备)。不用 sleep。
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, LoginRejectedStopsAtLoginFailedAndNotifies) {
+    // 柜台拒绝登录 (密码错误): 此前回退到 Authenticated (4/10「已授权」), 看起来像认证
+    // 成功在等下一步。现在停 5/10「登录失败」。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoggingIn);
+    ASSERT_FALSE(timer_queue_.empty()) << "the 10s login timeout must be armed";
+
+    OnRspTdUserLoginField failed{};
+    CThostFtdcRspInfoField info{};
+    info.ErrorID = 3;
+    // **ASCII 正文**: CTP 的 ErrorMsg 是 GBK 字段, 本进程按平台解码 —— 写非 ASCII 字面量
+    // 会让 Windows 上解码结果与字面量不符 (编码转换由 libs/core 的 encoding_test 覆盖)。
+    // 这里钉的是「柜台拒绝 → 停 LoginFailed + 写 last_error + 推通知」这条链。
+    std::strcpy(info.ErrorMsg, "CTP:wrong password");
+    failed.rsp_info = info;
+    session_->on_rsp_user_login(failed);
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 5);
+    EXPECT_EQ(session_->state_machine().status().progress_desc, "登录失败");
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "login_rejected");
+    EXPECT_EQ(last_error->error_id, 3);
+    EXPECT_EQ(last_error->message, "CTP:wrong password");
+    ASSERT_EQ(notifications_.size(), 1u) << "a login rejection must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_NE(notifications_.front().message.find("（CTP:wrong password）"), std::string::npos)
+        << notifications_.front().message;
+    // 响应到达必须取消 10s 定时器, 不留残留
+    EXPECT_TRUE(timer_queue_.empty()) << "the response must cancel the login timeout timer";
+}
+
+TEST_F(TdPositionLifecycleTest, LoginRejectionWithoutRspInfoRecordsErrorIdMinusOne) {
+    // rsp_info 缺失按失败处置 (与认证 / settlement 一致), error_id 记 -1 而不是伪造 0 ——
+    // 0 在契约里表示「无 CTP 错误码」(超时), 两者必须可区分。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+
+    OnRspTdUserLoginField missing{};
+    missing.rsp_info = std::nullopt;
+    session_->on_rsp_user_login(missing);
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "login_rejected");
+    EXPECT_EQ(last_error->error_id, -1);
+    EXPECT_EQ(last_error->message, "柜台未返回错误信息");
+    ASSERT_EQ(notifications_.size(), 1u);
+}
+
+TEST_F(TdPositionLifecycleTest, LoginTimeoutStopsAtLoginFailedAndNotifies) {
+    // 10 s 内没收到登录响应: 与柜台拒绝同等对待 (ADR 0059 决策 5)。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoggingIn);
+    ASSERT_FALSE(timer_queue_.empty()) << "the 10s login timeout must be armed";
+
+    session_->expire_login_timeout_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 5);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "login_timeout");
+    EXPECT_EQ(last_error->error_id, 0) << "a timeout has no CTP error id";
+    EXPECT_EQ(last_error->message, "10 秒内未收到柜台的登录响应");
+    ASSERT_EQ(notifications_.size(), 1u) << "a login timeout must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_NE(notifications_.front().message.find("交易登录超时（10 秒内未收到柜台的登录响应）"),
+              std::string::npos)
+        << notifications_.front().message;
+}
+
+TEST_F(TdPositionLifecycleTest, LoginTimeoutThroughRealTimerQueueFiresTheQueuedCallback) {
+    // 上一条走 expire_login_timeout_for_test (注入收口)。这一条钉**真回调**: 排进 TimerQueue
+    // 的 lambda 本身是否是空壳, 只有真 tick 才验证得了 (docs/unit-test-standard.md §1.1)。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->set_login_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoggingIn);
+
+    timer_queue_.tick();  // 到点: 排定的回调此刻执行
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed)
+        << "the queued callback itself must move the state to the failure stage";
+    ASSERT_EQ(notifications_.size(), 1u) << "the queued callback itself must notify";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "login_timeout");
+}
+
+TEST_F(TdPositionLifecycleTest, LoginTimeoutNotFiredEarly) {
+    // 上一条把超时缩到 0 才触发。这一条反过来钉**排的是真延迟**: 未到点 tick 不得触发,
+    // 否则一次正常的慢响应会被误判成登录超时。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoggingIn);
+
+    timer_queue_.tick();
+    EXPECT_EQ(session_->state(), TdState::LoggingIn) << "must not fire early";
+    EXPECT_TRUE(notifications_.empty());
+}
+
+TEST_F(TdPositionLifecycleTest, InvalidTradingDayStopsAtLoginFailedWithParseError) {
+    // 交易日无效 = 响应解析失败 (对齐 md 的 LoginParseError), 不是柜台拒绝 —— code 必须
+    // 能区分这两种原因 (契约 td-status §2.5)。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+
+    OnRspTdUserLoginField f{};
+    CThostFtdcRspUserLoginField ok{};
+    std::strcpy(ok.TradingDay, "00000000");
+    f.rsp_user_login = ok;
+    CThostFtdcRspInfoField ok_info{};
+    ok_info.ErrorID = 0;
+    f.rsp_info = ok_info;
+    f.days_since_epoch = std::numeric_limits<int32_t>::min();  // parse_ctp_date 失败哨兵
+    session_->on_rsp_user_login(f);
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 5);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "login_parse_error");
+    EXPECT_EQ(last_error->error_id, 0);
+    EXPECT_NE(last_error->message.find("交易日无效"), std::string::npos) << last_error->message;
+    ASSERT_EQ(notifications_.size(), 1u);
+    EXPECT_NE(notifications_.front().message.find("交易日无效"), std::string::npos);
+}
+
+TEST_F(TdPositionLifecycleTest, DayLoadFailureStopsAtLoginFailedWithDayLoadCode) {
+    // 当日订单/成交基准装载失败: 与「交易日无效」不同的原因 (不同 code), 但同一失败态。
+    // 注入一个恒返回 nullptr 的只读连接提供器制造装载失败 (生产由 DB 不可用触发)。
+    session_->set_read_db_provider([]() -> SQLite::Database* { return nullptr; });
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+
+    OnRspTdUserLoginField f{};
+    CThostFtdcRspUserLoginField ok{};
+    std::strcpy(ok.TradingDay, kTradingDayText);
+    f.rsp_user_login = ok;
+    CThostFtdcRspInfoField ok_info{};
+    ok_info.ErrorID = 0;
+    f.rsp_info = ok_info;
+    f.days_since_epoch = kDay;
+    session_->on_rsp_user_login(f);
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "day_load_failed");
+    EXPECT_EQ(last_error->message, "当日订单/成交基准装载失败");
+    ASSERT_EQ(notifications_.size(), 1u);
+}
+
+TEST_F(TdPositionLifecycleTest, LoginFailedDoesNotRollBackToAuthenticated) {
+    // 核心回归 (ADR 0059 决策 1): 失败后**不回到** Authenticated (4/10「已授权」)——
+    // 那正是本票要消灭的说谎: 界面显示「已授权」, 用户以为认证成功在等下一步。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+    session_->expire_login_timeout_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::LoginFailed);
+    EXPECT_NE(session_->state(), TdState::Authenticated);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 5)
+        << "progress must stay at the failed stage, not fall back to 4";
+    EXPECT_EQ(account_state_of(session_->state()), DZ_ACCOUNT_LOGGING_IN)
+        << "a failure stage belongs to 'logging in' for the strategy-facing triple state";
+}
+
+// ============================================================================
+// 连接超时：回 Idle、不进失败态、只写 last_error + 通知 (#495 / ADR 0059 决策 7)
+//
+// 这是本票唯一的例外路径，也是唯一的「写了 last_error 却没有失败态」的组合。
+// 决策后果必须在会话级钉住：状态字段与「从未发起过登录」完全相同（Idle）——
+// 唯一能看出区别的是 last_error。丢掉它，用户就只能看到「未启动」而无原因。
+// 对照：链内失败停在失败态（上面 LoginFailed 各组），这里必须**没有**失败态。
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, LateLoginSuccessAfterTimeoutIsIgnored) {
+    // 10 s 登录超时已把状态转到 LoginFailed 之后，真的登录响应才到。
+    // 若不守状态，会走成功分支：on_login_success 被状态机拒绝（不在 LoggingIn），
+    // 但 set_trading_day / load_trading_day_baseline 照跑，然后 req_settlement_confirm ——
+    // 一个没有归属的结算确认请求。这与 #488 / #494 的迟到响应形态完全相同。
+    session_->set_login_send_hook([](CThostFtdcReqUserLoginField&, int) { return 0; });
+    session_->set_login_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::Authenticated);
+    session_->request_login_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoggingIn);
+    timer_queue_.tick();
+    ASSERT_EQ(session_->state(), TdState::LoginFailed);
+    ASSERT_TRUE(timer_queue_.empty()) << "premise: the login timeout timer fired and dequeued";
+    const auto failed_at = session_->state_machine().status().last_error;
+
+    // 注入可用的只读连接提供器：让迟到响应在**没有守卫**时能真的走完全链
+    // （set_trading_day → 基准装载 → req_settlement_confirm 武装 60s 看门狗）。
+    // 不注入的话装载必失败、链在到达结算确认前就断了 —— 那样本用例即使没有守卫也会绿，
+    // 属 docs/unit-test-standard.md §1.1 的失效测试形态。
+    // 局部只读连接（不在 SetUp 里给全部用例开句柄 —— 成本与写连接并存都不必要）。
+    SQLite::Database db(db_path_, SQLite::OPEN_READONLY);
+    db.exec("PRAGMA busy_timeout=5000");
+    session_->set_read_db_provider([&db]() -> SQLite::Database* { return &db; });
+
+    // 迟到的成功响应（带一个**不同的**交易日：若走成功分支，set_trading_day 会把它写进
+    // 会话交易日，后续重放去重与均价累计就锚在错误的日子上）。
+    OnRspTdUserLoginField late{};
+    CThostFtdcRspUserLoginField ok{};
+    std::strcpy(ok.TradingDay, "20261012");
+    std::strcpy(ok.LoginTime, "09:00:00");
+    late.rsp_user_login = ok;
+    CThostFtdcRspInfoField ok_info{};
+    ok_info.ErrorID = 0;
+    late.rsp_info = ok_info;
+    late.days_since_epoch = day(2026, 10, 12);
+    ASSERT_NE(late.days_since_epoch, kDay) << "premise: the late response carries another day";
+
+    const auto current_day_before = session_->state_machine().status().date;
+    session_->on_rsp_user_login(late);
+
+    // 状态不变、不追加通知、不发起后续链（req_settlement_confirm 会排 60s 看门狗 —— 必须仍为空）
+    EXPECT_EQ(session_->state(), TdState::LoginFailed)
+        << "a late success must not resurrect the login chain";
+    EXPECT_EQ(notifications_.size(), 1u) << "a late response must not raise another notification";
+    ASSERT_TRUE(session_->state_machine().status().last_error.has_value());
+    EXPECT_EQ(session_->state_machine().status().last_error->code, failed_at->code)
+        << "the recorded failure must be left untouched";
+    EXPECT_EQ(session_->state_machine().status().date, current_day_before)
+        << "a stale response must not overwrite the session trading day";
+    // **可失败的断言**：无守卫时 set_trading_day(外来日) + 基准装载会真的执行，
+    // 会话交易日被改成 2026-10-12；有守卫时入口即丢弃、仍停在 kDay。
+    // 只断言「状态机没变」是无效的 —— on_login_success 本来就会被状态机拒绝，
+    // 那种断言无论有没有守卫都绿（docs/unit-test-standard.md §1.1）。
+    EXPECT_EQ(session_->trading_day_for_test(), kDay)
+        << "a stale response must not re-anchor the session trading day";
+    EXPECT_EQ(session_->state_machine().status().login_time, "")
+        << "a stale response must not record a login time on a failed session";
+}
+
+TEST_F(TdPositionLifecycleTest, ConnectTimeoutStaysIdleAndWritesConnectTimeoutCode) {
+    session_->advance_login_chain_for_test(TdState::Connecting);
+    ASSERT_EQ(session_->state(), TdState::Connecting);
+
+    session_->expire_connect_timeout_for_test();
+
+    // 例外本身: 不进失败态, 回 Idle (Offline 三态, 唯一允许直接发起登录的端点)
+    EXPECT_EQ(session_->state(), TdState::Idle);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 0);
+    EXPECT_EQ(account_state_of(session_->state()), DZ_ACCOUNT_OFFLINE)
+        << "a failure stage here would report 'logging in' for a front that never connected";
+    // 原因只能从 last_error 读
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "connect_timeout");
+    EXPECT_EQ(last_error->error_id, 0);
+    EXPECT_EQ(last_error->message, "30 秒内未连接上前置");
+    // 通知照推, 且正文说「可直接重新登录」而不是链内失败那句「请先登出再重新登录」
+    ASSERT_EQ(notifications_.size(), 1u) << "a connect timeout must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_NE(notifications_.front().message.find("交易连接超时（30 秒内未连接上前置）"),
+              std::string::npos)
+        << notifications_.front().message;
+    EXPECT_EQ(notifications_.front().message.find("请先登出"), std::string::npos)
+        << "the account is back at the offline endpoint: re-login directly, no logout step";
+}
+
+TEST_F(TdPositionLifecycleTest, ConnectTimeoutIgnoredOutsideConnecting) {
+    // 30 s 定时器可能与别的路径竞争: 前置已连上后再到点的超时不得把链拽回 Idle,
+    // 也不得写 last_error / 弹窗 (与认证/登录超时的迟到收口同一取舍)。
+    session_->advance_login_chain_for_test(TdState::Connected);
+    ASSERT_EQ(session_->state(), TdState::Connected);
+
+    session_->expire_connect_timeout_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::Connected)
+        << "a late timeout must not roll the chain back";
+    EXPECT_TRUE(notifications_.empty());
+    EXPECT_FALSE(session_->state_machine().status().last_error.has_value());
 }
 
 TEST_F(TdPositionLifecycleTest, LastErrorSurvivesDisconnectForReview) {

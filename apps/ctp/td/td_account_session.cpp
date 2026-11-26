@@ -197,11 +197,16 @@ void AccountSession::advance_login_chain_for_test(TdState target) {
     };
     state_machine_ = TdStateMachine{};
     state_machine_.on_connect();
+    // #495: 停在 Connecting —— 前置连接超时用例的摆位点 (超时只在 Connecting 有效)。
+    if (stop_at(TdState::Connecting)) return;
     state_machine_.on_front_connected();
     if (stop_at(TdState::Connected)) return;
     state_machine_.on_req_authenticate();
     if (stop_at(TdState::Authenticating)) return;
     state_machine_.on_authenticate_success();
+    // #495: 认证通过但尚未发起登录 —— 登录失败用例的摆位点 (要验「不回退到 Authenticated」,
+    // 必须先真的走过 Authenticated)。
+    if (stop_at(TdState::Authenticated)) return;
     state_machine_.on_req_login();
     state_machine_.on_login_success(
         "test", trading_day_ > 0 ? format_day_text(trading_day_) : std::string(), "09:00:00");
@@ -527,15 +532,7 @@ void AccountSession::open(const std::string& flow_dir,
     uint64_t gen = generation_;
     connect_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(30), [this, gen]() {
         if (gen != generation_) return;  // 陈旧回调
-        if (state_machine_.state() == TdState::Connecting) {
-            SPDLOG_ERROR("td connect timeout | account={}", account_id_);
-            state_machine_.on_connect_timeout();
-            // 契约 account-status: 连接超时回 Offline (本 lambda 是唯一不经
-            // TdApi dispatch 路径的直调点, 经状态通知回调走统一写出口)
-            if (account_state_cb_) {
-                account_state_cb_(DZ_ACCOUNT_OFFLINE);
-            }
-        }
+        on_connect_timeout();
     });
 
     api_->Init();
@@ -584,6 +581,24 @@ void AccountSession::on_front_connected() {
         req_authenticate();
     } else {
         req_login();
+    }
+}
+
+void AccountSession::on_connect_timeout() {
+    // 生产由 TimerQueue 在 30s 后回调; 测试经 expire_connect_timeout_for_test 注入同一收口.
+    // 已离开 Connecting (前置已连上 / 已登出) 时忽略迟到超时。
+    if (state_machine_.state() != TdState::Connecting) return;
+    SPDLOG_ERROR("td connect timeout | account={}", account_id_);
+    // #495 / ADR 0059 决策 7: 连接超时**不进失败态** (仍回 Idle), 但必须写
+    // last_error.code = connect_timeout 并推通知 —— 此前这条路径既不写 last_error
+    // 也丢弃了状态机返回的通知, 用户事后在卡片上看不到「上次失败：连接超时」。
+    const auto notif = state_machine_.on_connect_timeout();
+    push_notification(notif, connect_timeout_message(std::string(kConnectTimeoutReason)),
+                      "td connect timeout notify failed");
+    // 契约 account-status: 连接超时回 Offline (本路径是唯一不经 TdApi dispatch 的直调点,
+    // 经状态通知回调走统一写出口)
+    if (account_state_cb_) {
+        account_state_cb_(DZ_ACCOUNT_OFFLINE);
     }
 }
 
@@ -654,14 +669,29 @@ void AccountSession::on_rsp_authenticate(const OnRspAuthenticateField& f) {
 }
 
 void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
+    // 迟到响应窗口 (与 #488 的 on_settlement_confirm / #494 的 on_rsp_authenticate 同一形态):
+    // 10 秒登录超时已把状态转到 LoginFailed 之后, 真响应才到。此时若按成功分支继续走,
+    // 会 set_trading_day → load_trading_day_baseline (重建重放过滤器 / 清空当日均价累计) →
+    // on_login_success (被状态机拒绝) → req_settlement_confirm (也被拒绝) ——
+    // 账户状态没变, 但**登录日基准已被一次无归属的响应重写**, 后续重放去重与均价累计
+    // 建立在错误的基线上。下游守卫只是碰巧挡住最后一步, 不能靠它替上游擦屁股。
+    // 判据 = 状态 (此刻必须还在 LoggingIn), 与 authenticate / settlement 一致。
+    // 守卫必须排在 cancel 之前: 排在前面会让一条被丢弃的外来响应把本链的超时定时器撤掉。
+    if (state_machine_.state() != TdState::LoggingIn) {
+        SPDLOG_WARN("td stale login response ignored | account={} state={}", account_id_,
+                    magic_enum::enum_name(state_machine_.state()));
+        return;
+    }
     cancel_login_timer();
     if (!f.rsp_info || f.rsp_info->ErrorID != 0) {
-        SPDLOG_ERROR("td login failed | account={} error_id={}", account_id_,
-                     f.rsp_info ? f.rsp_info->ErrorID : -1);
-        notify_login_failed(f.rsp_info
-                                ? std::format("柜台拒绝，错误码 {}：{}", f.rsp_info->ErrorID,
-                                              dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg))
-                                : std::string("柜台未返回错误信息"));
+        const int error_id = f.rsp_info ? f.rsp_info->ErrorID : -1;
+        SPDLOG_ERROR("td login failed | account={} error_id={}", account_id_, error_id);
+        // 柜台拒绝: 原因码 login_rejected (带 CTP error_id), 原因文案取 ErrorMsg 原文
+        // (错误码走 last_error.error_id, 不在正文里重复; 前端把它作为「上次失败」tooltip)。
+        notify_login_failed(TdFailureCode::LoginRejected,
+                            f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
+                                       : std::string("柜台未返回错误信息"),
+                            error_id);
         return;
     }
     // 同步 order_ref (设计 §9.4): new = max(local+1, ctp_max+1)
@@ -675,15 +705,17 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     // 日切感知 (status 帧 date 变化) 随之失真; 跨日会话本身已由回报 TradingDay 校验判死
     // (#423), 但那次判死同样依赖正确的会话交易日. 宁可这次登录失败,
     // 也不带着错误的会话交易日进入 Ready.
-    // 注意: 回滚后本进程不会自动重发登录 (状态停在 Authenticated/Connected 直到人工断开
-    // 重连或前置断线), 该缺口见 #406.
+    // 注意: 失败后本进程不会自动重发登录 (状态停在 LoginFailed 直到人工登出重来或前置
+    // 断线), 该缺口见 #406.
     // 发现 3 (评审 Important): 走 set_trading_day 而非直接赋值 — 日切/重连后新交易日的
     // 持仓为绝对态, 旧镜像 (key 不含日期) 会拦截新日首报, 必须在登录时清空 (spec §4.1 跨日清空).
     if (!trading_day_usable(f.days_since_epoch)) {
         const std::string raw = f.rsp_user_login ? f.rsp_user_login->TradingDay : "";
         SPDLOG_ERROR("td login trading day invalid | account={} trading_day=\"{}\"", account_id_,
                      raw);
-        notify_login_failed(std::format("交易日无效（原始值 \"{}\"）", raw));
+        // 交易日无效 = 响应解析失败 (对齐 md 的 LoginParseError 分支), 不是柜台拒绝。
+        notify_login_failed(TdFailureCode::LoginParseError,
+                            std::format("交易日无效（原始值 \"{}\"）", raw));
         return;
     }
     set_trading_day(f.days_since_epoch);
@@ -691,7 +723,7 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
     // 重放回报前装载当日订单/成交基准. 装载失败按登录失败路径处理 (重试登录):
     // 空基准会让重放风暴整批误判转发, 宁可重试也不带错基准进入 Ready.
     if (!load_trading_day_baseline()) {
-        notify_login_failed("当日订单/成交基准装载失败");
+        notify_login_failed(TdFailureCode::DayLoadFailed, "当日订单/成交基准装载失败");
         return;
     }
     // I1: sys_version 改用 CTP API 版本 (CZCETime 是郑商所时间, 不是系统版本)
@@ -1376,6 +1408,18 @@ void AccountSession::on_auth_timeout() {
 
 void AccountSession::set_auth_send_hook(AuthSendFn hook) { auth_send_hook_ = std::move(hook); }
 
+void AccountSession::set_login_send_hook(LoginSendFn hook) { login_send_hook_ = std::move(hook); }
+
+void AccountSession::request_login_for_test() { req_login(); }
+
+void AccountSession::expire_login_timeout_for_test() { on_login_timeout(); }
+
+void AccountSession::expire_connect_timeout_for_test() { on_connect_timeout(); }
+
+void AccountSession::set_login_timeout_for_test(std::chrono::seconds timeout) {
+    login_timeout_ = timeout;
+}
+
 void AccountSession::request_authenticate_for_test() { req_authenticate(); }
 
 void AccountSession::expire_auth_timeout_for_test() { on_auth_timeout(); }
@@ -1415,11 +1459,13 @@ void AccountSession::notify_auth_failed(TdFailureCode code,
     push_notification(notif, auth_failed_message(code, reason), "td auth failed notify failed");
 }
 
-void AccountSession::notify_login_failed(const std::string& reason) {
-    // 先转状态 (回滚到 Authenticated/Connected), 再通知 —— 与 md 的
+void AccountSession::notify_login_failed(TdFailureCode code,
+                                         const std::string& reason,
+                                         int error_id) {
+    // 先转状态 (停在 LoginFailed 5/10) + 写 last_error, 再通知 —— 与 md 的
     // 「先 set_last_error + set_state, 再返回通知」时序一致.
-    const auto notif = state_machine_.on_login_failed();
-    push_notification(notif, login_failed_message(reason), "td login failed notify failed");
+    const auto notif = state_machine_.on_login_failed(code, reason, error_id);
+    push_notification(notif, login_failed_message(code, reason), "td login failed notify failed");
 }
 
 void AccountSession::notify_settlement_confirm_failed(const std::string& reason) {
@@ -1447,20 +1493,32 @@ void AccountSession::req_login() {
     copy_string(f.BrokerID, broker_id_.c_str(), true);
     fill_account_id(f.UserID, sizeof(f.UserID), account_id_);
     copy_string(f.Password, password_.c_str(), true);
-    int ret = api_->ReqUserLogin(&f, ++request_id_);
+    // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_auth_send_hook 同形态 ——
+    // 没有它, 登录段的四条失败出口只能靠读代码确认 (docs/unit-test-standard.md §1.1).
+    int ret = login_send_hook_ ? login_send_hook_(f, ++request_id_)
+                               : api_->ReqUserLogin(&f, ++request_id_);
     if (ret != 0) {
         SPDLOG_ERROR("td req login failed | account={} ret={}", account_id_, ret);
         return;
     }
     state_machine_.on_req_login();
+    // 登录超时（生产 10s；测试可缩短到 0 走真 TimerQueue 回调）
     uint64_t gen = generation_;
-    login_timer_id_ = timer_queue_.schedule_after(std::chrono::seconds(10), [this, gen]() {
+    login_timer_id_ = timer_queue_.schedule_after(login_timeout_, [this, gen]() {
         if (gen != generation_) return;
-        if (state_machine_.state() == TdState::LoggingIn) {
-            SPDLOG_ERROR("td login timeout | account={}", account_id_);
-            notify_login_failed("10 秒内未收到柜台的登录响应");
-        }
+        on_login_timeout();
     });
+}
+
+void AccountSession::on_login_timeout() {
+    // 生产由 TimerQueue 在 10s 后回调; 测试经 expire_login_timeout_for_test 注入同一收口.
+    // 已离开 LoggingIn (响应已到 / 已断线 / 已登出) 时忽略迟到超时: 此时弹窗对不上
+    // 界面状态, 也不该把已前进的链硬拽回失败态。
+    if (state_machine_.state() != TdState::LoggingIn) return;
+    SPDLOG_ERROR("td login timeout | account={}", account_id_);
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5): 同一失败态、同一 last_error 写入,
+    // 只靠 code 区分。
+    notify_login_failed(TdFailureCode::LoginTimeout, "10 秒内未收到柜台的登录响应");
 }
 
 void AccountSession::req_settlement_confirm() {

@@ -169,7 +169,14 @@ private:
     /// 主循环每轮的会话状态 sweep (契约 td-status §3 触发场景 1): 对比本账户上次推送键
     /// (td_status_publish_key), 有变化才调 update_status。状态转移来源分散 (SPI 回调 /
     /// 连接与登录超时定时器 / 跨日登出 / 自动调度), 统一在此收敛, 不逐个调用点补推送 (#409)。
+    /// 末尾调 {@link reap_terminated_sessions} 拆除已终止的会话。
     void publish_changed_states();
+
+    /// 拆除状态已回 `Idle` 的会话 (#495 / ADR 0059 决策 7)。
+    ///
+    /// 连接超时是唯一「会话还在、状态机回 Idle」的组合: 不拆掉会让下一次登录被幂等守卫
+    /// 静默跳过 (既登录不了、也登不出), 账户死锁。判据与完整理由见实现处注释。
+    void reap_terminated_sessions();
     /// 账户状态统一写出口 (spec §3.1): 2018 三态去重推送。
     /// 状态与该账户上次推送相同、且帧内交易日也相同时跳过; 同态但日切 (date 变化) 重推
     /// (契约场景 3)。date 为空串或 state!=READY 时帧内 date=0。

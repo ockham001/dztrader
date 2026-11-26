@@ -1019,8 +1019,37 @@ void TdApi::publish_changed_states() {
     for (const auto& [account_id, session] : sessions_) {
         snapshots.push_back({account_id, td_status_publish_key(session->state_machine().status())});
     }
+    // 先把本轮需要推的推完, 再拆会话 —— 拆掉之后这一轮就没有它的状态可推了 (终态已在
+    // disconnect_account_by_id 里推过, 见那里的注释)。
     for (const auto& account_id : publish_changed_accounts(snapshots, account_last_published_)) {
         update_status(account_id);
+    }
+    reap_terminated_sessions();
+}
+
+void TdApi::reap_terminated_sessions() {
+    // 连接超时 (ADR 0059 决策 7 / #495) 之后, 状态机回 Idle 但**会话对象仍在**。
+    // 不拆掉它, `connect_account_by_id` 的幂等守卫 (`find_session != nullptr` → skip)
+    // 会让用户点「登录」永远没反应: 会话在、状态是未登录、既不能登录 (被 skip)
+    // 也不能登出 (前端在 `current == min` 禁用登出) —— 账户死锁。
+    // 与 md 同形态: md 的连接超时回调直接 `disconnect()` 释放 API 回 Idle
+    // (md_api_ctp.cpp 的 30s 定时器), 下次登录重建。
+    //
+    // 为什么不在 AccountSession::on_connect_timeout 里自毁: 那是 TimerQueue 回调栈帧内的
+    // `this`, 析构等于在成员函数里 delete this。改在主循环 sweep 里做 (与跨日登出同一
+    // 处置: 判定在会话内, 拆除在主循环), 顺序确定、可观察。
+    //
+    // 判据 = `Idle`。Idle 在 td 里只有两个来源: 从未 open (会话不存在) 与连接超时后回退
+    // (用户登出走 disconnect_account_by_id, 那里自己 erase)。因此这里只会命中超时会话。
+    std::vector<std::string> expired;
+    for (const auto& [account_id, session] : sessions_) {
+        if (session->state_machine().state() == TdState::Idle) {
+            expired.push_back(account_id);
+        }
+    }
+    for (const auto& account_id : expired) {
+        SPDLOG_INFO("td session reaped | account={} reason=terminal_idle", account_id);
+        disconnect_account_by_id(account_id);
     }
 }
 

@@ -306,6 +306,67 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(failed.attributes('title')).toBeUndefined()
   })
 
+  it('进度停在 5/10 并显示「登录失败」（与「登录中」区分）；原因行照常展示', async () => {
+    // #495 / ADR 0059 决策 1: 登录失败停在 5/10, 与 LoggingIn 同格 —— 界面必须靠
+    // state 文案区分「正在登录」与「登录失败」, 不能让用户以为还在等。
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'LoginFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '登录失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 5,
+      last_error: {
+        code: 'login_rejected', message: 'CTP:用户密码错误', error_id: 3, timestamp: 1_700_000_000,
+      },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 5, desc: '登录失败' })
+    const { wrapper } = mountCard(store)
+
+    const row = wrapper.find('[data-test="td-account-row-account_001"]')
+    expect(row.find('[data-test="td-account-state"]').text()).toBe('登录失败')
+    // 进度停在失败阶段，不回退到 4/10（Authenticated 那一格）
+    expect(row.text()).toContain('登录失败 · 5/10')
+    expect(row.text()).not.toContain('4/10')
+
+    const failed = row.find('[data-test="td-last-error-account_001"]')
+    expect(failed.text()).toMatch(/^上次失败：CTP:用户密码错误（\d{2}:\d{2}:\d{2}）$/)
+    expect(row.text()).not.toContain('login_rejected')
+  })
+
+  it('connect_timeout 后状态是未登录（不是登录失败），原因行展示「连接超时」', async () => {
+    // ADR 0059 决策 7 的决定性后果: 连接超时不进失败态, 状态字段与「从未发起过登录」相同;
+    // 唯一能看出区别的地方是 last_error。若前端把状态说成「登录失败」, 就把「从未连上」
+    // 误报成「登录被拒」, 用户会去查密码而真正的问题是网络。
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'Idle',
+      date: '',
+      login_time: '',
+      progress_desc: '未启动',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 0,
+      last_error: { code: 'connect_timeout', message: '', error_id: 0, timestamp: 1_700_000_000 },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 0, desc: '未启动' })
+    const { wrapper } = mountCard(store)
+
+    const row = wrapper.find('[data-test="td-account-row-account_001"]')
+    expect(row.find('[data-test="td-account-state"]').text()).toBe('未启动')
+    expect(row.text()).not.toContain('登录失败')
+    const failed = row.find('[data-test="td-last-error-account_001"]')
+    expect(failed.exists()).toBe(true)
+    expect(failed.text()).toMatch(/^上次失败：连接超时（30 秒内未连接上前置）（\d{2}:\d{2}:\d{2}）$/)
+    expect(row.text()).not.toContain('connect_timeout')
+  })
+
   it('无 last_error 时不展示「上次失败」行', async () => {
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {

@@ -40,7 +40,8 @@
 
 - 前端发起 → dzweb 预检（admin、账户已登记、目标网关 Running、写通道可用）并写帧 → 回 ack（`ok=false` = 未写通道）→ 目标网关串行处理 → 进度/状态推送。
 - 目标账户已有会话：幂等跳过（不重建会话、不产生新登录链、不推送）。
-- 登录失败（柜台拒绝 / 交易日无效 / 基准装载失败 / 登录超时）：状态回滚到中间态并停住，本进程**不自动重试**（#406）；失败原因经 `NOTIFY_UI` 错误级弹窗上浮（#407 / #408）。恢复路径 = 先登出、再登录（ADR 0051）。
+- 登录失败（柜台拒绝 / 交易日无效 / 基准装载失败 / 登录超时）：状态**停在失败阶段** `LoginFailed`（5/10「登录失败」，不回退到 `Authenticated` / `Connected`；ADR 0059 决策 1），本进程**不自动重试**（#406）；失败原因进 `RTN_TD_STATUS.last_error`（契约 td-status §2.5，四种场景分别是 `login_rejected` / `login_parse_error` / `day_load_failed` / `login_timeout`），并经 `NOTIFY_UI` 错误级弹窗上浮（#407 / #408）。恢复路径 = 先登出、再登录（ADR 0051）。
+- **前置连接超时例外**（ADR 0059 决策 7）：30 秒内未连上前置时账户回 `Idle`（`current == min`、Offline 三态，**不是**失败态），因此三态判据这里读作「未登录」而不是「建立中」；失败原因同样进 `last_error`（`code` = `connect_timeout`），通知照推。**网关随即销毁该账户的会话**，使下一次 `TD_CONNECT` 正常重建（契约 td-status §2.2 例外段「会话拆除」）——这样用户可直接重新发起登录，不必先登出；若会话不拆，`TD_CONNECT` 会被幂等守卫静默跳过而账户卡死。
 - 登录链后段失败（结算确认被拒 / 结算确认看门狗超时 / 合约查询被拒或超时 / 合约加载失败）：同样回滚到 `LoggedIn` 并停住、不自动重试，失败原因同样经 `NOTIFY_UI` 错误级弹窗上浮（#488）。**注意 `RTN_PROGRESS.current` 由此回退**（交易网关当前实现回到 6）——回退后的 `LoggedIn` 与「登录成功、正在初始化」是同一个状态，消费方不得据此推断登录成功，就绪判据只有一个：`RTN_PROGRESS.current == progress.max`。
 - 登录成功判据：该账户 `RTN_PROGRESS.current == progress.max`（契约 progress「网关会话进度骨架」）。
 
@@ -95,8 +96,12 @@
 > 按钮可见性/位置/disabled 的视觉规则是前端设计决策，见 ADR 0051；本节只写跨进程可观察的协议义务（契约侧只约束消息触发与判据，不约束控件形态）。
 
 1. **会话态判据**：以 `RTN_PROGRESS` 端点为唯一判据——`current <= min` = 未登录、`current >= max` = 就绪、其余 = 建立中（连接中/登录中/重连中/**失败停在失败阶段**）。`progress` 未到达时可按 `RTN_TD_STATUS.state` 兜底：`Idle` = 未登录、`Ready` = 就绪、其余 = 建立中（含失败态）。规则实现见 ADR 0051 / ADR 0059。
+
+   **例外（ADR 0059 决策 7 / 契约 td-status §2.2）**：前置连接超时**不进失败态**，账户回 `Idle`（`current == min`）。此时「未登录」这个判据是**真的**（它确实从未连上，也允许直接重新登录），失败原因只能从 `last_error.code` = `connect_timeout` 读——两者在状态字段上不可区分，**不得**据此以为「从没发起过登录」。这也是本判据唯一的例外：链内失败一律停在中间值、不回落到 `min`。
 2. **pending 清除**：登录 pending 的清除信号 = `RTN_TD_STATUS.last_error.timestamp` 变化且非 `null`（**链内失败**，契约 td-status §2.5）、`RTN_PROGRESS` 到达 `current == max`、`current` 相对上次推送回退（**主动中止**：登出 / 前置断线；ADR 0059 起链内失败不回退）、或兜底超时（建议 45s，连接 30s + 登录 10s + 余量）；登出 pending = `current == min` 或兜底超时（建议 10s）。端点到 `min`/`max` 时清掉对应在途请求（登录中点登出 → 到 `min` 时登录与登出 pending 都清）。`NOTIFY_UI` 是纯通知，**永不清除 pending**（契约 notify-ui）。
 3. **失败展示**：`NOTIFY_UI` 错误级弹窗即时提示；`RTN_TD_STATUS` 的 `last_error` 是持久失败原因（契约 td-status §2.5），前端据此在账户卡片持续展示「上次失败：原因（时间）」，并在 `last_error.timestamp` 变化时清登录 pending。`message` 为空时按 `code` 映射固定文案，**不得展示 `code` 原文**。
+
+   **`connect_timeout` 不是登录失败态**：它到达时 `state` 是 `Idle`、进度是 `min`（见义务 1 的例外）。卡片可以而且应当展示「上次失败：连接超时」，但**不得**把卡片状态说成「登录失败」——状态展示取 `state`/进度，原因行取 `last_error`，两者必须各走各的来源。
 4. **权限与禁止发起的条件**：仅 admin 可发起；目标网关未 Running 时两动作都不可发起（无法写帧）。账户已禁用时**登录**不可发起（网关会拒），**登出不受启用状态影响**——禁用不强制断开已有会话，仍需可登出（契约 td-config 启用/禁用语义）。dzweb 守卫权威，前端禁用只是体验优化（守卫失败经 WS `error` / REST 错误体表达，不写帧）。
 5. **不以 ack / HTTP 200 判定结果**：两者只表示已写事件通道；成败只看 `progress` / `td_status`。
 
