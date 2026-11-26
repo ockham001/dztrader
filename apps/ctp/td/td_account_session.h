@@ -187,13 +187,13 @@ public:
     ///
     /// 为什么需要（#488）：`req_settlement_confirm()` 直接解引用 `api_`，而 `api_` 只能由
     /// `open()` 创建真实 `CThostFtdcTraderApi`（需连柜台）。没有这个钩子，看门狗排定与
-    /// `ret != 0` 回滚两条路径只能靠「读代码」确认，属 `docs/unit-test-standard.md` §1.1
+    /// `ret != 0` 失败出口两条路径只能靠「读代码」确认，属 `docs/unit-test-standard.md` §1.1
     /// 判定的失效测试形态。与 `set_query_send_hook` 同一形态。
     using SettlementSendFn = std::function<int(CThostFtdcSettlementInfoConfirmField&, int)>;
     void set_settlement_send_hook(SettlementSendFn hook);
     /// 测试夹具专用：驱动生产 `req_settlement_confirm()`（会话须先在 `LoggedIn`）。
     /// 与 `set_settlement_send_hook` 配套 —— 用它才能在真会话上验「看门狗被排定」与
-    /// 「发送被拒时状态回滚 + 弹窗」。
+    /// 「发送被拒时停在失败态 + 弹窗」。
     void request_settlement_confirm_for_test();
     /// 测试夹具专用：从 Idle 重放生产登录链的状态迁移，停在 target（生产由 CTP 回调驱动）。
     /// 覆盖登录链各段（`Connected` / `Authenticating` / `Authenticated` / 认证后各段直到

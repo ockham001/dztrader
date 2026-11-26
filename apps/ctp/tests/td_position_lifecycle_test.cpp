@@ -1415,7 +1415,7 @@ TEST_F(TdPositionLifecycleTest, SettlementConfirmTimeoutStopsAtFailedStageAndNot
 }
 
 TEST_F(TdPositionLifecycleTest, LateSettlementConfirmResponseAfterTimeoutIsIgnored) {
-    // 看门狗超时回滚并通知后, 真响应可能才到 (实测该响应有 4–14s 延迟, 60s 看门狗只在
+    // 看门狗超时转失败态并通知后, 真响应可能才到 (实测该响应有 4–14s 延迟, 60s 看门狗只在
     // 极端丢包时触发)。迟到的成功不能被当成本次登录继续推进 —— 否则会发起一次没有收尾
     // 归属的合约查询, 账户停在一个既非「已通知失败」也非「正常初始化」的中间态。
     session_->set_settlement_send_hook(
@@ -1610,7 +1610,7 @@ TEST_F(TdPositionLifecycleTest, WatchdogNotFiredEarlyAndCancelledByDisconnect) {
     EXPECT_EQ(session_->state(), TdState::Confirming);
     EXPECT_TRUE(notifications_.empty()) << "the watchdog must not fire early";
 
-    // 断线会取消看门狗: 否则 60s 后回调会对着已回滚的会话弹一条对不上状态的告警。
+    // 断线会取消看门狗: 否则 60s 后回调会对着已出链的会话弹一条对不上状态的告警。
     session_->on_front_disconnected(0);
     EXPECT_TRUE(timer_queue_.empty()) << "disconnect must cancel the armed watchdog";
 }
@@ -1690,7 +1690,7 @@ TEST_F(TdPositionLifecycleTest, InstrumentQueryErrorResponseStopsAtFailedStageAn
 }
 
 TEST_F(TdPositionLifecycleTest, InstrumentsLoadTimeoutFiresThroughTimerQueueAndNotifies) {
-    // 合约加载 5 分钟超时出口 (#488 的第 7 个调用点): 此前只排了定时器并回滚, 通知被丢弃。
+    // 合约加载 5 分钟超时出口 (#488 的第 7 个调用点): 此前只排了定时器并回退日志, 通知被丢弃。
     // 缩时到 0 后用真 TimerQueue::tick() 执行排定的回调本身 —— 只验「排上了定时器」的
     // 用例在 lambda 被换成空壳时照样绿 (docs/unit-test-standard.md §1.1)。
     session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return 0; });

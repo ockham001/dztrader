@@ -841,4 +841,24 @@ TEST(TdFailureCodeTest, CodeStringsMatchContract) {
     EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::DayLoadFailed)), "day_load_failed");
     EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginSendFailed)),
               "login_send_failed");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::SettlementRejected)),
+              "settlement_rejected");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::SettlementTimeout)),
+              "settlement_timeout");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::InstrumentsRejected)),
+              "instruments_rejected");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::InstrumentsTimeout)),
+              "instruments_timeout");
+}
+
+TEST(TdFailureCodeTest, EveryCodeIsCoveredByTheContractTable) {
+    // 契约 td-status §2.5 码表是 12 项；枚举漏一个码或改名, 上面那条逐项断言会红,
+    // 但「新增枚举值却忘了补契约表」只有计数能钉住 —— 逐项断言不会因为多了一个值而失败。
+    int reachable = 0;
+    for (const auto code : magic_enum::enum_values<TdFailureCode>()) {
+        EXPECT_NE(std::string(td_failure_code_str(code)), "unknown")
+            << "every enum value must have a wire string: " << magic_enum::enum_name(code);
+        ++reachable;
+    }
+    EXPECT_EQ(reachable, 12) << "contract td-status §2.5 lists 12 codes; keep them in sync";
 }

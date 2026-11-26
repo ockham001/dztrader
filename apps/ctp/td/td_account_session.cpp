@@ -1545,7 +1545,7 @@ void AccountSession::req_settlement_confirm() {
     CThostFtdcSettlementInfoConfirmField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
     fill_account_id(f.InvestorID, sizeof(f.InvestorID), account_id_);
-    // #488: 先转状态再发送 —— 发送被拒与响应失败/超时从同一状态 (Confirming) 回滚,
+    // #488: 先转状态再发送 —— 发送被拒与响应失败/超时从同一状态 (Confirming) 出链,
     // 失败出口因此唯一 (notify_settlement_confirm_failed)。此前 ret != 0 只记日志:
     // 状态停在 LoggedIn、回调永不到来, 账户静默停在 6/10。
     (void)state_machine_.on_req_settlement_confirm();
@@ -1571,7 +1571,7 @@ void AccountSession::req_settlement_confirm() {
             on_settlement_confirm_timeout();
         });
     // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_query_send_hook 同形态 ——
-    // 没有它, 本函数的看门狗排定与 ret != 0 回滚只能靠读代码确认 (失效测试形态)。
+    // 没有它, 本函数的看门狗排定与 ret != 0 失败出口只能靠读代码确认 (失效测试形态)。
     settlement_confirm_request_id_ = ++request_id_;
     int ret = settlement_send_hook_
                   ? settlement_send_hook_(f, settlement_confirm_request_id_)
@@ -1593,7 +1593,7 @@ void AccountSession::on_settlement_confirm_timeout() {
     // expire_settlement_confirm_timeout_for_test 直接注入同一收口, 或用 0 延迟时长 +
     // TimerQueue::tick() 走真回调 (都不 sleep)。
     // 迟到超时 (响应已到 / 已断线 / 已登出) 一律忽略: 状态已离开 Confirming,
-    // 此时回滚与弹窗都会对不上界面状态。
+    // 此时转失败态与弹窗都会对不上界面状态。
     if (state_machine_.state() != TdState::Confirming) return;
     SPDLOG_ERROR("td settlement confirm timeout | account={} timeout_s={}", account_id_,
                  settlement_confirm_timeout_.count());
