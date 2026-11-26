@@ -207,6 +207,19 @@ public:
     void expire_runtime_query_timeout_for_test();
     /// 测试夹具专用：立即触发结算单确认看门狗的超时收口（生产由 TimerQueue 触发）。
     void expire_settlement_confirm_timeout_for_test();
+    /// 测试夹具专用：缩短结算单确认看门狗时长（默认 `kSettlementConfirmTimeout`）。
+    ///
+    /// 用途是让「真 TimerQueue 回调」可测：用 `std::chrono::milliseconds(0)` 武装后
+    /// `timer_queue_.tick()` 即触发——否则只能验证「定时器排上了」，而排上的回调是空壳
+    /// 也会绿（`docs/unit-test-standard.md` §1.1 断言能失败）。
+    void set_settlement_confirm_timeout_for_test(std::chrono::seconds timeout);
+    /// 合约查询发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqQryInstrument` 返回码。
+    /// 与 `set_settlement_send_hook` 同形态，让「发送被拒」与 `on_rsp_error` 两条失败出口
+    /// 在真会话上可驱动（否则只有 `api_` 非空的真机路径能到，测试无法证伪）。
+    using InstrumentSendFn = std::function<int(CThostFtdcQryInstrumentField&, int)>;
+    void set_instrument_send_hook(InstrumentSendFn hook);
+    /// 测试夹具专用：驱动生产 `req_qry_instrument()`（会话须在 `LoadingInstruments`）。
+    void request_instrument_query_for_test();
 
     /// 手动刷新请求（契约 td-refresh）：Ready 时置脏一次并返回 true；
     /// 非 Ready / 已离开会话返回 false（调用方记 WARN，不改变账户状态）。
@@ -610,6 +623,11 @@ private:
     QuerySendFn query_send_hook_;
     QueryClockFn query_clock_;
     SettlementSendFn settlement_send_hook_;
+    InstrumentSendFn instrument_send_hook_;
+    /// 结算单确认看门狗时长（生产 = kSettlementConfirmTimeout；测试可缩短）。
+    std::chrono::seconds settlement_confirm_timeout_ = kSettlementConfirmTimeout;
+    /// 结算单确认在途 request id（0 = 未在途）。响应侧校验它, 丢弃旧链接的迟到响应。
+    int settlement_confirm_request_id_ = 0;
 
     /// CTP 登录诊断字段 (open 时保存, 用于 ReqAuthenticate/ReqUserLogin)
     std::string broker_id_;

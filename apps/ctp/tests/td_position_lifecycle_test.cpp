@@ -21,11 +21,13 @@
  * 基准查询的**有限重试预算/停住/ERROR 通知**是本文件覆盖的例外：重试定时器只排定不触发
  * （无柜台的测试不能真发请求），但预算判定、定时器清理、通知与「失败链不碰表」都走真实代码。
  *
- * **#488 登录链后段失败**：结算确认的发送经注入钩子（`set_settlement_send_hook`，空 = 走
- * `api_`）绕开柜台，因此本目标也覆盖结算确认段——看门狗排定与超时、发送被拒、响应被拒、
- * 迟到响应丢弃，以及合约加载失败的通知上浮。状态摆位用 `advance_login_chain_for_test`
- * （重放生产迁移，失败当场抛），超时收口用 `expire_settlement_confirm_timeout_for_test`
- * 或真 `TimerQueue::tick()`，不 sleep。
+ * **#488 登录链后段失败**：结算确认与合约查询的发送都经注入钩子
+ * （`set_settlement_send_hook` / `set_instrument_send_hook`，空 = 走 `api_`）绕开柜台，
+ * 因此本目标覆盖两个失败出口的**全部调用点**：结算确认响应被拒 / 发送被拒 / 看门狗超时 /
+ * 迟到响应丢弃，以及合约查询发送被拒 / 流控不误报 / `on_rsp_error` 错误响应 / 加载 is_last
+ * 失败。状态摆位用 `advance_login_chain_for_test`（重放生产迁移，失败当场抛），超时收口
+ * 两路都验：`expire_settlement_confirm_timeout_for_test`（注入收口）与缩时后真
+ * `TimerQueue::tick()`（执行排定的回调本身）。不 sleep。
  *
  * **#458 运行期资金刷新**：生产上由登录收尾链进入 Ready，本目标用
  * `AccountSession::enter_ready_for_test` 注入同一状态迁移（纯状态机调用，不触网/不落库），
@@ -1409,6 +1411,16 @@ TEST_F(TdPositionLifecycleTest, LateSettlementConfirmResponseAfterTimeoutIsIgnor
     ASSERT_EQ(notifications_.size(), 1u);
     ASSERT_EQ(session_->state(), TdState::LoggedIn);
 
+    // 迟到响应: 用**错误 request_id** 也一并钉住 (只判状态会被旧链接的迟到响应蒙混过关)。
+    OnRspSettlementInfoConfirmField late_wrong_id{};
+    CThostFtdcRspInfoField ok2{};
+    ok2.ErrorID = 0;
+    late_wrong_id.rsp_info = ok2;
+    late_wrong_id.request_id = 999;
+    session_->on_rsp_settlement_confirm(late_wrong_id);
+    EXPECT_EQ(session_->state(), TdState::LoggedIn) << "a foreign request id must be dropped too";
+    EXPECT_EQ(notifications_.size(), 1u);
+
     // 迟到的成功响应。
     OnRspSettlementInfoConfirmField late{};
     CThostFtdcRspInfoField ok{};
@@ -1436,8 +1448,7 @@ TEST_F(TdPositionLifecycleTest, SettlementConfirmSendRejectionRollsBackAndNotifi
     ASSERT_EQ(notifications_.size(), 1u) << "a rejected settlement confirm send must be visible";
     EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(notifications_.front().popup);
-    EXPECT_NE(notifications_.front().message.find("发送结算单确认请求被柜台拒绝"),
-              std::string::npos)
+    EXPECT_NE(notifications_.front().message.find("发送结算单确认请求失败"), std::string::npos)
         << notifications_.front().message;
     EXPECT_TRUE(timer_queue_.empty()) << "a rejected send must not leave a watchdog armed";
 }
@@ -1528,24 +1539,117 @@ TEST_F(TdPositionLifecycleTest, LoginChainFailureWithoutNotifyCallbackDoesNotCra
     EXPECT_TRUE(notifications_.empty()) << "no callback means no notification, not a crash";
 }
 
-TEST_F(TdPositionLifecycleTest, WatchdogFiresThroughTimerQueueNotOnlyThroughTestSeam) {
-    // 上一条用例走 expire_*_for_test; 这一条钉「生产路径真的把回调排进了 TimerQueue」——
-    // 只有 TimerQueue::tick() 才会触发 (定时器漏排时 timer_queue_.empty() 先红)。
+TEST_F(TdPositionLifecycleTest, WatchdogFiresThroughTimerQueueOnRealDeadline) {
+    // 上一条用例走 expire_*_for_test (注入收口)。这一条钉**真回调**：把看门狗时长缩到 0,
+    // 让 TimerQueue::tick() 真正执行 req_settlement_confirm 排进去的那个 lambda。
+    // 为什么必须有: 若把排定的 lambda 换成空壳 `[]{}`, 只验「定时器排上了」的用例照样绿
+    // —— 断言必须能失败 (docs/unit-test-standard.md §1.1)。
+    session_->set_settlement_send_hook(
+        [](CThostFtdcSettlementInfoConfirmField&, int) { return 0; });
+    session_->set_settlement_confirm_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::LoggedIn);
+    session_->request_settlement_confirm_for_test();
+    ASSERT_EQ(session_->state(), TdState::Confirming);
+
+    timer_queue_.tick();  // 到点: 排定的回调此刻执行
+
+    EXPECT_EQ(session_->state(), TdState::LoggedIn)
+        << "the queued callback itself must roll the state back";
+    ASSERT_EQ(notifications_.size(), 1u) << "the queued callback itself must notify";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_TRUE(timer_queue_.empty());
+}
+
+TEST_F(TdPositionLifecycleTest, WatchdogNotFiredEarlyAndCancelledByDisconnect) {
+    // 60s 未到不得触发 (证明排的是真延迟而不是 0, 也证明不会误伤正常慢响应)。
     session_->set_settlement_send_hook(
         [](CThostFtdcSettlementInfoConfirmField&, int) { return 0; });
     session_->advance_login_chain_for_test(TdState::LoggedIn);
     session_->request_settlement_confirm_for_test();
     ASSERT_FALSE(timer_queue_.empty());
 
-    // 立刻 tick: 60s 未到, 不该触发 (证明排的是真延迟而不是 0)。
     timer_queue_.tick();
     EXPECT_EQ(session_->state(), TdState::Confirming);
     EXPECT_TRUE(notifications_.empty()) << "the watchdog must not fire early";
 
-    // 断线会取消看门狗 (登出/断线路径都调 cancel_settlement_confirm_timer):
-    // 否则 60s 后回调会对着已回滚的会话弹一条对不上状态的告警。
+    // 断线会取消看门狗: 否则 60s 后回调会对着已回滚的会话弹一条对不上状态的告警。
     session_->on_front_disconnected(0);
     EXPECT_TRUE(timer_queue_.empty()) << "disconnect must cancel the armed watchdog";
+}
+
+TEST_F(TdPositionLifecycleTest, InstrumentQuerySendRejectionRollsBackAndNotifies) {
+    // req_qry_instrument 的 ret != 0 分支 (#488): 此前回退到 LoggedIn 但通知被丢弃.
+    session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return -2; });
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    session_->request_instrument_query_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::LoggedIn);
+    ASSERT_EQ(notifications_.size(), 1u) << "a rejected instrument query must be visible";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_NE(notifications_.front().message.find("发送合约查询请求失败（ret=-2）"),
+              std::string::npos)
+        << notifications_.front().message;
+    // ret = -3 (流控) 不算失败: 排 1.5s 重试, 不通知. 见下一例.
+}
+
+TEST_F(TdPositionLifecycleTest, InstrumentQueryFlowControlRetriesWithoutNotification) {
+    // -3 是流控不是失败: 必须只排重试、不弹窗、状态留在 LoadingInstruments.
+    // 否则一次正常的流控退避会变成用户可见的假失败.
+    session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return -3; });
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    session_->request_instrument_query_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::LoadingInstruments)
+        << "flow control must not roll back the login chain";
+    EXPECT_TRUE(notifications_.empty()) << "flow control is not a user-visible failure";
+    EXPECT_FALSE(timer_queue_.empty()) << "a retry must be scheduled";
+    EXPECT_LE(timer_queue_.next_timeout(), std::chrono::milliseconds(1500));
+}
+
+TEST_F(TdPositionLifecycleTest, InstrumentQueryErrorResponseRollsBackAndNotifies) {
+    // on_rsp_error 的 Instrument 分支 (#488): 柜台错误响应 -> 回滚 + 弹窗.
+    session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    session_->request_instrument_query_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoadingInstruments);
+
+    OnRspErrorTdField rsp_error{};
+    CThostFtdcRspInfoField info{};
+    info.ErrorID = 7;
+    std::strcpy(info.ErrorMsg, "CTP:查询失败");
+    rsp_error.rsp_info = info;
+    // request_id 必须等于在途合约查询 id, 否则会被当作陈旧错误丢弃 (那是另一条分支).
+    rsp_error.request_id = 1;
+    session_->on_rsp_error(rsp_error);
+
+    EXPECT_EQ(session_->state(), TdState::LoggedIn);
+    ASSERT_EQ(notifications_.size(), 1u) << "an instrument error response must be visible";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_NE(notifications_.front().message.find("柜台返回错误，错误码 7："), std::string::npos)
+        << notifications_.front().message;
+}
+
+TEST_F(TdPositionLifecycleTest, NotifyThrowIsCaughtAndStateStillRollsBack) {
+    // AC7 后半: notify_ 抛异常必须被 catch (不逃逸到 TdApi 主循环), 且状态照常回滚.
+    // 用独立的会抛 notify 的会话 —— 本 fixture 的 notifications_ 不可抛.
+    auto throwing = std::make_unique<AccountSession>(
+        "acc_throw", *order_id_meta_, *writer_, *persist_, queue_, timer_queue_,
+        /*account_state_cb=*/nullptr, /*seq_allocator=*/nullptr,
+        [](DzNotifyLevel, const std::string&, bool) { throw std::runtime_error("notify boom"); });
+    throwing->set_trading_day(kDay);
+    throwing->set_settlement_send_hook(
+        [](CThostFtdcSettlementInfoConfirmField&, int) { return 0; });
+    throwing->advance_login_chain_for_test(TdState::LoggedIn);
+    throwing->request_settlement_confirm_for_test();
+    ASSERT_EQ(throwing->state(), TdState::Confirming);
+
+    EXPECT_NO_THROW(throwing->expire_settlement_confirm_timeout_for_test())
+        << "a throwing notify callback must not escape into the main loop";
+    EXPECT_EQ(throwing->state(), TdState::LoggedIn)
+        << "the state must still roll back even when the notification path throws";
 }
 
 }  // namespace

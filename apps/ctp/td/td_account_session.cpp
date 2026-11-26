@@ -331,9 +331,20 @@ void AccountSession::expire_runtime_query_timeout_for_test() {
 }
 
 void AccountSession::expire_settlement_confirm_timeout_for_test() {
-    // 生产路径由 TimerQueue 在 kSettlementConfirmTimeout 后回调；测试注入同一收口逻辑。
+    // 生产路径由 TimerQueue 在 settlement_confirm_timeout_ 后回调；测试注入同一收口逻辑。
     on_settlement_confirm_timeout();
 }
+
+void AccountSession::set_settlement_confirm_timeout_for_test(std::chrono::seconds timeout) {
+    settlement_confirm_timeout_ = timeout;
+}
+
+// === 合约查询发送钩子 (#488) ===
+void AccountSession::set_instrument_send_hook(InstrumentSendFn hook) {
+    instrument_send_hook_ = std::move(hook);
+}
+
+void AccountSession::request_instrument_query_for_test() { req_qry_instrument(); }
 
 void AccountSession::on_runtime_query_timeout(int request_id, QueryKind kind) {
     if (runtime_account_request_id_ != request_id) return;  // 迟到超时（已收口/已复位）
@@ -674,11 +685,18 @@ void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmF
     // #488 迟到响应窗口: 看门狗超时已把状态回滚到 LoggedIn (并通知了用户), 此后真响应
     // 才到 —— 不能再驱动后续链条, 否则会发起一次没有收尾归属的合约查询, 把账户拖成
     // 一个既非「已通知失败」也非「正常初始化」的中间态。
-    if (state_machine_.state() != TdState::Confirming) {
-        SPDLOG_WARN("td stale settlement confirm response ignored | account={} state={}",
-                    account_id_, magic_enum::enum_name(state_machine_.state()));
+    // 判据 = 状态 + request_id 双校验 (同 on_rsp_qry_instrument 的 query_gen_/request_id):
+    // 只判状态不够 —— 断线重连后新链进入 Confirming 时, 旧链的迟到响应会以「状态正确」
+    // 蒙混过关。
+    if (state_machine_.state() != TdState::Confirming ||
+        f.request_id != settlement_confirm_request_id_) {
+        SPDLOG_WARN(
+            "td stale settlement confirm response ignored | account={} state={} request_id={}",
+            account_id_, magic_enum::enum_name(state_machine_.state()), f.request_id);
         return;
     }
+    // 本链收口: 在途 request id 作废 (成功与失败两条分支都走这里)。
+    settlement_confirm_request_id_ = 0;
     // I8: 统一 rsp_info 处理: 缺失视为失败 (与 on_rsp_authenticate / on_rsp_user_login 一致)
     if (!f.rsp_info || f.rsp_info->ErrorID != 0) {
         std::string err =
@@ -1347,6 +1365,7 @@ void AccountSession::notify_settlement_confirm_failed(const std::string& reason)
     // 看门狗收口在失败出口统一取消: 每个调用点各写一遍只会漏一处 (此前 5 个调用点
     // 全部丢弃状态机返回值, 失败无痕)。
     cancel_settlement_confirm_timer();
+    settlement_confirm_request_id_ = 0;  // 出链即作废, 迟到响应的 request_id 校验依赖它
     // 状态机拒绝转移 (此刻不在 Confirming: 已断线 / 已登出 / 看门狗已收口后又来了迟到失败)
     // 时不推送, 理由同 notify_login_failed.
     auto notif = state_machine_.on_settlement_confirm_failed(reason);
@@ -1429,39 +1448,46 @@ void AccountSession::req_settlement_confirm() {
                     magic_enum::enum_name(state_machine_.state()));
         return;
     }
-    // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_query_send_hook 同形态 ——
-    // 没有它, 本函数的看门狗排定与 ret != 0 回滚只能靠读代码确认 (失效测试形态)。
-    int ret = settlement_send_hook_ ? settlement_send_hook_(f, ++request_id_)
-                                    : api_->ReqSettlementInfoConfirm(&f, ++request_id_);
-    if (ret != 0) {
-        SPDLOG_ERROR("td req settlement confirm failed | account={} ret={}", account_id_, ret);
-        notify_settlement_confirm_failed(
-            std::format("发送结算单确认请求被柜台拒绝（ret={}）", ret));
-        return;
-    }
     // #488 看门狗: 柜台不回 OnRspSettlementInfoConfirm 时状态机会永久停在 Confirming (7/10),
-    // 而本进程不自动重试登录链 —— 没有看门狗就是静默卡死。60s 的依据见
+    // 而本进程不自动重试登录链 —— 没有看门狗就是静默卡死。时长依据见
     // kSettlementConfirmTimeout (实测该响应 13.5s / 4.3s, 留 4.4 倍余量)。
+    // **排在发送之前**: 发送本身也可能抛 (注入钩子 / SDK), 那一刻状态已是 Confirming,
+    // 若不先武装看门狗就会留下「无定时器、无回调」的永久 Confirming —— 正是本票要消灭的形态。
     uint64_t gen = generation_;
-    settlement_confirm_timer_id_ = timer_queue_.schedule_after(
-        kSettlementConfirmTimeout, [this, weak = std::weak_ptr<void>(alive_token_), gen]() {
+    std::weak_ptr<void> weak = alive_token_;
+    settlement_confirm_timer_id_ =
+        timer_queue_.schedule_after(settlement_confirm_timeout_, [this, weak, gen]() {
             // 未跟踪的回调先查存活令牌: logout 会 erase 会话, 不查就 UAF。
             if (weak.expired()) return;
             if (gen != generation_) return;  // 断线重连后旧代际的回调作废
             on_settlement_confirm_timeout();
         });
+    // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_query_send_hook 同形态 ——
+    // 没有它, 本函数的看门狗排定与 ret != 0 回滚只能靠读代码确认 (失效测试形态)。
+    settlement_confirm_request_id_ = ++request_id_;
+    int ret = settlement_send_hook_
+                  ? settlement_send_hook_(f, settlement_confirm_request_id_)
+                  : api_->ReqSettlementInfoConfirm(&f, settlement_confirm_request_id_);
+    if (ret != 0) {
+        SPDLOG_ERROR("td req settlement confirm failed | account={} ret={}", account_id_, ret);
+        // ret 是 CTP API 返回码 (-1 网络 / -2 未登录 / -3 流控), 不是柜台裁决 —— 文案不写成
+        // 「柜台拒绝」。看门狗由统一失败出口取消。
+        notify_settlement_confirm_failed(std::format("发送结算单确认请求失败（ret={}）", ret));
+        return;
+    }
 }
 
 void AccountSession::on_settlement_confirm_timeout() {
-    // 生产路径由 TimerQueue 在 kSettlementConfirmTimeout 后回调; 测试经
-    // expire_settlement_confirm_timeout_for_test 直接注入同一收口 (不 sleep)。
+    // 生产路径由 TimerQueue 在 settlement_confirm_timeout_ 后回调; 测试经
+    // expire_settlement_confirm_timeout_for_test 直接注入同一收口, 或用 0 延迟时长 +
+    // TimerQueue::tick() 走真回调 (都不 sleep)。
     // 迟到超时 (响应已到 / 已断线 / 已登出) 一律忽略: 状态已离开 Confirming,
     // 此时回滚与弹窗都会对不上界面状态。
     if (state_machine_.state() != TdState::Confirming) return;
     SPDLOG_ERROR("td settlement confirm timeout | account={} timeout_s={}", account_id_,
-                 kSettlementConfirmTimeout.count());
+                 settlement_confirm_timeout_.count());
     notify_settlement_confirm_failed(
-        std::format("{} 秒内未收到柜台的结算单确认响应", kSettlementConfirmTimeout.count()));
+        std::format("{} 秒内未收到柜台的结算单确认响应", settlement_confirm_timeout_.count()));
 }
 
 void AccountSession::req_qry_instrument() {
@@ -1481,7 +1507,9 @@ void AccountSession::req_qry_instrument() {
     CThostFtdcQryInstrumentField qry{};
     // InstrumentID 留空: 查询所有合约
     instrument_query_request_id_ = ++request_id_;
-    int ret = api_->ReqQryInstrument(&qry, instrument_query_request_id_);
+    // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_settlement_send_hook 同形态。
+    int ret = instrument_send_hook_ ? instrument_send_hook_(qry, instrument_query_request_id_)
+                                    : api_->ReqQryInstrument(&qry, instrument_query_request_id_);
     if (ret != 0) {
         note_query_done();
         instrument_query_request_id_ = 0;
@@ -1500,8 +1528,9 @@ void AccountSession::req_qry_instrument() {
             return;
         }
         // C2: 非 -3 错误, 回退到 LoggedIn (设计 §2.4.1); #488 失败原因上浮 UI。
+        // ret 是 CTP API 返回码 (-1 网络 / -2 未登录 / -3 流控), 不是柜台裁决。
         SPDLOG_ERROR("td req qry instrument failed | account={} ret={}", account_id_, ret);
-        notify_instruments_load_failed(std::format("发送合约查询请求被柜台拒绝（ret={}）", ret));
+        notify_instruments_load_failed(std::format("发送合约查询请求失败（ret={}）", ret));
         return;
     }
     note_query_sent();

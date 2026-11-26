@@ -5,12 +5,21 @@
 #include <cstring>
 #include <format>
 #include <limits>
+#include <string_view>
 
 #include <dztrader/date_time/date.h>
 
 namespace dztrader::ctp {
 
 namespace {
+
+/// 登录链后段失败之后的「会怎样 + 下一步」(#488).
+///
+/// 结算确认失败与合约加载失败都会回滚到 `LoggedIn` —— 那是**正常中间态**, 界面看不出
+/// 异常, 而本进程不会自动重试登录链 (#406)。两条文案共用这一句, 只有前缀不同:
+/// 分开各写一份会让改一处漏一处的漂移成为可能 (两条文案的后果本来就是同一件事)。
+constexpr std::string_view kLoginChainStuckConsequence =
+    "账户停在「已登录」不能交易，本进程不会自动重试；请先登出再重新登录";
 
 /// 解析 CTP 回报自带的 8 位 "YYYYMMDD" (委托/成交回报的 TradingDay 字段).
 /// 先做长度与字符校验再交给 Date: 回报字段是定长字符数组, 空位填充 / 分隔符 / 缓冲区
@@ -275,21 +284,17 @@ std::string settlement_confirm_failed_message(const std::string& reason) {
     // 口径同 login_failed_message: 「发生了什么 + 会怎样 + 下一步」.
     // 「会怎样」必须写清, 因为状态机只回滚到 LoggedIn (6/10「已登录」) 这个正常中间态,
     // 界面看不出异常; 「下一步」= 先登出再登录 (ADR 0051 决策 4, WebUI 已有该入口, #409).
-    const std::string consequence =
-        "账户停在「已登录」不能交易，本进程不会自动重试；请先登出再重新登录";
     if (reason.empty()) {
-        return "结算单确认失败，" + consequence;
+        return std::format("结算单确认失败，{}", kLoginChainStuckConsequence);
     }
-    return std::format("结算单确认失败（{}），{}", reason, consequence);
+    return std::format("结算单确认失败（{}），{}", reason, kLoginChainStuckConsequence);
 }
 
 std::string instruments_load_failed_message(const std::string& reason) {
-    const std::string consequence =
-        "账户停在「已登录」不能交易，本进程不会自动重试；请先登出再重新登录";
     if (reason.empty()) {
-        return "合约加载失败，" + consequence;
+        return std::format("合约加载失败，{}", kLoginChainStuckConsequence);
     }
-    return std::format("合约加载失败（{}），{}", reason, consequence);
+    return std::format("合约加载失败（{}），{}", reason, kLoginChainStuckConsequence);
 }
 
 bool position_query_retry_allowed(int retries_done) noexcept {

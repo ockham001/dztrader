@@ -169,7 +169,8 @@ public:
     /// 结算单确认成功时调用。
     std::optional<TdNotification> on_settlement_confirmed();
 
-    /// 结算单确认失败时调用 (ErrorID != 0). 回退到 LoggedIn 等待重试.
+    /// 结算单确认失败时调用 (ErrorID != 0 / 看门狗超时). 回退到 LoggedIn.
+    /// 回退后本进程**不自动重试** (见 #406); 恢复路径 = 先登出再登录 (ADR 0051 决策 4).
     std::optional<TdNotification> on_settlement_confirm_failed(const std::string& err);
 
     /// 合约加载完成时调用。

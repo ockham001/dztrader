@@ -179,7 +179,8 @@ std::optional<TdNotification> TdStateMachine::on_settlement_confirm_failed(const
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    // C6: 回退到 LoggedIn, 等待下一个调度点重试 (不卡死在 Confirming)
+    // C6: 回退到 LoggedIn (不卡死在 Confirming). 回退后本进程不自动重试该账户
+    // (#406); 恢复路径 = 先登出再登录 (ADR 0051 决策 4). 失败原因由调用方上浮 UI (#488).
     set_state(TdState::LoggedIn);
     SPDLOG_ERROR("settlement confirm failed | error=\"{}\"", err);
     return TdNotification{
@@ -206,7 +207,8 @@ std::optional<TdNotification> TdStateMachine::on_instruments_load_failed(const s
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    // 回退到 LoggedIn, 等待重试 (不进入 Ready, 不接受下单)
+    // 回退到 LoggedIn (不进入 Ready, 不接受下单). 同样不自动重试 (#406); 恢复路径 =
+    // 先登出再登录. 失败原因由调用方上浮 UI (#488).
     set_state(TdState::LoggedIn);
     SPDLOG_ERROR("instruments load failed | error=\"{}\"", err);
     return TdNotification{
