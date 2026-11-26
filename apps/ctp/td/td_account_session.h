@@ -220,6 +220,10 @@ public:
     void set_instrument_send_hook(InstrumentSendFn hook);
     /// 测试夹具专用：驱动生产 `req_qry_instrument()`（会话须在 `LoadingInstruments`）。
     void request_instrument_query_for_test();
+    /// 测试夹具专用：缩短合约加载超时时长（默认 5 分钟）。
+    /// 与 `set_settlement_confirm_timeout_for_test` 同用途：让「真 TimerQueue 回调」可测，
+    /// 而不是只验「定时器排上了」（排上的 lambda 是空壳也会绿）。
+    void set_instruments_load_timeout_for_test(std::chrono::seconds timeout);
 
     /// 手动刷新请求（契约 td-refresh）：Ready 时置脏一次并返回 true；
     /// 非 Ready / 已离开会话返回 false（调用方记 WARN，不改变账户状态）。
@@ -626,6 +630,8 @@ private:
     InstrumentSendFn instrument_send_hook_;
     /// 结算单确认看门狗时长（生产 = kSettlementConfirmTimeout；测试可缩短）。
     std::chrono::seconds settlement_confirm_timeout_ = kSettlementConfirmTimeout;
+    /// 合约加载超时时长（生产 = 5 分钟；测试可缩短）。
+    std::chrono::seconds instruments_load_timeout_ = std::chrono::minutes(5);
     /// 结算单确认在途 request id（0 = 未在途）。响应侧校验它, 丢弃旧链接的迟到响应。
     int settlement_confirm_request_id_ = 0;
 

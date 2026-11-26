@@ -426,9 +426,9 @@ TEST(SettlementConfirmFailedMessageTest, EmptyReasonOmitsParentheses) {
 }
 
 TEST(InstrumentsLoadFailedMessageTest, IncludesReasonConsequenceAndRecovery) {
-    const std::string msg = instruments_load_failed_message("查询 5 分钟未收到最后一批响应");
+    const std::string msg = instruments_load_failed_message("查询 300 秒未收到最后一批响应");
     EXPECT_EQ(msg,
-              "合约加载失败（查询 5 分钟未收到最后一批响应），账户停在「已登录」不能交易，"
+              "合约加载失败（查询 300 秒未收到最后一批响应），账户停在「已登录」不能交易，"
               "本进程不会自动重试；请先登出再重新登录");
     EXPECT_NE(msg.find("请先登出再重新登录"), std::string::npos);
 }

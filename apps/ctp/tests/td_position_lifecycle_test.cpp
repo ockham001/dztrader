@@ -1610,18 +1610,24 @@ TEST_F(TdPositionLifecycleTest, InstrumentQueryFlowControlRetriesWithoutNotifica
 
 TEST_F(TdPositionLifecycleTest, InstrumentQueryErrorResponseRollsBackAndNotifies) {
     // on_rsp_error 的 Instrument 分支 (#488): 柜台错误响应 -> 回滚 + 弹窗.
-    session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return 0; });
+    int instrument_request_id = 0;
+    session_->set_instrument_send_hook([&](CThostFtdcQryInstrumentField&, int request_id) {
+        instrument_request_id = request_id;
+        return 0;
+    });
     session_->advance_login_chain_for_test(TdState::LoadingInstruments);
     session_->request_instrument_query_for_test();
     ASSERT_EQ(session_->state(), TdState::LoadingInstruments);
+    ASSERT_GT(instrument_request_id, 0) << "the hook must observe the real in-flight id";
 
     OnRspErrorTdField rsp_error{};
     CThostFtdcRspInfoField info{};
     info.ErrorID = 7;
     std::strcpy(info.ErrorMsg, "CTP:查询失败");
     rsp_error.rsp_info = info;
-    // request_id 必须等于在途合约查询 id, 否则会被当作陈旧错误丢弃 (那是另一条分支).
-    rsp_error.request_id = 1;
+    // request_id 必须等于在途合约查询 id, 否则会被当作陈旧错误丢弃 (那是另一条分支)。
+    // 从发送钩子捕获实际 id, 不写死 (夹具的 request_id_ 起点变了就会静默走错分支)。
+    rsp_error.request_id = instrument_request_id;
     session_->on_rsp_error(rsp_error);
 
     EXPECT_EQ(session_->state(), TdState::LoggedIn);
@@ -1630,6 +1636,53 @@ TEST_F(TdPositionLifecycleTest, InstrumentQueryErrorResponseRollsBackAndNotifies
     EXPECT_TRUE(notifications_.front().popup);
     EXPECT_NE(notifications_.front().message.find("柜台返回错误，错误码 7："), std::string::npos)
         << notifications_.front().message;
+}
+
+TEST_F(TdPositionLifecycleTest, InstrumentsLoadTimeoutFiresThroughTimerQueueAndNotifies) {
+    // 合约加载 5 分钟超时出口 (#488 的第 7 个调用点): 此前只排了定时器并回滚, 通知被丢弃。
+    // 缩时到 0 后用真 TimerQueue::tick() 执行排定的回调本身 —— 只验「排上了定时器」的
+    // 用例在 lambda 被换成空壳时照样绿 (docs/unit-test-standard.md §1.1)。
+    session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return 0; });
+    session_->set_instruments_load_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    session_->request_instrument_query_for_test();
+    // 发送被接受 -> 查询在途, 等待 is_last; 超时定时器已武装。
+    ASSERT_EQ(session_->state(), TdState::LoadingInstruments);
+    ASSERT_FALSE(timer_queue_.empty());
+
+    timer_queue_.tick();  // 到点: 排定的超时回调此刻执行
+
+    EXPECT_EQ(session_->state(), TdState::LoggedIn)
+        << "the queued timeout callback itself must roll the state back";
+    ASSERT_EQ(notifications_.size(), 1u) << "the instruments load timeout must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    // 正文里的秒数随实际配置 (测试缩成 0 秒), 证明文案拿的是同一个时长源.
+    EXPECT_NE(notifications_.front().message.find("查询 0 秒未收到最后一批响应"), std::string::npos)
+        << notifications_.front().message;
+    EXPECT_TRUE(timer_queue_.empty());
+}
+
+TEST_F(TdPositionLifecycleTest, WrongRequestIdResponseWhileConfirmingIsDropped) {
+    // #488: 迟到响应的判据是「状态 + request_id」双校验。只判状态的实现在这里会绿——
+    // 本条用例在**仍处于 Confirming** 时喂一个陌生 request_id, 必须被丢弃:
+    // 状态不动、不弹窗、看门狗仍武装 (后续真响应才收口)。
+    session_->set_settlement_send_hook(
+        [](CThostFtdcSettlementInfoConfirmField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::LoggedIn);
+    session_->request_settlement_confirm_for_test();
+    ASSERT_EQ(session_->state(), TdState::Confirming);
+
+    OnRspSettlementInfoConfirmField foreign{};
+    CThostFtdcRspInfoField ok{};
+    ok.ErrorID = 0;
+    foreign.rsp_info = ok;
+    foreign.request_id = 999;  // 不是本链的在途 id
+    session_->on_rsp_settlement_confirm(foreign);
+
+    EXPECT_EQ(session_->state(), TdState::Confirming)
+        << "a foreign request id must not advance the chain";
+    EXPECT_TRUE(notifications_.empty()) << "a foreign request id must not notify";
 }
 
 TEST_F(TdPositionLifecycleTest, NotifyThrowIsCaughtAndStateStillRollsBack) {

@@ -346,6 +346,10 @@ void AccountSession::set_instrument_send_hook(InstrumentSendFn hook) {
 
 void AccountSession::request_instrument_query_for_test() { req_qry_instrument(); }
 
+void AccountSession::set_instruments_load_timeout_for_test(std::chrono::seconds timeout) {
+    instruments_load_timeout_ = timeout;
+}
+
 void AccountSession::on_runtime_query_timeout(int request_id, QueryKind kind) {
     if (runtime_account_request_id_ != request_id) return;  // 迟到超时（已收口/已复位）
     SPDLOG_WARN("td runtime fund query timeout | account={} request_id={}", account_id_,
@@ -1538,14 +1542,16 @@ void AccountSession::req_qry_instrument() {
     cancel_instruments_load_timer();
     uint64_t gen = generation_;
     instruments_load_timer_id_ =
-        timer_queue_.schedule_after(std::chrono::minutes(5), [this, gen]() {
+        timer_queue_.schedule_after(instruments_load_timeout_, [this, gen]() {
             if (gen != generation_) return;
             if (state_machine_.state() == TdState::LoadingInstruments) {
-                SPDLOG_ERROR("td instruments load timeout | account={}", account_id_);
+                SPDLOG_ERROR("td instruments load timeout | account={} timeout_s={}", account_id_,
+                             instruments_load_timeout_.count());
                 note_query_done();
                 instrument_query_request_id_ = 0;
-                // #488: 原因改中文 —— 它会进用户弹窗。
-                notify_instruments_load_failed("查询 5 分钟未收到最后一批响应");
+                // #488: 原因改中文 —— 它会进用户弹窗。时长随实际配置, 与看门狗同源。
+                notify_instruments_load_failed(
+                    std::format("查询 {} 秒未收到最后一批响应", instruments_load_timeout_.count()));
             }
         });
 }

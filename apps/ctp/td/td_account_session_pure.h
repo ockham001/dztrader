@@ -170,7 +170,7 @@ std::string settlement_confirm_failed_message(const std::string& reason);
 
 /// 合约加载失败的通知正文 (纯构造便于断言, #488).
 /// @param reason 失败场景的中文说明 (如「柜台拒绝，错误码 3：CTP:未到合约加载时段」/
-///   「查询 5 分钟未收到最后一批响应」)
+///   「查询 300 秒未收到最后一批响应」)
 /// @return 形如「合约加载失败（<原因>），账户停在「已登录」不能交易，本进程不会自动重试；
 ///   请先登出再重新登录」; reason 为空时不产出残缺括号
 std::string instruments_load_failed_message(const std::string& reason);
