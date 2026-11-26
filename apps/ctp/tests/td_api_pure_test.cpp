@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include <magic_enum/magic_enum.hpp>
 #include <nlohmann/json.hpp>
 
 namespace dztrader::ctp {
@@ -624,6 +625,30 @@ TEST(ParseTdRefreshReqTest, RejectsNonIntegerRequestId) {
     std::string error;
     EXPECT_FALSE(parse_td_refresh_req(R"({"account_id":"acc_a","request_id":"x"})", &req, &error));
     EXPECT_EQ(error, "invalid_request_id");
+}
+
+// ============================================================================
+// session_should_be_reaped: 连接超时后会话是否应被拆除 (#495 / ADR 0059 决策 7)
+//
+// 这条判据决定一个**不可逆**动作 (销毁会话), 且它的反面是账户死锁 —— 必须有可失败的
+// 断言, 不能只靠注释论证 (td_api.cpp 不参与任何测试目标)。
+// ============================================================================
+
+TEST(SessionShouldBeReapedTest, IdleIsTerminal) {
+    EXPECT_TRUE(session_should_be_reaped(TdState::Idle))
+        << "connect timeout leaves the session at Idle; not reaping deadlocks the account";
+}
+
+TEST(SessionShouldBeReapedTest, LiveStatesAreNotReaped) {
+    // 其余任何状态都还在链上或已就绪: 拆掉它们等于把正常会话连坐。
+    for (const TdState state :
+         {TdState::Connecting, TdState::Connected, TdState::Authenticating, TdState::AuthFailed,
+          TdState::Authenticated, TdState::LoggingIn, TdState::LoginFailed, TdState::LoggedIn,
+          TdState::Confirming, TdState::LoadingInstruments, TdState::Ready,
+          TdState::Disconnected}) {
+        EXPECT_FALSE(session_should_be_reaped(state))
+            << "must not reap a live session: " << magic_enum::enum_name(state);
+    }
 }
 
 }  // namespace dztrader::ctp

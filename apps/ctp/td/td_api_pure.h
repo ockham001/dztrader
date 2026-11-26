@@ -9,6 +9,7 @@
 #include <dztrader/data_type.h>  // DzAccountState
 
 #include "td/td_config.h"
+#include "td/td_state.h"  // TdState (会话拆除判据)
 
 namespace dztrader::ctp {
 
@@ -33,6 +34,17 @@ const AccountConfig* find_current_account_in(const std::vector<AccountConfig>& a
 /// 在 cfg.accounts 中查找 account_id 对应的账户 (纯函数, 便捷重载)。
 /// account_id 为空或未找到时返回 nullptr。委托给 find_current_account_in(cfg.accounts, ...)。
 const AccountConfig* find_account_in(const TdConfig& cfg, const std::string& account_id);
+
+/// 会话是否已终止、应被主循环拆除 (#495 / ADR 0059 决策 7)。
+///
+/// 连接超时是唯一「会话对象还在、状态机已回 `Idle`」的组合：不拆掉它，下一次 `TD_CONNECT`
+/// 会被 `connect_account_by_id` 的幂等守卫（`find_session != nullptr` → skip）静默跳过，
+/// 而 `Idle` 下前端又禁用登出 —— 账户既登录不了也登不出。判据抽在本层是为了让「不做就死锁」
+/// 这条不可逆决策有可失败的单元测试（`td_api.cpp` 不参与任何测试目标）。
+///
+/// @param state 会话状态机的当前态
+/// @return true = 已终止（`Idle`），主循环 sweep 应推终态并 erase
+bool session_should_be_reaped(TdState state) noexcept;
 
 /// 2115 查询路由: queried 为空串 = 查全部 (true); 否则命中配置才应答 (不在配置不回, master 兜底)
 bool account_query_matches(const std::vector<std::string>& configured, const std::string& queried);

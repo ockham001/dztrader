@@ -174,7 +174,7 @@ export function tdInterfaceType(gateway: string): string {
   return underscore < 0 ? tail : tail.slice(0, underscore)
 }
 
-/** 细状态展示文案（契约 td-status §2.2 十二态；未知值原样显示，不吞掉事实） */
+/** 细状态展示文案（契约 td-status §2.2 十三态；未知值原样显示，不吞掉事实） */
 const TD_STATE_TEXT: Record<TdState, string> = {
   Idle: '未启动',
   Connecting: '连接中',
@@ -183,6 +183,7 @@ const TD_STATE_TEXT: Record<TdState, string> = {
   AuthFailed: '认证失败',
   Authenticated: '已认证',
   LoggingIn: '登录中',
+  LoginFailed: '登录失败',
   LoggedIn: '已登录',
   Confirming: '确认结算单',
   LoadingInstruments: '加载合约',
@@ -202,9 +203,9 @@ export function tdStateText(state: TdState | string | null | undefined): string 
  * 转换只发生在 {@link parseTdLastError}，组件不接触后端字段形状。
  */
 export interface TdLastErrorView {
-  code: string // auth_rejected | auth_timeout（未知码也保留原文，仅用于映射兜底）
+  code: string // connect_timeout | auth_rejected | auth_timeout | login_rejected | login_timeout | login_parse_error | day_load_failed | login_send_failed（未知码也保留原文，仅用于映射兜底）
   message: string // 中文用户可读原因；空串 = 无详情，展示时按 code 映射固定文案
-  errorId: number // CTP ErrorID；仅 auth_rejected 非 0
+  errorId: number // CTP ErrorID；仅 *_rejected 非 0
   timestamp: number // 失败发生时间，Unix 秒
 }
 
@@ -228,17 +229,28 @@ export function parseTdLastError(raw: unknown): TdLastErrorView | null {
 
 /**
  * 失败原因展示文案（契约 td-status §2.5 前端义务③）：`message` 优先；空则按 `code` 映射固定中文。
- * 未知 code 统一「认证失败」（本票只接通认证段的码）——**绝不把 snake_case 机器码直接展示给用户**。
+ * 未知 code 统一「交易登录链失败」（机器码种类只增，不能因为前端没跟上就显示空白）——
+ * **绝不把 snake_case 机器码直接展示给用户**。
+ *
+ * `connect_timeout` 单独一条：它**不是失败态**（账回到未登录，契约 td-status §2.5 / ADR 0059
+ * 决策 7），文案必须说「连接超时」而不是「登录失败」——用户看到的状态是「未启动」，
+ * 原因行说「登录失败」会把「从未连上」误导成一登录就失败。
  */
 const TD_LAST_ERROR_TEXT: Record<string, string> = {
+  connect_timeout: '连接超时（30 秒内未连接上前置）',
   auth_rejected: '认证被柜台拒绝',
   auth_timeout: '认证超时（10 秒内未收到响应）',
+  login_rejected: '登录被柜台拒绝',
+  login_timeout: '登录超时（10 秒内未收到响应）',
+  login_parse_error: '登录响应解析失败',
+  day_load_failed: '当日订单/成交基准装载失败',
+  login_send_failed: '登录请求发送失败',
 }
 
 export function tdLastErrorText(e: TdLastErrorView | null): string {
   if (!e) return ''
   if (e.message) return e.message
-  return TD_LAST_ERROR_TEXT[e.code] || '认证失败'
+  return TD_LAST_ERROR_TEXT[e.code] || '交易登录链失败'
 }
 
 /** 降级原因文案（契约 rest §2.9.9 只有 no_gateway_snapshot 一种原因） */
@@ -1052,7 +1064,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     // payload 冗余携带 account_id 供消费方定位与自校验（契约 td-status §3）：与帧头不一致
     // 说明来源错乱，按非法帧丢弃，避免把 A 账户的状态挂到 B 账户行上。
     if (payload.account_id !== instanceId) return
-    // state 是契约 td-status §2.2 的 12 态枚举名；运行时不可信，非字符串/空串的帧丢弃
+    // state 是契约 td-status §2.2 的 13 态枚举名；运行时不可信，非字符串/空串的帧丢弃
     //（类型声明已收窄为 TdState，因此先转 unknown 再判，避免与类型系统打架）
     const rawState: unknown = payload.state
     if (typeof rawState !== 'string' || rawState === '') return

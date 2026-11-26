@@ -373,10 +373,11 @@ TEST(TradingDayUsableTest, RejectsEpochDayCollidingWithNa) {
 // ============================================================================
 
 TEST(LoginFailedMessageTest, IncludesReasonConsequenceAndRecovery) {
-    // 登录失败后状态回滚到 Authenticated/Connected (正常中间态), 前端无法与「正在登录」
-    // 区分; 且本进程不自动重发登录 (#406). 正文必须给出「发生了什么」与「会怎样」,
-    // 以及下一步——#409 落地后 WebUI 有「先登出、再登录」入口 (ADR 0051 决策 4).
-    const std::string msg = login_failed_message("交易日无效（原始值 \"00000000\"）");
+    // 登录失败停在 5/10「登录失败」(ADR 0059 决策 1), 界面已显示异常; 但本进程不自动重发
+    // 登录 (#406), 正文仍须给出「发生了什么」「会怎样」与下一步——#409 落地后 WebUI 有
+    // 「先登出、再登录」入口 (ADR 0051 决策 4).
+    const std::string msg =
+        login_failed_message(TdFailureCode::LoginParseError, "交易日无效（原始值 \"00000000\"）");
     EXPECT_EQ(msg,
               "交易登录失败（交易日无效（原始值 \"00000000\"）），本进程不会自动重试该账户；"
               "请先登出再重新登录");
@@ -385,18 +386,58 @@ TEST(LoginFailedMessageTest, IncludesReasonConsequenceAndRecovery) {
 }
 
 TEST(LoginFailedMessageTest, PropagatesScenarioVerbatim) {
-    // 三种失败场景的说明各自原样带入, 不被归一成同一句通用文案.
-    for (const char* reason : {"柜台拒绝，错误码 3：CTP:用户不存在", "当日订单/成交基准装载失败",
-                               "10 秒内未收到柜台的登录响应"}) {
-        const std::string msg = login_failed_message(reason);
-        EXPECT_NE(msg.find(reason), std::string::npos) << reason;
+    // 失败场景的说明原样带入, 不被归一成同一句通用文案。
+    // 每条按**它自己的**原因码传: 统一传同一个码会让 code 参数对断言零作用 ——
+    // 前缀逻辑改坏 (比如把超时前缀接到拒绝上) 时用例照绿。
+    struct Case {
+        TdFailureCode code;
+        const char* reason;
+        const char* prefix;
+    };
+    const Case cases[] = {
+        {TdFailureCode::LoginRejected, "CTP:用户不存在", "交易登录失败"},
+        {TdFailureCode::DayLoadFailed, "当日订单/成交基准装载失败", "交易登录失败"},
+        {TdFailureCode::LoginParseError, "交易日无效（原始值 \"00000000\"）", "交易登录失败"},
+        {TdFailureCode::LoginTimeout, "10 秒内未收到柜台的登录响应", "交易登录超时"},
+    };
+    for (const auto& c : cases) {
+        const std::string msg = login_failed_message(c.code, c.reason);
+        EXPECT_NE(msg.find(c.reason), std::string::npos) << c.reason;
+        EXPECT_EQ(msg.rfind(c.prefix, 0), 0u) << "wrong prefix: " << msg;
     }
+}
+
+TEST(LoginFailedMessageTest, TimeoutUsesTimeoutPrefix) {
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5), 只有前缀措辞区分「谁没响应」。
+    // 与 auth_failed_message 同构: 同一失败态、同一处置, 不分裂成两条文案模板。
+    EXPECT_EQ(login_failed_message(TdFailureCode::LoginTimeout, "10 秒内未收到柜台的登录响应"),
+              "交易登录超时（10 秒内未收到柜台的登录响应），本进程不会自动重试该账户；"
+              "请先登出再重新登录");
 }
 
 TEST(LoginFailedMessageTest, EmptyReasonOmitsParentheses) {
     // 空原因不得产出「（）」这种残缺文案; 逐字锁定, 防止改成 ASCII () 后静默通过.
-    EXPECT_EQ(login_failed_message(""),
+    EXPECT_EQ(login_failed_message(TdFailureCode::LoginRejected, ""),
               "交易登录失败，本进程不会自动重试该账户；请先登出再重新登录");
+    EXPECT_EQ(login_failed_message(TdFailureCode::LoginTimeout, ""),
+              "交易登录超时，本进程不会自动重试该账户；请先登出再重新登录");
+}
+
+// ============================================================================
+// connect_timeout_message (连接超时通知正文, #495 / ADR 0059 决策 7)
+// ============================================================================
+
+TEST(ConnectTimeoutMessageTest, SaysStayOfflineAndRetryDirectly) {
+    // 连接超时是唯一不进失败态的失败: 账户回到未登录, 用户可以直接再发起登录。
+    // 套用链内失败的「请先登出再重新登录」会指错下一步 —— 用户在未登录状态登不了出。
+    const std::string msg = connect_timeout_message("30 秒内未连接上前置");
+    EXPECT_EQ(msg, "交易连接超时（30 秒内未连接上前置），账户保持在未登录，可直接重新登录");
+    EXPECT_EQ(msg.find("请先登出"), std::string::npos)
+        << "connect timeout is not a login-chain failure: no logout step";
+}
+
+TEST(ConnectTimeoutMessageTest, EmptyReasonOmitsParentheses) {
+    EXPECT_EQ(connect_timeout_message(""), "交易连接超时，账户保持在未登录，可直接重新登录");
 }
 
 // ============================================================================

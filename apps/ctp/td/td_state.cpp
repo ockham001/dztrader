@@ -17,10 +17,22 @@ int64_t now_epoch_seconds() { return static_cast<int64_t>(std::time(nullptr)); }
 
 const char* td_failure_code_str(TdFailureCode code) {
     switch (code) {
+        case TdFailureCode::ConnectTimeout:
+            return "connect_timeout";
         case TdFailureCode::AuthRejected:
             return "auth_rejected";
         case TdFailureCode::AuthTimeout:
             return "auth_timeout";
+        case TdFailureCode::LoginRejected:
+            return "login_rejected";
+        case TdFailureCode::LoginTimeout:
+            return "login_timeout";
+        case TdFailureCode::LoginParseError:
+            return "login_parse_error";
+        case TdFailureCode::DayLoadFailed:
+            return "day_load_failed";
+        case TdFailureCode::LoginSendFailed:
+            return "login_send_failed";
     }
     return "unknown";
 }
@@ -50,7 +62,6 @@ std::optional<TdNotification> TdStateMachine::on_disconnect() {
     if (status_.state == TdState::Idle) {
         return std::nullopt;
     }
-    was_authenticated_ = false;
     set_state(TdState::Idle);
     return TdNotification{.level = DZ_NOTIFY_INFO, .popup = false, .message = "交易已断开"};
 }
@@ -75,9 +86,6 @@ std::optional<TdNotification> TdStateMachine::on_front_disconnected(int reason) 
         SPDLOG_DEBUG("disconnected repeat callback, ignoring | reason={}", reason);
         return std::nullopt;
     }
-    // I11: 重置 was_authenticated_ 标记, 重连后会重新走认证流程
-    // 否则重连后若 auth_code 为空直接 req_login 失败, 会错误回退到 Authenticated
-    was_authenticated_ = false;
     set_state(TdState::Disconnected);
     // 复用 mdctp 的 disconnect_reason_str (在 md_state.h 声明, md_state.cpp 实现)
     // td_state 不依赖 md_state, 此处内联简单描述
@@ -94,6 +102,11 @@ std::optional<TdNotification> TdStateMachine::on_connect_timeout() {
     }
     // 连接超时: 从未连上前置, 回退到 Idle (区别于断线回退 Disconnected)
     // 调用方 (TdApi) 负责 cleanup CTP API 并决定是否重试 open()
+    //
+    // 例外 (ADR 0059 决策 7): 这是唯一写 last_error 却不进失败态的失败路径。Idle 是 Offline
+    // 三态成员、也是唯一允许直接发起登录的端点; 给它失败态会把「从未连上」报成「登录中」,
+    // 改变 ACCOUNT_STATUS 对策略侧的语义。原因只能从 last_error.code 读。
+    set_last_error(TdFailureCode::ConnectTimeout, std::string(kConnectTimeoutReason), 0);
     set_state(TdState::Idle);
     SPDLOG_ERROR("connect timeout | state=Connecting");
     return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "交易连接超时"};
@@ -114,7 +127,6 @@ std::optional<TdNotification> TdStateMachine::on_authenticate_success() {
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    was_authenticated_ = true;
     set_state(TdState::Authenticated);
     return std::nullopt;
 }
@@ -160,7 +172,9 @@ std::optional<TdNotification> TdStateMachine::on_login_success(const std::string
     return TdNotification{.level = DZ_NOTIFY_INFO, .popup = false, .message = "交易登录成功"};
 }
 
-std::optional<TdNotification> TdStateMachine::on_login_failed() {
+std::optional<TdNotification> TdStateMachine::on_login_failed(TdFailureCode code,
+                                                              const std::string& message,
+                                                              int error_id) {
     if (status_.state != TdState::LoggingIn) {
         SPDLOG_WARN("login failed: unexpected state | state={}",
                     magic_enum::enum_name(status_.state));
@@ -168,14 +182,15 @@ std::optional<TdNotification> TdStateMachine::on_login_failed() {
     }
     // 登录失败, 清空残留的登录时间避免 UI 误显示
     status_.login_time.clear();
-    // 根据是否认证过决定回退目标:
-    // - 认证过 -> Authenticated (重新登录, 无需重新认证)
-    // - 未认证 -> Connected (无认证路径, 重新走 Connected -> LoggingIn)
-    TdState rollback = was_authenticated_ ? TdState::Authenticated : TdState::Connected;
-    set_state(rollback);
-    SPDLOG_ERROR("login failed | state=LoggingIn rollback={}", magic_enum::enum_name(rollback));
-    // message 保留通用文案供本函数的其它调用方; AccountSession 侧改用
-    // login_failed_message() 构造带场景的正文, 只取本结构的 level/popup (#407).
+    // ADR 0059 决策 1: 停在失败阶段 (LoginFailed, 5/10「登录失败」), 不回退到
+    // Authenticated (4) / Connected (2)。失败位置与「是否经过认证」无关 —— 链走到哪一段
+    // 就停在哪一段, 不再借用回退来表达失败。
+    // 段内原因写 last_error (契约 td-status §2.5); message 空串 = 无详情, 前端按 code 兜底.
+    set_last_error(code, message, error_id);
+    set_state(TdState::LoginFailed);
+    SPDLOG_ERROR("login failed | code={} error_id={}", td_failure_code_str(code), error_id);
+    // message 保留通用文案: AccountSession 侧改用 login_failed_message() 构造带场景的正文,
+    // 只取本结构的 level/popup (#407).
     return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "交易登录失败"};
 }
 
@@ -257,7 +272,7 @@ void TdStateMachine::set_state(TdState new_state) {
     status_.state = new_state;
 
     // progress_max=10: Idle=0, Connecting/Disconnected=1, Connected=2,
-    // Authenticating/AuthFailed=3, Authenticated=4, LoggingIn=5, LoggedIn=6,
+    // Authenticating/AuthFailed=3, Authenticated=4, LoggingIn/LoginFailed=5, LoggedIn=6,
     // Confirming=7, LoadingInstruments=8, Ready=10
     // 失败态取**它停住的那一段**的数值 (ADR 0059 决策 1): 不回退到上一段, 也不占用端点.
     switch (new_state) {
@@ -307,6 +322,13 @@ void TdStateMachine::set_state(TdState new_state) {
             status_.progress_max = 10;
             status_.progress_current = 5;
             break;
+        case TdState::LoginFailed:
+            // 与 LoggingIn 同格 (5/10): 停在失败发生的那一段, 不回退到 Authenticated (4).
+            status_.progress_desc = "登录失败";
+            status_.progress_min = 0;
+            status_.progress_max = 10;
+            status_.progress_current = 5;
+            break;
         case TdState::LoggedIn:
             status_.progress_desc = "已登录";
             status_.progress_min = 0;
@@ -351,6 +373,7 @@ DzAccountState account_state_of(TdState state) noexcept {
         case TdState::AuthFailed:  // 失败态属会话未就绪 (契约 account-status 三态聚合)
         case TdState::Authenticated:
         case TdState::LoggingIn:
+        case TdState::LoginFailed:  // 失败态属会话未就绪 (契约 account-status 三态聚合)
         case TdState::LoggedIn:
         case TdState::Confirming:
         case TdState::LoadingInstruments:

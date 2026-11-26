@@ -127,11 +127,11 @@ describe('tdInterfaceType（契约 td-config §1 接口类型派生）', () => {
   })
 })
 
-describe('tdStateText（契约 td-status §2.2 十二态）', () => {
-  it('12 个状态值都有中文文案，且互不相同（不漏映射、不撞文案）', () => {
+describe('tdStateText（契约 td-status §2.2 十三态）', () => {
+  it('13 个状态值都有中文文案，且互不相同（不漏映射、不撞文案）', () => {
     const states = ['Idle', 'Connecting', 'Connected', 'Authenticating', 'AuthFailed',
-      'Authenticated', 'LoggingIn', 'LoggedIn', 'Confirming', 'LoadingInstruments', 'Ready',
-      'Disconnected'] as const
+      'Authenticated', 'LoggingIn', 'LoginFailed', 'LoggedIn', 'Confirming', 'LoadingInstruments',
+      'Ready', 'Disconnected'] as const
     const texts = states.map(state => tdStateText(state))
     for (const text of texts) {
       expect(text).not.toBe('')
@@ -150,6 +150,14 @@ describe('tdStateText（契约 td-status §2.2 十二态）', () => {
   it('AuthFailed 有独立文案（与 Authenticating 不同，用户能看出「在认证」还是「认证失败」）', () => {
     expect(tdStateText('AuthFailed')).toBe('认证失败')
     expect(tdStateText('AuthFailed')).not.toBe(tdStateText('Authenticating'))
+  })
+
+  it('LoginFailed 有独立文案（与 LoggingIn 不同，用户能看出「在登录」还是「登录失败」）', () => {
+    // ADR 0059 决策 1: 登录失败停在 5/10, 界面必须能区分「登录进行中」与「登录失败」——
+    // 两者进度同为 5, 只有 state 与文案不同。
+    expect(tdStateText('LoginFailed')).toBe('登录失败')
+    expect(tdStateText('LoginFailed')).not.toBe(tdStateText('LoggingIn'))
+    expect(tdStateText('LoginFailed')).not.toBe(tdStateText('AuthFailed'))
   })
 })
 
@@ -185,8 +193,30 @@ describe('parseTdLastError / tdLastErrorText（契约 td-status §2.5）', () =>
       .toBe('认证超时（10 秒内未收到响应）')
     // 未知 code 也不外泄机器码
     expect(tdLastErrorText({ code: 'some_future_code', message: '', errorId: 0, timestamp: 1 }))
-      .toBe('认证失败')
+      .toBe('交易登录链失败')
     expect(tdLastErrorText(null)).toBe('')
+  })
+
+  it('登录段五个码各有中文兜底（契约 td-status §2.5 码表）', () => {
+    // 机器码不展示；每种原因说得清是哪一步出错，用户才知道该改什么。
+    expect(tdLastErrorText({ code: 'login_rejected', message: '', errorId: 3, timestamp: 1 }))
+      .toBe('登录被柜台拒绝')
+    expect(tdLastErrorText({ code: 'login_timeout', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('登录超时（10 秒内未收到响应）')
+    expect(tdLastErrorText({ code: 'login_parse_error', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('登录响应解析失败')
+    expect(tdLastErrorText({ code: 'day_load_failed', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('当日订单/成交基准装载失败')
+    expect(tdLastErrorText({ code: 'login_send_failed', message: '', errorId: 0, timestamp: 1 }))
+      .toBe('登录请求发送失败')
+  })
+
+  it('connect_timeout 文案说「连接超时」而不是「登录失败」（它不是失败态）', () => {
+    // ADR 0059 决策 7: 连接超时回 Idle(未登录), 不是失败态。卡片状态显示「未启动」,
+    // 原因行若说「登录失败」会把「从未连上」误导成一登录就失败。
+    const text = tdLastErrorText({ code: 'connect_timeout', message: '', errorId: 0, timestamp: 1 })
+    expect(text).toBe('连接超时（30 秒内未连接上前置）')
+    expect(text).not.toContain('登录失败')
   })
 })
 

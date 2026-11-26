@@ -4,7 +4,7 @@
 
 帧使用 `DzExtInstFrameHeader` 扩展头，**账户级帧**：`instance_id` = **账户 ID**（如 `"00001"`，柜台真实投资者代码，总则 §5），不携带网关名（[ADR 0056](../adr/0056-td-account-identity-investor-code-and-display-name.md)）。仅 RTN 推送，无 SET、无持久化、无文件 IO；交易网关在状态或状态字段变化时主动推送。
 
-与《帧契约：账户登录状态》的分工：`ACCOUNT_STATUS` 面向策略/master 的三态聚合（Offline/LoggingIn/Ready）；本帧面向 UI 的细状态（12 态 + 登录信息 + 进度 + 最近一次失败），按账户上报。
+与《帧契约：账户登录状态》的分工：`ACCOUNT_STATUS` 面向策略/master 的三态聚合（Offline/LoggingIn/Ready）；本帧面向 UI 的细状态（13 态 + 登录信息 + 进度 + 最近一次失败），按账户上报。
 
 **实现注记**：扁平结构（`date`/`api_version`/`sys_version` 在顶层、无 `ext`）与通用化 schema（`interface_type` + `ext`）的分层已随 #251 落地（`date` 改名随 #243）；dzweb 已消费本帧：按 `instance_id`（= 账户 ID）维护镜像 domain `td_status` 并 WS 推送 `td_rtn_status`（映射见契约 webui-ws §2.2）。
 
@@ -75,7 +75,7 @@ JSON 示例：
 
 ### 2.2 状态枚举（`state`）
 
-`state` 取值为交易网关内部状态机（12 态，值以发送方进程状态机定义为唯一真相源；CTP：`apps/ctp/td/td_state.h` 的 `TdState`，JSON 为枚举名字符串）：
+`state` 取值为交易网关内部状态机（13 态，值以发送方进程状态机定义为唯一真相源；CTP：`apps/ctp/td/td_state.h` 的 `TdState`，JSON 为枚举名字符串）：
 
 | 值 | 说明 |
 |---|---|
@@ -86,6 +86,7 @@ JSON 示例：
 | `AuthFailed` | **认证失败态**：停在 3/10，原因见 2.5 `last_error` |
 | `Authenticated` | 认证通过，准备登录 |
 | `LoggingIn` | 登录请求已发，等待响应 |
+| `LoginFailed` | **登录失败态**：停在 5/10，原因见 2.5 `last_error` |
 | `LoggedIn` | 登录成功，准备确认结算单 |
 | `Confirming` | 结算单确认已发，等待响应 |
 | `LoadingInstruments` | 合约加载进行中 |
@@ -94,13 +95,23 @@ JSON 示例：
 
 **失败态语义**（ADR 0059）：登录链上任一段失败后**停在它自己那一段**——`progress_current` 取该段的数值、**不回退**到上一段，`desc` 描述该段失败。失败态只回答「在哪一段失败」，段内具体原因由 `last_error` 承载（2.5），二者在同一次状态转移写出、同一帧发布。失败态**不占端点**：既不是 `progress_min` 也不是 `progress_max`。
 
-**失败态集合与取值**（当前只落认证段；登录 / 结算确认 / 合约加载三段随 #495 / #496 补齐）：
+**失败态集合与取值**（已落认证段与登录段；结算确认 / 合约加载两段随 #496 补齐）：
 
 | 失败态 | `progress_current` | `progress_desc` | 原先回退到 |
 |---|---|---|---|
 | `AuthFailed` | 3 | 认证失败 | `Connected`（2） |
+| `LoginFailed` | 5 | 登录失败 | `Authenticated`（4），无认证路径时 `Connected`（2） |
+
+**`LoginFailed` 的失败位置与「是否经过认证」无关**：链走到 `LoggingIn` 就停在同一格（5/10），无认证路径（`auth_code` 为空，`Connected` 直接进登录）与有认证路径的失败态完全一致——失败只回答「在哪一段」，不回答「从哪来」。
 
 三态聚合映射（Offline/LoggingIn/Ready）以《帧契约：账户登录状态》为准：失败态归 `LoggingIn`（会话未就绪）。
+
+**连接超时是唯一的例外：不进失败态**（ADR 0059 决策 7）。前置连接超时（30 秒内未收到 `OnFrontConnected`）发生在登录链第一段之前，没有失败阶段可停——进程回 `Idle`（`progress_current` = 0、三态为 Offline），**不产生任何失败态**，因此：
+
+- **可见性**：失败原因只能从 2.5 的 `last_error.code` = `connect_timeout` 读，`state` 与进度都是「未登录」的正常值，与「从未发起过登录」在状态字段上不可区分。
+- **理由**：`Idle` 是 Offline 三态成员，也是唯一允许直接发起登录的端点。给它失败态会把「从未连上」报成「登录中」，改变 `ACCOUNT_STATUS` 对策略侧的语义，并让「能否登录」的判定多一个特例。
+- **可观察后果**：前端看到的是「未启动 / 进度 0」+ 卡片上的「上次失败：连接超时」；用户可直接重新发起登录，**不需要先登出**（与链内失败的恢复路径不同）。
+- **会话拆除（实现约定）**：连接超时后网关**销毁该账户的会话对象**（与 md 的连接超时回收一致），使下一次 `TD_CONNECT` 走正常建会话路径。不拆会留下「会话还在、状态是未登录」的组合：`TD_CONNECT` 的幂等守卫会静默跳过它，而 `Idle` 下登出按钮又不可用——账户既登录不了也登不出。拆除时按登出同一口径推终态（`Idle` + `current = min`），**`last_error` 不在那一帧清空**（推出去的最后一条状态帧仍带原因）；但会话随销毁从集合移除，此后 `QUERY_FULL_SNAPSHOT` 等快照不再重放该账户的细状态——「上次失败」只在该帧及前端镜像存活期内可见，这是已知限制。
 
 ### 2.3 CTP `ext`
 
@@ -137,21 +148,27 @@ JSON 示例：
 |---|---|---|
 | `code` | string | 机器码，取值见下表 |
 | `message` | string | 用户可读原因（中文）。CTP 返回的 `ErrorMsg` 原文（已转 UTF-8）；空串表示无详情，前端按 `code` 映射固定文案 |
-| `error_id` | int | CTP `ErrorID`；仅 `auth_rejected` 携带（无 `rsp_info` 时为 `-1`），其余为 0 |
+| `error_id` | int | CTP `ErrorID`；仅 `auth_rejected` / `login_rejected` 携带（无 `rsp_info` 时为 `-1`），其余为 0 |
 | `timestamp` | int | 失败发生时间，Unix 秒级时间戳 |
 
-`code` 取值（当前只接通认证段的两个码；登录 / 结算确认 / 合约加载各段的码随 #495 / #496 补齐）：
+`code` 取值（已接通认证段与登录段；结算确认 / 合约加载两段的码随 #496 补齐）：
 
 | code | 触发场景 | 对应失败态 |
 |---|---|---|
+| `connect_timeout` | 30 秒内未收到 `OnFrontConnected`（前置连接超时） | **无**（回 `Idle`，见 2.2 例外） |
 | `auth_rejected` | CTP 拒绝认证（`OnRspAuthenticate` 的 `ErrorID != 0`），`error_id` 为 CTP 错误码 | `AuthFailed` |
 | `auth_timeout` | 10 秒内未收到认证响应（认证超时） | `AuthFailed` |
+| `login_rejected` | CTP 拒绝登录（`OnRspUserLogin` 的 `ErrorID != 0`，如密码错误）；响应**缺少错误信息**（无 `rsp_info`）也归此码，`error_id` 记 `-1` | `LoginFailed` |
+| `login_timeout` | 10 秒内未收到登录响应（登录超时） | `LoginFailed` |
+| `login_parse_error` | 登录响应**缺少登录数据**（无 `rsp_user_login`）/ 交易日无效（响应解析失败） | `LoginFailed` |
+| `day_load_failed` | 当日订单/成交基准装载失败 | `LoginFailed` |
+| `login_send_failed` | `ReqUserLogin` 返回非 0（发送被拒：网络 / 未登录 / 流控），非柜台裁决 | `LoginFailed` |
 
 **超时与柜台拒绝同等对待**（ADR 0059 决策 5）：两者进同一失败态、写同一 `last_error`，靠 `code` 区分。用户不需要关心「柜台拒了」还是「没人理」——两者对处置的差别远小于「停在哪一段」。
 
 **设置与清空**：
 
-- 设置：上述失败发生时随本帧推送（全量），与转失败态在同一次状态转移写出。
+- 设置：上述失败发生时随本帧推送（全量），与转失败态在同一次状态转移写出。**唯一例外是 `connect_timeout`**：它没有失败态可写，随「回 `Idle`」这一次状态转移写出（见 2.2 例外）。
 - 清空（置 `null` 并推送）：**下一次登录尝试被受理时**（`TD_CONNECT` 被受理 = 状态机 `on_connect`）；**转 `Ready` 时**。
 - 进入 `Idle`（用户主动登出）**不清空**：保留最近一次失败供用户回看（与 md 一致）；进程重启后为空（新进程状态）。
 
@@ -163,7 +180,7 @@ JSON 示例：
 2. `progress_current` 回退降级为「**主动中止**」信号保留：登出（→ `min`）与前置断线（回到连接阶段）仍使 `current` 回退，`current` 回退时同样清登录 pending。`last_error` 缺失（如进程刚启动）时兜底超时是最后一道信号。
 3. 卡片持久展示「上次失败：`message` + 时间」；`message` 为空时按 `code` 映射固定文案；**不得把 `code` 原文直接展示给用户**。`timestamp` 非法/缺失时不展示时间（不得渲染 1970）。
 4. 登录成功后 `last_error` 清空，前端不得保留旧失败展示；断开/重连期间展示以本帧全量覆盖为准。
-5. 失败态不提供原地重试（ADR 0051 决策 4，ADR 0059 继承）：恢复路径统一为「先登出、再登录」；登录资格仍只在 `progress_current <= progress_min`。
+5. 失败态不提供原地重试（ADR 0051 决策 4，ADR 0059 继承）：恢复路径统一为「先登出、再登录」；登录资格仍只在 `progress_current <= progress_min`。**`connect_timeout` 不适用本条**：它没有失败态，账户回到 `min`（未登录），登录资格本来就成立——用户可直接重新发起登录，不需要先登出；对它套用「失败态禁止原地重试」会把一个可立即重试的状态误锁死。
 6. 进度展示以《帧契约：进度推送》为唯一入口（本帧的 `progress_*` 是历史兼容，见 2.1 注）；`desc` 仅展示、不得用于状态判定。
 
 ---
@@ -176,7 +193,7 @@ JSON 示例：
 
 **触发场景**：
 
-1. 状态或任何状态字段变化时推送（状态机翻转、登录信息填充/清空、`date` 变化、进度变化、`last_error` 的 `timestamp` 变化）
+1. 状态或任何状态字段变化时推送（状态机翻转、登录信息填充/清空、`date` 变化、进度变化、`last_error` 的**身份**（`code` + `timestamp`）变化——判据见 2.5「重推判据」）
 2. 交易网关启动初始化完成后按账户各上报一次
 3. `QUERY_FULL_SNAPSHOT` 响应（总则 §7）
 

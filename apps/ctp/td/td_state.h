@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 #include <magic_enum/magic_enum.hpp>
@@ -29,22 +30,23 @@ struct UnknownEnumCounts {
     }
 };
 
-/// CTP 交易网关状态机状态 (12 状态: 连接/登录链 11 段 + 认证失败态)。
+/// CTP 交易网关状态机状态 (13 状态: 连接/登录链 11 段 + 认证失败态 + 登录失败态)。
 /// 参考 mdctp MdState, 扩展以覆盖认证/结算确认/合约加载。
 ///
 /// 失败态 (ADR 0059 / 契约 td-status §2.2): 登录链上任一段失败后**停在它自己那一段**,
 /// `progress.current` 取该段数值、不回退到上一段 —— 失败只回答「在哪一段」, 段内原因由
-/// `last_error` 承载。本票只落认证段的 `AuthFailed`, 其余三段随 #495 / #496 补齐。
+/// `last_error` 承载。已落地 `AuthFailed` 与 `LoginFailed`, 其余两段随 #496 补齐。
 enum class TdState {
-    Idle,                ///< 未启动, 初始状态
-    Connecting,          ///< API 已 Init, 等待 OnFrontConnected
-    Connected,           ///< 前置已连接, 准备认证
-    Authenticating,      ///< ReqAuthenticate 已发, 等待 OnRspAuthenticate
-    AuthFailed,          ///< 认证失败, 停在 3/10 (不再回退 Connected); 原因见 last_error
-    Authenticated,       ///< 认证通过, 准备登录
-    LoggingIn,           ///< ReqUserLogin 已发, 等待 OnRspUserLogin
-    LoggedIn,            ///< 登录成功, 准备确认结算单
-    Confirming,          ///< ReqSettlementInfoConfirm 已发, 等待响应
+    Idle,            ///< 未启动, 初始状态
+    Connecting,      ///< API 已 Init, 等待 OnFrontConnected
+    Connected,       ///< 前置已连接, 准备认证
+    Authenticating,  ///< ReqAuthenticate 已发, 等待 OnRspAuthenticate
+    AuthFailed,      ///< 认证失败, 停在 3/10 (不再回退 Connected); 原因见 last_error
+    Authenticated,   ///< 认证通过, 准备登录
+    LoggingIn,       ///< ReqUserLogin 已发, 等待 OnRspUserLogin
+    LoginFailed,     ///< 登录失败, 停在 5/10 (不再回退 Authenticated/Connected); 原因见 last_error
+    LoggedIn,        ///< 登录成功, 准备确认结算单
+    Confirming,      ///< ReqSettlementInfoConfirm 已发, 等待响应
     LoadingInstruments,  ///< ReqQryInstrument 进行中 (流控重试)
     Ready,               ///< 合约加载完成, 可下单
     Disconnected         ///< 网络断开, CTP 自动重连中
@@ -55,21 +57,33 @@ DZ_JSON_ENUM(TdState)
 
 /// 登录链失败原因码 (契约 td-status §2.5 `last_error.code`)。
 /// 一个码 = 同一失败阶段里的一种原因; 超时与柜台拒绝同等对待, 靠本枚举区分 (ADR 0059 决策 5)。
-/// 本票只接通认证段的两个码, 其余三段随 #495 / #496 补齐。
+/// 已落地认证段两个码 + 登录段五个码 + 连接超时例外; 后两段的码随 #496 补齐。
 enum class TdFailureCode {
-    AuthRejected,  ///< auth_rejected: OnRspAuthenticate 的 ErrorID != 0 (柜台拒绝认证)
-    AuthTimeout,   ///< auth_timeout: 10 秒内未收到认证响应
+    ConnectTimeout,   ///< connect_timeout: 30 秒内未收到 OnFrontConnected (回 Idle, 不进失败态)
+    AuthRejected,     ///< auth_rejected: OnRspAuthenticate 的 ErrorID != 0 (柜台拒绝认证)
+    AuthTimeout,      ///< auth_timeout: 10 秒内未收到认证响应
+    LoginRejected,    ///< login_rejected: OnRspUserLogin 的 ErrorID != 0 (柜台拒绝登录)
+    LoginTimeout,     ///< login_timeout: 10 秒内未收到登录响应
+    LoginParseError,  ///< login_parse_error: 登录响应缺失 / 交易日无效
+    DayLoadFailed,    ///< day_load_failed: 当日订单/成交基准装载失败
+    LoginSendFailed,  ///< login_send_failed: ReqUserLogin 返回非 0 (发送被拒, 非柜台裁决)
 };
 
 /// 失败原因码的线上字符串 (契约 td-status §2.5 码表)。
 const char* td_failure_code_str(TdFailureCode code);
+
+/// 连接超时的用户可读原因 (契约 td-status §2.5 的 `connect_timeout` 文案)。
+///
+/// 单一来源: 状态机写 `last_error.message`、会话拼通知正文都用它——两处各写一份字面量
+/// 时, 改口径必漏一处 (用户会看到状态帧与弹窗说两件不同的事)。
+inline constexpr std::string_view kConnectTimeoutReason = "30 秒内未连接上前置";
 
 /// 最近一次登录链失败 (契约 td-status §2.5, 全量随 RTN_TD_STATUS 推送)。
 /// 与状态机状态分工: 失败态回答「在哪一段」, 本结构回答「这一段里为什么」。
 struct TdLastError {
     std::string code;       ///< 机器码 (td_failure_code_str); 前端按它映射固定文案, 不直接展示
     std::string message;    ///< 用户可读原因 (中文); 空串 = 无详情, 由前端按 code 兜底
-    int error_id = 0;       ///< CTP ErrorID (仅 auth_rejected 有意义), 其余为 0
+    int error_id = 0;       ///< CTP ErrorID (仅 *_rejected 有意义), 其余为 0
     int64_t timestamp = 0;  ///< 失败发生时间 (Unix 秒)
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TdLastError, code, message, error_id, timestamp)
@@ -176,6 +190,11 @@ public:
 
     /// 连接超时触发时调用 (定时器回调)。仅在 Connecting 状态有效, 回退到 Idle。
     /// 与 on_front_disconnected 语义不同: 超时意味着从未连上, 不是断线。
+    ///
+    /// **例外路径 (ADR 0059 决策 7)**: 连接超时发生在登录链第一段之前, 没有失败阶段可停,
+    /// 因此**不进失败态**——仍回 `Idle`(= Offline 三态, 唯一允许直接发起登录的端点)。
+    /// 失败原因照写 `last_error` (`code` = connect_timeout), 用户从那里读原因。
+    /// 给它失败态会把「从未连上」报成「登录中」, 改变 `ACCOUNT_STATUS` 对策略侧的语义。
     std::optional<TdNotification> on_connect_timeout();
 
     /// ReqAuthenticate 发送时调用。Connected -> Authenticating。
@@ -202,8 +221,17 @@ public:
                                                    const std::string& date,
                                                    const std::string& login_time);
 
-    /// 登录失败时调用 (ErrorID != 0)。
-    std::optional<TdNotification> on_login_failed();
+    /// 登录失败时调用 (柜台拒绝 ErrorID != 0 / 10 秒超时 / 响应解析失败 / 基准装载失败)。
+    /// 停在 `LoginFailed` (5/10「登录失败」), **不再回退到 `Authenticated`(4) / `Connected`(2)**
+    /// (ADR 0059 决策 1)。失败位置与「是否经过认证」无关——链走到哪一段就停在哪一段。
+    /// 段内原因写入 `last_error` (契约 td-status §2.5):
+    /// @param code 失败原因码 (login_rejected / login_timeout / login_parse_error /
+    /// day_load_failed / login_send_failed)
+    /// @param message 用户可读原因 (中文; CTP ErrorMsg 原文或空串 = 无详情)
+    /// @param error_id CTP ErrorID (仅 login_rejected 有意义, 其余传 0)
+    std::optional<TdNotification> on_login_failed(TdFailureCode code,
+                                                  const std::string& message,
+                                                  int error_id = 0);
 
     /// ReqSettlementInfoConfirm 发送时调用。LoggedIn -> Confirming。
     std::optional<TdNotification> on_req_settlement_confirm();
@@ -228,10 +256,6 @@ private:
     void set_last_error(TdFailureCode code, const std::string& message, int error_id);
 
     TdStatus status_;
-
-    /// 标记是否经过认证成功 (用于 on_login_failed 决定回退目标)。
-    /// on_authenticate_success 时置 true; on_disconnect 时重置 false。
-    bool was_authenticated_ = false;
 };
 
 }  // namespace dztrader::ctp

@@ -148,38 +148,139 @@ TEST_F(TdStateMachineTest, AuthenticateFailedOutsideAuthenticatingIsSilentAndDoe
     EXPECT_FALSE(sm.status().last_error.has_value());
 }
 
-// --- 登录失败回退 ---
+// --- 登录失败: 停在失败阶段 (ADR 0059 决策 1, #495) ---
 
-TEST_F(TdStateMachineTest, LoginFailedRollback) {
+TEST_F(TdStateMachineTest, LoginRejectedStopsAtLoginFailed) {
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_authenticate();
     sm.on_authenticate_success();
     sm.on_req_login();
-    auto notif = sm.on_login_failed();
-    EXPECT_EQ(sm.state(), TdState::Authenticated);
+    ASSERT_EQ(sm.status().progress_current, 5);
+    auto notif = sm.on_login_failed(TdFailureCode::LoginRejected, "CTP:user not found", 3);
+    // 停在失败阶段: 与 LoggingIn 同格 (5/10), 不回退到 Authenticated (4)。
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+    EXPECT_EQ(sm.status().progress_current, 5);
+    EXPECT_EQ(sm.status().progress_desc, "登录失败");
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
     EXPECT_TRUE(notif->popup);
-    EXPECT_EQ(notif->message, "交易登录失败");
-    EXPECT_EQ(sm.status().progress_current, 4);
-    EXPECT_EQ(sm.status().progress_desc, "已授权");
+    // 段内原因写入 last_error (契约 td-status §2.5)
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_rejected");
+    EXPECT_EQ(sm.status().last_error->message, "CTP:user not found");
+    EXPECT_EQ(sm.status().last_error->error_id, 3);
+    EXPECT_GT(sm.status().last_error->timestamp, 0);
 }
 
-// --- 无认证路径登录失败回退到 Connected ---
-
-TEST_F(TdStateMachineTest, LoginFailedWithoutAuthRollsBackToConnected) {
+TEST_F(TdStateMachineTest, LoginFailedWithoutAuthPathAlsoStopsAtLoginFailed) {
+    // 无 auth_code 时链从 Connected 直接进 LoggingIn: 失败同样停在 5/10, 不回 Connected (2)。
     sm.on_connect();
     sm.on_front_connected();
-    // 无 auth_code, 直接 login
     sm.on_req_login();
-    auto notif = sm.on_login_failed();
-    EXPECT_EQ(sm.state(), TdState::Connected);
+    sm.on_login_failed(TdFailureCode::LoginParseError, "交易日无效（原始值 \"00000000\"）", 0);
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+    EXPECT_EQ(sm.status().progress_current, 5);
+    EXPECT_EQ(sm.status().progress_desc, "登录失败");
+}
+
+TEST_F(TdStateMachineTest, LoginTimeoutWritesSameFailurePathAsRejection) {
+    // ADR 0059 决策 5: 超时与柜台拒绝同失败态、同 last_error 写入, 只靠 code 区分。
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    auto notif = sm.on_login_failed(TdFailureCode::LoginTimeout, "", 0);
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+    EXPECT_EQ(sm.status().progress_current, 5);
     ASSERT_TRUE(notif.has_value());
-    EXPECT_EQ(notif->level, DZ_NOTIFY_ERROR);
-    EXPECT_TRUE(notif->popup);
-    EXPECT_EQ(sm.status().progress_current, 2);
-    EXPECT_EQ(sm.status().progress_desc, "已连接");
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_timeout");
+    EXPECT_EQ(sm.status().last_error->message, "");  // 空串 = 无详情, 前端按 code 兜底
+    EXPECT_EQ(sm.status().last_error->error_id, 0);
+}
+
+TEST_F(TdStateMachineTest, LoginParseErrorStopsAtLoginFailed) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    sm.on_login_failed(TdFailureCode::LoginParseError, "登录响应缺少登录数据", 0);
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "login_parse_error");
+}
+
+TEST_F(TdStateMachineTest, DayLoadFailedStopsAtLoginFailed) {
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    sm.on_login_failed(TdFailureCode::DayLoadFailed, "当日订单/成交基准装载失败", 0);
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "day_load_failed");
+}
+
+TEST_F(TdStateMachineTest, LoginFailedClearsLoginTime) {
+    // 失败后不得残留上一次的登录时间 (UI 会误显示「已登录于 …」)。
+    // 必须先把 login_time 置成非空再验清空 —— 否则断言恒真 (它本来就只在成功登录时写入)。
+    // 走法: 先完整登录成功一次留下 login_time, 再断线重连重新发起登录并失败。
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    sm.on_login_success("v", "20260726", "09:00:00");
+    ASSERT_EQ(sm.status().login_time, "09:00:00") << "premise: a successful login set it";
+
+    sm.on_front_disconnected(0x1001);  // -> Disconnected (保留 date/login_time)
+    ASSERT_EQ(sm.status().login_time, "09:00:00") << "premise: disconnect keeps it";
+    sm.on_front_connected();  // -> Connected
+    sm.on_req_login();        // -> LoggingIn
+    sm.on_login_failed(TdFailureCode::LoginRejected, "CTP:user not found", 3);
+
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+    EXPECT_TRUE(sm.status().login_time.empty()) << "a stale login time must be cleared on failure";
+}
+
+TEST_F(TdStateMachineTest, LoginFailedOutsideLoggingInIsSilentAndDoesNotTransfer) {
+    // 非预期状态下收到登录失败: 不转移、不写 last_error、不推通知 (保持既有语义)。
+    ASSERT_EQ(sm.state(), TdState::Idle);
+    auto notif = sm.on_login_failed(TdFailureCode::LoginRejected, "late", 3);
+    EXPECT_FALSE(notif.has_value());
+    EXPECT_EQ(sm.state(), TdState::Idle);
+    EXPECT_FALSE(sm.status().last_error.has_value());
+}
+
+TEST_F(TdStateMachineTest, LoginFailedRejectsInPlaceRetry) {
+    // ADR 0051 决策 4: 失败态不提供原地重试 —— on_req_login 只在 Connected/Authenticated 有效。
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_login();
+    sm.on_login_failed(TdFailureCode::LoginRejected, "CTP:user not found", 3);
+    ASSERT_EQ(sm.state(), TdState::LoginFailed);
+    // on_req_login 无论成功与否都返回 nullopt, 所以「返回值是 nullopt」证明不了任何事 ——
+    // 只有状态不变才说明转移被拒 (ADR 0051 决策 4: 失败态不提供原地重试)。
+    (void)sm.on_req_login();
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
+}
+
+TEST_F(TdStateMachineTest, LoginFailedDoesNotRollBackProgress) {
+    // 核心回归: 失败态的 current 必须等于它停住那一段的数值, 不得回退到上一段。
+    // 期望值取自契约表 (td-status §2.2: LoginFailed = 5, desc = 登录失败), 不取实现自身的
+    // 中间值 —— 否则 progress 表改错时断言会跟着错 (docs/unit-test-standard.md §1.3)。
+    sm.on_connect();
+    sm.on_front_connected();
+    sm.on_req_authenticate();
+    sm.on_authenticate_success();
+    sm.on_req_login();
+    ASSERT_EQ(sm.status().progress_current, 5) << "premise: LoggingIn is 5/10";
+    sm.on_login_failed(TdFailureCode::LoginTimeout, "", 0);
+    EXPECT_EQ(sm.status().progress_current, 5)
+        << "failure must stay at the failed stage, not fall back to Authenticated (4)";
+    EXPECT_EQ(sm.status().progress_desc, "登录失败");
+    EXPECT_LT(sm.status().progress_current, sm.status().progress_max)
+        << "failure is not an endpoint";
+    EXPECT_GT(sm.status().progress_current, sm.status().progress_min)
+        << "failure is not an endpoint";
 }
 
 // --- 合约加载失败回退 ---
@@ -244,7 +345,7 @@ TEST_F(TdStateMachineTest, SettlementConfirmFailedFromNonConfirmingRejected) {
     EXPECT_EQ(idle_sm.state(), TdState::Idle);
 }
 
-// --- 连接超时回退 (仅在 Connecting 有效) ---
+// --- 连接超时: 回 Idle, 不进失败态 (ADR 0059 决策 7 的例外) ---
 
 TEST_F(TdStateMachineTest, ConnectTimeoutRollsBackToIdle) {
     sm.on_connect();
@@ -259,10 +360,26 @@ TEST_F(TdStateMachineTest, ConnectTimeoutRollsBackToIdle) {
     EXPECT_EQ(sm.status().progress_desc, "未启动");
 }
 
+TEST_F(TdStateMachineTest, ConnectTimeoutWritesConnectTimeoutCode) {
+    // ADR 0059 决策 7 / #495 AC: 连接超时**不加失败态** (仍是 Idle = Offline 三态),
+    // 只写 last_error.code = connect_timeout —— 原因只能从这里读。
+    sm.on_connect();
+    sm.on_connect_timeout();
+    ASSERT_EQ(sm.state(), TdState::Idle) << "connect timeout must stay at the offline endpoint";
+    EXPECT_EQ(account_state_of(sm.state()), DZ_ACCOUNT_OFFLINE)
+        << "a failure stage here would report 'logging in' for a front that never connected";
+    ASSERT_TRUE(sm.status().last_error.has_value());
+    EXPECT_EQ(sm.status().last_error->code, "connect_timeout");
+    EXPECT_EQ(sm.status().last_error->message, kConnectTimeoutReason);
+    EXPECT_EQ(sm.status().last_error->error_id, 0);
+    EXPECT_GT(sm.status().last_error->timestamp, 0);
+}
+
 TEST_F(TdStateMachineTest, ConnectTimeoutFromNonConnectingRejected) {
     // Idle 拒绝
     EXPECT_FALSE(sm.on_connect_timeout().has_value());
     EXPECT_EQ(sm.state(), TdState::Idle);
+    EXPECT_FALSE(sm.status().last_error.has_value()) << "a rejected transition writes nothing";
 
     // Connected 拒绝 (已连上, 超时定时器不应回退状态)
     sm.on_connect();
@@ -270,6 +387,7 @@ TEST_F(TdStateMachineTest, ConnectTimeoutFromNonConnectingRejected) {
     EXPECT_FALSE(sm.on_connect_timeout().has_value());
     EXPECT_EQ(sm.state(), TdState::Connected);
     EXPECT_EQ(sm.status().progress_current, 2);
+    EXPECT_FALSE(sm.status().last_error.has_value());
 }
 
 // --- 断线 ---
@@ -387,15 +505,16 @@ TEST_F(TdStateMachineTest, DisconnectFromDisconnected) {
     EXPECT_EQ(sm.state(), TdState::Idle);
     ASSERT_TRUE(notif.has_value());
     EXPECT_EQ(notif->message, "交易已断开");
-    // was_authenticated_ 已重置: 重连后走无认证路径登录失败应回退 Connected (而非 Authenticated)
+    // 重连后走无认证路径登录: 失败同样停在 5/10「登录失败」——失败位置与「认证过没有」
+    // 无关 (ADR 0059 决策 1), 唯一的失败态就是它自己那一段。
     sm.on_connect();
     sm.on_front_connected();
     sm.on_req_login();
-    auto login_failed = sm.on_login_failed();
-    EXPECT_EQ(sm.state(), TdState::Connected);
+    auto login_failed = sm.on_login_failed(TdFailureCode::LoginRejected, "CTP:user not found", 3);
+    EXPECT_EQ(sm.state(), TdState::LoginFailed);
     ASSERT_TRUE(login_failed.has_value());
     EXPECT_EQ(login_failed->level, DZ_NOTIFY_ERROR);
-    EXPECT_EQ(sm.status().progress_current, 2);
+    EXPECT_EQ(sm.status().progress_current, 5);
 }
 
 // --- Ready 状态 progress_current=10 (max) ---
@@ -501,6 +620,7 @@ TEST(AccountStateMapping, TripleStateAggregation) {
     EXPECT_EQ(account_state_of(TdState::AuthFailed), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Authenticated), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoggingIn), DZ_ACCOUNT_LOGGING_IN);
+    EXPECT_EQ(account_state_of(TdState::LoginFailed), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoggedIn), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::Confirming), DZ_ACCOUNT_LOGGING_IN);
     EXPECT_EQ(account_state_of(TdState::LoadingInstruments), DZ_ACCOUNT_LOGGING_IN);
@@ -642,6 +762,14 @@ TEST(TdStatusJsonTest, LastErrorIsSerializedWithStatus) {
 TEST(TdFailureCodeTest, CodeStringsMatchContract) {
     using namespace dztrader::ctp;
     // 线上码表（契约 td-status §2.5）：字符串即协议, 改名是破坏性变更。
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::ConnectTimeout)), "connect_timeout");
     EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::AuthRejected)), "auth_rejected");
     EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::AuthTimeout)), "auth_timeout");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginRejected)), "login_rejected");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginTimeout)), "login_timeout");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginParseError)),
+              "login_parse_error");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::DayLoadFailed)), "day_load_failed");
+    EXPECT_EQ(std::string(td_failure_code_str(TdFailureCode::LoginSendFailed)),
+              "login_send_failed");
 }

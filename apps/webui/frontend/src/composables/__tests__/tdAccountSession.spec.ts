@@ -14,7 +14,7 @@ import { sessionPendingClear } from '../sessionProgress'
  * 固定「一个按钮只有一个意思」的判据：
  * - `current <= min` = 未登录（唯一可登录态）；
  * - `current >= max` = 就绪（可登出、不可登录）；
- * - 其余 = 建立中/重连中/失败回滚（可登出 = 强制中断、不可登录）。
+ * - 其余 = 建立中/重连中/失败停在失败阶段（可登出 = 强制中断、不可登录）。
  */
 describe('sessionStateOfProgress（契约 progress 端点判定）', () => {
   it('端点到 min = 未登录，到 max = 就绪，中间 = 建立中', () => {
@@ -47,8 +47,9 @@ describe('sessionStateOfTdState（td_status.state 兜底）', () => {
   it('Idle = 未登录、Ready = 就绪、其余 = 建立中', () => {
     expect(sessionStateOfTdState('Idle')).toBe('absent')
     expect(sessionStateOfTdState('Ready')).toBe('ready')
-    for (const state of ['Connecting', 'Connected', 'Authenticating', 'Authenticated',
-      'LoggingIn', 'LoggedIn', 'Confirming', 'LoadingInstruments', 'Disconnected'] as const) {
+    for (const state of ['Connecting', 'Connected', 'Authenticating', 'AuthFailed',
+      'Authenticated', 'LoggingIn', 'LoginFailed', 'LoggedIn', 'Confirming',
+      'LoadingInstruments', 'Disconnected'] as const) {
       expect(sessionStateOfTdState(state)).toBe('forming')
     }
   })

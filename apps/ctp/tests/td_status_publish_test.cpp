@@ -59,7 +59,8 @@ TEST(TdStatusPublishKeyTest, DateAndLoginTimeChangesChangeKey) {
         td_status_publish_key(make_status(TdState::Ready, 10, "20261123", "2026-11-22 08:45:32"));
     EXPECT_FALSE(no_login == logged_in);
     EXPECT_FALSE(logged_in == next_day);
-    // 登出/失败回滚会清空 date 与 login_time（契约 td-connection：current 回到 min）
+    // 登出会清空 date 与 login_time（契约 td-connection：current 回到 min）；
+    // 链内失败停在失败阶段、不清这些字段也不回退（ADR 0059）
     EXPECT_FALSE(logged_in == no_login);
 }
 
@@ -131,6 +132,32 @@ TEST(TdStatusPublishKeyTest, ReasonChangeWithinSameSecondStillChangesKey) {
     EXPECT_FALSE(a == b) << "a different failure code in the same second must republish";
 }
 
+TEST(TdStatusPublishKeyTest, LoginFailedIsDistinctFromLoggingInDespiteSameProgress) {
+    // #495 / ADR 0059 决策 1: LoginFailed 与 LoggingIn 同格 (5/10) —— 若重推键只看进度,
+    // 这次翻转就推不出去, 界面会一直停在「登录中」。state 进键是这条的保证。
+    const auto logging_in = td_status_publish_key(make_status(TdState::LoggingIn, 5, "", ""));
+    const auto login_failed =
+        td_status_publish_key(make_status(TdState::LoginFailed, 5, "", "", "登录失败"));
+    EXPECT_EQ(logging_in.progress_current, login_failed.progress_current)
+        << "premise: the two states share the same progress cell";
+    EXPECT_FALSE(logging_in == login_failed) << "the state alone must republish";
+}
+
+TEST(TdStatusPublishKeyTest, ConnectTimeoutPublishesThroughLastErrorAlone) {
+    // #495 / ADR 0059 决策 7: 连接超时回 Idle —— state/progress/date/login_time 与
+    // 「从未发起过登录」完全相同, 只有 last_error 能表达「刚刚失败过」。若 last_error
+    // 不进键, 这一帧推不出去, 前端就永远看不到「上次失败：连接超时」。
+    auto idle = make_status(TdState::Idle, 0, "", "");
+    auto timed_out = idle;
+    timed_out.last_error = TdLastError{"connect_timeout", "30 秒内未连接上前置", 0, 1'700'000'000};
+
+    const auto before = td_status_publish_key(idle);
+    const auto after = td_status_publish_key(timed_out);
+    EXPECT_EQ(before.state, after.state) << "premise: the exception keeps the state at Idle";
+    EXPECT_EQ(before.progress_current, after.progress_current) << "premise: progress is min";
+    EXPECT_FALSE(before == after) << "the reason must still reach the frontend";
+}
+
 TEST(TdStatusPublishKeyTest, SameLastErrorDoesNotChangeKey) {
     // 同一次失败被重复观察（主循环每轮比较）不得制造重复状态帧。
     auto failed = make_status(TdState::AuthFailed, 3, "", "", "认证失败");
@@ -172,7 +199,7 @@ TEST(PublishChangedAccountsTest, OnlyChangedSessionsArePublished) {
 }
 
 TEST(PublishChangedAccountsTest, LogoutRollbackChangesArePublished) {
-    // 登出/失败回滚：current 从 10 回到 0/1 也必须推（前端据此清 pending 并恢复登录按钮）
+    // 登出（主动中止）：current 从 10 回到 0 也必须推（前端据此清 pending 并恢复登录按钮）
     const std::vector<TdSessionStatusSnapshot> sessions{
         {"account_001", td_status_publish_key(make_status(TdState::Idle, 0, "", ""))},
     };
