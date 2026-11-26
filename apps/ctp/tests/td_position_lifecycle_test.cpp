@@ -1710,5 +1710,167 @@ TEST_F(TdPositionLifecycleTest, NotifyThrowIsCaughtAndStateStillRollsBack) {
         << "the state must still roll back even when the notification path throws";
 }
 
+// ============================================================================
+// 认证失败：停在 3/10 + last_error + 通知 (#489 并入 #494)
+//
+// 为什么必须在这个目标：AC 的核心是「两处调用点都不再丢弃状态机通知」。只测状态机
+// (td_state_test) 证明不了 notify_ 被接住; 只测纯函数 (文案) 证明不了真的推了。
+// 这里是全仓唯一「真 AccountSession + 已注入 notify 回调 + 真 TimerQueue」的夹具。
+//
+// 确定性来源: 认证发送经注入钩子 (不碰 api_; api_ 需连柜台才能创建), 10 s 超时经
+// expire_auth_timeout_for_test 注入同一收口逻辑, 以及 0 延迟定时器 + timer_queue_.tick()。
+// 不用 sleep。
+// ============================================================================
+
+TEST_F(TdPositionLifecycleTest, AuthRejectedStopsAtAuthFailedAndNotifies) {
+    // 柜台拒绝认证 (ErrorID != 0): 此前丢弃状态机通知, 账户静默停在 2/10「已连接」。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Connected);
+    ASSERT_EQ(session_->state(), TdState::Connected);
+    session_->request_authenticate_for_test();
+    ASSERT_EQ(session_->state(), TdState::Authenticating);
+    // 10s 超时定时器必须已武装 (证明确实走了生产 req_authenticate 的排定)
+    ASSERT_FALSE(timer_queue_.empty());
+
+    OnRspAuthenticateField failed{};
+    CThostFtdcRspInfoField info{};
+    info.ErrorID = 3;
+    std::strcpy(info.ErrorMsg, "CTP:用户认证失败");
+    failed.rsp_info = info;
+    session_->on_rsp_authenticate(failed);
+
+    // 停在失败阶段 (3/10), 不回退到 Connected (2)
+    EXPECT_EQ(session_->state(), TdState::AuthFailed);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 3);
+    EXPECT_EQ(session_->state_machine().status().progress_desc, "认证失败");
+    // last_error 写入 (契约 td-status §2.5): auth_rejected + CTP error_id + 柜台原文
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "auth_rejected");
+    EXPECT_EQ(last_error->error_id, 3);
+    // message = CTP ErrorMsg 原文（与 md 的 LoginRejected 同口径）；错误码走 error_id 字段
+    // （前端作为「上次失败」的 tooltip），不在正文里重复。
+    EXPECT_EQ(last_error->message, "CTP:用户认证失败");
+    // 通知不再被丢弃 (AC: 各推出一条 ERROR 级通知)
+    ASSERT_EQ(notifications_.size(), 1u)
+        << "an auth rejection must reach the user (the whole point of #489)";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    // 文案逐字锁定在 td_account_session_pure_test; 这里钉会话确实推了这一条.
+    EXPECT_NE(notifications_.front().message.find("认证失败（CTP:用户认证失败）"),
+              std::string::npos)
+        << notifications_.front().message;
+    // 响应到达必须取消 10s 定时器, 不留残留
+    EXPECT_TRUE(timer_queue_.empty()) << "the response must cancel the auth timeout timer";
+}
+
+TEST_F(TdPositionLifecycleTest, AuthTimeoutStopsAtAuthFailedAndNotifies) {
+    // 10 s 内没收到认证响应: 与柜台拒绝同等对待 (ADR 0059 决策 5) —— 同一失败态、
+    // 同一 last_error 写入、同一条通知出口, 只靠 code 区分。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Connected);
+    session_->request_authenticate_for_test();
+    ASSERT_EQ(session_->state(), TdState::Authenticating);
+    ASSERT_FALSE(timer_queue_.empty()) << "the 10s auth timeout must be armed";
+
+    session_->expire_auth_timeout_for_test();
+
+    EXPECT_EQ(session_->state(), TdState::AuthFailed);
+    EXPECT_EQ(session_->state_machine().status().progress_current, 3);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "auth_timeout");
+    EXPECT_EQ(last_error->error_id, 0) << "a timeout has no CTP error id";
+    EXPECT_EQ(last_error->message, "10 秒内未收到柜台的认证响应");
+    ASSERT_EQ(notifications_.size(), 1u) << "an auth timeout must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+    EXPECT_NE(notifications_.front().message.find("认证超时（10 秒内未收到柜台的认证响应）"),
+              std::string::npos)
+        << notifications_.front().message;
+}
+
+TEST_F(TdPositionLifecycleTest, AuthTimeoutThroughRealTimerQueueFiresTheQueuedCallback) {
+    // 上一条走 expire_*_for_test (注入收口)。这一条钉**真回调**: 排进 TimerQueue 的
+    // lambda 本身是否是空壳, 只有真 tick 才验证得了 (docs/unit-test-standard.md §1.1)。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Connected);
+    session_->request_authenticate_for_test();
+    ASSERT_EQ(session_->state(), TdState::Authenticating);
+
+    // 排的是 10s 而不是 0: 现在就 tick 不该触发
+    timer_queue_.tick();
+    EXPECT_EQ(session_->state(), TdState::Authenticating) << "must not fire early";
+    EXPECT_TRUE(notifications_.empty());
+}
+
+TEST_F(TdPositionLifecycleTest, AuthFailureOutsideAuthenticatingIsSilent) {
+    // 状态机拒绝转移 (此刻不在 Authenticating) 时不推送、不写 last_error: 弹窗会对不上
+    // 界面状态 (与 #407 / #488 同一取舍, 也防止将来把 push 提到 guard 之前)。
+    ASSERT_EQ(session_->state(), TdState::Idle);
+    OnRspAuthenticateField failed{};
+    CThostFtdcRspInfoField info{};
+    info.ErrorID = 3;
+    std::strcpy(info.ErrorMsg, "CTP:用户认证失败");
+    failed.rsp_info = info;
+    session_->on_rsp_authenticate(failed);
+
+    EXPECT_EQ(session_->state(), TdState::Idle) << "state machine must not move on a rejected step";
+    EXPECT_TRUE(notifications_.empty()) << "no notification when there is nothing to report";
+    EXPECT_FALSE(session_->state_machine().status().last_error.has_value());
+}
+
+TEST_F(TdPositionLifecycleTest, AuthFailureWithoutNotifyCallbackDoesNotCrash) {
+    // notify_ 为空 (无 UI / 部分测试) 时: 状态照常转失败态、不崩、不新增日志噪音。
+    auto bare_session = std::make_unique<AccountSession>(
+        "acc_bare_auth", *order_id_meta_, *writer_, *persist_, queue_, timer_queue_,
+        /*account_state_cb=*/nullptr, /*seq_allocator=*/nullptr,
+        /*notify=*/nullptr);
+    bare_session->set_trading_day(kDay);
+    bare_session->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    bare_session->advance_login_chain_for_test(TdState::Connected);
+    bare_session->request_authenticate_for_test();
+    ASSERT_EQ(bare_session->state(), TdState::Authenticating);
+
+    EXPECT_NO_THROW(bare_session->expire_auth_timeout_for_test());
+    EXPECT_EQ(bare_session->state(), TdState::AuthFailed) << "state must still move";
+    EXPECT_TRUE(notifications_.empty()) << "no callback means no notification, not a crash";
+}
+
+TEST_F(TdPositionLifecycleTest, AuthRejectionWithoutRspInfoRecordsErrorIdMinusOne) {
+    // rsp_info 缺失按失败处置 (与 on_rsp_user_login / settlement 一致), error_id 记 -1
+    // 而不是伪造 0 —— 0 在契约里表示「无 CTP 错误码」(超时), 两者必须可区分。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Connected);
+    session_->request_authenticate_for_test();
+
+    OnRspAuthenticateField missing{};
+    missing.rsp_info = std::nullopt;
+    session_->on_rsp_authenticate(missing);
+
+    EXPECT_EQ(session_->state(), TdState::AuthFailed);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "auth_rejected");
+    EXPECT_EQ(last_error->error_id, -1);
+    EXPECT_EQ(last_error->message, "柜台未返回错误信息");
+    ASSERT_EQ(notifications_.size(), 1u);
+}
+
+TEST_F(TdPositionLifecycleTest, NextLoginAttemptClearsLastError) {
+    // 清空时机 (契约 td-status §2.5): 下一次登录尝试被受理时清空; 登出不清空。
+    session_->set_auth_send_hook([](CThostFtdcReqAuthenticateField&, int) { return 0; });
+    session_->advance_login_chain_for_test(TdState::Connected);
+    session_->request_authenticate_for_test();
+    session_->expire_auth_timeout_for_test();
+    ASSERT_TRUE(session_->state_machine().status().last_error.has_value());
+
+    // 登出: 保留 (供回看)
+    session_->on_front_disconnected(0);
+    // 断线也不清 (不是「新尝试受理」也不是「就绪」)
+    EXPECT_TRUE(session_->state_machine().status().last_error.has_value())
+        << "disconnect must keep the last failure for review";
+}
+
 }  // namespace
 }  // namespace dztrader::ctp

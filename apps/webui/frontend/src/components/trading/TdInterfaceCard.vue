@@ -22,7 +22,9 @@ import type { TdAccountFormValue } from '@/components/trading/TdAccountFormModal
 import {
   useTdAccountsStore,
   tdStateText,
+  tdLastErrorText,
   type TdAccountRow,
+  type TdLastErrorView,
   type TdInterfaceView,
 } from '@/stores/tdAccounts'
 import { canLoginTd, canLogoutTd } from '@/composables/tdAccountSession'
@@ -348,9 +350,32 @@ async function confirmRemoveInterface(): Promise<void> {
 
 // ===== 展示辅助（细状态/交易日/登录时间/进度；口径同 #251 页面）=====
 
-/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 11 态映射） */
+/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 12 态映射） */
 function statusText(row: TdAccountRow): string {
   return tdStateText(row.status?.state ?? null)
+}
+
+// 契约 td-status §2.5 前端义务③：卡片持久展示「上次失败：message + 时间」。
+// timestamp 为 Unix 秒，转本地时间；message 空时 tdLastErrorText 按 code 映射中文。
+// timestamp<=0（非法/缺失）不展示时间，避免渲染 1970 时间。
+const LAST_ERROR_TIME_FORMAT = { hour12: false } as const
+
+function lastErrorTime(e: TdLastErrorView): string {
+  if (!(e.timestamp > 0)) return ''
+  // 秒 → 毫秒；只取时分秒，与卡片内其它时间字段同粒度
+  return new Date(e.timestamp * 1000).toLocaleTimeString('zh-CN', LAST_ERROR_TIME_FORMAT)
+}
+
+/** 完整一句「上次失败：<原因>（时间）」；时间非法时只给原因（契约 td-status §2.5） */
+function lastErrorText(e: TdLastErrorView): string {
+  const time = lastErrorTime(e)
+  const text = `上次失败：${tdLastErrorText(e)}`
+  return time ? `${text}（${time}）` : text
+}
+
+/** 可选 tooltip：CTP ErrorID 仅 auth_rejected 非 0，其余不给 title（避免误导） */
+function lastErrorTitle(e: TdLastErrorView): string | undefined {
+  return e.errorId ? `CTP 错误码：${e.errorId}` : undefined
 }
 
 /** 状态样式：Ready 正常、Idle 中性、其余中间态提示（与进程状态色口径一致） */
@@ -542,6 +567,15 @@ function progressPercent(row: TdAccountRow): number {
                   {{ statusText(row) }}
                 </span>
                 <div v-if="row.status?.progress_desc" class="td-card__account-meta">{{ row.status.progress_desc }}</div>
+                <!-- 契约 td-status §2.5 前端义务③：持久展示上次登录链失败的原因 + 时间。
+                     失败停在失败态后 state/progress 都不会再变，这一行是用户事后回看的唯一入口；
+                     原因空时按 code 映射中文，绝不展示 snake_case 机器码。 -->
+                <div
+                  v-if="row.lastError"
+                  class="td-card__account-meta td-card__account-meta--warn"
+                  :title="lastErrorTitle(row.lastError)"
+                  :data-test="`td-last-error-${row.account_id}`"
+                >{{ lastErrorText(row.lastError) }}</div>
                 <!-- 会话控制（ADR 0051）：登录仅在完全未登录可用；登出在任意非未登录态可用（含强制中断） -->
                 <div class="td-card__session-actions">
                   <button
@@ -841,6 +875,11 @@ function progressPercent(row: TdAccountRow): number {
 .td-card__account-meta {
   font-size: var(--body-xs-font-size);
   color: var(--text-tertiary);
+}
+
+/* 上次失败（契约 td-status §2.5）：持久告警色，与「进度描述」这类中性元信息区分开 */
+.td-card__account-meta--warn {
+  color: var(--status-warning-default);
 }
 
 .td-card__state--ok {

@@ -1,11 +1,29 @@
 #include "td/td_state.h"
 
+#include <ctime>
 #include <format>
 
 #include <spdlog/spdlog.h>
 #include <magic_enum/magic_enum.hpp>
 
 namespace dztrader::ctp {
+
+namespace {
+
+/// 当前 Unix 秒级时间戳（契约 td-status §2.5 last_error.timestamp）
+int64_t now_epoch_seconds() { return static_cast<int64_t>(std::time(nullptr)); }
+
+}  // namespace
+
+const char* td_failure_code_str(TdFailureCode code) {
+    switch (code) {
+        case TdFailureCode::AuthRejected:
+            return "auth_rejected";
+        case TdFailureCode::AuthTimeout:
+            return "auth_timeout";
+    }
+    return "unknown";
+}
 
 // --- TdStateMachine ---
 
@@ -21,6 +39,9 @@ std::optional<TdNotification> TdStateMachine::on_connect() {
         SPDLOG_WARN("connect rejected | state={}", magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
+    // 新连接/登录尝试被受理: 清空最近一次失败 (契约 td-status §2.5 清空时机).
+    // 与 md 的 on_connect 同一口径 —— 前端据此撤下「上次失败」展示.
+    status_.last_error.reset();
     set_state(TdState::Connecting);
     return std::nullopt;
 }
@@ -98,14 +119,19 @@ std::optional<TdNotification> TdStateMachine::on_authenticate_success() {
     return std::nullopt;
 }
 
-std::optional<TdNotification> TdStateMachine::on_authenticate_failed() {
+std::optional<TdNotification> TdStateMachine::on_authenticate_failed(TdFailureCode code,
+                                                                     const std::string& message,
+                                                                     int error_id) {
     if (status_.state != TdState::Authenticating) {
         SPDLOG_WARN("authenticate failed: unexpected state | state={}",
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
-    set_state(TdState::Connected);
-    SPDLOG_ERROR("authenticate failed | state=Authenticating");
+    // ADR 0059 决策 1: 停在失败阶段 (AuthFailed, 3/10「认证失败」), 不回退到 Connected (2).
+    // 段内原因写 last_error (契约 td-status §2.5); message 空串 = 无详情, 前端按 code 兜底.
+    set_last_error(code, message, error_id);
+    set_state(TdState::AuthFailed);
+    SPDLOG_ERROR("authenticate failed | code={} error_id={}", td_failure_code_str(code), error_id);
     return TdNotification{.level = DZ_NOTIFY_ERROR, .popup = true, .message = "认证失败"};
 }
 
@@ -196,6 +222,8 @@ std::optional<TdNotification> TdStateMachine::on_instruments_loaded() {
                     magic_enum::enum_name(status_.state));
         return std::nullopt;
     }
+    // 转 Ready = 本次会话建立成功: 清空最近一次失败 (契约 td-status §2.5 清空时机).
+    status_.last_error.reset();
     set_state(TdState::Ready);
     SPDLOG_INFO("instruments loaded, ready to trade");
     return TdNotification{.level = DZ_NOTIFY_INFO, .popup = false, .message = "交易就绪"};
@@ -229,8 +257,9 @@ void TdStateMachine::set_state(TdState new_state) {
     status_.state = new_state;
 
     // progress_max=10: Idle=0, Connecting/Disconnected=1, Connected=2,
-    // Authenticating=3, Authenticated=4, LoggingIn=5, LoggedIn=6,
+    // Authenticating/AuthFailed=3, Authenticated=4, LoggingIn=5, LoggedIn=6,
     // Confirming=7, LoadingInstruments=8, Ready=10
+    // 失败态取**它停住的那一段**的数值 (ADR 0059 决策 1): 不回退到上一段, 也不占用端点.
     switch (new_state) {
         case TdState::Idle:
             status_.progress_desc = "未启动";
@@ -255,6 +284,13 @@ void TdStateMachine::set_state(TdState new_state) {
             break;
         case TdState::Authenticating:
             status_.progress_desc = "授权验证...";
+            status_.progress_min = 0;
+            status_.progress_max = 10;
+            status_.progress_current = 3;
+            break;
+        case TdState::AuthFailed:
+            // 与 Authenticating 同格 (3/10): 停在失败发生的那一段, 不回退到 Connected (2).
+            status_.progress_desc = "认证失败";
             status_.progress_min = 0;
             status_.progress_max = 10;
             status_.progress_current = 3;
@@ -312,6 +348,7 @@ DzAccountState account_state_of(TdState state) noexcept {
         case TdState::Connecting:
         case TdState::Connected:
         case TdState::Authenticating:
+        case TdState::AuthFailed:  // 失败态属会话未就绪 (契约 account-status 三态聚合)
         case TdState::Authenticated:
         case TdState::LoggingIn:
         case TdState::LoggedIn:
@@ -322,6 +359,11 @@ DzAccountState account_state_of(TdState state) noexcept {
             return DZ_ACCOUNT_READY;
     }
     return DZ_ACCOUNT_OFFLINE;  // 防御: 未枚举值按 Offline
+}
+
+void TdStateMachine::set_last_error(TdFailureCode code, const std::string& message, int error_id) {
+    status_.last_error =
+        TdLastError{td_failure_code_str(code), message, error_id, now_epoch_seconds()};
 }
 
 nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts& counts) {
@@ -335,6 +377,11 @@ nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts
     payload["ext"]["unknown_direction"] = counts.direction;
     payload["ext"]["unknown_price_type"] = counts.price_type;
     payload["ext"]["unknown_position_effect"] = counts.position_effect;
+    // 契约 td-status §2.5: last_error 无未清空失败时为 null (不是空对象、不是省略键) ——
+    // 前端用「非 null + timestamp 变化」作登录 pending 的清除信号, 缺键与 null 必须同义.
+    if (!status.last_error.has_value()) {
+        payload["last_error"] = nullptr;
+    }
     return payload;
 }
 

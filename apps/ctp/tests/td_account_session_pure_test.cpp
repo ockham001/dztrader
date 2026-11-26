@@ -400,6 +400,35 @@ TEST(LoginFailedMessageTest, EmptyReasonOmitsParentheses) {
 }
 
 // ============================================================================
+// auth_failed_message (认证失败通知正文, #489 并入 #494)
+// ============================================================================
+
+TEST(AuthFailedMessageTest, RejectedIncludesReasonConsequenceAndRecovery) {
+    // 认证失败停在 3/10「认证失败」(ADR 0059 决策 1) —— 界面本身已显示失败态,
+    // 正文只需说清「柜台给了什么 + 下一步」; 后果不再是「看起来像正常」而是「不会自动重试」。
+    // reason = CTP ErrorMsg 原文 (与 md 的 LoginRejected 同口径); 错误码走 last_error.error_id.
+    const std::string msg = auth_failed_message(TdFailureCode::AuthRejected, "CTP:用户认证失败");
+    EXPECT_EQ(msg, "认证失败（CTP:用户认证失败），本进程不会自动重试该账户；请先登出再重新登录");
+    EXPECT_NE(msg.find("请先登出再重新登录"), std::string::npos)
+        << "recovery path must be actionable since #409 landed";
+}
+
+TEST(AuthFailedMessageTest, TimeoutUsesTimeoutPrefix) {
+    // 超时与柜台拒绝同等对待 (ADR 0059 决策 5), 只有前缀措辞区分「谁没响应」。
+    EXPECT_EQ(auth_failed_message(TdFailureCode::AuthTimeout, "10 秒内未收到柜台的认证响应"),
+              "认证超时（10 秒内未收到柜台的认证响应），本进程不会自动重试该账户；"
+              "请先登出再重新登录");
+}
+
+TEST(AuthFailedMessageTest, EmptyReasonOmitsParentheses) {
+    // 空原因不得产出「（）」这种残缺文案; 逐字锁定, 防止改成 ASCII () 后静默通过.
+    EXPECT_EQ(auth_failed_message(TdFailureCode::AuthRejected, ""),
+              "认证失败，本进程不会自动重试该账户；请先登出再重新登录");
+    EXPECT_EQ(auth_failed_message(TdFailureCode::AuthTimeout, ""),
+              "认证超时，本进程不会自动重试该账户；请先登出再重新登录");
+}
+
+// ============================================================================
 // settlement_confirm_failed_message / instruments_load_failed_message
 // (登录链后段失败的通知正文, #488)
 // ============================================================================

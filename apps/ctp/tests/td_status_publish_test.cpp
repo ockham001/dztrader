@@ -81,6 +81,45 @@ TEST(TdStatusPublishKeyTest, ExtFieldsDoNotChangeKey) {
 }
 
 // ============================================================================
+// last_error.timestamp 参与重推判定（契约 td-status §2.5 重推判据）
+// ============================================================================
+
+TEST(TdStatusPublishKeyTest, LastErrorTimestampChangeAloneChangesKey) {
+    // 关键场景：同一失败态下「原因变了」（先柜台拒绝、重试后超时）——state 与进度都不变，
+    // 若 last_error 不进键，新原因永远到不了前端（卡片一直显示旧原因）。
+    auto rejected = make_status(TdState::AuthFailed, 3, "", "", "认证失败");
+    rejected.last_error = TdLastError{"auth_rejected", "CTP:用户认证失败", 3, 1'700'000'000};
+    auto timed_out = rejected;
+    timed_out.last_error = TdLastError{"auth_timeout", "10 秒内未收到响应", 0, 1'700'000'100};
+
+    const auto a = td_status_publish_key(rejected);
+    const auto b = td_status_publish_key(timed_out);
+    EXPECT_EQ(a.state, b.state);
+    EXPECT_EQ(a.progress_current, b.progress_current);
+    EXPECT_FALSE(a == b) << "same state with a new failure reason must still be republished";
+}
+
+TEST(TdStatusPublishKeyTest, LastErrorClearedChangesKey) {
+    // 清空 last_error（下一次尝试被受理 / 转 Ready）也必须触发重推：前端据此撤下
+    // 「上次失败」展示，等下一帧推送才生效会残留旧原因。
+    auto failed = make_status(TdState::AuthFailed, 3, "", "", "认证失败");
+    failed.last_error = TdLastError{"auth_rejected", "CTP:用户认证失败", 3, 1'700'000'000};
+    auto cleared =
+        make_status(TdState::Connecting, 1, "", "", "前置连接...");  // last_error 为 null
+
+    EXPECT_FALSE(td_status_publish_key(failed) == td_status_publish_key(cleared));
+    EXPECT_EQ(td_status_publish_key(cleared).last_error_timestamp, 0);
+}
+
+TEST(TdStatusPublishKeyTest, SameLastErrorDoesNotChangeKey) {
+    // 同一次失败被重复观察（主循环每轮比较）不得制造重复状态帧。
+    auto failed = make_status(TdState::AuthFailed, 3, "", "", "认证失败");
+    failed.last_error = TdLastError{"auth_rejected", "CTP:用户认证失败", 3, 1'700'000'000};
+    auto same = failed;
+    EXPECT_TRUE(td_status_publish_key(failed) == td_status_publish_key(same));
+}
+
+// ============================================================================
 // publish_changed_accounts：主循环 sweep 的判据
 // ============================================================================
 

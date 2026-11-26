@@ -94,9 +94,9 @@
 
 > 按钮可见性/位置/disabled 的视觉规则是前端设计决策，见 ADR 0051；本节只写跨进程可观察的协议义务（契约侧只约束消息触发与判据，不约束控件形态）。
 
-1. **会话态判据**：以 `RTN_PROGRESS` 端点为唯一判据——`current <= min` = 未登录、`current >= max` = 就绪、其余 = 建立中（连接中/登录中/重连中/失败回滚）。`progress` 未到达时可按 `RTN_TD_STATUS.state` 兜底：`Idle` = 未登录、`Ready` = 就绪、其余 = 建立中。规则实现见 ADR 0051。
-2. **pending 清除**：登录 pending 的清除信号 = `RTN_PROGRESS` 到达 `current == max`、`current` 相对上次推送回退（进度骨架：失败/中止会回退）、或兜底超时（建议 45s，连接 30s + 登录 10s + 余量）；登出 pending = `current == min` 或兜底超时（建议 10s）。端点到 `min`/`max` 时清掉对应在途请求（登录中点登出 → 到 `min` 时登录与登出 pending 都清）。`NOTIFY_UI` 是纯通知，**永不清除 pending**（契约 notify-ui）。
-3. **失败展示**：`NOTIFY_UI` 错误级弹窗即时提示；`RTN_TD_STATUS` 的 `last_error` 持久化在后续票（#427）落地前不存在，前端不得依赖该字段做判定。
+1. **会话态判据**：以 `RTN_PROGRESS` 端点为唯一判据——`current <= min` = 未登录、`current >= max` = 就绪、其余 = 建立中（连接中/登录中/重连中/**失败停在失败阶段**）。`progress` 未到达时可按 `RTN_TD_STATUS.state` 兜底：`Idle` = 未登录、`Ready` = 就绪、其余 = 建立中（含失败态）。规则实现见 ADR 0051 / ADR 0059。
+2. **pending 清除**：登录 pending 的清除信号 = `RTN_TD_STATUS.last_error.timestamp` 变化且非 `null`（**链内失败**，契约 td-status §2.5）、`RTN_PROGRESS` 到达 `current == max`、`current` 相对上次推送回退（**主动中止**：登出 / 前置断线；ADR 0059 起链内失败不回退）、或兜底超时（建议 45s，连接 30s + 登录 10s + 余量）；登出 pending = `current == min` 或兜底超时（建议 10s）。端点到 `min`/`max` 时清掉对应在途请求（登录中点登出 → 到 `min` 时登录与登出 pending 都清）。`NOTIFY_UI` 是纯通知，**永不清除 pending**（契约 notify-ui）。
+3. **失败展示**：`NOTIFY_UI` 错误级弹窗即时提示；`RTN_TD_STATUS` 的 `last_error` 是持久失败原因（契约 td-status §2.5），前端据此在账户卡片持续展示「上次失败：原因（时间）」，并在 `last_error.timestamp` 变化时清登录 pending。`message` 为空时按 `code` 映射固定文案，**不得展示 `code` 原文**。
 4. **权限与禁止发起的条件**：仅 admin 可发起；目标网关未 Running 时两动作都不可发起（无法写帧）。账户已禁用时**登录**不可发起（网关会拒），**登出不受启用状态影响**——禁用不强制断开已有会话，仍需可登出（契约 td-config 启用/禁用语义）。dzweb 守卫权威，前端禁用只是体验优化（守卫失败经 WS `error` / REST 错误体表达，不写帧）。
 5. **不以 ack / HTTP 200 判定结果**：两者只表示已写事件通道；成败只看 `progress` / `td_status`。
 

@@ -896,8 +896,19 @@
     },
     "TdState": {
       "type": "string",
-      "enum": ["Idle", "Connecting", "Connected", "Authenticating", "Authenticated", "LoggingIn", "LoggedIn", "Confirming", "LoadingInstruments", "Ready", "Disconnected"],
-      "description": "交易网关账户级细状态（契约 td-status §2.2，11 态；值 = 发送方状态机的枚举名）"
+      "enum": ["Idle", "Connecting", "Connected", "Authenticating", "AuthFailed", "Authenticated", "LoggingIn", "LoggedIn", "Confirming", "LoadingInstruments", "Ready", "Disconnected"],
+      "description": "交易网关账户级细状态（契约 td-status §2.2，12 态；值 = 发送方状态机的枚举名）"
+    },
+    "TdLastError": {
+      "type": "object",
+      "description": "最近一次登录链失败（契约 td-status §2.5）",
+      "required": ["code", "message", "error_id", "timestamp"],
+      "properties": {
+        "code": { "type": "string", "description": "机器码（契约 td-status §2.5 码表）；前端按它映射固定文案，不得直接展示给用户" },
+        "message": { "type": "string", "description": "用户可读原因（中文）；空串 = 无详情，由前端按 code 兜底" },
+        "error_id": { "type": "integer", "description": "CTP ErrorID（仅 auth_rejected 有意义，无 rsp_info 时为 -1），其余为 0" },
+        "timestamp": { "type": "integer", "description": "失败发生时间，Unix 秒级时间戳；非法/缺失时前端不展示时间" }
+      }
     },
     "TdCtpStatusExt": {
       "type": "object",
@@ -913,7 +924,7 @@
     },
     "TdStatusPayload": {
       "type": "object",
-      "required": ["account_id", "state", "date", "login_time", "progress_desc", "progress_min", "progress_max", "progress_current", "ext"],
+      "required": ["account_id", "state", "date", "login_time", "progress_desc", "progress_min", "progress_max", "progress_current", "last_error", "ext"],
       "description": "交易网关账户级细状态全量结构（契约 td-status §2.1；WS td_rtn_status 的 data，始终全量、后到覆盖先到）",
       "properties": {
         "account_id": { "type": "string", "description": "账户 ID（柜台真实投资者代码，与帧头 instance_id 同值；payload 冗余携带供消费方定位与自校验，契约 td-status §3）" },
@@ -924,6 +935,7 @@
         "progress_min": { "type": "integer", "description": "进度最小值（交易网关为 0）" },
         "progress_max": { "type": "integer", "description": "进度最大值（交易网关为 10）" },
         "progress_current": { "type": "integer", "description": "当前进度值" },
+        "last_error": { "anyOf": [{ "$ref": "#/$defs/TdLastError" }, { "type": "null" }], "description": "最近一次登录链失败；null = 无未清空的失败（契约 td-status §2.5）" },
         "ext": { "$ref": "#/$defs/TdCtpStatusExt", "description": "柜台特有字段" }
       }
     }

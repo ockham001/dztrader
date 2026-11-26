@@ -18,16 +18,22 @@ struct TdStatusPublishKey {
     int progress_current = 0;
     std::string date;
     std::string login_time;
+    /// 最近一次失败的**时间戳**（契约 td-status §2.5；0 = 无未清空失败）。
+    /// 必须进键：同一失败态下「原因变了」（先柜台拒绝、重试后超时）时 state 与进度都不变，
+    /// 只靠其余字段判定会让新原因永远到不了前端。
+    int64_t last_error_timestamp = 0;
 
     bool operator==(const TdStatusPublishKey&) const = default;
 };
 
 /// 从 TdStatus 提取重推键（纯函数）。
 inline TdStatusPublishKey td_status_publish_key(const TdStatus& status) {
-    return {.state = status.state,
-            .progress_current = status.progress_current,
-            .date = status.date,
-            .login_time = status.login_time};
+    return {
+        .state = status.state,
+        .progress_current = status.progress_current,
+        .date = status.date,
+        .login_time = status.login_time,
+        .last_error_timestamp = status.last_error.has_value() ? status.last_error->timestamp : 0};
 }
 
 /// 主循环 sweep 的输入：一个会话的 account_id + 当前重推键。

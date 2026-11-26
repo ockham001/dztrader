@@ -226,6 +226,7 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
       progress_min: 0,
       progress_max: 10,
       progress_current: 10,
+      last_error: null,
       ext: {},
     })
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10, desc: '就绪' })
@@ -239,6 +240,89 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
 
     const unknown = wrapper.find('[data-test="td-account-row-account_002"]')
     expect(unknown.find('[data-test="td-account-state"]').text()).toBe('—')
+  })
+
+  // ===== 上次失败：持久展示（契约 td-status §2.5 前端义务③）=====
+  // 失败停在失败态后 state/progress 都不再变，这一行是用户事后回看的唯一入口。
+
+  it('进度停在 3/10 并显示「认证失败」；卡片展示「上次失败：原因（时间）」', async () => {
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'AuthFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '认证失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 3,
+      last_error: {
+        code: 'auth_rejected', message: 'CTP:用户认证失败', error_id: 3, timestamp: 1_700_000_000,
+      },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 3, desc: '认证失败' })
+    const { wrapper } = mountCard(store)
+
+    const row = wrapper.find('[data-test="td-account-row-account_001"]')
+    expect(row.find('[data-test="td-account-state"]').text()).toBe('认证失败')
+    // 进度停在失败阶段，不回退到 2/10
+    expect(row.text()).toContain('认证失败 · 3/10')
+    // 失败不回退：不得出现 2/10（Connected 那一格）
+    expect(row.text()).not.toContain('2/10')
+
+    const failed = row.find('[data-test="td-last-error-account_001"]')
+    expect(failed.exists()).toBe(true)
+    // 不复制实现的 toLocaleTimeString 作为 oracle：断言「时间括号」形状（HH:MM:SS）
+    expect(failed.text()).toMatch(/^上次失败：CTP:用户认证失败（\d{2}:\d{2}:\d{2}）$/)
+    // 展示层不得出现 snake_case 机器码
+    expect(row.text()).not.toContain('auth_rejected')
+  })
+
+  it('message 为空时按 code 映射中文（不得展示机器码）；timestamp 非法不渲染 1970', async () => {
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'AuthFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '认证失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 3,
+      last_error: { code: 'auth_timeout', message: '', error_id: 0, timestamp: 0 },
+      ext: {},
+    })
+    const { wrapper } = mountCard(store)
+
+    const failed = wrapper.find('[data-test="td-last-error-account_001"]')
+    expect(failed.exists()).toBe(true)
+    expect(failed.text()).toBe('上次失败：认证超时（10 秒内未收到响应）')
+    expect(failed.text()).not.toContain('auth_timeout')
+    expect(failed.text()).not.toContain('1970')
+    // 只断言「时间括号后缀」缺席（原因文案自带中文括号，不能整句禁括号）
+    expect(failed.text()).not.toMatch(/（\d{2}:\d{2}:\d{2}）$/)
+    // 超时无 CTP 错误码 → 不给误导性的 tooltip
+    expect(failed.attributes('title')).toBeUndefined()
+  })
+
+  it('无 last_error 时不展示「上次失败」行', async () => {
+    const store = await prepare({ accounts: ['account_001'] })
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'Ready',
+      date: '20260808',
+      login_time: '2026-08-08 08:45:32',
+      progress_desc: '就绪',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 10,
+      last_error: null,
+      ext: {},
+    })
+    const { wrapper } = mountCard(store)
+
+    expect(wrapper.find('[data-test="td-last-error-account_001"]').exists()).toBe(false)
   })
 })
 
@@ -488,6 +572,7 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
       progress_min: 0,
       progress_max: 10,
       progress_current: 10,
+      last_error: null,
       ext: {},
     })
     vi.mocked(tdApi.removeAccount).mockResolvedValue({ ok: true })

@@ -174,12 +174,13 @@ export function tdInterfaceType(gateway: string): string {
   return underscore < 0 ? tail : tail.slice(0, underscore)
 }
 
-/** 细状态 11 态的展示文案（契约 td-status §2.2；未知值原样显示，不吞掉事实） */
+/** 细状态展示文案（契约 td-status §2.2 十二态；未知值原样显示，不吞掉事实） */
 const TD_STATE_TEXT: Record<TdState, string> = {
   Idle: '未启动',
   Connecting: '连接中',
   Connected: '已连接',
   Authenticating: '认证中',
+  AuthFailed: '认证失败',
   Authenticated: '已认证',
   LoggingIn: '登录中',
   LoggedIn: '已登录',
@@ -193,6 +194,51 @@ const TD_STATE_TEXT: Record<TdState, string> = {
 export function tdStateText(state: TdState | string | null | undefined): string {
   if (state === null || state === undefined || state === '') return '—'
   return (TD_STATE_TEXT as Record<string, string>)[state] ?? state
+}
+
+/**
+ * 一次性登录链失败（契约 td-status §2.5 `last_error`）。
+ * 展示层用 camelCase（`errorId`）；后端/SHM 边界为 snake_case（code/message/error_id/timestamp），
+ * 转换只发生在 {@link parseTdLastError}，组件不接触后端字段形状。
+ */
+export interface TdLastErrorView {
+  code: string // auth_rejected | auth_timeout（未知码也保留原文，仅用于映射兜底）
+  message: string // 中文用户可读原因；空串 = 无详情，展示时按 code 映射固定文案
+  errorId: number // CTP ErrorID；仅 auth_rejected 非 0
+  timestamp: number // 失败发生时间，Unix 秒
+}
+
+/**
+ * `last_error` 解析（契约 td-status §2.5）：对象且 `code` 为 string 才采纳；
+ * 其余字段逐字段防御回落（message 非 string → ''，error_id/timestamp 非有限 number → 0）。
+ * `last_error` 为 null/非法 → null（不构成一次失败，不清 pending、不展示）。
+ */
+export function parseTdLastError(raw: unknown): TdLastErrorView | null {
+  if (!raw || typeof raw !== 'object') return null
+  const e = raw as { code?: unknown; message?: unknown; error_id?: unknown; timestamp?: unknown }
+  if (typeof e.code !== 'string') return null
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  return {
+    code: e.code,
+    message: typeof e.message === 'string' ? e.message : '',
+    errorId: num(e.error_id),
+    timestamp: num(e.timestamp),
+  }
+}
+
+/**
+ * 失败原因展示文案（契约 td-status §2.5 前端义务③）：`message` 优先；空则按 `code` 映射固定中文。
+ * 未知 code 统一「认证失败」（本票只接通认证段的码）——**绝不把 snake_case 机器码直接展示给用户**。
+ */
+const TD_LAST_ERROR_TEXT: Record<string, string> = {
+  auth_rejected: '认证被柜台拒绝',
+  auth_timeout: '认证超时（10 秒内未收到响应）',
+}
+
+export function tdLastErrorText(e: TdLastErrorView | null): string {
+  if (!e) return ''
+  if (e.message) return e.message
+  return TD_LAST_ERROR_TEXT[e.code] || '认证失败'
 }
 
 /** 降级原因文案（契约 rest §2.9.9 只有 no_gateway_snapshot 一种原因） */
@@ -213,6 +259,11 @@ export interface TdAccountRow {
   config: TdAccountConfig | null
   /** 账户级细状态（WS td_rtn_status）；未到达为 null */
   status: TdStatusPayload | null
+  /**
+   * 最近一次登录链失败（契约 td-status §2.5，从 `status.last_error` 解析）；
+   * null = 无未清空的失败（含镜像未到达、字段非法）。
+   */
+  lastError: TdLastErrorView | null
   /** 进度（契约 progress；账户级 `instance_id` = 账户 ID）；未到达为 null */
   progress: ProgressView | null
   /** 网关进程是否 Running（进程镜像）；镜像未到达为 false（页面据此提示先启动网关） */
@@ -409,6 +460,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       currencyId: 'CNY',
       config: null,
       status: null,
+      lastError: null,
       progress: null,
       gatewayRunning: isGatewayRunning(gateway),
     })
@@ -449,6 +501,9 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       const row = merged.get(accountId)
       if (!row) continue  // 状态镜像里的账户不在注册表/配置镜像中：等配置帧到达，不自造行
       row.status = status
+      // 失败原因随状态帧全量到达（契约 td-status §2.5）：按 code 采纳、逐字段防御回落，
+      // null = 无未清空失败。解析只在这一处，组件不接触后端字段形状。
+      row.lastError = parseTdLastError(status.last_error)
     }
     for (const [accountId, progress] of Object.entries(progressStore.progress)) {
       const row = merged.get(accountId)
@@ -561,10 +616,13 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     tdAccountsPending.clearByPrefix(opKey(gateway, accountId, op))
   }
 
-  // 清除信号（唯一来源是进度端点/回退；NOTIFY_UI 是纯通知，永不清 pending，契约 notify-ui）：
+  // 清除信号（唯一来源是进度端点/回退与 status.last_error 的新时间戳；NOTIFY_UI 是纯通知，
+  // 永不清 pending，契约 notify-ui）：
   //   - 到 max → 清登录 pending（登录完成）；
   //   - 到 min → 清登录 + 登出 pending（登出完成；或登录在途时被登出/中止，避免挂到 45s 超时）；
-  //   - 中间态且 current 相对上次回退 → 清登录 pending（失败回滚，进度骨架声明建立期单调）；
+  //   - 中间态且 current 相对上次回退 → 清登录 pending（**主动中止**：登出 / 前置断线）；
+  //   - `status.last_error.timestamp` 变化且非 null → 清登录 pending（**链内失败**，见下方
+  //     watcher；ADR 0059 起链内失败停在失败阶段、current 不回退，回退不再是失败信号）；
   //   - 兜底超时（登录 45s / 登出 10s，见 TD_SESSION_*_TIMEOUT_MS）。
   watch(
     () => progressStore.progress,
@@ -586,6 +644,38 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
           clearSessionPending(gateway, instanceId, 'login')
           clearSessionPending(gateway, instanceId, 'logout')
         }
+      }
+    },
+    { deep: true },
+  )
+
+  // ===== 链内失败驱动 login pending 清理（契约 td-status §2.5 前端义务①②，ADR 0059）=====
+  // `last_error.timestamp` 变化且非 null = 一次登录尝试已结束（失败停在失败阶段）→ 立即清该
+  // 账户的登录 pending，不等待 45s 兜底。失败态下 `current` 停在失败阶段、不回退，进度 watcher
+  // 的「回退清登录」判据在失败路径上不再触发——没有本 watcher，pending 会一直挂到超时。
+  //
+  // 记录已见 timestamp 是去重：状态帧会因订阅统计等无关字段变化重复推送同一失败，
+  // 反复清理可能误清用户重试后新一次登录的 pending。
+  // `last_error` 变 null（下一次尝试被受理 / 登录成功 / 转 Ready）只丢弃去重记录、不清 pending。
+  //
+  // 只看状态镜像、不解析进度：失败原因与「一次尝试结束」是同一事实的两面，都在状态帧里。
+  const seenLastErrorTimestamp = ref<Record<string, number>>({})
+  watch(
+    () => statuses.value,
+    (statusMap) => {
+      for (const [accountId, payload] of Object.entries(statusMap)) {
+        const lastError = parseTdLastError(payload?.last_error)
+        if (!lastError) {
+          // 失败已清空：丢弃去重记录，使后续失败（即使落在同一秒）仍能触发清理
+          delete seenLastErrorTimestamp.value[accountId]
+          continue
+        }
+        if (!lastError.timestamp) continue
+        if (seenLastErrorTimestamp.value[accountId] === lastError.timestamp) continue
+        seenLastErrorTimestamp.value[accountId] = lastError.timestamp
+        const gateway = gatewayOf(accountId)
+        if (gateway === null) continue
+        clearSessionPending(gateway, accountId, 'login')
       }
     },
     { deep: true },
@@ -959,7 +1049,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     // payload 冗余携带 account_id 供消费方定位与自校验（契约 td-status §3）：与帧头不一致
     // 说明来源错乱，按非法帧丢弃，避免把 A 账户的状态挂到 B 账户行上。
     if (payload.account_id !== instanceId) return
-    // state 是契约 td-status §2.2 的 11 态枚举名；运行时不可信，非字符串/空串的帧丢弃
+    // state 是契约 td-status §2.2 的 12 态枚举名；运行时不可信，非字符串/空串的帧丢弃
     //（类型声明已收窄为 TdState，因此先转 unknown 再判，避免与类型系统打架）
     const rawState: unknown = payload.state
     if (typeof rawState !== 'string' || rawState === '') return

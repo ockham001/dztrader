@@ -8,6 +8,8 @@
 
 #include <dztrader/data_type.h>  // DzOrderId
 
+#include "td/td_state.h"  // TdFailureCode (认证失败码, 通知正文按它区分措辞)
+
 namespace dztrader::ctp {
 
 /// 撤单上下文 (C4: cancel_order 反向查找所需).
@@ -142,6 +144,19 @@ bool trading_day_usable(int32_t days_since_epoch) noexcept;
 /// @return 形如「交易登录失败（交易日无效（原始值
 /// "00000000"）），本进程不会自动重试该账户；请先登出再重新登录」
 std::string login_failed_message(const std::string& reason);
+
+/// 认证失败通知正文 (纯构造便于断言, #489 并入 #494).
+///
+/// 与 login_failed_message 同一口径「发生了什么 + 会怎样 + 下一步」, 但**后果不同**:
+/// 认证失败停在 3/10「认证失败」(ADR 0059 决策 1), 那是失败态而非正常中间态 —— 界面本身
+/// 已经显示异常, 所以正文只需说清「柜台给了什么 + 恢复方式」, 不必再解释「看起来像正常」。
+///
+/// @param code 段内原因码 (决定超时/柜台拒绝的前缀措辞)
+/// @param reason 失败场景的中文说明 (如「柜台拒绝，错误码 3：CTP:用户认证失败」/
+///   「10 秒内未收到柜台的认证响应」)
+/// @return 形如「认证失败（柜台拒绝，错误码 3：...），本进程不会自动重试该账户；
+///   请先登出再重新登录」; reason 为空时不产出残缺括号
+std::string auth_failed_message(TdFailureCode code, const std::string& reason);
 
 // ============================================================================
 // 登录链后段失败的通知正文 (结算确认 / 合约加载, #488)

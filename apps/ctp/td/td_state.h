@@ -29,13 +29,18 @@ struct UnknownEnumCounts {
     }
 };
 
-/// CTP 交易网关状态机状态 (11 状态)。
-/// 参考 mdctp MdState, 扩展为 11 状态以覆盖认证/结算确认/合约加载。
+/// CTP 交易网关状态机状态 (12 状态: 连接/登录链 11 段 + 认证失败态)。
+/// 参考 mdctp MdState, 扩展以覆盖认证/结算确认/合约加载。
+///
+/// 失败态 (ADR 0059 / 契约 td-status §2.2): 登录链上任一段失败后**停在它自己那一段**,
+/// `progress.current` 取该段数值、不回退到上一段 —— 失败只回答「在哪一段」, 段内原因由
+/// `last_error` 承载。本票只落认证段的 `AuthFailed`, 其余三段随 #495 / #496 补齐。
 enum class TdState {
     Idle,                ///< 未启动, 初始状态
     Connecting,          ///< API 已 Init, 等待 OnFrontConnected
     Connected,           ///< 前置已连接, 准备认证
     Authenticating,      ///< ReqAuthenticate 已发, 等待 OnRspAuthenticate
+    AuthFailed,          ///< 认证失败, 停在 3/10 (不再回退 Connected); 原因见 last_error
     Authenticated,       ///< 认证通过, 准备登录
     LoggingIn,           ///< ReqUserLogin 已发, 等待 OnRspUserLogin
     LoggedIn,            ///< 登录成功, 准备确认结算单
@@ -47,6 +52,28 @@ enum class TdState {
 
 /// 基于 magic_enum 自动派生 TdState 的 JSON 序列化, 字符串与日志一致。
 DZ_JSON_ENUM(TdState)
+
+/// 登录链失败原因码 (契约 td-status §2.5 `last_error.code`)。
+/// 一个码 = 同一失败阶段里的一种原因; 超时与柜台拒绝同等对待, 靠本枚举区分 (ADR 0059 决策 5)。
+/// 本票只接通认证段的两个码, 其余三段随 #495 / #496 补齐。
+enum class TdFailureCode {
+    AuthRejected,  ///< auth_rejected: OnRspAuthenticate 的 ErrorID != 0 (柜台拒绝认证)
+    AuthTimeout,   ///< auth_timeout: 10 秒内未收到认证响应
+};
+
+/// 失败原因码的线上字符串 (契约 td-status §2.5 码表)。
+const char* td_failure_code_str(TdFailureCode code);
+
+/// 最近一次登录链失败 (契约 td-status §2.5, 全量随 RTN_TD_STATUS 推送)。
+/// 与状态机状态分工: 失败态回答「在哪一段」, 本结构回答「这一段里为什么」。
+struct TdLastError {
+    std::string code;       ///< 机器码 (td_failure_code_str); 前端按它映射固定文案, 不直接展示
+    std::string message;    ///< 用户可读原因 (中文); 空串 = 无详情, 由前端按 code 兜底
+    int error_id = 0;       ///< CTP ErrorID (仅 auth_rejected 有意义), 其余为 0
+    int64_t timestamp = 0;  ///< 失败发生时间 (Unix 秒)
+
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TdLastError, code, message, error_id, timestamp)
+};
 
 /// 交易二元健康度 (给策略/风控进程决策用, 与 TdState 细粒度状态独立)。
 /// - Up: 已就绪 (Ready 状态, 可下单)
@@ -65,7 +92,7 @@ struct CtpStatusExt {
 };
 
 /// 网关状态, 对 UI 和共享内存可见（契约 td-status §2.1 TdStatus）。
-/// 通用层（account_id/state/date/login_time/progress_*）+ 柜台特有 `ext` 分层：
+/// 通用层（account_id/state/date/login_time/progress_*/last_error）+ 柜台特有 `ext` 分层：
 /// 新增接口类型只换 `ext`，dzweb 与前端按 interface_type 选择 schema。
 struct TdStatus {
     std::string account_id;         ///< 账户标识 (per-account 状态上报用)
@@ -79,6 +106,11 @@ struct TdStatus {
     int progress_max = 10;      ///< 进度最大值 (td: max=10, md 是 4)
     int progress_current = 0;   ///< 当前进度
 
+    /// 最近一次登录链失败 (契约 td-status §2.5)；null = 无未清空的失败。
+    /// 清空时机: 下一次登录尝试被受理 (on_connect) 与转 Ready; 进入 Idle (登出) **不清空**
+    /// —— 保留最近一次失败供用户回看 (ADR 0059 决策 6)。
+    std::optional<TdLastError> last_error;
+
     CtpStatusExt ext;  ///< 柜台特有字段 (interface_type = ctp)
 
     NLOHMANN_DEFINE_TYPE_INTRUSIVE_WITH_DEFAULT(TdStatus,
@@ -90,6 +122,7 @@ struct TdStatus {
                                                 progress_min,
                                                 progress_max,
                                                 progress_current,
+                                                last_error,
                                                 ext)
 };
 
@@ -106,8 +139,9 @@ struct TdNotification {
     std::string message;                   ///< 中文消息
 };
 
-/// TdState 11 态 → 策略可见三态聚合映射 (spec §2.1)。
-/// Ready 与 TdHealth::Up 同一判定点; 内部 11 态演进不得破坏此映射的稳定性。
+/// TdState → 策略可见三态聚合映射 (spec §2.1)。
+/// Ready 与 TdHealth::Up 同一判定点; 内部状态演进不得破坏此映射的稳定性。
+/// 失败态属「会话未就绪」: 与它停住的那一段同类, 归 LoggingIn (契约 account-status)。
 DzAccountState account_state_of(TdState state) noexcept;
 
 /// CTP 交易网关的状态机。
@@ -127,7 +161,8 @@ public:
     // --- 状态转移 ---
     // 每个方法返回可选通知, 调用方应发送给 UI
 
-    /// connect() 请求时调用。仅在 Idle 状态有效。
+    /// connect() 请求时调用。仅在 Idle 状态有效；同时清空 last_error
+    /// (登录尝试被受理, 契约 td-status §2.5 清空时机)。
     std::optional<TdNotification> on_connect();
 
     /// disconnect() 请求时调用。任意状态均有效。
@@ -149,8 +184,15 @@ public:
     /// 认证成功时调用。
     std::optional<TdNotification> on_authenticate_success();
 
-    /// 认证失败时调用 (ErrorID != 0)。
-    std::optional<TdNotification> on_authenticate_failed();
+    /// 认证失败时调用 (柜台拒绝 ErrorID != 0 / 10 秒超时)。
+    /// 停在 `AuthFailed` (3/10「认证失败」), **不再回退到 `Connected`** (ADR 0059 决策 1)。
+    /// 段内原因写入 `last_error` (契约 td-status §2.5):
+    /// @param code 失败原因码 (auth_rejected / auth_timeout)
+    /// @param message 用户可读原因 (中文; CTP ErrorMsg 原文或空串 = 无详情)
+    /// @param error_id CTP ErrorID (仅 auth_rejected 有意义, 超时传 0)
+    std::optional<TdNotification> on_authenticate_failed(TdFailureCode code,
+                                                         const std::string& message,
+                                                         int error_id = 0);
 
     /// ReqUserLogin 发送时调用。Connected/Authenticated -> LoggingIn。
     std::optional<TdNotification> on_req_login();
@@ -181,6 +223,9 @@ public:
 
 private:
     void set_state(TdState new_state);
+
+    /// 记录最近一次失败 (契约 td-status §2.5, 时间戳取当前 Unix 秒)。
+    void set_last_error(TdFailureCode code, const std::string& message, int error_id);
 
     TdStatus status_;
 

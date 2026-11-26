@@ -196,8 +196,10 @@ public:
     /// 「发送被拒时状态回滚 + 弹窗」。
     void request_settlement_confirm_for_test();
     /// 测试夹具专用：从 Idle 重放生产登录链的状态迁移，停在 target（生产由 CTP 回调驱动）。
-    /// 覆盖登录链后段（`LoggedIn` → `Confirming` → `LoadingInstruments` → `Ready`）的用例
+    /// 覆盖登录链各段（`Connected` / `Authenticating` / 认证后各段直到 `Ready`）的用例
     /// 用它把会话摆到失败发生前一步；迁移失败当场抛，防止夹具与生产链漂移。
+    /// @note 停在 `Authenticating` 时 10 秒超时定时器**未**武装（武装在 `req_authenticate()`
+    ///   里）；需要验证超时收口的用例应从 `Connected` 走 `request_authenticate_for_test()`。
     void advance_login_chain_for_test(TdState target);
     /// 测试夹具专用：把会话推进到 Ready（生产由登录收尾链进入）。
     /// @param position_ok 同时置/清持仓基准就绪标志（覆盖写路径守卫用例）
@@ -214,6 +216,18 @@ public:
     /// `timer_queue_.tick()` 即触发——否则只能验证「定时器排上了」，而排上的回调是空壳
     /// 也会绿（`docs/unit-test-standard.md` §1.1 断言能失败）。
     void set_settlement_confirm_timeout_for_test(std::chrono::seconds timeout);
+    /// 认证发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqAuthenticate` 返回码。
+    /// 与 `set_settlement_send_hook` 同形态：`req_authenticate()` 直接解引用 `api_`，而
+    /// `api_` 只能由 `open()` 创建真实 `CThostFtdcTraderApi`（需连柜台）。没有它，
+    /// 「认证被拒 / 10 s 超时两条失败出口都写 last_error 并推通知」只能靠读代码确认。
+    using AuthSendFn = std::function<int(CThostFtdcReqAuthenticateField&, int)>;
+    void set_auth_send_hook(AuthSendFn hook);
+    /// 测试夹具专用：驱动生产 `req_authenticate()`（会话须已在 `Connected`）。
+    /// 与 `request_settlement_confirm_for_test` 配套：它才会**武装 10 s 认证超时定时器**。
+    void request_authenticate_for_test();
+    /// 测试夹具专用：立即触发认证 10 s 超时的收口（生产由 TimerQueue 回调）。
+    /// 与 `expire_settlement_confirm_timeout_for_test` 同用途：走同一收口逻辑，不 sleep。
+    void expire_auth_timeout_for_test();
     /// 合约查询发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqQryInstrument` 返回码。
     /// 与 `set_settlement_send_hook` 同形态，让「发送被拒」与 `on_rsp_error` 两条失败出口
     /// 在真会话上可驱动（否则只有 `api_` 非空的真机路径能到，测试无法证伪）。
@@ -301,8 +315,26 @@ private:
                            const std::string& message,
                            std::string_view prose);
 
-    /// 登录失败统一出口 (#407): 状态机回滚 + 失败原因上浮 UI 通知.
+    /// 认证失败统一出口 (#489 并入 #494): 状态机转 AuthFailed + 写 last_error + 上浮 UI 通知.
     ///
+    /// 与 notify_login_failed 同一问题形态: 两个调用点 (OnRspAuthenticate 被拒 / 10 秒超时)
+    /// 此前都丢弃了状态机返回值, 账户静默停在 2/10「已连接」——用户只看到连接成功, 不知道
+    /// 认证已经失败, 而这正是本该修复的缺陷。本票同时把失败位置改对: 停在 3/10「认证失败」
+    /// (ADR 0059 决策 1), 不再回退。
+    ///
+    /// 超时与柜台拒绝走同一出口 (ADR 0059 决策 5): 同一失败态、同一 last_error 写入,
+    /// 由 code 区分。
+    ///
+    /// @param code 段内原因码 (auth_rejected 带 CTP error_id / auth_timeout)
+    /// @param reason 失败场景 (中文, 供 last_error.message 与通知正文; 如「柜台拒绝，错误码
+    ///   3：CTP:认证失败」/「10 秒内未收到柜台的认证响应」)。不复用状态机的通用文案「认证失败」
+    ///   ——只说失败不说原因, 用户拿不到可用信息。
+    /// 时序: 必须先 on_authenticate_failed() 转状态再通知 (与 md 一致)。异常不逃逸
+    /// (push_notification 兜底)。状态机拒绝转移 (此刻不在 Authenticating, 如前置已断线或
+    /// 已登出) 时不推送, 见 push_notification 的 `!notif` 说明。
+    void notify_auth_failed(TdFailureCode code, const std::string& reason, int error_id = 0);
+
+    /// 登录失败统一出口 (#407): 状态机回滚 + 失败原因上浮 UI 通知.
     /// 登录失败后状态回滚到 Authenticated/Connected, 两者都是**正常中间态**——前端与用户
     /// 无法与「正在登录」区分, 也拿不到原因; 而本进程不会自动重发登录 (见 #406)。因此失败
     /// 必须让用户看得见, 否则账户会静默卡住。
@@ -335,6 +367,11 @@ private:
     ///   响应」)。状态机拒绝转移 (此刻不在 LoadingInstruments) 时不推送, 见 push_notification
     ///   的 `!notif` 说明。
     void notify_instruments_load_failed(const std::string& reason);
+
+    /// 认证 10 s 超时收口 (#489 并入 #494): 生产由 TimerQueue 回调, 测试经
+    /// `expire_auth_timeout_for_test` 注入同一条路径 (不 sleep)。
+    /// 已离开 Authenticating (响应已到 / 已断线 / 已登出) 时忽略迟到超时。
+    void on_auth_timeout();
 
     /// 结算单确认看门狗超时收口 (#488): 生产由 TimerQueue 回调, 测试经
     /// `expire_settlement_confirm_timeout_for_test` 注入同一条路径 (不 sleep)。
@@ -663,6 +700,7 @@ private:
     QueryClockFn query_clock_;
     SettlementSendFn settlement_send_hook_;
     InstrumentSendFn instrument_send_hook_;
+    AuthSendFn auth_send_hook_;
     /// 结算单确认看门狗时长（生产 = kSettlementConfirmTimeout；测试可缩短）。
     std::chrono::seconds settlement_confirm_timeout_ = kSettlementConfirmTimeout;
     /// 合约加载超时时长（生产 = 5 分钟；测试可缩短）。

@@ -68,6 +68,9 @@ function status(overrides: Partial<TdStatusPayload> = {}): TdStatusPayload {
     progress_current: 10,
     ext: { api_version: 'v6.7.2', sys_version: 'v6.7.2_20240105' },
     ...overrides,
+    // 显式收口：`Partial<TdStatusPayload>` 的 last_error 是可选，展开后会带 undefined，
+    // 而线上契约恒为 `TdLastError | null`（契约 td-status §2.5：缺键与 null 同义）。
+    last_error: overrides.last_error ?? null,
   }
 }
 
