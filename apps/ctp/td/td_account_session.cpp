@@ -1343,29 +1343,31 @@ void AccountSession::req_authenticate() {
     });
 }
 
-void AccountSession::notify_login_failed(const std::string& reason) {
-    // 先转状态 (回滚到 Authenticated/Connected), 再通知 —— 与 md 的
-    // 「先 set_last_error + set_state, 再返回通知」时序一致.
-    auto notif = state_machine_.on_login_failed();
-    // 状态机拒绝了这次转移 (此刻不在 LoggingIn: 典型为前置已断线 / 已登出, 已由状态机
-    // 记 WARN): 此刻弹窗对不上界面状态, 不推送。注意这只是「不在 LoggingIn」, 不保证
-    // 等于「非真实登录尝试」——该情形同样静默, 属有意取舍 (断线场景由 Offline/重连反馈兜底).
+void AccountSession::push_notification(const std::optional<TdNotification>& notif,
+                                       const std::string& message,
+                                       std::string_view prose) {
+    // 状态机拒绝了这次转移 (此刻不在该出口对应的那一段状态, 已由状态机记 WARN): 此刻弹窗
+    // 对不上界面状态, 不推送 (具体哪一段见各调用点)。
     if (!notif) {
         return;
     }
     if (!notify_) {
-        return;  // 未注入 (测试/无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
+        return;  // 未注入 (测试 / 无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
     }
-    const std::string message = login_failed_message(reason);
     try {
         notify_(notif->level, message, notif->popup);
     } catch (const std::exception& e) {
-        SPDLOG_ERROR("td login failed notify failed | account={} error=\"{}\"", account_id_,
-                     e.what());
+        SPDLOG_ERROR("{} | account={} error=\"{}\"", prose, account_id_, e.what());
     } catch (...) {
-        SPDLOG_ERROR("td login failed notify failed | account={} error=unknown_exception",
-                     account_id_);
+        SPDLOG_ERROR("{} | account={} error=unknown_exception", prose, account_id_);
     }
+}
+
+void AccountSession::notify_login_failed(const std::string& reason) {
+    // 先转状态 (回滚到 Authenticated/Connected), 再通知 —— 与 md 的
+    // 「先 set_last_error + set_state, 再返回通知」时序一致.
+    const auto notif = state_machine_.on_login_failed();
+    push_notification(notif, login_failed_message(reason), "td login failed notify failed");
 }
 
 void AccountSession::notify_settlement_confirm_failed(const std::string& reason) {
@@ -1374,50 +1376,18 @@ void AccountSession::notify_settlement_confirm_failed(const std::string& reason)
     // 全部丢弃状态机返回值, 失败无痕)。
     cancel_settlement_confirm_timer();
     settlement_confirm_request_id_ = 0;  // 出链即作废, 迟到响应的 request_id 校验依赖它
-    // 状态机拒绝转移 (此刻不在 Confirming: 已断线 / 已登出 / 看门狗已收口后又来了迟到失败)
-    // 时不推送, 理由同 notify_login_failed.
-    auto notif = state_machine_.on_settlement_confirm_failed(reason);
-    if (!notif) {
-        return;
-    }
-    if (!notify_) {
-        return;  // 未注入 (测试/无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
-    }
-    const std::string message = settlement_confirm_failed_message(reason);
-    try {
-        notify_(notif->level, message, notif->popup);
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td settlement confirm failed notify failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    } catch (...) {
-        SPDLOG_ERROR(
-            "td settlement confirm failed notify failed | account={} error=unknown_exception",
-            account_id_);
-    }
+    const auto notif = state_machine_.on_settlement_confirm_failed(reason);
+    push_notification(notif, settlement_confirm_failed_message(reason),
+                      "td settlement confirm failed notify failed");
 }
 
 void AccountSession::notify_instruments_load_failed(const std::string& reason) {
     // #488: 同上 —— 收定时器 + 转状态 + 通知. on_instruments_load_failed 回滚到 LoggedIn
     // (6/10「已登录」这个正常中间态), 且不会有下一次尝试 —— 不上浮就是静默卡住.
     cancel_instruments_load_timer();
-    auto notif = state_machine_.on_instruments_load_failed(reason);
-    if (!notif) {
-        return;
-    }
-    if (!notify_) {
-        return;
-    }
-    const std::string message = instruments_load_failed_message(reason);
-    try {
-        notify_(notif->level, message, notif->popup);
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR("td instruments load failed notify failed | account={} error=\"{}\"",
-                     account_id_, e.what());
-    } catch (...) {
-        SPDLOG_ERROR(
-            "td instruments load failed notify failed | account={} error=unknown_exception",
-            account_id_);
-    }
+    const auto notif = state_machine_.on_instruments_load_failed(reason);
+    push_notification(notif, instruments_load_failed_message(reason),
+                      "td instruments load failed notify failed");
 }
 
 void AccountSession::req_login() {
