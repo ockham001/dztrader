@@ -185,7 +185,7 @@ TEST_F(MdStateMachineTest, LoginRejectedTransitionsToLoginFailedWithReason) {
     EXPECT_EQ(sm.state(), MdState::LoginFailed);
     EXPECT_TRUE(sm.status().login_time.empty());
     EXPECT_EQ(sm.status().progress_desc, "登录失败");
-    // ADR 0059 决策 6: 失败停在登录段 3/4，不回退到 Connected 的 2
+    // ADR 0059 决策 1: 失败停在登录段 3/4，不回退到 Connected 的 2
     EXPECT_EQ(sm.status().progress_current, 3);
     ASSERT_TRUE(sm.status().last_error.has_value());
     EXPECT_EQ(sm.status().last_error->code, "login_rejected");
@@ -441,7 +441,7 @@ TEST_F(MdStateMachineTest, ProgressMappingDisconnected) {
 }
 
 TEST_F(MdStateMachineTest, ProgressMappingLoginFailed) {
-    // 契约 md-status 失败语义 / ADR 0059 决策 6: 登录失败停在登录阶段（3/4）、不回退到
+    // 契约 md-status 失败语义 / ADR 0059 决策 1: 登录失败停在登录阶段（3/4）、不回退到
     // Connected（2/4），失败原因由 RTN_MD_STATUS.last_error 承载；desc 仅展示为「登录失败」
     sm.on_connect();
     sm.on_front_connected();
