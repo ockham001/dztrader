@@ -182,6 +182,22 @@ public:
     /// 查询时钟（测试注入；空 = `steady_clock`）。确定性用例用它消除 sleep。
     using QueryClockFn = std::function<QueryPacer::TimePoint()>;
     void set_query_clock(QueryClockFn clock);
+    /// 结算单确认发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqSettlementInfoConfirm` 返回码。
+    ///
+    /// 为什么需要（#488）：`req_settlement_confirm()` 直接解引用 `api_`，而 `api_` 只能由
+    /// `open()` 创建真实 `CThostFtdcTraderApi`（需连柜台）。没有这个钩子，看门狗排定与
+    /// `ret != 0` 回滚两条路径只能靠「读代码」确认，属 `docs/unit-test-standard.md` §1.1
+    /// 判定的失效测试形态。与 `set_query_send_hook` 同一形态。
+    using SettlementSendFn = std::function<int(CThostFtdcSettlementInfoConfirmField&, int)>;
+    void set_settlement_send_hook(SettlementSendFn hook);
+    /// 测试夹具专用：驱动生产 `req_settlement_confirm()`（会话须先在 `LoggedIn`）。
+    /// 与 `set_settlement_send_hook` 配套 —— 用它才能在真会话上验「看门狗被排定」与
+    /// 「发送被拒时状态回滚 + 弹窗」。
+    void request_settlement_confirm_for_test();
+    /// 测试夹具专用：从 Idle 重放生产登录链的状态迁移，停在 target（生产由 CTP 回调驱动）。
+    /// 覆盖登录链后段（`LoggedIn` → `Confirming` → `LoadingInstruments` → `Ready`）的用例
+    /// 用它把会话摆到失败发生前一步；迁移失败当场抛，防止夹具与生产链漂移。
+    void advance_login_chain_for_test(TdState target);
     /// 测试夹具专用：把会话推进到 Ready（生产由登录收尾链进入）。
     /// @param position_ok 同时置/清持仓基准就绪标志（覆盖写路径守卫用例）
     void enter_ready_for_test(bool position_ok = true);
@@ -189,6 +205,8 @@ public:
     void pump_query_lane();
     /// 测试夹具专用：立即触发运行期资金查询的 10s 超时路径（生产由 TimerQueue 触发）。
     void expire_runtime_query_timeout_for_test();
+    /// 测试夹具专用：立即触发结算单确认看门狗的超时收口（生产由 TimerQueue 触发）。
+    void expire_settlement_confirm_timeout_for_test();
 
     /// 手动刷新请求（契约 td-refresh）：Ready 时置脏一次并返回 true；
     /// 非 Ready / 已离开会话返回 false（调用方记 WARN，不改变账户状态）。
@@ -245,13 +263,41 @@ private:
     /// 状态机拒绝转移 (此刻不在 LoggingIn, 如前置已断线或已登出) 时不推送: 弹窗会对不上
     /// 当前状态。注意这不等于「只有真实登录尝试才推送」——该情形同样会静默, 是有意取舍。
     void notify_login_failed(const std::string& reason);
+
+    /// 结算单确认失败统一出口 (#488): 取消看门狗 + 状态机回滚 + 失败原因上浮 UI 通知.
+    ///
+    /// 与 notify_login_failed 同一问题形态: on_settlement_confirm_failed() 回滚到 LoggedIn
+    /// (进度 6/10「已登录」), 那是**正常中间态**, 界面看不出异常。而本进程不自动重试登录链
+    /// (#406), 不上浮就是静默卡在 6/10。调用方不再各自处置状态机返回值 (此前 5 个调用点
+    /// 全部丢弃了通知, 失败无痕)。
+    ///
+    /// @param reason 失败场景 (中文, 供通知正文; 如「柜台拒绝，错误码 3：...」/「60 秒内未收到
+    ///   柜台的结算单确认响应」)。不复用状态机的「结算单确认失败: ...」——那是日志口径。
+    /// 时序: 必须先 on_settlement_confirm_failed() 转状态再通知 (与 md 一致)。异常不逃逸。
+    /// 状态机拒绝转移 (此刻不在 Confirming, 如已断线 / 已登出 / 迟到响应迟到超时) 时不推送。
+    void notify_settlement_confirm_failed(const std::string& reason);
+
+    /// 合约加载失败统一出口 (#488): 取消加载定时器 + 状态机回滚 + 失败原因上浮 UI 通知.
+    ///
+    /// 同上: 回滚到 LoggedIn 是正常中间态, 且不会有下一次尝试 —— 必须让用户看见。
+    /// @param reason 失败场景 (中文; 如「柜台拒绝，错误码 3：...」/「查询 5 分钟未收到最后一批
+    ///   响应」)。状态机拒绝转移 (此刻不在 LoadingInstruments) 时不推送。
+    void notify_instruments_load_failed(const std::string& reason);
+
+    /// 结算单确认看门狗超时收口 (#488): 生产由 TimerQueue 回调, 测试经
+    /// `expire_settlement_confirm_timeout_for_test` 注入同一条路径 (不 sleep)。
+    /// 已离开 Confirming (响应已到 / 已断线 / 已登出) 时忽略迟到超时。
+    void on_settlement_confirm_timeout();
+
     /// 触发合约查询 (设计 §7.2), 进入 LoadingInstruments 状态.
-    /// 失败/超时调 on_instruments_load_failed 回退到 LoggedIn (设计 §2.4.1).
+    /// 失败/超时调 notify_instruments_load_failed 回退到 LoggedIn (设计 §2.4.1).
     void req_qry_instrument();
     void cancel_connect_timer();
     void cancel_login_timer();
     /// 取消合约加载超时定时器 (I2)
     void cancel_instruments_load_timer();
+    /// 取消结算单确认看门狗定时器 (#488; 收到响应 / 断连 / 登出时清理).
+    void cancel_settlement_confirm_timer();
     /// 取消基准持仓查询的重试定时器 (查询成功 / 重试耗尽 / 断连时清理, 不留残留定时器).
     void cancel_position_query_retry_timer();
     /// 取消基准持仓查询单次尝试的超时定时器.
@@ -524,6 +570,8 @@ private:
     /// 定时器 id (0 = 无挂起)
     dztrader::core::TimerQueue::TimerId connect_timer_id_ = 0;
     dztrader::core::TimerQueue::TimerId login_timer_id_ = 0;
+    /// 结算单确认看门狗定时器 id (#488; kSettlementConfirmTimeout, 收到响应后取消)
+    dztrader::core::TimerQueue::TimerId settlement_confirm_timer_id_ = 0;
     /// I2: 合约加载超时定时器 id (5 分钟, 设计 §2.4.1 流控持续 -3 超时)
     dztrader::core::TimerQueue::TimerId instruments_load_timer_id_ = 0;
     /// 基准持仓查询重试定时器 id (失败后 3s 重试; 0 = 无挂起)
@@ -561,6 +609,7 @@ private:
     /// 测试注入（空 = 生产实现）。
     QuerySendFn query_send_hook_;
     QueryClockFn query_clock_;
+    SettlementSendFn settlement_send_hook_;
 
     /// CTP 登录诊断字段 (open 时保存, 用于 ReqAuthenticate/ReqUserLogin)
     std::string broker_id_;

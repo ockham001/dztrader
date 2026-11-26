@@ -271,6 +271,27 @@ std::string login_failed_message(const std::string& reason) {
     return std::format("交易登录失败（{}），{}", reason, consequence);
 }
 
+std::string settlement_confirm_failed_message(const std::string& reason) {
+    // 口径同 login_failed_message: 「发生了什么 + 会怎样 + 下一步」.
+    // 「会怎样」必须写清, 因为状态机只回滚到 LoggedIn (6/10「已登录」) 这个正常中间态,
+    // 界面看不出异常; 「下一步」= 先登出再登录 (ADR 0051 决策 4, WebUI 已有该入口, #409).
+    const std::string consequence =
+        "账户停在「已登录」不能交易，本进程不会自动重试；请先登出再重新登录";
+    if (reason.empty()) {
+        return "结算单确认失败，" + consequence;
+    }
+    return std::format("结算单确认失败（{}），{}", reason, consequence);
+}
+
+std::string instruments_load_failed_message(const std::string& reason) {
+    const std::string consequence =
+        "账户停在「已登录」不能交易，本进程不会自动重试；请先登出再重新登录";
+    if (reason.empty()) {
+        return "合约加载失败，" + consequence;
+    }
+    return std::format("合约加载失败（{}），{}", reason, consequence);
+}
+
 bool position_query_retry_allowed(int retries_done) noexcept {
     return retries_done >= 0 && retries_done < kPositionQueryMaxRetries;
 }

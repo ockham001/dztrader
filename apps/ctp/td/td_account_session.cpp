@@ -175,12 +175,26 @@ void AccountSession::set_query_send_hook(QuerySendFn hook) { query_send_hook_ = 
 
 void AccountSession::set_query_clock(QueryClockFn clock) { query_clock_ = std::move(clock); }
 
+void AccountSession::set_settlement_send_hook(SettlementSendFn hook) {
+    settlement_send_hook_ = std::move(hook);
+}
+
+void AccountSession::request_settlement_confirm_for_test() { req_settlement_confirm(); }
+
 QueryPacer::TimePoint AccountSession::query_now() const {
     return query_clock_ ? query_clock_() : QueryPacer::Clock::now();
 }
 
-void AccountSession::enter_ready_for_test(bool position_ok) {
-    // 测试夹具专用：从任意状态重建状态机并迁移到 Ready（纯函数，不触网 / 不落库 / 不推帧）。
+void AccountSession::advance_login_chain_for_test(TdState target) {
+    // 测试夹具专用：从 Idle 逐条重放生产登录链的状态迁移，停在 target。
+    // 纯状态机调用（不触网 / 不落库 / 不推帧）；迁移失败当场抛 —— 防止夹具与生产链漂移，
+    // 也防止用例静默测到错误状态。
+    const auto stop_at = [this, target](TdState reached) {
+        if (state_machine_.state() != reached) {
+            throw std::logic_error("advance_login_chain_for_test failed | reason=state_mismatch");
+        }
+        return reached == target;
+    };
     state_machine_ = TdStateMachine{};
     state_machine_.on_connect();
     state_machine_.on_front_connected();
@@ -189,13 +203,19 @@ void AccountSession::enter_ready_for_test(bool position_ok) {
     state_machine_.on_req_login();
     state_machine_.on_login_success(
         "test", trading_day_ > 0 ? format_day_text(trading_day_) : std::string(), "09:00:00");
+    if (stop_at(TdState::LoggedIn)) return;
     state_machine_.on_req_settlement_confirm();
+    if (stop_at(TdState::Confirming)) return;
     state_machine_.on_settlement_confirmed();
+    if (stop_at(TdState::LoadingInstruments)) return;
     state_machine_.on_instruments_loaded();
-    if (state_machine_.state() != TdState::Ready) {
-        // 防夹具与生产登录链漂移：迁移失败要让测试当场失败，而不是静默测到错误状态。
-        throw std::logic_error("enter_ready_for_test failed | reason=state_not_ready");
+    if (!stop_at(TdState::Ready)) {
+        throw std::logic_error("advance_login_chain_for_test failed | reason=unsupported_target");
     }
+}
+
+void AccountSession::enter_ready_for_test(bool position_ok) {
+    advance_login_chain_for_test(TdState::Ready);
     position_query_ok_ = position_ok;
     position_baseline_ready_ = position_ok;
 }
@@ -308,6 +328,11 @@ void AccountSession::expire_runtime_query_timeout_for_test() {
     // 生产路径由 TimerQueue 在 10s 后回调；测试直接注入同一收口逻辑（不 sleep）。
     if (runtime_account_request_id_ == 0) return;
     on_runtime_query_timeout(runtime_account_request_id_, QueryKind::TradingAccount);
+}
+
+void AccountSession::expire_settlement_confirm_timeout_for_test() {
+    // 生产路径由 TimerQueue 在 kSettlementConfirmTimeout 后回调；测试注入同一收口逻辑。
+    on_settlement_confirm_timeout();
 }
 
 void AccountSession::on_runtime_query_timeout(int request_id, QueryKind kind) {
@@ -506,6 +531,7 @@ void AccountSession::disconnect() {
     alive_token_.reset();
     cancel_connect_timer();
     cancel_login_timer();
+    cancel_settlement_confirm_timer();
     cancel_instruments_load_timer();
     cancel_position_query_retry_timer();
     cancel_position_query_timeout_timer();
@@ -548,6 +574,7 @@ void AccountSession::on_front_disconnected(int reason) {
     state_machine_.on_front_disconnected(reason);
     cancel_connect_timer();
     cancel_login_timer();
+    cancel_settlement_confirm_timer();
     cancel_instruments_load_timer();
     cancel_position_query_retry_timer();
     cancel_position_query_timeout_timer();
@@ -643,14 +670,26 @@ void AccountSession::on_rsp_user_login(const OnRspTdUserLoginField& f) {
 }
 
 void AccountSession::on_rsp_settlement_confirm(const OnRspSettlementInfoConfirmField& f) {
+    cancel_settlement_confirm_timer();
+    // #488 迟到响应窗口: 看门狗超时已把状态回滚到 LoggedIn (并通知了用户), 此后真响应
+    // 才到 —— 不能再驱动后续链条, 否则会发起一次没有收尾归属的合约查询, 把账户拖成
+    // 一个既非「已通知失败」也非「正常初始化」的中间态。
+    if (state_machine_.state() != TdState::Confirming) {
+        SPDLOG_WARN("td stale settlement confirm response ignored | account={} state={}",
+                    account_id_, magic_enum::enum_name(state_machine_.state()));
+        return;
+    }
     // I8: 统一 rsp_info 处理: 缺失视为失败 (与 on_rsp_authenticate / on_rsp_user_login 一致)
     if (!f.rsp_info || f.rsp_info->ErrorID != 0) {
         std::string err =
             f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg) : "rsp_info is null";
         SPDLOG_ERROR("td settlement confirm failed | account={} error_id={} error=\"{}\"",
                      account_id_, f.rsp_info ? f.rsp_info->ErrorID : -1, err);
-        // C6: 回退到 LoggedIn, 等待下个调度点重试 (不卡死在 Confirming)
-        state_machine_.on_settlement_confirm_failed(err);
+        // C6: 回退到 LoggedIn (#488: 同时把失败原因上浮 —— 回滚后的 LoggedIn 是正常中间态,
+        // 不上浮就是静默卡在 6/10)。
+        notify_settlement_confirm_failed(
+            f.rsp_info ? std::format("柜台拒绝，错误码 {}：{}", f.rsp_info->ErrorID, err)
+                       : std::string("柜台未返回错误信息"));
         return;
     }
     state_machine_.on_settlement_confirmed();
@@ -721,10 +760,12 @@ void AccountSession::on_rsp_qry_instrument(const OnRspQryInstrumentField& f) {
         bool failed = (f.rsp_info && f.rsp_info->ErrorID != 0) || !f.instrument;
         if (failed) {
             // 合约加载失败: 回退到 LoggedIn, 不进入 Ready (设计 §2.4.1).
-            std::string err = f.rsp_info ? dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg)
-                                         : "instrument is null on is_last";
-            cancel_instruments_load_timer();
-            state_machine_.on_instruments_load_failed(err);
+            // #488: 原因改中文 —— 它会进用户弹窗 (notify_instruments_load_failed)。
+            const std::string err =
+                f.rsp_info ? std::format("柜台拒绝，错误码 {}：{}", f.rsp_info->ErrorID,
+                                         dztrader::to_utf8_from_gbk(f.rsp_info->ErrorMsg))
+                           : std::string("最后一批响应未携带合约数据");
+            notify_instruments_load_failed(err);
             return;
         }
         // 合约加载成功: 停留在 LoadingInstruments, 发起持仓查询.
@@ -1301,6 +1342,57 @@ void AccountSession::notify_login_failed(const std::string& reason) {
     }
 }
 
+void AccountSession::notify_settlement_confirm_failed(const std::string& reason) {
+    // #488: 与 notify_login_failed 同结构 —— 先收定时器, 再转状态 (回滚到 LoggedIn), 再通知.
+    // 看门狗收口在失败出口统一取消: 每个调用点各写一遍只会漏一处 (此前 5 个调用点
+    // 全部丢弃状态机返回值, 失败无痕)。
+    cancel_settlement_confirm_timer();
+    // 状态机拒绝转移 (此刻不在 Confirming: 已断线 / 已登出 / 看门狗已收口后又来了迟到失败)
+    // 时不推送, 理由同 notify_login_failed.
+    auto notif = state_machine_.on_settlement_confirm_failed(reason);
+    if (!notif) {
+        return;
+    }
+    if (!notify_) {
+        return;  // 未注入 (测试/无 UI): 状态已回滚, 仅少一条通知, 不产生日志噪音
+    }
+    const std::string message = settlement_confirm_failed_message(reason);
+    try {
+        notify_(notif->level, message, notif->popup);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td settlement confirm failed notify failed | account={} error=\"{}\"",
+                     account_id_, e.what());
+    } catch (...) {
+        SPDLOG_ERROR(
+            "td settlement confirm failed notify failed | account={} error=unknown_exception",
+            account_id_);
+    }
+}
+
+void AccountSession::notify_instruments_load_failed(const std::string& reason) {
+    // #488: 同上 —— 收定时器 + 转状态 + 通知. on_instruments_load_failed 回滚到 LoggedIn
+    // (6/10「已登录」这个正常中间态), 且不会有下一次尝试 —— 不上浮就是静默卡住.
+    cancel_instruments_load_timer();
+    auto notif = state_machine_.on_instruments_load_failed(reason);
+    if (!notif) {
+        return;
+    }
+    if (!notify_) {
+        return;
+    }
+    const std::string message = instruments_load_failed_message(reason);
+    try {
+        notify_(notif->level, message, notif->popup);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td instruments load failed notify failed | account={} error=\"{}\"",
+                     account_id_, e.what());
+    } catch (...) {
+        SPDLOG_ERROR(
+            "td instruments load failed notify failed | account={} error=unknown_exception",
+            account_id_);
+    }
+}
+
 void AccountSession::req_login() {
     CThostFtdcReqUserLoginField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
@@ -1326,12 +1418,50 @@ void AccountSession::req_settlement_confirm() {
     CThostFtdcSettlementInfoConfirmField f{};
     copy_string(f.BrokerID, broker_id_.c_str(), true);
     fill_account_id(f.InvestorID, sizeof(f.InvestorID), account_id_);
-    int ret = api_->ReqSettlementInfoConfirm(&f, ++request_id_);
-    if (ret != 0) {
-        SPDLOG_ERROR("td req settlement confirm failed | account={} ret={}", account_id_, ret);
+    // #488: 先转状态再发送 —— 发送被拒与响应失败/超时从同一状态 (Confirming) 回滚,
+    // 失败出口因此唯一 (notify_settlement_confirm_failed)。此前 ret != 0 只记日志:
+    // 状态停在 LoggedIn、回调永不到来, 账户静默停在 6/10。
+    (void)state_machine_.on_req_settlement_confirm();
+    if (state_machine_.state() != TdState::Confirming) {
+        // on_req_settlement_confirm() 只在状态非 LoggedIn 时拒绝转移 (已由状态机记 WARN)。
+        // 此时不发送, 免得响应回来没有归属。
+        SPDLOG_WARN("td settlement confirm skipped | account={} state={}", account_id_,
+                    magic_enum::enum_name(state_machine_.state()));
         return;
     }
-    state_machine_.on_req_settlement_confirm();
+    // 测试注入的发送钩子优先 (空 = 真实 api_); 与 set_query_send_hook 同形态 ——
+    // 没有它, 本函数的看门狗排定与 ret != 0 回滚只能靠读代码确认 (失效测试形态)。
+    int ret = settlement_send_hook_ ? settlement_send_hook_(f, ++request_id_)
+                                    : api_->ReqSettlementInfoConfirm(&f, ++request_id_);
+    if (ret != 0) {
+        SPDLOG_ERROR("td req settlement confirm failed | account={} ret={}", account_id_, ret);
+        notify_settlement_confirm_failed(
+            std::format("发送结算单确认请求被柜台拒绝（ret={}）", ret));
+        return;
+    }
+    // #488 看门狗: 柜台不回 OnRspSettlementInfoConfirm 时状态机会永久停在 Confirming (7/10),
+    // 而本进程不自动重试登录链 —— 没有看门狗就是静默卡死。60s 的依据见
+    // kSettlementConfirmTimeout (实测该响应 13.5s / 4.3s, 留 4.4 倍余量)。
+    uint64_t gen = generation_;
+    settlement_confirm_timer_id_ = timer_queue_.schedule_after(
+        kSettlementConfirmTimeout, [this, weak = std::weak_ptr<void>(alive_token_), gen]() {
+            // 未跟踪的回调先查存活令牌: logout 会 erase 会话, 不查就 UAF。
+            if (weak.expired()) return;
+            if (gen != generation_) return;  // 断线重连后旧代际的回调作废
+            on_settlement_confirm_timeout();
+        });
+}
+
+void AccountSession::on_settlement_confirm_timeout() {
+    // 生产路径由 TimerQueue 在 kSettlementConfirmTimeout 后回调; 测试经
+    // expire_settlement_confirm_timeout_for_test 直接注入同一收口 (不 sleep)。
+    // 迟到超时 (响应已到 / 已断线 / 已登出) 一律忽略: 状态已离开 Confirming,
+    // 此时回滚与弹窗都会对不上界面状态。
+    if (state_machine_.state() != TdState::Confirming) return;
+    SPDLOG_ERROR("td settlement confirm timeout | account={} timeout_s={}", account_id_,
+                 kSettlementConfirmTimeout.count());
+    notify_settlement_confirm_failed(
+        std::format("{} 秒内未收到柜台的结算单确认响应", kSettlementConfirmTimeout.count()));
 }
 
 void AccountSession::req_qry_instrument() {
@@ -1369,9 +1499,9 @@ void AccountSession::req_qry_instrument() {
             });
             return;
         }
-        // C2: 非 -3 错误, 调 on_instruments_load_failed 回退到 LoggedIn (设计 §2.4.1)
+        // C2: 非 -3 错误, 回退到 LoggedIn (设计 §2.4.1); #488 失败原因上浮 UI。
         SPDLOG_ERROR("td req qry instrument failed | account={} ret={}", account_id_, ret);
-        state_machine_.on_instruments_load_failed(std::format("ReqQryInstrument ret={}", ret));
+        notify_instruments_load_failed(std::format("发送合约查询请求被柜台拒绝（ret={}）", ret));
         return;
     }
     note_query_sent();
@@ -1385,7 +1515,8 @@ void AccountSession::req_qry_instrument() {
                 SPDLOG_ERROR("td instruments load timeout | account={}", account_id_);
                 note_query_done();
                 instrument_query_request_id_ = 0;
-                state_machine_.on_instruments_load_failed("query timeout 5min");
+                // #488: 原因改中文 —— 它会进用户弹窗。
+                notify_instruments_load_failed("查询 5 分钟未收到最后一批响应");
             }
         });
 }
@@ -1645,6 +1776,13 @@ void AccountSession::cancel_login_timer() {
     if (login_timer_id_ != 0) {
         timer_queue_.cancel(login_timer_id_);
         login_timer_id_ = 0;
+    }
+}
+
+void AccountSession::cancel_settlement_confirm_timer() {
+    if (settlement_confirm_timer_id_ != 0) {
+        timer_queue_.cancel(settlement_confirm_timer_id_);
+        settlement_confirm_timer_id_ = 0;
     }
 }
 
@@ -2638,9 +2776,10 @@ void AccountSession::on_rsp_error(const OnRspErrorTdField& f) {
                          account_id_, error_id, error_msg);
             note_query_done();
             instrument_query_request_id_ = 0;
-            cancel_instruments_load_timer();
-            state_machine_.on_instruments_load_failed(
-                std::format("OnRspError error_id={}", error_id));
+            // #488: on_instruments_load_failed 的通知从 notify_instruments_load_failed 统一上浮;
+            // 原因用柜台原文 (中文弹窗)。
+            notify_instruments_load_failed(
+                std::format("柜台返回错误，错误码 {}：{}", error_id, error_msg));
             return;
         case QueryErrorTarget::Position:
             if (!position_query_in_flight_ || finalizer_.phase() != Phase::kQueryPosition) {
