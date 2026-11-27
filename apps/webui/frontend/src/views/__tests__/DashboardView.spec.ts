@@ -140,6 +140,24 @@ function fundRow(wrapper: Awaited<ReturnType<typeof mountDashboard>>, accountId:
   return row
 }
 
+/**
+ * 登记一个交易账户并给进度（#509：资金面板状态列读 `tdAccounts` 行镜像，
+ * 与交易账户页同一个 StatusIndicator；不再由 `online_accounts` 派生「在线/离线」）。
+ *
+ * 必须先于挂载调用：仪表盘挂载时 `tdAccountsStore.init()` 拉注册表，进度镜像随 Pinia
+ * 单例一起生效。
+ */
+function seedTdAccountStatus(
+  accountId: string,
+  progress: { min: number; max: number; current: number; desc?: string },
+): void {
+  vi.mocked(tdApi.listAccounts).mockResolvedValue({
+    available: true,
+    accounts: [{ account_id: accountId, account_name: '', gateway: 'dztd_ctp', enabled: true }],
+  })
+  useProgressStore().applyProgress(accountId, progress)
+}
+
 describe('DashboardView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -511,6 +529,8 @@ describe('DashboardView', () => {
         withdraw: 1234.5,
       }),
     ]))
+    // 状态列读 tdAccounts 行镜像：acc_a 已登录（progress 到 max）
+    seedTdAccountStatus('acc_a', { min: 0, max: 10, current: 10 })
     const w = await mountDashboard()
 
     for (const header of ['账户', '状态', '权益', '可用', '冻结', '保证金', '手续费', '可取', '出入金', '数据日期']) {
@@ -520,7 +540,11 @@ describe('DashboardView', () => {
     const row = fundRow(w, 'acc_a')
     const cells = row.findAll('td').map(td => td.text())
     // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期 | 操作
-    expect(cells[1]).toBe('在线')
+    // 状态列 = StatusIndicator（#509）：徽章文案取自 `.ds-status__text`（单元格 text 会把
+    // 隐藏的进度文案也算进来，不能直接断言整格 text）
+    const status = row.findAll('td')[1].find('[data-test="fund-status"]')
+    expect(status.classes()).toContain('ds-status--done')
+    expect(status.find('.ds-status__text').text()).toBe('已登录')
     expect(cells.slice(2)).toEqual([
       '1,234,567.89',
       '850,000.00',
@@ -536,24 +560,62 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('离线账户显示「离线」；多账户锚点日不同时面板级日期标签全部列出', async () => {
+  it('状态列 = 登录态（已登录/未登录），界面不再出现「在线/离线」；多账户锚点日不同时全部列出', async () => {
     vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
       [
         account({ account_id: 'acc_a', date: '20260808' }),
         account({ account_id: 'acc_offline', date: '20260807', seq: 11 }),
       ],
       { online_accounts: ['acc_a'] }))
+    // 只有 acc_a 有进度镜像 → 已登录；acc_offline 没有行镜像 → 未登录
+    seedTdAccountStatus('acc_a', { min: 0, max: 10, current: 10 })
     const w = await mountDashboard()
 
-    expect(fundRow(w, 'acc_a').text()).toContain('在线')
-    expect(fundRow(w, 'acc_offline').text()).toContain('离线')
-    // 状态标签样式与文案同源（同一在线谓词）：在线 = success、离线 = danger
-    expect(fundRow(w, 'acc_a').findAll('td')[1].find('.ds-tag').classes()).toContain('ds-tag--success')
-    expect(fundRow(w, 'acc_offline').findAll('td')[1].find('.ds-tag').classes()).toContain('ds-tag--danger')
+    const online = fundRow(w, 'acc_a').find('[data-test="fund-status"]')
+    expect(online.classes()).toContain('ds-status--done')
+    expect(online.find('.ds-status__text').text()).toBe('已登录')
+    const notLoggedIn = fundRow(w, 'acc_offline').find('[data-test="fund-status"]')
+    expect(notLoggedIn.classes()).toContain('ds-status--idle')
+    expect(notLoggedIn.find('.ds-status__text').text()).toBe('未登录')
+    // 「在线/离线」这层词不再出现在界面上（它与登录态是同一件事的两种说法，#509）
+    expect(w.text()).not.toContain('在线')
+    expect(w.text()).not.toContain('离线')
     expect(w.get('[data-test="fund-date-label"]').text())
       .toBe('数据日期 2026-08-07 / 2026-08-08')
     // 行内数据日期是该账户锚点日，不是信封 trading_day
     expect(fundRow(w, 'acc_offline').find('[data-test="fund-row-date"]').text()).toBe('2026-08-07')
+
+    w.unmount()
+  })
+
+  it('资金行失败态（last_error）显示 ds-status--failed，不把失败说成「未登录」', async () => {
+    vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
+      [account({ account_id: 'acc_a' })],
+      { online_accounts: [] }))
+    vi.mocked(tdApi.listAccounts).mockResolvedValue({
+      available: true,
+      accounts: [{ account_id: 'acc_a', account_name: '', gateway: 'dztd_ctp', enabled: true }],
+    })
+    // 失败态停在中间值（ADR 0059）：进度数值只会说「进行中」，失败结论来自 last_error/state
+    useTdAccountsStore().applyTdStatus('acc_a', {
+      account_id: 'acc_a',
+      state: 'LoginFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '登录失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 5,
+      last_error: { code: 'login_rejected', message: '', error_id: 3, timestamp: 1_700_000_000 },
+      ext: {},
+    })
+    useProgressStore().applyProgress('acc_a', { min: 0, max: 10, current: 5, desc: '登录失败' })
+
+    const w = await mountDashboard()
+
+    const status = fundRow(w, 'acc_a').find('[data-test="fund-status"]')
+    expect(status.classes()).toContain('ds-status--failed')
+    expect(status.find('.ds-status__text').text()).toBe('失败')
 
     w.unmount()
   })
@@ -566,7 +628,9 @@ describe('DashboardView', () => {
 
     const row = fundRow(w, 'acc_offline')
     const cells = row.findAll('td').map(td => td.text())
-    expect(cells[1]).toBe('离线')
+    // 状态列无行镜像 → 未登录（不是「离线」：那是刷新按钮的数据新鲜度语义）
+    const status = row.findAll('td')[1].find('[data-test="fund-status"]')
+    expect(status.find('.ds-status__text').text()).toBe('未登录')
     // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期 | 操作
     expect(cells.slice(2)).toEqual([
       '—', '—', '—', '—', '—', '—', '入 — / 出 —', '—', '',

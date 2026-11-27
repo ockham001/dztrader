@@ -104,8 +104,8 @@ export const useMarketSourcesStore = defineStore('marketSources', () => {
         sysVersion: mdStatus?.sysVersion ?? '',
         loginTime: mdStatus?.loginTime ?? '',
         // date 用 || 非 ??: parseMdStatus 对类型非法回落空串（非 nullish），
-        // ?? 不会触发回落；|| 使空串也显示 '--'（Idle 清空语义下 UI 正确显示占位符）
-        date: mdStatus?.date || '--',
+        // ?? 不会触发回落；|| 使空串也显示 '—'（Idle 清空语义下 UI 正确显示占位符）
+        date: mdStatus?.date || '—',
         subscribeCount: mdStatus?.subscribeCount ?? 0,
         subscribeTotal: mdStatus?.subscribeTotal ?? 0,
         // 契约 md-status 失败语义：last_error 持久展示「上次失败原因+时间」（登录成功后清空）

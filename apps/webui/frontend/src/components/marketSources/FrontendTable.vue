@@ -162,7 +162,7 @@ function onFrontendAddressBlur(
                 @blur="onFrontendAddressBlur(src.id, broker.name, fe.address, $event)"
               >
             </td>
-            <td><code class="mono front-table__label">{{ fe.label || '--' }}</code></td>
+            <td><code class="mono front-table__label">{{ fe.label || '—' }}</code></td>
             <td class="front-table__cell--right">
               <button
                 class="ds-btn ds-btn--tertiary ds-btn--sm ds-btn--icon ds-btn--danger-icon"

@@ -39,6 +39,37 @@ export function tdSessionState(row: {
   )
 }
 
+/** 交易登录链的四个失败态（ADR 0059 决策 1：失败停在失败阶段，不回退到上一格） */
+const TD_FAILED_STATES: readonly string[] = [
+  'AuthFailed',
+  'LoginFailed',
+  'SettlementConfirmFailed',
+  'InstrumentsLoadFailed',
+]
+
+/** 细状态是否属于四个登录链失败态（ADR 0059 决策 1；`null`/未到达/未知值都返回 false） */
+export function isTdFailureState(state: TdState | string | null | undefined): boolean {
+  return state !== null && state !== undefined && TD_FAILED_STATES.includes(state)
+}
+
+/**
+ * 是否处于「失败」态（#509 状态列）：`last_error` 非空 **或** 细状态是四个失败态之一。
+ *
+ * 为什么不从 `current/max` 推：失败态停在 3/5/7/8（ADR 0059 决策 1），数值映射只会说
+ * 「进行中」；失败结论必须来自状态帧（`state`）与 `last_error`。判定放这里而不是组件里：
+ * 交易账户页与仪表盘资金面板共用同一结论（与 canLoginTd / canLogoutTd 同处）。
+ *
+ * 覆盖 `connect_timeout`：它没有失败态（账户回到 `Idle`，ADR 0059 决策 7），但 `last_error`
+ * 保留了这次失败——状态列显示「失败」+「上次失败：连接超时」，不说成「登录失败」。
+ */
+export function isTdAccountFailed(row: {
+  lastError: object | null
+  status: { state?: TdState | string } | null
+}): boolean {
+  if (row.lastError !== null && row.lastError !== undefined) return true
+  return isTdFailureState(row.status?.state)
+}
+
 /** 登录按钮可用：仅完全未登录（这是「一个按钮只有一个意思」的落点） */
 export function canLoginTd(row: Parameters<typeof tdSessionState>[0]): boolean {
   return tdSessionState(row) === 'absent'

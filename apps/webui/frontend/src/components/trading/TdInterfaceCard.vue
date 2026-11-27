@@ -6,8 +6,8 @@
  * 一张卡片 = 一个交易接口进程（`dztd_*`）+ 其内部账户表：
  * - 头部：显示名 + 进程名 + 进程状态（色语义沿用 processNaming/useProcessState）+
  *   「启动进程」（仅非 Running 且 admin 可见，调 `start` 恢复；ADR 0053 禁止删除重加）；
- * - 体：账户表（账户 ID / 启用 / 连接状态含登录登出 / 交易日 / 登录时间 / 进度 / 操作）+
- *   卡片内「添加账户」；接口可零账户运行（空态提示）；
+ * - 体：账户表（账户名称 / 启用 / 状态 / 交易日 / 登录时间 / 操作；#509 状态列 = 共享
+ *   StatusIndicator，会话与配置动作同处「操作」列）+ 卡片内「添加账户」；接口可零账户运行（空态提示）；
  * - 底部：「删除交易接口」整行 danger 按钮，二次确认（停止进程 + 移除启动配置 + 不可撤销）；
  *   卡片内仍有账户时前端禁用（title「先删除账户」），权威 guard 在服务端 409。
  *
@@ -17,6 +17,7 @@
 import { computed, ref } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
+import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import TdAccountFormModal from '@/components/trading/TdAccountFormModal.vue'
 import type { TdAccountFormValue } from '@/components/trading/TdAccountFormModal.vue'
 import {
@@ -27,7 +28,12 @@ import {
   type TdLastErrorView,
   type TdInterfaceView,
 } from '@/stores/tdAccounts'
-import { canLoginTd, canLogoutTd } from '@/composables/tdAccountSession'
+import {
+  canLoginTd,
+  canLogoutTd,
+  isTdFailureState,
+  tdSessionState,
+} from '@/composables/tdAccountSession'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 import { formatTdDate } from '@/composables/tdPositionView'
@@ -348,11 +354,59 @@ async function confirmRemoveInterface(): Promise<void> {
   }
 }
 
-// ===== 展示辅助（细状态/交易日/登录时间/进度；口径同 #251 页面）=====
+// ===== 展示辅助（状态/交易日/登录时间；口径同 #251 页面）=====
 
-/** 细状态文案（未上报 = 占位；契约 td-status §2.2 的 15 态映射） */
-function statusText(row: TdAccountRow): string {
-  return tdStateText(row.status?.state ?? null)
+/**
+ * 状态列 = `StatusIndicator`（#509）：登录中显进度条 + 阶段文案，未登录/已登录/失败显徽章，
+ * 与仪表盘资金面板同组件同判定（ADR 0051 的 md/td 一致性要求）。
+ *
+ * 两个覆盖（#509 2d）：网关进程非 Running 时一律「未启动」——进程没跑不可能有可用会话，
+ * 即使 progress 镜像还留着上一次会话的旧值；从未收到状态帧（无 progress）也是「未启动」，
+ * 而不是把「没有数据」说成「未登录」。
+ *
+ * `desc` 只在**建立中**传：端点态的徽章要说端点词（「已登录」/「未登录」），而 td 的进度
+ * desc 在端点处是「就绪」/「未启动」——传进去会顶掉徽章文案（组件里 desc 优先），把
+ * 「已登录」说成「就绪」。建立中的 desc 是真阶段文案（「用户登录...」「加载合约...」）。
+ */
+function statusIndicatorProps(row: TdAccountRow): {
+  current: number
+  max: number
+  min: number
+  desc?: string
+  failed: boolean
+  idleText: string
+} {
+  if (!row.gatewayRunning) {
+    return { current: 0, max: 1, min: 0, failed: row.isFailed, idleText: '未启动' }
+  }
+  return {
+    current: row.progress?.current ?? 0,
+    max: row.progress?.max ?? 1,
+    min: row.progress?.min ?? 0,
+    desc: tdSessionState(row) === 'forming' ? row.progress?.desc : undefined,
+    failed: row.isFailed,
+    idleText: row.progress ? '未登录' : '未启动',
+  }
+}
+
+/** 状态列 tooltip：只解释「为什么是未启动」；失败由徽章 + 「上次失败」行自解释 */
+function statusTitle(row: TdAccountRow): string | undefined {
+  if (row.isFailed) return undefined
+  if (!row.gatewayRunning) return '交易接口进程未运行，无法登录'
+  return row.progress ? undefined : '尚未收到该账户的状态上报'
+}
+
+/**
+ * 状态列次级行（#509 2a）：失败态保留**阶段文案**——徽章只说「失败」，停在哪一段由这一行
+ * 回答（`progress.desc` 优先，回落细状态中文文案）。
+ *
+ * 判据用细状态而不是 `row.isFailed`：`connect_timeout` 会留下 `last_error` 但账户回到
+ * `Idle`（ADR 0059 决策 7），它不是失败态、没有「停在哪一段」可展示——原因由「上次失败」行承载。
+ * 建立中的 desc 由 StatusIndicator 自己的进度文案承载，不再重复一行。
+ */
+function statusMetaText(row: TdAccountRow): string {
+  if (!isTdFailureState(row.status?.state)) return ''
+  return row.progress?.desc || tdStateText(row.status?.state)
 }
 
 // 契约 td-status §2.5 前端义务③：卡片持久展示「上次失败：message + 时间」。
@@ -382,14 +436,6 @@ function lastErrorText(e: TdLastErrorView): string {
  */
 function lastErrorTitle(e: TdLastErrorView): string | undefined {
   return e.errorId > 0 ? `CTP 错误码：${e.errorId}` : undefined
-}
-
-/** 状态样式：Ready 正常、Idle 中性、其余中间态提示（与进程状态色口径一致） */
-function statusClass(row: TdAccountRow): string {
-  const state = row.status?.state
-  if (state === 'Ready') return 'td-card__state--ok'
-  if (state === undefined || state === 'Idle') return 'td-card__state--idle'
-  return 'td-card__state--busy'
 }
 
 // ===== 会话控制（ADR 0051 / 契约 td-connection / 契约 rest §2.9.10）=====
@@ -456,21 +502,6 @@ function loginTimeText(row: TdAccountRow): string {
   const text = row.status?.login_time ?? ''
   return text === '' ? TD_UNAVAILABLE_TEXT : text
 }
-
-/** 进度：以契约 progress 为唯一入口（契约 td-status §2.1 注）；无进度时占位 */
-function progressText(row: TdAccountRow): string {
-  const p = row.progress
-  if (!p) return TD_UNAVAILABLE_TEXT
-  const desc = p.desc ? `${p.desc} · ` : ''
-  return `${desc}${p.current}/${p.max}`
-}
-
-/** 进度条宽度（不确定进度 max<=min 时给 0） */
-function progressPercent(row: TdAccountRow): number {
-  const p = row.progress
-  if (!p || p.max <= p.min) return 0
-  return Math.min(100, Math.max(0, ((p.current - p.min) / (p.max - p.min)) * 100))
-}
 </script>
 
 <template>
@@ -535,10 +566,9 @@ function progressPercent(row: TdAccountRow): number {
             <tr>
               <th>账户名称</th>
               <th>启用</th>
-              <th>连接状态</th>
-              <th>交易日</th>
-              <th>登录时间</th>
-              <th>进度</th>
+              <th class="td-card__col-status">状态</th>
+              <th class="td-card__num td-card__col-day">交易日</th>
+              <th class="td-card__num td-card__col-time">登录时间</th>
               <th class="td-card__col-actions">操作</th>
             </tr>
           </thead>
@@ -568,11 +598,23 @@ function progressPercent(row: TdAccountRow): number {
                   {{ row.enabled ? '已启用' : '已禁用' }}
                 </span>
               </td>
-              <td>
-                <span class="td-card__state" :class="statusClass(row)" data-test="td-account-state">
-                  {{ statusText(row) }}
-                </span>
-                <div v-if="row.status?.progress_desc" class="td-card__account-meta">{{ row.status.progress_desc }}</div>
+              <td class="td-card__col-status">
+                <div class="td-card__status" :title="statusTitle(row)" data-test="td-account-status">
+                  <StatusIndicator
+                    v-bind="statusIndicatorProps(row)"
+                    :mini="true"
+                    loading-text="登录中"
+                    done-text="已登录"
+                    data-test="td-account-state"
+                  />
+                </div>
+                <!-- 失败态：保留阶段文案作为次级信息（#509 2a）——徽章只说「失败」，
+                     具体停在哪一段（认证失败/结算单确认失败…）由这一行回答 -->
+                <div
+                  v-if="statusMetaText(row)"
+                  class="td-card__account-meta"
+                  data-test="td-account-status-desc"
+                >{{ statusMetaText(row) }}</div>
                 <!-- 契约 td-status §2.5 前端义务③：持久展示上次登录链失败的原因 + 时间。
                      失败停在失败态后 state/progress 都不会再变，这一行是用户事后回看的唯一入口；
                      原因空时按 code 映射中文，绝不展示 snake_case 机器码。 -->
@@ -582,8 +624,14 @@ function progressPercent(row: TdAccountRow): number {
                   :title="lastErrorTitle(row.lastError)"
                   :data-test="`td-last-error-${row.account_id}`"
                 >{{ lastErrorText(row.lastError) }}</div>
-                <!-- 会话控制（ADR 0051）：登录仅在完全未登录可用；登出在任意非未登录态可用（含强制中断） -->
-                <div class="td-card__session-actions">
+              </td>
+              <td class="td-card__mono td-card__num td-card__col-day">{{ tradingDayText(row) }}</td>
+              <td class="td-card__mono td-card__num td-card__col-time">{{ loginTimeText(row) }}</td>
+              <td class="td-card__col-actions">
+                <div class="td-card__row-actions">
+                  <!-- 会话控制（ADR 0051 决策 2：双按钮固定位置、始终渲染只切 disabled）：
+                       登录仅在完全未登录可用，登出在任意非未登录态可用（含强制中断）。
+                       #509：从状态列收进「操作」列——操作紧挨它影响的账户行，与配置三键同行右对齐 -->
                   <button
                     class="ds-btn ds-btn--sm ds-btn--primary"
                     type="button"
@@ -608,18 +656,8 @@ function progressPercent(row: TdAccountRow): number {
                     <span v-if="store.sessionPending(row.account_id, 'logout')" class="ds-btn__spinner"></span>
                     {{ store.sessionPending(row.account_id, 'logout') ? '登出中' : '登出' }}
                   </button>
-                </div>
-              </td>
-              <td class="td-card__mono">{{ tradingDayText(row) }}</td>
-              <td class="td-card__mono">{{ loginTimeText(row) }}</td>
-              <td class="td-card__progress-cell">
-                <span class="td-card__mono">{{ progressText(row) }}</span>
-                <div class="td-card__progress-track" role="presentation">
-                  <div class="td-card__progress-fill" :style="{ width: `${progressPercent(row)}%` }"></div>
-                </div>
-              </td>
-              <td class="td-card__col-actions">
-                <div class="td-card__row-actions">
+                  <!-- 会话动作与配置动作两组之间：1px 竖分隔（不超过 16px，与行内按钮等高内缩） -->
+                  <span class="td-card__actions-divider" aria-hidden="true"></span>
                   <button
                     class="ds-btn ds-btn--tertiary ds-btn--icon ds-btn--sm"
                     type="button"
@@ -800,6 +838,13 @@ function progressPercent(row: TdAccountRow): number {
   flex-wrap: wrap;
 }
 
+/* 状态列（#509）：StatusIndicator 单独一行，次级文案（阶段 / 上次失败）排在它下面 */
+.td-card__status {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 卡片头的进程状态文案（色由状态推导内联注入；状态列不再用它，见 #509） */
 .td-card__state {
   font-size: var(--body-sm-font-size);
   color: var(--text-secondary);
@@ -838,6 +883,24 @@ function progressPercent(row: TdAccountRow): number {
 }
 
 .td-card__col-actions {
+  text-align: right;
+}
+
+/* 状态 / 数值列的固定下限（#509 2c）：进度条 + 文案、YYYY-MM-DD 与 HH:MM:SS 都不逐字换行 */
+.td-card__col-status {
+  min-width: 160px;
+}
+
+.td-card__col-day {
+  min-width: 88px;
+}
+
+.td-card__col-time {
+  min-width: 72px;
+}
+
+/* 数值型列右对齐（DESIGN.md「表格」：数字列右对齐 + 等宽数字，与表头一致） */
+.td-card__num {
   text-align: right;
 }
 
@@ -883,29 +946,9 @@ function progressPercent(row: TdAccountRow): number {
   color: var(--text-tertiary);
 }
 
-/* 上次失败（契约 td-status §2.5）：持久告警色，与「进度描述」这类中性元信息区分开 */
+/* 上次失败（契约 td-status §2.5）：持久告警色，与「阶段文案」这类中性元信息区分开 */
 .td-card__account-meta--warn {
   color: var(--status-warning-default);
-}
-
-.td-card__state--ok {
-  color: var(--status-success-default);
-}
-
-.td-card__state--busy {
-  color: var(--status-warning-default);
-}
-
-.td-card__state--idle {
-  color: var(--text-tertiary);
-}
-
-/* 会话控制双按钮（ADR 0051）：操作紧挨它影响的状态，不混进右侧配置操作 */
-.td-card__session-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--spacer-8);
-  margin-top: var(--spacer-8);
 }
 
 .td-card__mono {
@@ -913,29 +956,22 @@ function progressPercent(row: TdAccountRow): number {
   white-space: nowrap;
 }
 
-.td-card__progress-cell {
-  min-width: 140px;
-}
-
-.td-card__progress-track {
-  height: 4px;
-  margin-top: var(--spacer-4);
-  border-radius: var(--radius-full);
-  background: var(--bg-overlay-l2);
-  overflow: hidden;
-}
-
-.td-card__progress-fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  background: var(--status-primary-default);
-  transition: width 120ms linear;
-}
-
 .td-card__row-actions {
   display: flex;
+  align-items: center;
   gap: var(--spacer-4);
   justify-content: flex-end;
+}
+
+/* 会话动作（文字按钮）与配置动作（图标按钮）之间的 1px 分隔（#509 2b）：
+   高度不超过 16px，沿按钮行垂直居中，两侧留 2px */
+.td-card__actions-divider {
+  flex: none;
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  margin: 0 var(--spacer-2);
+  background: var(--border-neutral-l1);
 }
 
 .td-card__empty {

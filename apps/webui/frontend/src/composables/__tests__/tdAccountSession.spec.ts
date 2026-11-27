@@ -5,6 +5,8 @@ import {
   tdSessionState,
   canLoginTd,
   canLogoutTd,
+  isTdAccountFailed,
+  isTdFailureState,
 } from '../tdAccountSession'
 import { sessionPendingClear } from '../sessionProgress'
 
@@ -97,6 +99,40 @@ describe('tdSessionState / canLoginTd / canLogoutTd（账户行）', () => {
 
     expect(canLoginTd(ready)).toBe(false)
     expect(canLogoutTd(ready)).toBe(true)
+  })
+})
+
+describe('isTdFailureState / isTdAccountFailed（#509 状态列失败结论）', () => {
+  it('四个登录链失败态为 true；正常态/中间态/未知/缺失为 false', () => {
+    for (const state of ['AuthFailed', 'LoginFailed', 'SettlementConfirmFailed',
+      'InstrumentsLoadFailed'] as const) {
+      expect(isTdFailureState(state)).toBe(true)
+    }
+    for (const state of ['Idle', 'Connecting', 'Authenticating', 'LoggingIn', 'LoggedIn',
+      'Ready', 'Disconnected', 'UnknownFutureState'] as const) {
+      expect(isTdFailureState(state)).toBe(false)
+    }
+    expect(isTdFailureState(null)).toBe(false)
+    expect(isTdFailureState(undefined)).toBe(false)
+  })
+
+  it('last_error 非空即失败（connect_timeout 没有失败态，但它是一次真实失败）', () => {
+    expect(isTdAccountFailed({
+      lastError: { code: 'connect_timeout' },
+      status: { state: 'Idle' },
+    })).toBe(true)
+  })
+
+  it('无 last_error 时按细状态判失败（失败态停在中间值，数值映射看不出失败）', () => {
+    expect(isTdAccountFailed({
+      lastError: null,
+      status: { state: 'LoginFailed' },
+    })).toBe(true)
+  })
+
+  it('无 last_error 且状态正常 → 不失败；状态镜像未到达也不算失败（不能把「没有数据」说成失败）', () => {
+    expect(isTdAccountFailed({ lastError: null, status: { state: 'Ready' } })).toBe(false)
+    expect(isTdAccountFailed({ lastError: null, status: null })).toBe(false)
   })
 })
 

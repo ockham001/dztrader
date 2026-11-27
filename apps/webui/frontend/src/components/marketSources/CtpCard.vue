@@ -310,9 +310,9 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           <span class="card-section__title">网关信息</span>
         </div>
         <div class="gateway-info">
-          <span class="gateway-info__item">API 版本：<span>{{ src.apiVersion || '--' }}</span></span>
-          <span class="gateway-info__item">系统版本：<span>{{ src.sysVersion || '--' }}</span></span>
-          <span class="gateway-info__item">登录时间：<span>{{ src.loginTime || '--' }}</span></span>
+          <span class="gateway-info__item">API 版本：<span>{{ src.apiVersion || '—' }}</span></span>
+          <span class="gateway-info__item">系统版本：<span>{{ src.sysVersion || '—' }}</span></span>
+          <span class="gateway-info__item">登录时间：<span>{{ src.loginTime || '—' }}</span></span>
         </div>
       </div>
 
@@ -397,7 +397,7 @@ function onSubParamBlur(s: MarketSourceView, key: SubParamKey, event: Event): vo
           </div>
           <div class="gateway-info">
             <span class="gateway-info__item" title="仅可通过配置文件修改，进程启动前生效（契约 shm）">
-              页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '--' }}</span>
+              页大小：<span>{{ shmCfg ? `${shmCfg.page_size_mb} MB` : '—' }}</span>
             </span>
             <label class="gateway-info__item" :for="fieldId('shm-check-interval')">周期检查间隔(分)：
               <input :id="fieldId('shm-check-interval')" class="shm-num-input" type="number" :value="shmCfg?.check_interval_min ?? ''"

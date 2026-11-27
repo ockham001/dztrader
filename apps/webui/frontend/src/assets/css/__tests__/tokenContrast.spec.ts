@@ -601,21 +601,12 @@ const KNOWN_DANGLING: Record<string, { files: string[]; ticket: number | null; w
     ticket: null,
     why: '#349 未覆盖（原登记号已失效，改派待定）：滚动条滑块色，靠 fallback rgba(128,128,128,.4)；icon 体系只到 tertiary',
   },
-  // 死代码形态：components.css 有一段 custom-color 覆盖块，但 StatusIndicator 从不注入
-  // 这两个属性、也不加 .ds-status--custom-color 类（注释声称 JS 会加，实际无人加）。
-  '--ds-color': {
-    files: ['assets/css/components.css'],
-    ticket: null,
-    why: 'components.css 的 ds-status--custom-color 覆盖块未接线（StatusIndicator 不注入），属死代码，不在本波范围',
-  },
-  '--ds-color-bg': {
-    files: ['assets/css/components.css'],
-    ticket: null,
-    why: '同上，custom-color 覆盖块的第二个变量',
-  },
   // #349 已修并删除的登记：`--border-default`（topbar 分隔线）—— 该 token 从未定义，
   // 实际一直落到 fallback 的**背景** token；#349 把它直接改成 `--border-neutral-l1`，
   // 悬空引用随之消失（基线只能收缩，不能腐化）。
+  // #509 已修并删除的登记：`--ds-color` / `--ds-color-bg` —— components.css 的
+  // `.ds-status--custom-color` 覆盖块从未接线（组件不注入这两个属性、也不加该类），
+  // 随 StatusIndicator 四态重定色一并删除，悬空引用消失。
 }
 
 /** 从一段文本里收集 var(--x)，累积到 out（value → 引用点列表） */
