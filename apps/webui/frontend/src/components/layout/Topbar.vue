@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import ThemeDropdown from './ThemeDropdown.vue'
 import TopbarMetricBadge from './TopbarMetricBadge.vue'
+import NotifyDrawer from '@/components/shared/NotifyDrawer.vue'
 import { UNAVAILABLE_TEXT, formatAge } from '@/composables/format'
 import { processCategory, type ProcessCategory } from '@/composables/processNaming'
 import { clockProbeAgeSec, resolveClockThresholds } from '@/composables/sysmonClock'
@@ -17,8 +18,14 @@ import {
 import { useWebSocket } from '@/composables/wsClient'
 import { useProcessStore } from '@/stores/process'
 import { useSysmonStore } from '@/stores/sysmon'
+import { useNotifyStore } from '@/stores/notify'
 
 const emit = defineEmits<{ toggleMobile: [] }>()
+
+// 消息中心入口（ADR 0060 决策 6）：未读徽标 + 点击打开「查看全部」抽屉。
+// 未读数纯前端内存（已读不是运维刚需，不为它加后端字段）。
+const notifyStore = useNotifyStore()
+const notifyDrawerOpen = ref(false)
 
 // WebSocket connection status
 const { connectionState } = useWebSocket()
@@ -300,16 +307,72 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
     </div>
 
     <div class="topbar__right">
+      <!-- 消息中心入口（ADR 0060 决策 6）：未读时显示计数徽标 -->
+      <button
+        type="button"
+        class="topbar__notify"
+        :aria-label="notifyStore.unreadCount > 0
+          ? `消息中心，${notifyStore.unreadCount} 条未读`
+          : '消息中心'"
+        data-test="topbar-notify"
+        @click="notifyDrawerOpen = true"
+      >
+        <Icon name="Tips" :size="16" />
+        <span
+          v-if="notifyStore.unreadCount > 0"
+          class="topbar__notify-badge"
+          data-test="topbar-notify-badge"
+        >{{ notifyStore.unreadCount > 99 ? '99+' : notifyStore.unreadCount }}</span>
+      </button>
       <span class="topbar__conn">
         <span class="topbar__conn-dot" :class="connStatus.dotClass"></span>
         <span>{{ connStatus.text }}</span>
       </span>
       <ThemeDropdown />
     </div>
+    <NotifyDrawer :open="notifyDrawerOpen" @close="notifyDrawerOpen = false" />
   </header>
 </template>
 
 <style scoped>
+.topbar__notify {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-8);
+  background: transparent;
+  color: var(--icon-secondary);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.topbar__notify:hover {
+  background: var(--bg-overlay-l2);
+  color: var(--icon-default);
+}
+
+/* 未读徽标：右上角数字，红底白字（错误色，因为「有未读」是需处理信号） */
+.topbar__notify-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 var(--spacer-4);
+  border-radius: var(--radius-full);
+  background: var(--status-error-default);
+  color: var(--text-inverse);
+  font-size: var(--font-size-10);
+  line-height: var(--body-xs-line-height);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .topbar__conn-dot {
   width: 6px;
   height: 6px;
