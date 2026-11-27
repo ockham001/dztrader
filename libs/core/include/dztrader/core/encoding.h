@@ -25,7 +25,7 @@ namespace dztrader {
  *       由 OS 按当前 locale 生成的字符串。
  *
  * - Windows: 使用 CP_ACP (系统默认 ANSI 代码页, 中文系统为 GBK) 转换为 UTF-8。
- * - Linux/macOS: 直接返回原字符串 (默认 UTF-8 locale)。
+ * - Linux: 直接返回原字符串 (默认 UTF-8 locale)。
  *
  * 失败时不抛异常, 返回原串或带替换字符的 UTF-8。
  */
@@ -38,9 +38,12 @@ std::string to_utf8_from_system(const std::string& s);
  *       与运行时系统 locale 无关。
  *
  * - Windows: 显式使用代码页 936 (GBK) 转换, 不依赖 CP_ACP。
- * - Linux/macOS: 直接返回原字符串 (CTP SDK 在 Linux 上已返回 UTF-8)。
+ * - Linux: CTP SDK 的 ErrorMsg 实测同样是 GBK（6.7.13，见 #512），因此
+ *   **不是**直返：先校验 UTF-8——合法则原样返回（兼容真返回 UTF-8 的版本/平台），
+ *   否则 iconv GBK→UTF-8；两者都不成时把非法字节替换为 U+FFFD 兜底。
  *
- * 失败时不抛异常, 返回原串 (可能不是合法 UTF-8)。
+ * 失败时不抛异常。返回值在 Linux 上**保证是合法 UTF-8**（帧 JSON 序列化不能因
+ * 编码失败整帧丢弃）；Windows 沿用「失败返回原串」的既有语义。
  */
 std::string to_utf8_from_gbk(const std::string& s);
 

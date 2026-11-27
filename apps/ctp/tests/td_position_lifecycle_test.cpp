@@ -1837,9 +1837,9 @@ TEST_F(TdPositionLifecycleTest, AuthRejectedStopsAtAuthFailedAndNotifies) {
     OnRspAuthenticateField failed{};
     CThostFtdcRspInfoField info{};
     info.ErrorID = 3;
-    // **ASCII 正文**: CTP 的 ErrorMsg 在 Windows 上是 GBK、Linux 上是 UTF-8, 本进程用
-    // to_utf8_from_gbk 按平台解码 —— 写非 ASCII 字面量会让 Windows 上解码结果与字面量不符
-    // (编码转换本身由 libs/core 的 encoding_test 覆盖, 不是本用例的断言对象)。
+    // **ASCII 正文**: CTP 的 ErrorMsg 在 Windows 与 Linux 上都是 GBK（Linux 实测见 #512），
+    // 本进程统一用 to_utf8_from_gbk 转 UTF-8 —— 写非 ASCII 字面量会让期望值依赖平台字节,
+    // 不利于断言可读性 (编码转换本身由 libs/core 的 encoding_test 覆盖, 不是本用例的断言对象)。
     // 这里要钉的是「柜台拒绝 → 停 AuthFailed + 写 last_error + 推通知」这条链。
     std::strcpy(info.ErrorMsg, "CTP:auth rejected");
     failed.rsp_info = info;

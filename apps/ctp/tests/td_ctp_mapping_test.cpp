@@ -831,19 +831,15 @@ TEST(ToInstrumentRecordTest, EmptyDateIsNa) {
 }
 
 TEST(ToInstrumentRecordTest, NameIsUtf8) {
-    // "沪" 的 GBK 字节. Windows SDK 返回 GBK, 需转 UTF-8;
-    // Linux SDK 已返回 UTF-8, to_utf8_from_gbk 为恒等透传.
+    // "沪" 的 GBK 字节. CTP SDK 在 Windows 与 Linux 上返回的都是 GBK
+    // （Linux 实测见 #512：ErrorMsg 同样为 GBK；InstrumentName 走同一个 to_utf8_from_gbk）。
     const std::string gbk = std::string("\xBB\xA6", 2);
     auto f = make_instrument_field();
     std::strcpy(f.InstrumentName, gbk.c_str());
 
     auto r = to_instrument_record(f, "20260101");
     // 期望值硬编码且不经 to_utf8_from_gbk, 转换被改坏时两个平台都会红.
-#ifdef _WIN32
     EXPECT_EQ(r.name, std::string("\xE6\xB2\xAA", 3));  // GBK "沪" -> UTF-8 "沪"
-#else
-    EXPECT_EQ(r.name, gbk);  // Linux 原样透传 (SDK 已是 UTF-8)
-#endif
 }
 
 TEST(ToInstrumentRecordTest, ProductCodeAndUnderlyingMultiple) {
