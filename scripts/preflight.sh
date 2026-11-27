@@ -325,6 +325,15 @@ check_review_marker() {
     "$PYTHON" "$ROOT/scripts/review_marker.py" --selftest
 }
 
+check_pr_create() {
+    # 建 PR 的守卫入口（#504 / retro #492–#497）：#495 的 PR 正文写了 `Closes #495`，本地没人拦，
+    # CI 的 `PR body (no closing keywords)` job 红 → 改正文后整轮 CI 重跑（wait-ci 1,127s）。
+    # pr-create.sh 把标题/正文两道 check_commit_subject 守卫串进 gh pr create 的正常路径
+    # （与 push-ticket.sh 同构）；selftest 用假 gh 覆盖「合法建 PR / 正文或标题含 closing
+    # keyword 拒建且不调 gh / 缺参数」，不联网、不碰工作区。
+    "$ROOT/scripts/pr-create.sh" --selftest
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -419,6 +428,7 @@ run_step "sysmon metric key set (#309)" check_sysmon_metric_keys
 run_step "push ticket discipline (#309)" check_push_ticket
 run_step "md production lock marker (#480)" check_md_lock_marker
 run_step "review verification marker (#289)" check_review_marker
+run_step "pr create wrapper (#504)" check_pr_create
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi

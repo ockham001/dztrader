@@ -20,6 +20,7 @@
 - **拆块判据是 context 压力，不是时间**：单个 reviewer 的 `git diff` 全量读入会挤掉它做判断的余量；拆块 = 同一轴的两份报告由 Lead 合并，不是新增轴、也不占新的 teammate 名额。
 - **产出优先：步骤序齐全即可**，不设时长与调用数上限。唯一的时间信号是三块模板的第 0 步 `T+8min` 进度 interim——它是**进度信号**，与「是否超时」无关。
 - 本波实测（#294–#298，14 个审查子会话）：首轮墙钟 median **5.5 min = 0.42×N**、超支 **9%**、nudge 命中率 **3%**；首轮 >N 的 10 个里 8 个没被 nudge、自行交付。时间盒既没拦住长尾、又让 verifier 在 T+8min 分心发 interim。
+- 本波实测（#492–#497，19 个审查/验证子会话、**1,817 次工具调用**）：开销主要由**工具使用方式**决定，不只是 diff 规模——#497 两个审查各 37 次调用 / 4–5min；#495 的 spec reviewer 用 `sed -n`/`head` 逐文件翻读、38 次逐文件 `git diff`，跑到 **428 次 bash / 117.6min** 并触发上下文压缩。因此三个模板都带**工具路由**块（文件用 `read`、搜索用 `grep`、全量 diff 只跑一次）。
 
 ---
 
@@ -30,16 +31,21 @@
 
 审查对象：**已冻结的 commit**，固定点 <base 短 hash>，HEAD = `<HEAD 短 hash>`。
 
+工具路由（AGENTS 顶部规则对子代理同样生效）：
+- 文件内容用 `read` 工具（大文件用 offset/limit 分段）；**不要**用 bash 的 `cat` / `sed -n` / `head` / `tail` 读文件；
+- 搜内容用 `grep` 工具（或一条 `git grep -n` 扫全仓）；契约与大文档用 `python3 scripts/contract_slice.py`；
+- bash 只用于 `git` / `gh` / `python3 scripts/...`；
+- **`git diff <base>...<HEAD>` 只跑一次**（逐文件 `git diff <base> -- <file>` 会成倍放大调用数）；怀疑某文件被截断才允许 `git show <sha>:<path>` 一次。
+
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
-- 允许：`git diff` / `git show` / `git log` / `git status` / `git grep` / `gh issue view` /
-  `rg` / `grep` / `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
-  - `sed -n` **仅限非契约、非大文档的小文件**（契约与大文档用 `contract_slice.py`；AGENTS §六）
+- 允许：`git diff` / `git show` / `git log` / `git status` / `git grep` / `gh issue view` / `ls` /
+  `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
 - 允许（仅验证轮交付时）：`python3 scripts/review_marker.py write <issue> <axis>`
 
 步骤（照做即可，不要扩展）：
 0. T+8min 先 send_message 一条进度 interim：**已完成哪些检查 / 正在查什么**（进度信号，与是否超时无关）
-1. 跑一次 `git diff <base>...<HEAD>`
-2. 读 <只读锚点文件>（第 <a>-<b> 行）
+1. 跑一次、且只跑一次 `git diff <base>...<HEAD>`
+2. 读 <只读锚点文件>；对每条 finding 只做定向查询（**不通读未改动文件**，每条 finding 的验证命令 ≤2 条）
 3. 直接输出报告
 
 禁止写工作区：不跑构建 / 测试 / `npm run gen:types` / `preflight.sh`（门禁由 Lead 跑），不用
@@ -59,17 +65,19 @@
 
 审查对象：**已冻结的 commit**，固定点 <base>，HEAD = `<HEAD>`。
 
+工具路由（同 §1）：文件用 `read` 工具、搜内容用 `grep` 工具、契约用 `contract_slice.py`；bash 只跑
+`git` / `gh` / `python3 scripts/...`；`git diff <base>...<HEAD>` 只跑一次。不要通读未改动文件。
+
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /
-  `rg` / `grep` / `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
-  - `sed -n` **仅限非契约、非大文档的小文件**（契约与大文档用 `contract_slice.py`；AGENTS §六）
+  `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
 - 允许（仅验证轮交付时）：`python3 scripts/review_marker.py write <issue> <axis>`
 
 步骤（照做即可，不要扩展）：
 0. T+8min 先 send_message 一条进度 interim：**已完成哪些 AC / 正在查什么**（进度信号，与是否超时无关）
 1. 跑一次 `gh issue view <N> --json title,body` 取 AC 原文
 2. 跑一次 `git diff --stat <base>...<HEAD>` 确认改动范围
-3. 跑一次 `git diff <base>...<HEAD>` 取全量
+3. 跑一次 `git diff <base>...<HEAD>` 取全量（**此后不再 diff**）
 4. 按 AC 逐条判定，直接输出报告
 
 禁止写工作区：不跑构建 / 测试 / `npm run gen:types` / `preflight.sh`（门禁由 Lead 跑），不用
@@ -84,13 +92,16 @@
 ```text
 只读验证。工作目录 <repo>。产出优先：步骤序齐全即可，不设时长与调用数上限。
 
-上一轮提了 <N> 条 finding，Lead 已在 commit `<hash>` 修复。逐条确认修复是否生效，
-**不要提出新 finding**（只验证这 N 条）。
+上一轮提了 <N> 条 finding（**standards / spec 两轴合计**），Lead 已在 commit `<hash>` 修复。逐条确认修复是否生效，
+**不要提出新 finding**（只验证这 N 条）。**你一个人覆盖两轴的 findings**——不要按轴分派第二个 verifier
+（#496 为 1 个修复 commit 派了 3 个验证成员、其中 2 个 failed；#497 单验证器 1.4min 完成），交付时两个轴的标记都写。
+
+工具路由（同 §1）：文件用 `read` 工具、搜内容用 `grep` 工具、契约用 `contract_slice.py`；bash 只跑
+`git` / `gh` / `python3 scripts/...`；`git diff <fixbase>...<fixhead>` 只跑一次。
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /
-  `rg` / `grep` / `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
-  - `sed -n` **仅限非契约、非大文档的小文件**（契约与大文档用 `contract_slice.py`；AGENTS §六）
+  `ls` / `python3 scripts/contract_slice.py`（按节取契约 / `--outline <stem>` 列单份大纲）
 - 允许：`python3 scripts/review_marker.py write <issue> <axis>`（交付时写标记）
 
 步骤（照做，不要扩展）：
@@ -98,8 +109,10 @@
 1. 跑一次 `git diff <fixbase>...<fixhead>`
 2. 跑一次 `<只读检查命令>`
 3. 直接输出报告
-4. 交付后执行 `python3 scripts/review_marker.py write <issue> <axis>`（默认把当前 HEAD 写入
-   `.cache/review/<issue>-<axis>.done`；验证的是更早的 commit 才用第三个参数显式传 sha）
+4. 交付后**两个轴都写**（本轮验证的是两轴 findings 的合集）：
+   `python3 scripts/review_marker.py write <issue> standards`
+   `python3 scripts/review_marker.py write <issue> spec`
+   （默认把当前 HEAD 写入 `.cache/review/<issue>-<axis>.done`；验证的是更早的 commit 才用第三个参数显式传 sha）
 
 禁止写工作区：不跑构建 / 测试 / `npm run gen:types` / `preflight.sh`（门禁由 Lead 跑），不用
 `sed -i` / heredoc 写文件。本波实测 14 个审查子会话里 2 个跑 `npm run gen:types`、1 个跑
@@ -110,6 +123,7 @@
 
 > 该模板返回后，Lead 才能进入 [ticket-closeout.md](ticket-closeout.md) §4 的 push / 建 PR（硬前置：最后一轮只读验证已返回且无 BLOCKING）；未返回先 `wait_agent`，#252 因跳过该动作点把一次修复放大成两个串行 CI 周期（≈56min，证据见 ticket-closeout §1 第 11 条）。
 >
+> 验证轮是**一个** verifier 覆盖两轴 findings、交付时写 `standards` 与 `spec` 两个标记（不要按轴派两个——#496 因此白派 3 个验证成员）；push 时 `push-ticket.sh` 要求两个标记都停在 HEAD。
 > 第 4 步写的标记由 `.githooks/pre-push` 只读检查（`review_marker.py check`，只 warning 不拦截），专门防 #253 的「验证轮被中止 → 未验证即合并」：那次修复 commit 推送时验证轮还没跑，验证准备随即被宿主 turn 中止，合并时该轮**从未发生**。标记让「哪个轴的验证停留在哪个 sha」在推送时可见；文件名为 `.cache/review/<issue>-<axis>.done`，`<axis>` 用 `standards` / `spec`。#309 AC6 起 `scripts/push-ticket.sh` 把该检查从 warning 升为默认拒绝（逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1`）。
 
 ---

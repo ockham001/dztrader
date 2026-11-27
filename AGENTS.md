@@ -140,7 +140,7 @@
 - **禁止单引号包裹占位符**：错 `"user '{}' fail"`，对 `"user fail | user={}"`
 - **禁止多行 `===` banner**，必须合并为单行 `prose | k=v`。**禁止中文**（含函数名、变量名）
 - 非性能路径用异常，日志作为最终输出。`Exception ──catch──→ LastError::set()`（C 接口边界，**无日志**）/ `──→ spdlog`（平台代码，无 LastError）
-- 提交前跑 `./scripts/preflight.sh`（**覆盖清单的唯一真相源是脚本自身的 `run_step` 行，`./scripts/preflight.sh --help` 直接打印全部步骤名与数量**——文档不逐项手抄，#289 AC7；与 CI 同源）；日志违规用 `// NOLINT(log-format)` 豁免
+- 提交前跑 `./scripts/gate.sh preflight`（**覆盖清单的唯一真相源是脚本自身的 `run_step` 行，`--help` 直接打印全部步骤名与数量**——文档不逐项手抄，#289 AC7；与 CI 同源）；**纯文档/脚本票加 `--c-only`**（与 CI 的 `ci_scope.py` fast 路径同口径：跳过前端五件套 ~50s；#492 纯文档票跑了 5 次 full preflight）；不要直调 `preflight.sh` 接 `| tail`（管道吞退出码，#495 实测假绿）；日志违规用 `// NOLINT(log-format)` 豁免
 
 ### 跨平台
 
@@ -197,7 +197,7 @@
 - **`create_worktree` 的 `name` 必须写完整分支名（含 `/`）**：`name: fix/issue-411-today-position` → 分支 `fix/issue-411-today-position`、目录 `.agents/worktrees/fix/issue-411-today-position`。工具描述的「hyphens」示例只保证目录能建出来；写成 flat 的 `fix-issue-411-today-position` 在 #411 时一路拖到 **pre-push** 才被拒（到收尾才发现）。现在 Linux 的 `setup.sh` 开头就会早检并打印修复命令（判定在 `scripts/check_branch_name.py`）；已建错用 `git branch -m fix/issue-<n>-<slug>` 改名（worktree 目录可不动）。
 - worktree 内**需重新跑 `setup`**（conan 缓存按 git common dir 共享：`~/.conan2` 只读时 `setup.sh` 自动回退到**共享**仓库 `.cache/conan2`（跨 worktree 复用，播种加 flock），见 [build-appendix](docs/agents/build-appendix.md)）
 - **前端依赖不能跨 worktree 共享**（与 conan 缓存相反）：worktree 里跑 `cd apps/webui/frontend && npm ci`（约 1 分钟）。**禁止 `ln -s` 指到主仓的 `node_modules`**——`npm ci` 会先删内容再重建，删的是**符号链接目标**里的东西，等于静默清空主工作区依赖（#471 实测 299 个包归零、破坏面跨会话）；`npm-ci-if-needed.cmake` 与 `preflight` 都会硬拒并提示本地安装
-- **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线
+- **并行波（同一时间多个 ticket）必须一票一 worktree**；禁止在共享工作区同时改两条线。**同一时间只有一条线时不建 worktree**——直接 `git switch -c <branch>` 在当前工作区做：worktree 每个都是冷构建（≈17 min/个），#495/#496 串行却各建一个，多付 34 min（同波共享工作区的 #497 首构建仅 181s）
 - **共享工作区只允许当前票的 WIP**：收尾最后一步 `git switch main && git pull --ff-only`，并让 `git status` 除**已登记的并行线**外干净；把工作区留在 feature 分支就结束会话 = 直接阻塞下一条线（本波 #91→#92）
 - **跨会话（>1 个会话）不提交的文档批次**：开 `docs/*` 分支提交/推送，或移出共享工作区；不要让未提交 docs 长期占着 `git status`（本波 ADR 0026–0030 从 10-22 挂到 10-23）
 - 分支名 `^(feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-<n>-<slug>`（**两处守卫、两种粒度**：`setup.sh` 开头按完整约定早检，判定在 `scripts/check_branch_name.py`；`.githooks/pre-push` 只用 `^(feat|fix|…)/` 前缀白名单兜一道——类型集合两处同步，`setup` 的检查器有 unittest 钉住）；push 前跑 `./scripts/check-push-scope.sh <issue>`，确认 `@{u}..HEAD` 只含本票 commit
@@ -214,7 +214,7 @@
 
 ### 本机沙箱（DSH）
 
-- **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；不要 `sleep` 轮询、不要前台空等。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）。实测代价与分段方法见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处，此处不重复）。
+- **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；不要 `sleep` 轮询、不要前台空等。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）；**CI 红用 `./scripts/ci-log.sh <run-id>` 定位**（优先取 `last-test-log` artifact，秒级给出失败用例名；不要 `gh run view --log` / `gh api jobs/logs`——Windows 日志可达数十 MB，#494 实测连续超时 ~25 min）。实测代价与分段方法见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处，此处不重复）。
 - **`job_output(wait=true)` 有宿主侧等待上限**（上限值随宿主配置，以实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
 - **仓内搜索用 `git grep`**（只扫版本控制内的文件，天然跳过 `build/`、`install/`、`.cache/`）：`grep -rn --include=*` 全仓跑会扫到编译产物与缓存（#253 实测单次 131.8s、`find .cache` 94.2s）。要搜运行产物再显式指定 `.cache/` 路径。
 - **门禁判绿看 `gate: OK` 行或分命令槽**，不要只看 shell 退出码（`wait-ci.sh` 例外：退出码即 CI 结论，别接管道）；管道与槽位口径见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。

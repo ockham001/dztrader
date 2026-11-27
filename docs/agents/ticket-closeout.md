@@ -35,7 +35,7 @@
 
 7. **票内多 teammate 并行必须划写作用域**：AGENTS 的「一票一 worktree」只覆盖**跨票**。票内并行时，同仓多成员同时改同一批文件会互相踩——#206/#233 共 7 次 `file changed since it was read`（`Modal.vue` / `useFocusTrap.ts` / `App.vue` 被多个成员碰过）。规则：**一个成员一个文件集，共享文件归 Lead**；用 `team_task_create` 的 `write_scopes` 字段登记该成员要改的路径前缀，派活时写进 prompt。审阅/验证类成员只读，不占作用域。**注意 `write_scopes` 是建议性声明、不是互斥锁**——它不会阻止两个成员写同一文件，纪律靠 prompt 与分工，不靠工具强制。**分工表（成员 / 写作用域 / 依赖 / 验收映射）必须先在 issue 评论落盘再 spawn 成员**——`.cache/handoff/` 可随时删除，不作为唯一载体；本仓以 issue 为唯一记忆。分工表与 `team_task_create` 的 `write_scopes` 登记同步维护，别只留在会话或 handoff 文档里。
 
-8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。**只修 NON-BLOCKING 的轮次不重开验证**，见第 13 条。
+8. 轮次口径：**1 轮 = 1 次修复 + 1 个 verifier**；最多 3 轮修复。第 3 轮仍有 blocking → 修完后必须再跑 **1 轮只读验证**（不算第 4 轮修复），并把结论写进报告。禁止用改写 prompt 重跑 verifier 来"刷新"结论。**只修 NON-BLOCKING 的轮次不重开验证**，见第 13 条。验证轮用**一个** verifier 覆盖两轴 findings、交付时写两个 marker（模板见 [verifier-prompt.md](verifier-prompt.md) §3）——不要按轴派两个：#496 为一个修复 commit 派了 3 个验证成员（其中 2 个 failed），#497 单验证器 1.4min 完成。
 9. **等 verifier 不要 `sleep` 轮询**（AGENTS §五「等待一律后台作业」）：`spawn_teammate` 的成员用 `wait_agent` 真正阻塞；派 `subagent` 时结果以 `subagent-settled` 通知到达。等待窗口做**不写文件**的工作（读 diff/契约、拟关闭评论与报告、跑幂等 `preflight --c-only`）。反例：#77/#78/#81 因 sleep 等 verifier 累计 ≈3.9h。**Lead 侧动作点**：verifier **无进展**（长时间既无工具调用、也无进度 interim）时主动 `send_message` 一条进度询问「**先发结论**（哪怕只发已完成部分），现在到哪一步了」，不要让审查无上限拖住关键路径——#253 两轴跑了 38.7min / 45.3min，T+26 / T+44min 一催，**1.5min 内即交付**，说明卡住多半是缺一个交付信号而不是缺时间。**不要以时长或工具调用数为触发条件**（#309 AC2 已删掉时间盒：107 个历史子会话实测首轮 median 0.42×N、超支 9%、nudge 命中率 3%，时间盒既拦不住长尾又让 verifier 提前分心）。
 10. **verifier / 实现 teammate `failed` ≠ 无产出**（#289 AC8）：`failed` 只表示该 turn 异常退出、没有报告，**不代表它没写文件**。恢复顺序：① 先查产出——`git status --porcelain`（它可能已落盘部分改动）、`team_task_list`（共享任务状态与 `write_scopes`）、其 session 日志（`~/.dsh/sessions/`，见 [retro-evidence.md](retro-evidence.md)）；② 成员仍可寻址（`list_agents` 里 `inactive` 而非名额释放）时用 `send_message` **续跑**，prompt 里写「上一步无产出/部分产出 + 先落最小骨架」——不要重派新成员（名额是稀缺资源，见第 6 条）；③ 原 prompt 重跑一次；④ 仍失败 → 改用 `spawn_teammate` 派 verifier（Team 成员可 `wait_agent` 真正阻塞）；⑤ 仍不可用 → **人工代轴**逐条核对（机器门禁须已全绿），并在报告写明"verifier failed N 次、人工代轴"。#123 两个审查线程丢失、用户被迫介入、Lead 人工补轴即反例；禁止改写 prompt 反复重跑刷结论。**实现类成员的 prompt 必须带「T+15min 先落最小骨架」**（#253 recon 37–39min 才写第一行，模板见 [verifier-prompt.md](verifier-prompt.md) §4）。
 11. **review 全部收敛（含最后一轮只读验证）后才进入 §4 push**；push 之后只允许修 CI 红。只读验证轮提出的 finding 必须**并入同一个 commit** 再推——先推再验会让验证轮 findings 又产生新 commit，上一轮 CI 作废重跑（旧守卫下第二次 push 还会被「CI 在跑」拒绝、白等一轮；#248 实测 986s；新口径见 §4）。**#252 实测（规则存在 ≠ 动作点看得见）**：23:15 建 PR 起 CI → 23:23:08 修复 commit → 23:23:30 push 被旧 run 拒绝 → 等旧 CI 1431s（到 23:47:57）→ 23:48:07 才推上去 → 新 run 31m42s → 00:20:44 才等到结果，**一次修复被放大成两个串行 CI 周期（≈56min）**，并在 00:20:28 触发用户 abort turn。因此 §4 把「最后一轮只读验证已返回且无 BLOCKING」写成 push / 建 PR 的**动作点前置条件**；只读验证轮模板见 [verifier-prompt.md](verifier-prompt.md) §3（模板返回后才允许进入 §4）。
@@ -96,9 +96,11 @@
 
 ```bash
 ./scripts/push-ticket.sh <issue> -u origin <branch>   # scope + 审查标记 + md 生产锁定 + git push 串行（#309/#480）
-gh pr create --base main --head <branch> --title "<type>: <摘要>（#<issue>）" --body-file <body 文件>
+./scripts/pr-create.sh --title "<type>(#<issue>): <摘要>" --body-file <body 文件> --base main --head <branch>
 ./scripts/wait-ci.sh --pr <n>             # 静默等 PR checks（后台作业启动，见下）
 ```
+
+- **建 PR 用 `scripts/pr-create.sh`，不要裸 `gh pr create`**（#504 / retro #492–#497）：它先跑**标题守卫**（`check_commit_subject.py --subject`：前缀 / ≤72 字符 / closing keyword）与**正文守卫**（`--pr-body-file`：`Closes #N` 等 auto-close 形态），全绿才调 `gh pr create` 并透传其余参数。背景：#495 正文写了 `Closes #495`，本地无人拦、CI 的 `PR body (no closing keywords)` 红，改正文后整轮 CI 重跑（wait-ci 1,127s）——守卫已存在，但「可用」不是动作点；与 `push-ticket.sh` 把 scope / 标记 / push 串起来同一形态。
 
 - **push 用 `scripts/push-ticket.sh <issue> [-u origin <branch>]`，不要裸 `git push`**（#309 AC6）：它串行做四件事——`./scripts/check-push-scope.sh <issue>` → `python3 scripts/review_marker.py check <issue>` **严格判定**（该票任一轴无标记 / 标记 sha 与 HEAD 不一致 → **默认拒绝**，exit 3）→ `python3 scripts/md_lock_marker.py check <issue> --strict`（diff 触及 `apps/ctp/md/` 且无确认标记 → **拒绝**，见下条）→ `git push "$@"`。逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1` / `DZ_ALLOW_MD_LOCK=1`：拒绝时先打印缺失/不匹配的标记与当前 HEAD，再放行。**worktree / 非标准分支**或需要推多个 ref 的场合才退回裸 `git push`（并手工跑前三条命令确认）。背景：#297 是本波唯一违例——`git push` 距首个 `spawn_teammate` 仅 19 s，`pre-push` 的 warning 被无视，随后 `--force-with-lease` 产生第二个 CI run（19 min）。
 - **改 `apps/ctp/md/` 的票先写确认标记**（#480）：AGENTS §一硬门禁 1 的确认原先只有 opencode 的 permission 机器化（DSH 没有），且 #471 实测确认被留到实现全部完成之后、漏项靠审查抓出。用户确认后立刻跑 `python3 scripts/md_lock_marker.py write <issue>`（写 `.cache/lock/<issue>-md-lock.done`，gitignore）；标记不判 sha（确认通常早于首个 commit）。**确认要在动手前完成**，不是在 PR 前补。
@@ -160,10 +162,11 @@ GitHub 的 closing keyword 要求关键字后紧跟空白/冒号再接 `#N`，�
 `Resolves #N` 同样会在合并瞬间关单、让本节的关闭评论被静默丢弃（#313 `Closes #301`、
 #314 `Closes #302`、#315 `Closes #303` 三个 PR 都犯了，#301 的关闭评论因此事后补发）。
 正文守卫由 `.github/workflows/pr-body.yml` 强制（调 `scripts/check_commit_subject.py
---pr-body-file`，与 R3 共用同一个 closing-keyword 正则）；本地可用
-`python3 scripts/check_commit_subject.py --pr-body-file <body 文件>` 预检。**两处都要避免**：
-正文写 `Refs #N`，或干脆不写票号（PR 标题已带 `（#<issue>）`，`check-push-scope.sh` 看的是
-commit subject）。
+--pr-body-file`，与 R3 共用同一个 closing-keyword 正则）；**本仓的正常路径已把它前移到
+`./scripts/pr-create.sh`**（§4 的命令块）：标题 + 正文两道守卫全绿才调 `gh pr create`，
+失败则 exit 1 且**不建 PR**。手工路径仍可单独预检：
+`python3 scripts/check_commit_subject.py --pr-body-file <body 文件>`。**两处都要避免**：
+正文写 `Closes #N` / `Fixes #N` / `Resolves #N` 一族，或干脆不写票号（PR 标题已带 `(#<issue>)`，`check-push-scope.sh` 看的是 commit subject）。
 
 关闭评论模板（交付 / 已知限制 / 提交 / CI / PR / 验证 / 审查）：
 
