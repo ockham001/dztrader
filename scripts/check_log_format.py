@@ -2,7 +2,7 @@
 """
 check_log_format.py — dztrader 日志格式 lint 脚本
 
-检测 spdlog / LastError::set / throw std::* / std::cerr 的文本是否符合项目规范:
+检测 spdlog / LastError::set / throw std::* / std::cerr / push_notification 的文本是否符合项目规范:
   - 格式: prose | k=v k=v （hybrid 模式）
   - prose 全英文小写开头，无句号
   - 自由文本类 k=v 的值必须双引号包裹（R6，见下）
@@ -22,6 +22,14 @@ bar_strategy §6 记录了这个缺口），因此与 spdlog 同一套文本规�
 用于自由文本也用于枚举标识符（如 `reason=negative_volume`，有测试断言锁定），静态不可
 判定；强行纳入会让测试变红（#266 第一版实测 8 个失败）。这几类 key 仍需人工判断。
 
+`push_notification(notif, message, prose)`（#493 引入的 td 登录链失败出口）只检查**第三实参
+prose** —— 它是异常兜底日志格式串的 prose 部分；第二实参 message 是 UI 通知正文，允许中文，
+不能按日志文本检查。调用形态约定前两个实参是变量/表达式（message 由 `*_failed_message`
+纯函数构造），因此「实参表内首个字符串字面量」即 prose（#506）。字面量只取在实参表区间内
+（配对 `)` 之前），跨行时在实参表内向后看（上限 `MAX_CALL_LOOKAHEAD_LINES` 行），所以
+#493 的结算确认 / 合约加载 / 连接超时三处「prose 在下一行」也被覆盖，且续行上闭合后的
+其它调用字面量不会被误取。
+
 不在本 lint 范围：UI 通知（notify_ui_*）与策略输出等**面向用户的展示文案**允许中文，
 不按日志/错误文本规范检查；需要时由 review 按契约单独裁决。
 
@@ -33,7 +41,7 @@ bar_strategy §6 记录了这个缺口），因此与 spdlog 同一套文本规�
 退出码: 0=通过, 1=有违规
 
 豁免机制:
-  行尾 // NOLINT(log-format)         豁免单行
+  行尾 // NOLINT(log-format)         豁免单行（跨行调用的 prose 写在该行或调用起始行）
   // NOLINTBEGIN(log-format)         豁免范围开始
   // NOLINTEND(log-format)           豁免范围结束
 """
@@ -45,6 +53,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 # spdlog 调用正则：匹配 spdlog::info(... / SPDLOG_INFO(... 等
 # 捕获组 1 = 函数名（info/warn/error/...），用于后续字符串提取
@@ -56,8 +65,13 @@ SPDLOG_CALL_RE = re.compile(
 #   LastError::set(code, "fmt | k={}", args...)   —— C 接口边界的上下文消息
 #   throw std::*("fmt | k={}")                     —— 异常消息
 #   std::cerr << std::format("fmt | k={}", ...)    —— header-only SDK 的诊断出口（无 spdlog）
-# UI 通知（notify_ui_*）面向用户，可中文，故意不在此列。
+#   push_notification(notif, message, prose)       —— prose 是异常兜底日志的格式串（#506）
+# UI 通知（notify_ui_*）面向用户，可中文，故意不在此列。push_notification 的**第二实参**
+# message 同样是 UI 正文（可中文），所以只取实参表内（配对 ')' 之前）首个字符串字面量当
+# prose —— 该口径成立的前提是前两个实参为变量/表达式，调用形态见 helper 的 Doxygen
+# （td_account_session.h）。
 OTHER_CALL_RES = (
+    re.compile(r'\bpush_notification\s*\('),
     re.compile(r'\bLastError::set\s*\('),
     re.compile(r'\bthrow\s+std::[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*\('),
     # `std::cerr << "..."` 与 `std::cerr << std::format("...")`：两个形态都要抓
@@ -66,6 +80,11 @@ OTHER_CALL_RES = (
 )
 
 CALL_RES = (SPDLOG_CALL_RE, *OTHER_CALL_RES)
+
+# 跨行 lookahead 上限：调用实参表最多向后看这么多行（扫描窗 = 调用行 + 后续该数行）。
+# 有上限是为了防「括号永不闭合」的宏/语法错误把扫描拖到很远、误抓无关字面量；#493/#506
+# 的站点都只跨一行，上限 2 行留了重排余量。
+MAX_CALL_LOOKAHEAD_LINES = 2
 
 # 字符串字面量提取：从调用起始处找第一个 "..." （支持转义）
 STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -113,6 +132,12 @@ SELFTEST_CASES: list[tuple[str, set[str]]] = [
     ("frame | type={} state={} ret={} count={}", set()),
     # 单词里碰巧含 key 名不算（\b 锚定）
     ("not_a_key | myerror={} error_code={}", set()),
+    # push_notification 的 prose 第三实参走同一套 R3/R5（#506）：合规 / 中文 / 大写开头 /
+    # 句号结尾各一条，锁住「调用类型扩了、规则边界没漂移」。
+    ("td connect timeout notify failed", set()),
+    ("认证失败通知发送失败", {"log-format/non-english"}),
+    ("Td connect timeout notify failed", {"log-format/prose-case"}),
+    ("td connect timeout notify failed.", {"log-format/prose-period"}),
 ]
 
 
@@ -143,23 +168,77 @@ class Violation:
     suggestion: str = ""
 
 
-def extract_log_string(line: str) -> tuple[str, int] | None:
-    """从一行中提取受检调用的第一个字符串字面量。
+def _argument_span(lines: list[str], idx: int, start: int) -> str | None:
+    """收集第 idx 行 start 列起、跨行到配对 ')' 之前的调用实参表文本。
 
-    依次尝试 spdlog / LastError::set / throw std::*，返回 (字符串内容, 起始列号) 或 None。
-    支持调用起始在同一行的跨行字符串（仅取首行内容）。
+    返回 None 表示实参表在 MAX_CALL_LOOKAHEAD_LINES 行内没闭合（更长的跨行调用属已知
+    漏检边界）。只在**实参表区间**内取字面量，所以续行上「调用闭合之后」的别的调用 /
+    语句的字面量不会被误当成本调用的文案（#506 审查 finding 1）。
+    字符串字面量内部的括号不参与计数；调用自己的 '(' 已被调用正则匹配吃掉，从 1 起算。
     """
+    text = "\n".join(lines[idx:idx + MAX_CALL_LOOKAHEAD_LINES + 1])
+    depth = 1
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == '\\' else 1
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return text[start:i]
+        i += 1
+    return None
+
+
+class LogString(NamedTuple):
+    """受检调用实参表里的第一个字符串字面量及其位置。
+
+    line_offset = 0 表示与调用起始同行，1/2 表示在第 1/2 个后续行（跨行调用，#506）；
+    column 是字面量所在行的 1-based 列号。
+    """
+
+    content: str
+    line_offset: int
+    column: int
+
+
+def extract_log_string(lines: list[str], idx: int) -> LogString | None:
+    """提取第 idx 行（0-based）受检调用的第一个字符串字面量。
+
+    依次尝试 spdlog / LastError::set / throw std::* / std::cerr / push_notification。
+    括号调用的字面量只取在**实参表区间内**（跨行时向后看，配对 ')' 之前才算）——因此
+    不会抓下一行其它调用 / 语句的字面量；实参表超过 MAX_CALL_LOOKAHEAD_LINES 行则漏检。
+    `std::cerr <<` 不带 `std::format(` 时没有实参表可界定，保守地只扫同行。
+    """
+    line = lines[idx]
     for call_re in CALL_RES:
         m = call_re.search(line)
         if not m:
             continue
-        after_call = line[m.end():]
-        sm = STRING_LITERAL_RE.search(after_call)
-        if not sm:
-            continue
-        content = sm.group(1)
-        column = m.end() + sm.start() + 1  # 1-based
-        return content, column
+        if "(" in line[m.start():m.end()]:
+            span = _argument_span(lines, idx, m.end())
+            if span is None:
+                continue
+            sm = STRING_LITERAL_RE.search(span)
+            if not sm:
+                continue
+            line_offset = span.count("\n", 0, sm.start())
+            if line_offset:
+                column = sm.start() - (span.rfind("\n", 0, sm.start()) + 1) + 1
+            else:
+                column = m.end() + sm.start() + 1
+            return LogString(sm.group(1), line_offset, column)
+        # `std::cerr <<` 后面没跟 `std::format(`：没有实参表可以界定，只扫同行（跨行的
+        # `std::cerr <<` 换行再接字面量因此不覆盖 —— 保守取舍，避免把下一行别的语句的字面量
+        # 当成本调用的文案）。
+        sm = STRING_LITERAL_RE.search(line[m.end():])
+        if sm:
+            return LogString(sm.group(1), 0, m.end() + sm.start() + 1)
     return None
 
 
@@ -266,15 +345,20 @@ def check_file(path: Path) -> list[Violation]:
         if in_nolint_block:
             continue
 
-        result = extract_log_string(line)
+        result = extract_log_string(lines, idx - 1)
         if not result:
             continue
 
-        content, column = result
+        content, line_offset, column = result
+        # 跨行的 prose 报在字面量所在行（= 修复动作所在行）；NOLINT 写该行或调用起始行
+        # 都能豁免 —— 调用起始行在循环里已被跳过，该行在下面显式判定。
+        report_line = idx + line_offset
+        if line_offset and "NOLINT(log-format)" in lines[report_line - 1]:
+            continue
         for rule, msg, suggestion in check_string(content):
             violations.append(Violation(
                 file=path,
-                line=idx,
+                line=report_line,
                 column=column,
                 rule=rule,
                 message=msg,

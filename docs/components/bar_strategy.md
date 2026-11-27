@@ -649,7 +649,7 @@ ctx.buy_to_cover(volume, price); // 买方向：平空（只减不增）；volum
 
   出口函数的 `0 = 全平` 是 TB 约定（`Share` 缺省/0 平掉当前所有持仓）；入口函数的 `0 = 只平反向、不建新仓` 是 MC 口径（`Buy 0`/`SellShort 0`）。两者在净持仓模型下是同一条规则：**`0` 是模式值不是数量**——出口函数 `sell(0)` 与 `sell(1)` 不连续，用计算量调平仓函数时必须自己保证 `> 0`（或显式分支）。
 - **参数与诊断**：`volume >= 0`，负数拒单并诊断；`n > 0` 方向无效（如空仓 `sell`）无操作 + WARN 诊断，`n > |P|` 钳制到 `|P|` + WARN 诊断；`0` 且无可平仓无操作、**不诊断**（避免平仓语句逐 bar 刷屏），`0` 实际触发平仓记 INFO 诊断（便于追溯非预期清仓）。日志文本用小写 prose 区分（`intent rejected` / `intent ignored` / `intent clamped` / `intent flat_by_zero`）；注意 header-only 框架只能写 stderr，而 master 把子进程 stderr 一律按 WARN 转发，因此**当前这三档在 master 日志里级别相同、只靠 prose 区分**——真正的级别分流要等 SDK 给策略代码一条日志通道（ADR 0021 现状）。
-> **门禁覆盖**：`scripts/check_log_format.py` 把 `std::cerr << "…"` 与 `std::cerr << std::format("…")` 一并纳入扫描（非英文 / 大写开头 / 句号结尾 / banner / 单引号占位符 / missing-pipe），因此本组件与 `strategy_engine.h` 的 stderr 诊断与 spdlog 走同一套机器校验。**仍缺**：`k={}` 该写成 `k="{}"` 的引号规则（现存 24 处历史站点，需单独清扫；框架侧已用 `quote_log_value()` 在运行期加引号）。
+> **门禁覆盖**：`scripts/check_log_format.py` 把 `std::cerr << "…"` 与 `std::cerr << std::format("…")` 一并纳入扫描（非英文 / 大写开头 / 句号结尾 / banner / 单引号占位符 / missing-pipe），因此本组件与 `strategy_engine.h` 的 stderr 诊断与 spdlog 走同一套机器校验。自由文本类 `k=v` 的引号规则（`k={}` 应写成 `k="{}"`）自 #266 起也已生效；框架侧另用 `quote_log_value()` 在运行期加引号。
 - **逻辑台账是虚拟成交（TB 虚拟账户口径）**：B 的每笔交易意图按传入限价**即时**记账——`P` 按上表推进，Tier 1（均价、建仓次数、浮动盈亏、进出场时间）在同一个漏斗里按开平归属更新（跨越 0 时拆成平仓段 + 开仓段）。不等待成交回报、不跟踪在途；拒单/部分成交不回流。B **只接触**这本逻辑账：不接触账户真实持仓/资金/权益，也不接触任何委托与成交明细（`order_id`、委托状态、部分成交、拒单原因都不出现在 B 的 API 面）。
 - `on_order_report` / `on_position_info` / `on_trading_account` v1 忽略，不参与任何 B 可见状态。
 
