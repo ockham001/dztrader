@@ -107,7 +107,8 @@ export const TD_ACCOUNT_STATUS_NO_DATA: Readonly<TdAccountStatusView> = {
  */
 export function tdAccountStatusView(row: TdAccountStatusRow): TdAccountStatusView {
   if (!row.gatewayRunning) {
-    return { current: 0, max: 1, min: 0, failed: false, idleText: '未启动' }
+    // 进程没跑 = 没有会话数据：与「镜像未到达」同一呈现（不猜已登录，也不给失败徽章）
+    return { ...TD_ACCOUNT_STATUS_NO_DATA }
   }
   return {
     current: row.progress?.current ?? 0,
