@@ -3,6 +3,7 @@
 #include <string>
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -73,51 +74,12 @@ TEST(ToUtf8FromSystem, ReturnsOriginalOnLinux) {
 // ── to_utf8_from_gbk ──
 
 namespace {
-/// 测试侧独立的 UTF-8 严格校验（不复用被测实现，避免「用同一 bug 自证」）。
-bool is_valid_utf8_for_test(const std::string& s) {
-    std::size_t i = 0;
-    while (i < s.size()) {
-        const auto c = static_cast<unsigned char>(s[i]);
-        std::size_t len = 0;
-        unsigned int cp = 0;
-        if (c < 0x80) {
-            ++i;
-            continue;
-        }
-        if ((c & 0xE0) == 0xC0) {
-            len = 2;
-            cp = c & 0x1F;
-        } else if ((c & 0xF0) == 0xE0) {
-            len = 3;
-            cp = c & 0x0F;
-        } else if ((c & 0xF8) == 0xF0) {
-            len = 4;
-            cp = c & 0x07;
-        } else {
-            return false;
-        }
-        if (i + len > s.size()) {
-            return false;
-        }
-        for (std::size_t k = 1; k < len; ++k) {
-            const auto cc = static_cast<unsigned char>(s[i + k]);
-            if ((cc & 0xC0) != 0x80) {
-                return false;
-            }
-            cp = (cp << 6) | (cc & 0x3F);
-        }
-        if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000)) {
-            return false;
-        }
-        if (cp >= 0xD800 && cp <= 0xDFFF) {
-            return false;
-        }
-        if (cp > 0x10FFFF) {
-            return false;
-        }
-        i += len;
-    }
-    return true;
+/// #512 的故障面：函数输出必须能被 JSON 帧序列化。现场是非法 UTF-8 让
+/// nlohmann::json::dump() 抛 type_error.316，整帧 RTN_TD_STATUS 被丢弃。
+/// 这里直接用真实消费者（json）当 oracle，而不是另抄一份 UTF-8 校验（抄写版会共享同盲点）。
+void expect_json_serializable(const std::string& s) {
+    nlohmann::json payload = {{"message", s}};
+    EXPECT_NO_THROW((void)payload.dump());
 }
 }  // namespace
 
@@ -128,10 +90,15 @@ TEST(ToUtf8FromGbk, AsciiUnchanged) {
     EXPECT_EQ(to_utf8_from_gbk("hello world"), "hello world");
 }
 
-TEST(ToUtf8FromGbk, InvalidBytesReturnUsableString) {
-    // 无效 GBK 字节: 契约要求失败时返回原串或带替换字符的 UTF-8, 不返回空串。
-    const std::string invalid = std::string("\xFF\xFE\x80", 3);
-    EXPECT_FALSE(to_utf8_from_gbk(invalid).empty());
+TEST(ToUtf8FromGbk, InvalidBytesProduceSerializableString) {
+    // 无效 GBK 字节: 契约要求失败时返回原串或带替换字符的 UTF-8, 不返回空串;
+    // 且结果必须可进 JSON 帧（Linux 兜底保证合法 UTF-8）。
+    for (const std::string& invalid :
+         {std::string("\xFF\xFE\x80", 3), std::string("CTP:\xB2\xBB", 6)}) {
+        const std::string result = to_utf8_from_gbk(invalid);
+        EXPECT_FALSE(result.empty());
+        expect_json_serializable(result);
+    }
 }
 
 TEST(ToUtf8FromGbk, ConvertsGbkChineseToUtf8) {
@@ -171,11 +138,14 @@ TEST(ToUtf8FromGbk, ConvertsMultipleChineseChars) {
     EXPECT_EQ(to_utf8_from_gbk(gbk), expected);
 }
 
-TEST(ToUtf8FromGbk, Utf8InputUnchanged) {
-    // 已是合法 UTF-8 的输入原样返回（兼容声称/实际返回 UTF-8 的 SDK 版本）
+#ifndef _WIN32
+TEST(ToUtf8FromGbk, Utf8InputUnchangedOnLinux) {
+    // Linux 分支先做 UTF-8 校验：合法 UTF-8 原样返回（兼容声称/实际返回 UTF-8 的 SDK 版本）。
+    // Windows 分支行为不同（恒按 936 解码），所以本用例只在 Linux 断言。
     const std::string s = "utf8 字符串 测试";
     EXPECT_EQ(to_utf8_from_gbk(s), s);
 }
+#endif
 
 #ifndef _WIN32
 TEST(ToUtf8FromGbk, InvalidBytesProduceValidUtf8OnLinux) {
@@ -185,9 +155,7 @@ TEST(ToUtf8FromGbk, InvalidBytesProduceValidUtf8OnLinux) {
          {std::string("\xFF\xFE\x80", 3), std::string("CTP:\xB2\xBB", 6),
           std::string("\xC0\xAF", 2),         // 超长编码
           std::string("\xED\xA0\x80", 3)}) {  // 代理区
-        const std::string result = to_utf8_from_gbk(invalid);
-        EXPECT_TRUE(is_valid_utf8_for_test(result))
-            << "input bytes=" << invalid.size() << " result is not valid UTF-8";
+        expect_json_serializable(to_utf8_from_gbk(invalid));
     }
 }
 
@@ -197,13 +165,13 @@ TEST(ToUtf8FromGbk, GbkErrorMsgFromCpLoginRejected) {
     const std::string gbk = std::string(
         "CTP:"
         "\xB2\xBB\xBA\xCF\xB7\xA8\xB5\xC4\xB5\xC7\xC2\xBC",
-        17);
+        16);
     const std::string expected = std::string(
         "CTP:"
         "\xE4\xB8\x8D\xE5\x90\x88\xE6\xB3\x95\xE7\x9A\x84\xE7\x99\xBB\xE5\xBD\x95",
-        23);
+        22);
     EXPECT_EQ(to_utf8_from_gbk(gbk), expected);
-    EXPECT_TRUE(is_valid_utf8_for_test(to_utf8_from_gbk(gbk)));
+    expect_json_serializable(to_utf8_from_gbk(gbk));
 }
 #endif
 

@@ -2,6 +2,12 @@
 
 #include <string>
 
+// dztrader 只支持 Windows x86_64 / Linux x86_64（AGENTS.md 跨平台硬门禁）：
+// 其它平台必须 #error，禁止静默回退（例如 macOS 上 iconv/CP_ACP 语义都不同）。
+#if !defined(_WIN32) && !defined(__linux__)
+#error "unsupported platform: dztrader supports Windows x86_64 and Linux x86_64 only"
+#endif
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -111,8 +117,9 @@ std::string gbk_to_utf8(const std::string& s) {
     if (cd == reinterpret_cast<iconv_t>(-1)) {
         return {};
     }
-    // GBK 双字节 -> UTF-8 最多 3 字节，2 倍输入 + 余量足够。
-    std::string out(s.size() * 2 + 8, '\0');
+    // 每个输入字节最坏展开为 3 字节（GBK 单字节 0x80 -> U+20AC 是 3 字节），
+    // 按 3 倍 + 余量预留，避免 E2BIG 让整串退回 U+FFFD 兜底。
+    std::string out(s.size() * 3 + 8, '\0');
     char* in_ptr = const_cast<char*>(s.data());
     std::size_t in_left = s.size();
     char* out_ptr = out.data();
