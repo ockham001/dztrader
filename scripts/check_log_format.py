@@ -25,9 +25,10 @@ bar_strategy §6 记录了这个缺口），因此与 spdlog 同一套文本规�
 `push_notification(notif, message, prose)`（#493 引入的 td 登录链失败出口）只检查**第三实参
 prose** —— 它是异常兜底日志格式串的 prose 部分；第二实参 message 是 UI 通知正文，允许中文，
 不能按日志文本检查。调用形态约定前两个实参是变量/表达式（message 由 `*_failed_message`
-纯函数构造），因此「实参表内首个字符串字面量」即 prose（#506）。prose 与调用起始跨行时
-（#493 的结算确认 / 合约加载 / 连接超时三处），提取按「调用括号未闭合」在实参表范围内继续
-向后看，闭合即停，不会抓下一行无关调用的实参字面量。
+纯函数构造），因此「实参表内首个字符串字面量」即 prose（#506）。字面量只取在实参表区间内
+（配对 `)` 之前），跨行时在实参表内向后看（上限 `MAX_CALL_LOOKAHEAD_LINES` 行），所以
+#493 的结算确认 / 合约加载 / 连接超时三处「prose 在下一行」也被覆盖，且续行上闭合后的
+其它调用字面量不会被误取。
 
 不在本 lint 范围：UI 通知（notify_ui_*）与策略输出等**面向用户的展示文案**允许中文，
 不按日志/错误文本规范检查；需要时由 review 按契约单独裁决。
@@ -52,6 +53,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 # spdlog 调用正则：匹配 spdlog::info(... / SPDLOG_INFO(... 等
 # 捕获组 1 = 函数名（info/warn/error/...），用于后续字符串提取
@@ -65,8 +67,9 @@ SPDLOG_CALL_RE = re.compile(
 #   std::cerr << std::format("fmt | k={}", ...)    —— header-only SDK 的诊断出口（无 spdlog）
 #   push_notification(notif, message, prose)       —— prose 是异常兜底日志的格式串（#506）
 # UI 通知（notify_ui_*）面向用户，可中文，故意不在此列。push_notification 的**第二实参**
-# message 同样是 UI 正文（可中文），所以只取实参表内首个字符串字面量当 prose —— 该口径成立
-# 的前提是前两个实参为变量/表达式，调用形态见 helper 的 Doxygen（td_account_session.h）。
+# message 同样是 UI 正文（可中文），所以只取实参表内（配对 ')' 之前）首个字符串字面量当
+# prose —— 该口径成立的前提是前两个实参为变量/表达式，调用形态见 helper 的 Doxygen
+# （td_account_session.h）。
 OTHER_CALL_RES = (
     re.compile(r'\bpush_notification\s*\('),
     re.compile(r'\bLastError::set\s*\('),
@@ -78,8 +81,9 @@ OTHER_CALL_RES = (
 
 CALL_RES = (SPDLOG_CALL_RE, *OTHER_CALL_RES)
 
-# 跨行 lookahead 上限：调用实参表最多向后看这么多行。有上限是为了防「括号永不闭合」的
-# 宏/语法错误把扫描拖到很远、误抓无关字面量；#493/#506 的站点都只跨一行。
+# 跨行 lookahead 上限：调用实参表最多向后看这么多行（扫描窗 = 调用行 + 后续该数行）。
+# 有上限是为了防「括号永不闭合」的宏/语法错误把扫描拖到很远、误抓无关字面量；#493/#506
+# 的站点都只跨一行，上限 2 行留了重排余量。
 MAX_CALL_LOOKAHEAD_LINES = 2
 
 # 字符串字面量提取：从调用起始处找第一个 "..." （支持转义）
@@ -164,15 +168,17 @@ class Violation:
     suggestion: str = ""
 
 
-def _call_still_open(text: str) -> bool:
-    """调用括号在本行末尾是否仍未闭合（实参表延续到下一行）。
+def _argument_span(lines: list[str], idx: int, start: int) -> str | None:
+    """收集第 idx 行 start 列起、跨行到配对 ')' 之前的调用实参表文本。
 
-    只用于给跨行 lookahead 加门：调用在本行已闭合时说明实参表结束，下一行的字面量属于
-    别的语句，不能拿来当本调用的 prose（否则会把「覆盖扩了」变成「误报多了」）。
+    返回 None 表示实参表在 MAX_CALL_LOOKAHEAD_LINES 行内没闭合（更长的跨行调用属已知
+    漏检边界）。只在**实参表区间**内取字面量，所以续行上「调用闭合之后」的别的调用 /
+    语句的字面量不会被误当成本调用的文案（#506 审查 finding 1）。
     字符串字面量内部的括号不参与计数；调用自己的 '(' 已被调用正则匹配吃掉，从 1 起算。
     """
+    text = "\n".join(lines[idx:idx + MAX_CALL_LOOKAHEAD_LINES + 1])
     depth = 1
-    i = 0
+    i = start
     while i < len(text):
         ch = text[i]
         if ch == '"':
@@ -184,46 +190,55 @@ def _call_still_open(text: str) -> bool:
         elif ch == ')':
             depth -= 1
             if depth == 0:
-                return False
+                return text[start:i]
         i += 1
-    return True
+    return None
 
 
-def extract_log_string(lines: list[str], idx: int) -> tuple[str, int, int] | None:
+class LogString(NamedTuple):
+    """受检调用实参表里的第一个字符串字面量及其位置。
+
+    line_offset = 0 表示与调用起始同行，1/2 表示在第 1/2 个后续行（跨行调用，#506）；
+    column 是字面量所在行的 1-based 列号。
+    """
+
+    content: str
+    line_offset: int
+    column: int
+
+
+def extract_log_string(lines: list[str], idx: int) -> LogString | None:
     """提取第 idx 行（0-based）受检调用的第一个字符串字面量。
 
-    依次尝试 spdlog / LastError::set / throw std::* / std::cerr / push_notification，
-    返回 (字符串内容, 行偏移, 1-based 列号) 或 None；行偏移 0 = 字面量在本行。
-    字面量与调用起始跨行时（#506），只看**实参表范围内**的后续行：括号闭合即停，
-    因此不会抓下一行无关调用的实参字面量；最多看 MAX_CALL_LOOKAHEAD_LINES 行。
+    依次尝试 spdlog / LastError::set / throw std::* / std::cerr / push_notification。
+    括号调用的字面量只取在**实参表区间内**（跨行时向后看，配对 ')' 之前才算）——因此
+    不会抓下一行其它调用 / 语句的字面量；实参表超过 MAX_CALL_LOOKAHEAD_LINES 行则漏检。
+    `std::cerr <<` 不带 `std::format(` 时没有实参表可界定，保守地只扫同行。
     """
     line = lines[idx]
     for call_re in CALL_RES:
         m = call_re.search(line)
         if not m:
             continue
-        after_call = line[m.end():]
-        sm = STRING_LITERAL_RE.search(after_call)
+        if "(" in line[m.start():m.end()]:
+            span = _argument_span(lines, idx, m.end())
+            if span is None:
+                continue
+            sm = STRING_LITERAL_RE.search(span)
+            if not sm:
+                continue
+            line_offset = span.count("\n", 0, sm.start())
+            if line_offset:
+                column = sm.start() - (span.rfind("\n", 0, sm.start()) + 1) + 1
+            else:
+                column = m.end() + sm.start() + 1
+            return LogString(sm.group(1), line_offset, column)
+        # `std::cerr <<` 后面没跟 `std::format(`：没有实参表可以界定，只扫同行（跨行的
+        # `std::cerr <<` 换行再接字面量因此不覆盖 —— 保守取舍，避免把下一行别的语句的字面量
+        # 当成本调用的文案）。
+        sm = STRING_LITERAL_RE.search(line[m.end():])
         if sm:
-            content = sm.group(1)
-            column = m.end() + sm.start() + 1  # 1-based
-            return content, 0, column
-
-        # 跨行：只有括号调用才有「实参表跨行」可言 —— `std::cerr <<` 后面没跟
-        # `std::format(` 时匹配文本里没有 '('，此时下一行的字面量属于别的语句。
-        if "(" not in line[m.start():m.end()]:
-            continue
-        scope = after_call
-        for offset in range(1, MAX_CALL_LOOKAHEAD_LINES + 1):
-            if not _call_still_open(scope):
-                break
-            if idx + offset >= len(lines):
-                break
-            nxt = lines[idx + offset]
-            sm = STRING_LITERAL_RE.search(nxt)
-            if sm:
-                return sm.group(1), offset, sm.start() + 1
-            scope += "\n" + nxt
+            return LogString(sm.group(1), 0, m.end() + sm.start() + 1)
     return None
 
 
