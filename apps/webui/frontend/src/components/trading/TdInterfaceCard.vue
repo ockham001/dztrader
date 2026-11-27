@@ -31,7 +31,6 @@ import {
 import {
   canLoginTd,
   canLogoutTd,
-  isTdFailureState,
   tdAccountStatusView,
 } from '@/composables/tdAccountSession'
 import { useAuthStore } from '@/stores/auth'
@@ -382,7 +381,7 @@ function statusTitle(row: TdAccountRow): string | undefined {
  * 建立中的 desc 由 StatusIndicator 自己的进度文案承载，不再重复一行。
  */
 function statusMetaText(row: TdAccountRow): string {
-  if (!row.gatewayRunning || !isTdFailureState(row.status?.state)) return ''
+  if (!row.gatewayRunning || !row.isFailed) return ''
   return row.progress?.desc || tdStateText(row.status?.state)
 }
 

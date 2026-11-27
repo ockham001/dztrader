@@ -564,23 +564,23 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('状态列 = 登录态（已登录/未登录），界面不再出现「在线/离线」；多账户锚点日不同时全部列出', async () => {
+  it('状态列 = 登录态（已登录/未启动），界面不再出现「在线/离线」；多账户锚点日不同时全部列出', async () => {
     vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
       [
         account({ account_id: 'acc_a', date: '20260808' }),
         account({ account_id: 'acc_offline', date: '20260807', seq: 11 }),
       ],
       { online_accounts: ['acc_a'] }))
-    // 只有 acc_a 有进度镜像 → 已登录；acc_offline 没有行镜像 → 未登录
+    // 只有 acc_a 有进度镜像 → 已登录；acc_offline 没有行镜像 → 「未启动」（无数据 ≠ 未登录）
     seedTdAccountStatus('acc_a', { min: 0, max: 10, current: 10 })
     const w = await mountDashboard()
 
     const online = fundRow(w, 'acc_a').find('[data-test="fund-status"]')
     expect(online.classes()).toContain('ds-status--done')
     expect(online.find('.ds-status__text').text()).toBe('已登录')
-    const notLoggedIn = fundRow(w, 'acc_offline').find('[data-test="fund-status"]')
-    expect(notLoggedIn.classes()).toContain('ds-status--idle')
-    expect(notLoggedIn.find('.ds-status__text').text()).toBe('未登录')
+    const noData = fundRow(w, 'acc_offline').find('[data-test="fund-status"]')
+    expect(noData.classes()).toContain('ds-status--idle')
+    expect(noData.find('.ds-status__text').text()).toBe('未启动')
     // 「在线/离线」这层词不再出现在界面上（它与登录态是同一件事的两种说法，#509）
     expect(w.text()).not.toContain('在线')
     expect(w.text()).not.toContain('离线')
@@ -592,7 +592,7 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('资金行失败态（last_error）显示 ds-status--failed，不把失败说成「未登录」', async () => {
+  it('资金行失败态（四个登录链失败态）显示 ds-status--failed，不把失败说成「未登录」', async () => {
     vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse(
       [account({ account_id: 'acc_a' })],
       { online_accounts: [] }))
@@ -600,7 +600,7 @@ describe('DashboardView', () => {
       available: true,
       accounts: [{ account_id: 'acc_a', account_name: '', gateway: 'dztd_ctp', enabled: true }],
     })
-    // 失败态停在中间值（ADR 0059）：进度数值只会说「进行中」，失败结论来自 last_error/state
+    // 失败态停在中间值（ADR 0059）：进度数值只会说「进行中」，失败结论来自细状态（四个失败态）
     useTdAccountsStore().applyTdStatus('acc_a', {
       account_id: 'acc_a',
       state: 'LoginFailed',
@@ -632,9 +632,9 @@ describe('DashboardView', () => {
 
     const row = fundRow(w, 'acc_offline')
     const cells = row.findAll('td').map(td => td.text())
-    // 状态列无行镜像 → 未登录（不是「离线」：那是刷新按钮的数据新鲜度语义）
+    // 状态列无行镜像 → 「未启动」（不是「离线」：那是刷新按钮的数据新鲜度语义）
     const status = row.findAll('td')[1].find('[data-test="fund-status"]')
-    expect(status.find('.ds-status__text').text()).toBe('未登录')
+    expect(status.find('.ds-status__text').text()).toBe('未启动')
     // 列序：账户 | 状态 | 权益 | 可用 | 冻结 | 保证金 | 手续费 | 可取 | 出入金 | 数据日期 | 操作
     expect(cells.slice(2)).toEqual([
       '—', '—', '—', '—', '—', '—', '入 — / 出 —', '—', '',

@@ -17,7 +17,11 @@ import {
   formatTdMoney,
   isTdAccountOnline,
 } from '@/composables/tdFundView'
-import { tdAccountStatusView, type TdAccountStatusView } from '@/composables/tdAccountSession'
+import {
+  TD_ACCOUNT_STATUS_NO_DATA,
+  tdAccountStatusView,
+  type TdAccountStatusView,
+} from '@/composables/tdAccountSession'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
@@ -232,17 +236,9 @@ const fundAggregate = computed<string>(() => (
  * 失败结论取行上的 `isFailed`），不再拿 `online_accounts` 投影成「在线/离线」——
  * 那是同一件事的另一种说法，正是用户「md 和 td 能否统一」反馈的落点。
  *
- * 缺行回落「未登录」：资金行来自 REST 信封（含离线与无记录账户），`tdAccounts` 行镜像要等
- * 注册表重拉后才有对应行；那一瞬不能把自己的「还没有数据」说成「失败」或「已登录」。
+ * 缺行（资金行来自 REST 信封，`tdAccounts` 行镜像要等注册表重拉/首拉返回）回落
+ * {@link TD_ACCOUNT_STATUS_NO_DATA}「未启动」：没有数据不等于未登录，更不等于失败。
  */
-const FUND_STATUS_IDLE: TdAccountStatusView = {
-  current: 0,
-  max: 1,
-  min: 0,
-  failed: false,
-  idleText: '未登录',
-}
-
 const fundStatusById = computed<Map<string, TdAccountStatusView>>(() => {
   const byId = new Map<string, TdAccountStatusView>()
   for (const row of tdAccountsStore.rows) {
@@ -254,7 +250,7 @@ const fundStatusById = computed<Map<string, TdAccountStatusView>>(() => {
 /** 资金行 + 登录态：模板一处取全（`cells[1]` = StatusIndicator，刷新按钮仍走 online_accounts） */
 const fundRowsView = computed(() => fundsStore.rows.map(row => ({
   ...row,
-  login: fundStatusById.value.get(row.account_id) ?? FUND_STATUS_IDLE,
+  login: fundStatusById.value.get(row.account_id) ?? TD_ACCOUNT_STATUS_NO_DATA,
 })))
 
 // === 交易面板空态状态机（#358，契约 webui-ws §5 第 13 条）===

@@ -82,6 +82,19 @@ export interface TdAccountStatusRow {
 }
 
 /**
+ * 行/账户镜像都还没有时的安全默认：既不说「已登录」也不说「失败」，只说「未启动」。
+ * 缺行（资金行来自 REST 信封，`tdAccounts` 行镜像要等注册表重拉）与无进度镜像同一含义：
+ * 没有数据≠未登录≠失败（#509 拍板「无数据表达 A」）。
+ */
+export const TD_ACCOUNT_STATUS_NO_DATA: Readonly<TdAccountStatusView> = {
+  current: 0,
+  max: 1,
+  min: 0,
+  failed: false,
+  idleText: '未启动',
+}
+
+/**
  * 状态列渲染数据：**交易账户页与仪表盘资金面板的唯一推导**（#509）。两边写各一份时，
  * 「什么时候算失败」「desc 什么时候传」这类判定必然漂移，同一账户会在两处说两种话。
  *
