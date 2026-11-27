@@ -62,6 +62,8 @@ public:
     ADD_METHOD_TO(TdGatewayCtrl::start, "/api/td/gateways/{1}/start", drogon::Post);
     ADD_METHOD_TO(TdGatewayCtrl::stop, "/api/td/gateways/{1}/stop", drogon::Post);
     ADD_METHOD_TO(TdGatewayCtrl::remove, "/api/td/gateways/{1}", drogon::Delete);
+    ADD_METHOD_TO(TdGatewayCtrl::get_auto_login, "/api/td/gateways/{1}/auto-login", drogon::Get);
+    ADD_METHOD_TO(TdGatewayCtrl::set_auto_login, "/api/td/gateways/{1}/auto-login", drogon::Put);
     METHOD_LIST_END
 
     /// GET `/api/td/gateways/available`（契约 rest §2.10）：任意已认证用户。
@@ -88,6 +90,27 @@ public:
     void remove(const drogon::HttpRequestPtr& req,
                 std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                 const std::string& name);
+
+    /// GET `/api/td/gateways/{name}/auto-login`（任意已认证用户，契约 rest §2.10 /
+    /// 契约 auto-login）：读取该接口的自动登录/登出排程。
+    ///
+    /// 200 `{enabled, schedules, source}`：
+    /// - `enabled`/`schedules`：镜像 `auto_login` 域的当前值；
+    /// - `source`：`"mirror"` = 来自网关实时镜像；`"default"` = 网关未运行 / 镜像尚无该域，
+    ///   返回网关**内置默认排程**（日盘/夜盘），使 UI 在网关停机时仍能展示「将会生效的值」。
+    ///
+    /// 排程是**进程级**（一个网关一份），不是账户级——登出会断开该网关全部 session。
+    void get_auto_login(const drogon::HttpRequestPtr& req,
+                        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                        const std::string& name);
+
+    /// PUT `/api/td/gateways/{name}/auto-login`（admin，契约 rest §2.10 / 契约 auto-login）：
+    /// 全量设置排程 → `SET_AUTO_LOGIN` 帧。body `{enabled?, schedules?}`（RFC 7386 增量）。
+    /// 200 `{"ok":true}` 只表示**已写入事件通道**；生效信号是 WS `auto_login` 推送。
+    /// 校验复用 `platform::AutoLoginConfig::validate`（校验规则唯一真相源），非法 400。
+    void set_auto_login(const drogon::HttpRequestPtr& req,
+                        std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                        const std::string& name);
 
 private:
     /// `name` 是否为合法的交易接口进程名（`dztd_*`，契约 process 命名，预检 2）。

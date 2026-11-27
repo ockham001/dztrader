@@ -570,6 +570,12 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 | POST `/api/td/gateways/{name}/start` | 添加/启动交易接口（admin）。`name` = 进程名（= exe stem）；body 可选 `{"display_name":…}` | → `REQUEST_PROCESS_CONTROL{Start}`（未注册时 master 动态注册并持久化，契约 process；`display_name` 走配置 patch）；生效信号 = WS `process_config` + `process_status` |
 | POST `/api/td/gateways/{name}/stop` | 停止交易接口进程（admin；瞬态，不是持久期望态） | → `REQUEST_PROCESS_CONTROL{Stop}`；生效信号 = WS `process_status` |
 | DELETE `/api/td/gateways/{name}` | 移除交易接口（admin）：停止进程 + 删除进程配置条目（master 重启后不再拉起） | → `REQUEST_PROCESS_CONTROL{Remove}`；生效信号：`process_config` 条目消失 = 移除完成的权威信号（契约 process） |
+| GET `/api/td/gateways/{name}/auto-login` | 读取该接口的自动登录/登出排程（任意已认证用户） | 读进程镜像的 `auto_login` 域；镜像无该域时 200 + `source:"unavailable"`（网关未运行/尚未上报），**不编造内置默认排程**——默认表是网关知识，dzweb 复制一份必然漂移 |
+| PUT `/api/td/gateways/{name}/auto-login` | 全量设置排程（admin）。body `{enabled, schedules}`（契约 auto-login 的配置子集） | → `SET_AUTO_LOGIN`（帧头 `instance_id` = 网关进程名）；生效信号 = WS `auto_login` 推送。校验复用 `platform::AutoLoginConfig::validate`（契约 auto-login 的校验唯一真相源），非法 400 `invalid_auto_login`；网关未注册 404 `gateway_not_found` |
+
+**排程是进程级、不是账户级**（契约 auto-login）：一个网关一份排程，登出会断开该网关**全部** session。因此端点挂在网关路径下、不带账户维度；UI 放在接口卡片级而非账户行级。
+
+**`GET .../auto-login` 响应**：200 `{enabled, schedules, source}`；`source` 为 `"mirror"`（实时镜像）或 `"unavailable"`（值未知，UI 必须如实呈现而不是假装空排程）。
 
 **`GET /api/td/gateways/available` 响应**：200，按 `name` 升序：
 

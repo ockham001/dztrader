@@ -14,11 +14,12 @@
  * 数据/写入全部经 tdAccounts store（单一写入点）：本组件不直接调 API，也不复制 store 的
  * 账户写/会话/pending 逻辑（那些语义已在 store 中由 #251/#409 固定）。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import StatusIndicator from '@/components/shared/StatusIndicator.vue'
 import TdAccountFormModal from '@/components/trading/TdAccountFormModal.vue'
+import TdAutoLoginPanel from '@/components/trading/TdAutoLoginPanel.vue'
 import type { TdAccountFormValue } from '@/components/trading/TdAccountFormModal.vue'
 import {
   useTdAccountsStore,
@@ -60,6 +61,11 @@ const startPending = computed(() => store.gatewayStartPending(props.tdInterface.
 const removePending = computed(() => store.gatewayRemovePending(props.tdInterface.name))
 /** 本接口「添加账户」在途态（按网关隔离，见 store.addPendingFor） */
 const addingAccount = computed(() => store.addPendingFor(props.tdInterface.name))
+// 自动登录/登出排程：挂载即拉一次基线（网关未运行时后端回 source=unavailable，
+// 面板据此展示「当前值未知」而不是假装空排程）。后续更新由 WS auto_login 推送。
+onMounted(() => {
+  void store.loadAutoLogin(props.tdInterface.name)
+})
 const stateText = computed(() => processStateText(props.tdInterface.state))
 const stateColor = computed(() => processStateColor(props.tdInterface.state))
 
@@ -511,6 +517,12 @@ function loginTimeText(row: TdAccountRow): string {
       </div>
     </div>
 
+    <!-- 自动登录/登出排程（契约 auto-login / rest §2.10）：进程级配置，
+         与行情侧「自动登录」同形态，放在卡片级（不是账户行级——登出断开该网关全部会话）。 -->
+    <div class="td-card__auto-login">
+      <TdAutoLoginPanel :gateway="tdInterface.name" :can-write="canWrite" />
+    </div>
+
     <!-- 体：账户表 + 卡片内添加账户 -->
     <div class="td-card__body">
       <div class="td-card__body-head">
@@ -785,6 +797,14 @@ function loginTimeText(row: TdAccountRow): string {
   justify-content: space-between;
   gap: var(--spacer-12);
   flex-wrap: wrap;
+}
+
+/* 自动登录/登出排程区块：卡片级配置，紧贴头部之下、账户表之上。
+   用上分隔线把它与账户表分开——两者层级不同（进程级配置 vs 账户列表）。 */
+.td-card__auto-login {
+  padding: var(--spacer-8) 0;
+  margin-bottom: var(--spacer-8);
+  border-bottom: 1px solid var(--border-neutral-l1);
 }
 
 .td-card__identity {

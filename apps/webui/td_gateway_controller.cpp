@@ -1,6 +1,7 @@
 #include "td_gateway_controller.h"
 
 #include <dztrader/core/this_process.h>
+#include <dztrader/platform/auto_login.h>  // AutoLoginConfig::validate（契约 auto-login 校验真相源）
 #include <dztrader/platform/process.h>
 #include <dztrader/process/exe_scanner.h>
 #include <nlohmann/json.hpp>
@@ -262,6 +263,105 @@ void TdGatewayCtrl::remove(const drogon::HttpRequestPtr& req,
         return;
     }
     SPDLOG_INFO("td gateway remove dispatched | name={}", name);
+    callback(json_response(drogon::k200OK, nlohmann::json{{"ok", true}}));
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/td/gateways/{name}/auto-login（契约 rest §2.10 / 契约 auto-login）
+// ---------------------------------------------------------------------------
+void TdGatewayCtrl::get_auto_login(const drogon::HttpRequestPtr& req,
+                                   std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                   const std::string& name) {
+    (void)req;  // 认证由 JWT advice；本端点权限「任意已认证用户」（与全部交易读端点一致）
+    if (!is_valid_gateway_name(name)) {
+        callback(error_with_code(drogon::k400BadRequest, "invalid gateway", "invalid_gateway"));
+        return;
+    }
+    // 镜像里的 auto_login 域由网关进程的 RTN_AUTO_LOGIN 填充（契约 auto-login）。
+    // 缺失有两种情况：网关从未启动过 / 刚启动还没回 RTN。
+    // **不在这里编造内置默认排程**：默认表是网关的知识（apps/ctp/common），
+    // dzweb 复制一份必然漂移。用 source 字段如实告诉前端「当前拿不到实时值」。
+    if (process_mirror_) {
+        if (auto it = process_mirror_->get_auto_login(name); it.has_value()) {
+            nlohmann::json out = *it;
+            out["source"] = "mirror";
+            callback(json_response(drogon::k200OK, out));
+            return;
+        }
+    }
+    SPDLOG_INFO("td auto-login read | name={} source=unavailable", name);
+    callback(json_response(drogon::k200OK, nlohmann::json{{"source", "unavailable"},
+                                                          {"enabled", false},
+                                                          {"schedules", nlohmann::json::array()}}));
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/td/gateways/{name}/auto-login（admin，契约 rest §2.10 / 契约 auto-login）
+// ---------------------------------------------------------------------------
+void TdGatewayCtrl::set_auto_login(const drogon::HttpRequestPtr& req,
+                                   std::function<void(const drogon::HttpResponsePtr&)>&& callback,
+                                   const std::string& name) {
+    if (!is_admin(req)) {
+        callback(error_with_code(drogon::k403Forbidden, "admin required", "admin_required"));
+        return;
+    }
+    if (!is_valid_gateway_name(name)) {
+        callback(error_with_code(drogon::k400BadRequest, "invalid gateway", "invalid_gateway"));
+        return;
+    }
+    nlohmann::json body;
+    try {
+        body = nlohmann::json::parse(req->getBody());
+    } catch (const std::exception&) {
+        callback(error_with_code(drogon::k400BadRequest, "invalid json", "invalid_json"));
+        return;
+    }
+    if (!body.is_object()) {
+        callback(error_with_code(drogon::k400BadRequest, "body must be an object", "invalid_body"));
+        return;
+    }
+    // 校验复用 platform::AutoLoginConfig（契约 auto-login 的校验唯一真相源），
+    // 不做第二套规则。注意 validate 校验的是**合并后的完整配置**，因此这里先按
+    // RFC 7386 语义把它与镜像里的当前值合并再校验——只发 {enabled:false} 这类增量
+    // 也是合法的。
+    nlohmann::json merged =
+        nlohmann::json{{"enabled", false}, {"schedules", nlohmann::json::array()}};
+    if (process_mirror_) {
+        if (auto current = process_mirror_->get_auto_login(name); current.has_value()) {
+            merged = *current;
+        }
+    }
+    for (auto it = body.begin(); it != body.end(); ++it) {
+        if (it.value().is_null()) {
+            merged.erase(it.key());
+            continue;
+        }
+        merged[it.key()] = it.value();
+    }
+    if (auto err = platform::AutoLoginConfig::validate(merged); err.has_value()) {
+        // 400 带具体原因：契约要求非法输入可见，不静默吞。
+        SPDLOG_WARN("td auto-login set rejected | name={} reason=\"{}\"", name, *err);
+        callback(error_with_code(drogon::k400BadRequest, *err, "invalid_auto_login"));
+        return;
+    }
+    if (!is_registered(name)) {
+        // 网关未注册 = 没有进程能接收 SET_AUTO_LOGIN 帧；此时写帧会悬空到对端超时。
+        callback(error_with_code(drogon::k404NotFound, "gateway not found", "gateway_not_found"));
+        return;
+    }
+    if (auto err = check_writer_ready(); err != nullptr) {
+        callback(err);
+        return;
+    }
+    // write_set_auto_login 是 fire-and-forget（无返回值；内部失败只记日志），
+    // 就绪性已由上方 check_writer_ready() 拦截。真正生效由 WS auto_login 推送确认。
+    shm_writer_->write_set_auto_login(name, body);
+    SPDLOG_INFO("td auto-login set dispatched | name={}", name);
+    // 关闭自动登录是安全敏感操作（网关不再自动登录/登出），下发成功后打 WARN 审计日志
+    // ——与行情侧 set_auto_login 同一口径。
+    if (body.contains("enabled") && body["enabled"].is_boolean() && !body["enabled"].get<bool>()) {
+        SPDLOG_WARN("td auto-login disable dispatched | name={}", name);
+    }
     callback(json_response(drogon::k200OK, nlohmann::json{{"ok", true}}));
 }
 

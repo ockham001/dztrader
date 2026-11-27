@@ -275,7 +275,12 @@ registerHandler('md_rtn_config', (payload) => {
 registerHandler('auto_login', (payload, instanceId) => {
   // 契约 auto-login: RTN_AUTO_LOGIN → WS auto_login 消息 (data: {enabled, schedules}, 始终全量)
   // P6 修复: 排程/自动登录单一真相源——前端镜像 + 全量提交 SET_AUTO_LOGIN
-  if (instanceId) {
+  // 分流（契约 rest §2.10 起交易接口也有排程）：instance_id = 网关进程名，
+  // md 与 td 各有自己的排程镜像，靠前缀区分，互不覆盖。
+  if (!instanceId) return
+  if (instanceId.startsWith('dztd_')) {
+    useTdAccountsStore().applyAutoLogin(instanceId, payload)
+  } else {
     useMdConfigStore().applyAutoLogin(instanceId, payload)
   }
 })

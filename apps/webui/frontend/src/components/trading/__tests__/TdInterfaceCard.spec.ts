@@ -37,6 +37,13 @@ vi.mock('@/api/tdGateways', async (importOriginal) => {
       start: vi.fn(),
       stop: vi.fn(),
       remove: vi.fn(),
+      // #524：卡片挂载即拉排程基线（auto-login 端点）
+      getAutoLogin: vi.fn().mockResolvedValue({
+        enabled: true,
+        schedules: [],
+        source: 'unavailable',
+      }),
+      setAutoLogin: vi.fn(),
     },
   }
 })
