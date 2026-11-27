@@ -2,7 +2,7 @@
 """
 check_log_format.py — dztrader 日志格式 lint 脚本
 
-检测 spdlog / LastError::set / throw std::* / std::cerr 的文本是否符合项目规范:
+检测 spdlog / LastError::set / throw std::* / std::cerr / push_notification 的文本是否符合项目规范:
   - 格式: prose | k=v k=v （hybrid 模式）
   - prose 全英文小写开头，无句号
   - 自由文本类 k=v 的值必须双引号包裹（R6，见下）
@@ -22,6 +22,13 @@ bar_strategy §6 记录了这个缺口），因此与 spdlog 同一套文本规�
 用于自由文本也用于枚举标识符（如 `reason=negative_volume`，有测试断言锁定），静态不可
 判定；强行纳入会让测试变红（#266 第一版实测 8 个失败）。这几类 key 仍需人工判断。
 
+`push_notification(notif, message, prose)`（#493 引入的 td 登录链失败出口）只检查**第三实参
+prose** —— 它是异常兜底日志格式串的 prose 部分；第二实参 message 是 UI 通知正文，允许中文，
+不能按日志文本检查。调用形态约定前两个实参是变量/表达式（message 由 `*_failed_message`
+纯函数构造），因此「实参表内首个字符串字面量」即 prose（#506）。prose 与调用起始跨行时
+（#493 的结算确认 / 合约加载 / 连接超时三处），提取按「调用括号未闭合」在实参表范围内继续
+向后看，闭合即停，不会抓下一行无关调用的实参字面量。
+
 不在本 lint 范围：UI 通知（notify_ui_*）与策略输出等**面向用户的展示文案**允许中文，
 不按日志/错误文本规范检查；需要时由 review 按契约单独裁决。
 
@@ -33,7 +40,7 @@ bar_strategy §6 记录了这个缺口），因此与 spdlog 同一套文本规�
 退出码: 0=通过, 1=有违规
 
 豁免机制:
-  行尾 // NOLINT(log-format)         豁免单行
+  行尾 // NOLINT(log-format)         豁免单行（跨行调用的 prose 写在该行或调用起始行）
   // NOLINTBEGIN(log-format)         豁免范围开始
   // NOLINTEND(log-format)           豁免范围结束
 """
@@ -56,8 +63,12 @@ SPDLOG_CALL_RE = re.compile(
 #   LastError::set(code, "fmt | k={}", args...)   —— C 接口边界的上下文消息
 #   throw std::*("fmt | k={}")                     —— 异常消息
 #   std::cerr << std::format("fmt | k={}", ...)    —— header-only SDK 的诊断出口（无 spdlog）
-# UI 通知（notify_ui_*）面向用户，可中文，故意不在此列。
+#   push_notification(notif, message, prose)       —— prose 是异常兜底日志的格式串（#506）
+# UI 通知（notify_ui_*）面向用户，可中文，故意不在此列。push_notification 的**第二实参**
+# message 同样是 UI 正文（可中文），所以只取实参表内首个字符串字面量当 prose —— 该口径成立
+# 的前提是前两个实参为变量/表达式，调用形态见 helper 的 Doxygen（td_account_session.h）。
 OTHER_CALL_RES = (
+    re.compile(r'\bpush_notification\s*\('),
     re.compile(r'\bLastError::set\s*\('),
     re.compile(r'\bthrow\s+std::[A-Za-z_][A-Za-z0-9_]*(?:<[^>]*>)?\s*\('),
     # `std::cerr << "..."` 与 `std::cerr << std::format("...")`：两个形态都要抓
@@ -66,6 +77,10 @@ OTHER_CALL_RES = (
 )
 
 CALL_RES = (SPDLOG_CALL_RE, *OTHER_CALL_RES)
+
+# 跨行 lookahead 上限：调用实参表最多向后看这么多行。有上限是为了防「括号永不闭合」的
+# 宏/语法错误把扫描拖到很远、误抓无关字面量；#493/#506 的站点都只跨一行。
+MAX_CALL_LOOKAHEAD_LINES = 2
 
 # 字符串字面量提取：从调用起始处找第一个 "..." （支持转义）
 STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
@@ -113,6 +128,12 @@ SELFTEST_CASES: list[tuple[str, set[str]]] = [
     ("frame | type={} state={} ret={} count={}", set()),
     # 单词里碰巧含 key 名不算（\b 锚定）
     ("not_a_key | myerror={} error_code={}", set()),
+    # push_notification 的 prose 第三实参走同一套 R3/R5（#506）：合规 / 中文 / 大写开头 /
+    # 句号结尾各一条，锁住「调用类型扩了、规则边界没漂移」。
+    ("td connect timeout notify failed", set()),
+    ("认证失败通知发送失败", {"log-format/non-english"}),
+    ("Td connect timeout notify failed", {"log-format/prose-case"}),
+    ("td connect timeout notify failed.", {"log-format/prose-period"}),
 ]
 
 
@@ -143,23 +164,66 @@ class Violation:
     suggestion: str = ""
 
 
-def extract_log_string(line: str) -> tuple[str, int] | None:
-    """从一行中提取受检调用的第一个字符串字面量。
+def _call_still_open(text: str) -> bool:
+    """调用括号在本行末尾是否仍未闭合（实参表延续到下一行）。
 
-    依次尝试 spdlog / LastError::set / throw std::*，返回 (字符串内容, 起始列号) 或 None。
-    支持调用起始在同一行的跨行字符串（仅取首行内容）。
+    只用于给跨行 lookahead 加门：调用在本行已闭合时说明实参表结束，下一行的字面量属于
+    别的语句，不能拿来当本调用的 prose（否则会把「覆盖扩了」变成「误报多了」）。
+    字符串字面量内部的括号不参与计数；调用自己的 '(' 已被调用正则匹配吃掉，从 1 起算。
     """
+    depth = 1
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == '\\' else 1
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            depth -= 1
+            if depth == 0:
+                return False
+        i += 1
+    return True
+
+
+def extract_log_string(lines: list[str], idx: int) -> tuple[str, int, int] | None:
+    """提取第 idx 行（0-based）受检调用的第一个字符串字面量。
+
+    依次尝试 spdlog / LastError::set / throw std::* / std::cerr / push_notification，
+    返回 (字符串内容, 行偏移, 1-based 列号) 或 None；行偏移 0 = 字面量在本行。
+    字面量与调用起始跨行时（#506），只看**实参表范围内**的后续行：括号闭合即停，
+    因此不会抓下一行无关调用的实参字面量；最多看 MAX_CALL_LOOKAHEAD_LINES 行。
+    """
+    line = lines[idx]
     for call_re in CALL_RES:
         m = call_re.search(line)
         if not m:
             continue
         after_call = line[m.end():]
         sm = STRING_LITERAL_RE.search(after_call)
-        if not sm:
+        if sm:
+            content = sm.group(1)
+            column = m.end() + sm.start() + 1  # 1-based
+            return content, 0, column
+
+        # 跨行：只有括号调用才有「实参表跨行」可言 —— `std::cerr <<` 后面没跟
+        # `std::format(` 时匹配文本里没有 '('，此时下一行的字面量属于别的语句。
+        if "(" not in line[m.start():m.end()]:
             continue
-        content = sm.group(1)
-        column = m.end() + sm.start() + 1  # 1-based
-        return content, column
+        scope = after_call
+        for offset in range(1, MAX_CALL_LOOKAHEAD_LINES + 1):
+            if not _call_still_open(scope):
+                break
+            if idx + offset >= len(lines):
+                break
+            nxt = lines[idx + offset]
+            sm = STRING_LITERAL_RE.search(nxt)
+            if sm:
+                return sm.group(1), offset, sm.start() + 1
+            scope += "\n" + nxt
     return None
 
 
@@ -266,15 +330,20 @@ def check_file(path: Path) -> list[Violation]:
         if in_nolint_block:
             continue
 
-        result = extract_log_string(line)
+        result = extract_log_string(lines, idx - 1)
         if not result:
             continue
 
-        content, column = result
+        content, line_offset, column = result
+        # 跨行的 prose 报在字面量所在行（= 修复动作所在行）；NOLINT 写该行或调用起始行
+        # 都能豁免 —— 调用起始行在循环里已被跳过，该行在下面显式判定。
+        report_line = idx + line_offset
+        if line_offset and "NOLINT(log-format)" in lines[report_line - 1]:
+            continue
         for rule, msg, suggestion in check_string(content):
             violations.append(Violation(
                 file=path,
-                line=idx,
+                line=report_line,
                 column=column,
                 rule=rule,
                 message=msg,

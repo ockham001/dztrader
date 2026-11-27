@@ -346,9 +346,10 @@ private:
     /// @param message 已拼好的中文通知正文 (各出口用对应的 `*_failed_message` 纯函数构造)
     /// @param prose 异常兜底日志格式串的 prose 部分 (各出口沿用自己收敛前那句 lower-case
     ///   English 措辞, 使日志行与收敛前逐字一致)。
-    ///   **已知限制**: 因为 prose 走格式串占位符 (`"{} | account={} ..."`),
-    ///   `check_log_format.py` 的 R3/R5 (非英文 / prose 大小写与句号) 只看得到 `"{}"`,
-    ///   对这三句不再生效 —— 改措辞时需人工保证 lower-case English、无句号。
+    ///   **静态覆盖** (#506): `scripts/check_log_format.py` 把本调用纳入扫描, R3/R5 (非英文 /
+    ///   prose 大小写与句号) 对第三实参生效; 提取口径是「实参表内首个字符串字面量」, 因此
+    ///   前两个实参须保持变量/表达式形态 (message 由 `*_failed_message` 构造), 不要在实参里
+    ///   直接写字面量。prose 与调用起始跨行 (本类三处) 也被覆盖。
     void push_notification(const std::optional<TdNotification>& notif,
                            const std::string& message,
                            std::string_view prose);
