@@ -29,9 +29,20 @@
   python3 scripts/check_build_info.py check            # --info 缺省按本机平台/Release 推
   python3 scripts/check_build_info.py --selftest       # 临时 git 仓库自测，不碰工作区
 
-stdout 一行 `build-info: ok|stale|missing|unknown | ...`，warning / note 走 stderr。
+stdout 一行 `build-info: status=<状态> ...`，warning / note 走 stderr。状态取值：
 
-退出码: 0=一致（note 不算问题）, 1=有 warning（不一致/缺失/不可读）, 2=参数或环境错误。
+  - `ok`          一致（dirty 构建另给一条 note，不算问题）
+  - `stale`       产物来自别的 commit（HEAD 与 BUILD_INFO.commit 不同）
+  - `missing`     BUILD_INFO 不在 / 读不到
+  - `unreadable`  文件在但缺必需字段（旧格式 / 被截断）
+  - `unknown`     BUILD_INFO 里 commit=unknown（构建时不在 git 仓库里）
+  - `no-head`     仓库侧 HEAD 解析不出来（不是 git 仓库 / git 不可用），判不了新旧
+
+状态是**显式**给的，不从 warning 数量反推——`missing` 与 `unreadable`、`stale` 与
+`no-head` 的排查方向完全不同（前者查产物有没有装上，后者查产物格式/仓库状态）。
+
+退出码: 0=ok（note 不算问题）, 1=有 warning（stale/missing/unreadable/unknown/no-head）,
+        2=参数或环境错误。
 """
 
 from __future__ import annotations
