@@ -31,11 +31,11 @@
 
 审查对象：**已冻结的 commit**，固定点 <base 短 hash>，HEAD = `<HEAD 短 hash>`。
 
-工具路由（AGENTS 顶部规则对子代理同样生效）：
+工具路由（本仓读取约定对子代理同样生效）：
 - 文件内容用 `read` 工具（大文件用 offset/limit 分段）；**不要**用 bash 的 `cat` / `sed -n` / `head` / `tail` 读文件；
 - 搜内容用 `grep` 工具（或一条 `git grep -n` 扫全仓）；契约与大文档用 `python3 scripts/contract_slice.py`；
-- bash 只用于 `git` / `gh` / `python3 scripts/...`；
-- **`git diff <base>...<HEAD>` 只跑一次**（逐文件 `git diff <base> -- <file>` 会成倍放大调用数）；怀疑某文件被截断才允许 `git show <sha>:<path>` 一次。
+- bash 只用于 `git` / `gh` / `ls` / `python3 scripts/...`；
+- **全量 `git diff <base>...<HEAD>` 只跑一次**（禁止逐文件 `git diff <base> -- <file>`，会成倍放大调用数）；`git diff --stat` 允许一次（确认范围）；怀疑某文件被截断才允许 `git show <sha>:<path>` 一次。
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`git diff` / `git show` / `git log` / `git status` / `git grep` / `gh issue view` / `ls` /
@@ -66,7 +66,8 @@
 审查对象：**已冻结的 commit**，固定点 <base>，HEAD = `<HEAD>`。
 
 工具路由（同 §1）：文件用 `read` 工具、搜内容用 `grep` 工具、契约用 `contract_slice.py`；bash 只跑
-`git` / `gh` / `python3 scripts/...`；`git diff <base>...<HEAD>` 只跑一次。不要通读未改动文件。
+`git` / `gh` / `ls` / `python3 scripts/...`；全量 `git diff <base>...<HEAD>` 只跑一次（`--stat` 允许一次）。
+不要通读未改动文件。
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /
@@ -81,7 +82,7 @@
 4. 按 AC 逐条判定，直接输出报告
 
 禁止写工作区：不跑构建 / 测试 / `npm run gen:types` / `preflight.sh`（门禁由 Lead 跑），不用
-`sed -i` / heredoc 写文件。不要通读旧版全文（只在怀疑某条真相丢失时用 `git show <base>:<file> | sed -n` 查对应段落）。
+`sed -i` / heredoc 写文件。不要通读旧版全文（只在怀疑某条真相丢失时 `git show <base>:<file>` 看对应段落，一次性例外）。
 
 报告按 AC 逐条 PASS / FAIL / 可接受偏差，每条附证据（行号或命令输出）。
 最后一行给 `AC 通过 X/Y`。
@@ -97,7 +98,8 @@
 （#496 为 1 个修复 commit 派了 3 个验证成员、其中 2 个 failed；#497 单验证器 1.4min 完成），交付时两个轴的标记都写。
 
 工具路由（同 §1）：文件用 `read` 工具、搜内容用 `grep` 工具、契约用 `contract_slice.py`；bash 只跑
-`git` / `gh` / `python3 scripts/...`；`git diff <fixbase>...<fixhead>` 只跑一次。
+`git` / `gh` / `ls` / `python3 scripts/...`；`git diff <fixbase>...<fixhead>` 只跑一次。
+不通读未改动文件——只验证上一轮这 N 条 finding。
 
 只读命令白名单（只用这些；需要实测时只改 `mktemp -d` 副本）：
 - 允许：`gh issue view <N> --json title,body` / `git diff` / `git show` / `git log` / `git grep` /

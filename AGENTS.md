@@ -140,7 +140,7 @@
 - **禁止单引号包裹占位符**：错 `"user '{}' fail"`，对 `"user fail | user={}"`
 - **禁止多行 `===` banner**，必须合并为单行 `prose | k=v`。**禁止中文**（含函数名、变量名）
 - 非性能路径用异常，日志作为最终输出。`Exception ──catch──→ LastError::set()`（C 接口边界，**无日志**）/ `──→ spdlog`（平台代码，无 LastError）
-- 提交前跑 `./scripts/gate.sh preflight`（**覆盖清单的唯一真相源是脚本自身的 `run_step` 行，`--help` 直接打印全部步骤名与数量**——文档不逐项手抄，#289 AC7；与 CI 同源）；**纯文档/脚本票加 `--c-only`**（与 CI 的 `ci_scope.py` fast 路径同口径：跳过前端五件套 ~50s；#492 纯文档票跑了 5 次 full preflight）；不要直调 `preflight.sh` 接 `| tail`（管道吞退出码，#495 实测假绿）；日志违规用 `// NOLINT(log-format)` 豁免
+- 提交前跑 `./scripts/gate.sh preflight`（**覆盖清单的唯一真相源是脚本自身的 `run_step` 行：`./scripts/preflight.sh --help` 直接打印全部步骤名与数量**——查清单直调原脚本，经 gate 会被 tail 截断；文档不逐项手抄，#289 AC7；与 CI 同源）；**纯文档/脚本票加 `--c-only`**（与 CI 的 `ci_scope.py` fast 路径同口径：跳过前端五件套 ~50s；#492 纯文档票跑了 5 次 full preflight）；不要直调 `preflight.sh` 跑门禁再接 `| tail`（管道吞退出码，#495 实测假绿）；日志违规用 `// NOLINT(log-format)` 豁免
 
 ### 跨平台
 

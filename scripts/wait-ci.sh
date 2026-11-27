@@ -155,9 +155,9 @@ print_ci_log_hint() {
     fi
 }
 
-# 从 gh pr checks 的 link 列里取 run id（形如 .../runs/<id>/job/<job-id>）；取不到输出空。
+# 从 gh pr checks 的 link 列里取 run id（形如 .../runs/<id> 或 .../runs/<id>/job/<job-id>）；取不到输出空。
 run_id_from_links() {
-    sed -n 's#.*/runs/\([0-9][0-9]*\)/.*#\1#p' | head -1
+    sed -n 's#.*/runs/\([0-9][0-9]*\).*#\1#p' | head -1
 }
 
 # ---- 共享的低层查询（前台等待与 --status 同一实现，#192 审查发现两套会漂移） ----

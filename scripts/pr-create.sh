@@ -18,7 +18,7 @@
 #   3) 两道全绿才 `gh pr create --title ... --body-file ... "$@"`（其余参数原样透传，gh 输出直通）
 #   4) 任一守卫失败 → exit 1 且**不调用 gh**（--selftest 覆盖）
 #
-# 退出码: 0=PR 已创建; 1=守卫失败; 2=参数/环境错误
+# 退出码: 0=PR 已创建; 1=守卫失败; 2=参数/环境错误（含缺 gh / 缺校验脚本）; 其余=gh pr create 的原样退出码
 #
 # 环境变量: GH（默认 gh，与 wait-ci.sh 一致；selftest 用假 gh）。
 
@@ -80,6 +80,7 @@ run_selftest() {
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$FAKE_GH_ARGS"
 echo "https://example.invalid/pull/1"
+exit "${FAKE_GH_RC:-0}"
 FAKE_GH
     chmod +x "$SELFTEST_TMP/bin/gh"
 
@@ -90,6 +91,13 @@ FAKE_GH
     run_case "合法标题+正文 → 建 PR" 0 1 \
         --title "chore(#504): retro hardening" --body-file "$SELFTEST_TMP/good-body.md" \
         --base main --head chore/issue-504-retro-spec-06-hardening || fails=$((fails + 1))
+    # 参数透传：gh 必须收到 pr-create 未知参数（--head 等原样进 passthru）
+    if [ ! -f "$SELFTEST_TMP/gh-args" ] || ! grep -qx -- "--head" "$SELFTEST_TMP/gh-args"; then
+        echo "selftest FAIL [参数透传]: gh did not receive --head" >&2
+        fails=$((fails + 1))
+    else
+        echo "selftest ok [参数透传]"
+    fi
     run_case "正文含 closing keyword → 拒建" 1 0 \
         --title "chore(#504): retro hardening" --body-file "$SELFTEST_TMP/bad-body.md" || fails=$((fails + 1))
     run_case "标题含 closing keyword → 拒建" 1 0 \
@@ -98,12 +106,25 @@ FAKE_GH
         --title "chore(#504): retro hardening" --body-file "$SELFTEST_TMP/missing.md" || fails=$((fails + 1))
     run_case "缺 --title → 参数错误" 2 0 \
         --body-file "$SELFTEST_TMP/good-body.md" || fails=$((fails + 1))
+    run_case "--help → 打印用法且不建 PR" 0 0 --help || fails=$((fails + 1))
+
+    # gh 自身的非 0 退出码原样透传（exec；不要被误当成「守卫失败」的 1）
+    rm -f "$SELFTEST_TMP/gh-args"
+    FAKE_GH_ARGS="$SELFTEST_TMP/gh-args" FAKE_GH_RC=3 GH="$SELFTEST_TMP/bin/gh" "$SCRIPT" \
+        --title "chore(#504): retro hardening" --body-file "$SELFTEST_TMP/good-body.md" >/dev/null 2>&1
+    local gh_rc=$?
+    if [ "$gh_rc" -ne 3 ] || [ ! -f "$SELFTEST_TMP/gh-args" ]; then
+        echo "selftest FAIL [gh 非 0 退出码透传]: rc=$gh_rc (want 3)" >&2
+        fails=$((fails + 1))
+    else
+        echo "selftest ok [gh 非 0 退出码透传]"
+    fi
 
     if [ "$fails" -ne 0 ]; then
         echo "selftest FAILED: $fails case(s)" >&2
         return 1
     fi
-    echo "selftest: 5 cases behave as expected"
+    echo "selftest: 8 checks behave as expected"
     return 0
 }
 
@@ -155,17 +176,21 @@ fi
 [ -f "$BODY" ] || die "PR body file not found: $BODY"
 [ -s "$BODY" ] || die "PR body file is empty: $BODY"
 
+# 依赖校验：缺 gh / 缺校验脚本属环境错误（2），不要伪装成「守卫失败」(1) 或 exec 的 127
+command -v "$GH_BIN" >/dev/null 2>&1 || die "gh not found: $GH_BIN (install gh or set GH)"
+[ -f "$SUBJECT_CHECK" ] || die "missing guard script: $SUBJECT_CHECK"
+
 PY="$(resolve_python)" || exit $?
 
 # 标题守卫（R1 前缀 / R2 长度 / R3 closing keyword）——不通过则不建 PR
 if ! "$PY" "$SUBJECT_CHECK" --subject "$TITLE"; then
-    echo "error: PR title 未通过校验；标题应为 '<type>(#<issue>): <描述>'" >&2
+    echo "error: PR title failed commit-subject rules; use '<type>(#<issue>): <subject>'" >&2
     exit 1
 fi
 
 # 正文守卫（R4 closing keyword）——不通过则不建 PR
 if ! "$PY" "$SUBJECT_CHECK" --pr-body-file "$BODY"; then
-    echo "error: PR 正文含 GitHub auto-close 形态；删除 closing keyword 后再建 PR（#495 曾因此多跑一轮 CI）" >&2
+    echo "error: PR body contains a GitHub auto-close form; drop closing keywords before creating the PR (#495)" >&2
     exit 1
 fi
 

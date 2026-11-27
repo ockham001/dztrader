@@ -11,7 +11,8 @@
 #       SYSMON 指标键集合（#309，4 处数据副本 + snapshot_builder 的 15 分支镜像）/ push 纪律
 #       （#309，push-ticket.sh 的 scope+验证标记+md 锁定+push 串联）/ md 生产锁定确认标记
 #       （#480，push-ticket.sh 对 apps/ctp/md 改动的硬前置）/ 审查验证标记（#289，pre-push
-#       读取）/ PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
+#       读取）/ 建 PR 守卫（#504，pr-create.sh 把标题/正文 auto-close 校验串进 gh pr create）/
+#       PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
 #       门禁分槽 + 票型放行判定（#316 AC2，scripts/gate_status.py，pre-push 共用）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
