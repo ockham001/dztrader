@@ -74,9 +74,18 @@
 
 与上面各类 finding 并列，这两条是每次 review 的固定自搜动作（不等它出现，而是主动核）。它们只靠人工读出来——没有任何机械检查覆盖。
 
-- 自搜项 A —— 注释/文档里引用的历史票号或 commit 必须能核实（#284 首轮 Standards 第 1 条 BLOCKING）。
+- 自搜项 A —— 注释/文档里引用的历史票号、commit、ADR 决策号必须能核实（#284 首轮 Standards 第 1 条 BLOCKING；ADR 决策号一项由 #505 增补）。
   - 搜法：新增或改动的每处历史归因（`（#N）` / `见 commit abc1234` / `<SHA> 引入`），用 `git log -S'<被归因的字符串>'` / `git log --all --grep='#N'` 核实；**核实不到就直接写完整 SHA**（先用 `git log --all --oneline -S'<keyword>'` 找到引入提交，再把 7+ 位 SHA 写进注释/文档），不要凭记忆编票号。
   - 本波实例：`check-push-scope.sh` 把 `cancel-in-progress` 的归因写成「（#274）」，而 #274 实际是孤儿导出 lint、并发取消来自 commit `2073992`（#93 复盘）——一个错的票号让追溯链断在开头；`git log --all --grep='#274'` 与 `git log --all -S'cancel-in-progress'` 三条命令即可证伪。
+  - **ADR 决策号要核对语义，不只看编号越界（#505）**：新增或改动的每处 `ADR NNNN 决策 M`，打开该 ADR 的 Decision 段核对该条讲的是不是你写的那件事：
+
+    ```bash
+    adr=$(ls docs/adr | grep '^0059-')   # 换成被引用的 ADR 编号
+    python3 scripts/contract_slice.py "docs/adr/$adr" Decision
+    ```
+
+    语义对不上就改引用（ADR 一经 Accepted 不改正文，错的只能是引用方）；**更稳的写法是「决策号 + 加粗标题」**——`ADR 0059 决策 1（失败态表示「在哪一段失败」）`，标题可 grep 核实、对编号漂移免疫。spec 侧编号规则见 [issue-tracker.md](issue-tracker.md)「spec 复述 ADR 决策」。
+  - 本波实例（#497，spec 编号 ≠ ADR 编号）：6 处「ADR 0059 决策 6」写的是「失败停在失败阶段」，而 ADR 决策 6 是「`last_error` 持久到下一次尝试」——对应的是决策 1；根因是父 spec #491 自行编号（其决策 6 = md 对齐）。双轴审查同时抓到、机械检查抓不到，6 处全改。
 - 自搜项 B —— 改 exit code / 错误文案后，全仓 `git grep` 同口径关键词（#284 首轮 Standards 第 2 条 BLOCKING）。
   - 搜法：改退出码 / 错误串 / 报错关键词后，用 `git grep -n` 扫全仓（只扫版本控制内文件，天然跳过 `build/`、`install/`、`.cache/`）：错误串关键词、退出码数字、文档里的旧措辞各 grep 一遍（错误串与文档措辞可能不同词），逐处确认是新口径或有理由保留。
   - 本波实例：`check-push-scope` 新增「不可解析 SHA 也拦」后，退出码契约文档只写「同 SHA 才拦」，导致 `.githooks/pre-push`、`docs/development-checklist.md`、`docs/agents/ticket-closeout.md` 一并漂移，靠人工审查才发现。
