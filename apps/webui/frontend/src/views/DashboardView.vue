@@ -22,11 +22,14 @@ import {
   tdAccountStatusView,
   type TdAccountStatusView,
 } from '@/composables/tdAccountSession'
+import { formatTdAvgPrice, formatTdPrice, formatTdTime } from '@/composables/tdOrderView'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { useTdAccountsStore } from '@/stores/tdAccounts'
+import { useTdOrdersStore } from '@/stores/tdOrders'
 import { useNotifyStore } from '@/stores/notify'
+import type { TdOrderRow } from '@/types/generated'
 
 const marketSourcesStore = useMarketSourcesStore()
 const positionsStore = useTdPositionsStore()
@@ -52,21 +55,6 @@ function marketProcessStateText(state: string | null): string {
 }
 
 // === Types ===
-interface OrderRow {
-  contract: string
-  icon: 'pending' | 'filled' | 'cancelled' | 'rejected'
-  source: string
-  account: string
-  direction: 'buy' | 'sell'
-  filled: string
-  price: string
-  avgPrice: string
-  time: string
-  tagText: string
-  tagClass: string
-  rowClass: string
-}
-
 interface StrategyRow {
   name: string
   id: string
@@ -311,22 +299,91 @@ async function onRefreshFunds(accountId: string): Promise<void> {
   await fundsStore.refreshAccount(accountId)
 }
 
-// === 委托 / 策略 / 消息（演示数据，issue #200）===
-// 这三个面板的交易数据链路尚未接入：真实委托数据在「交易数据」页（`/trading-data`，随
-// #246/#248 落地，REST 直查交易库），仪表盘委托面板保留原型布局，但满足三条约束：
-//   1) 页面永久可见地标注「演示数据」（横幅 + 逐面板 ds-tag）；
-//   2) 券商名 / 账户号 / 合约代码全部虚构，不得与真实期货公司或真实合约撞名；
-//   3) 面板聚合数一律由下列行数据计算，禁止硬编码（历史版本存在 2/3、5/5 等矛盾数字）。
-// 持仓面板已随 #249、资金面板已随 #250 接入真实链路，不再属于演示数据。
-const orders: OrderRow[] = [
-  { contract: 'zz2601', icon: 'pending', source: '长线', account: '演示期货_A', direction: 'buy', filled: '5/10', price: '3,680', avgPrice: '3,682', time: '14:05:23', tagText: '部分成交', tagClass: 'ds-tag--alert', rowClass: '' },
-  { contract: 'yy2601', icon: 'filled', source: '中线', account: '演示期货_A', direction: 'sell', filled: '8/8', price: '3,915', avgPrice: '3,915', time: '14:03:12', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
-  { contract: 'zz2601', icon: 'filled', source: '长线', account: '演示期货_A', direction: 'sell', filled: '3/3', price: '3,695', avgPrice: '3,694', time: '14:01:45', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
-  { contract: 'xx2605', icon: 'pending', source: '短线1号', account: '演示期货_A', direction: 'buy', filled: '0/20', price: '785.5', avgPrice: '--', time: '13:58:30', tagText: '未成交', tagClass: '', rowClass: '' },
-  { contract: 'ww2601', icon: 'cancelled', source: '短线2号', account: '演示期货_B', direction: 'buy', filled: '0/5', price: '3,720', avgPrice: '--', time: '13:50:22', tagText: '已撤单', tagClass: '', rowClass: 'order-row--cancelled' },
-  { contract: 'ww2605', icon: 'rejected', source: '多因子一号', account: '演示期货_A', direction: 'sell', filled: '0/10', price: '2,350', avgPrice: '--', time: '13:45:10', tagText: '废单', tagClass: 'ds-tag--danger', rowClass: 'order-row--rejected' },
-  { contract: 'yy2601', icon: 'filled', source: '多因子一号', account: '演示期货_B', direction: 'buy', filled: '10/10', price: '3,908', avgPrice: '3,907', time: '13:55:18', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' },
-]
+// === 委托面板：真实数据（#523；契约 rest §2.9.3 / webui-ws §2.5）===
+// 数据源 = `stores/tdOrders`（REST 基线 + WS `td_order_report` 增量 + 约 10Hz 批量合并），
+// 与「交易数据」页的委托列表是**同一个 store**，不另建链路。
+// 仍是只读展示：不含下单/撤单/改价（那些还缺后端链路，见 #523「明确不做」）。
+// 报表字段按契约 §2.9.3：价格用行内 `price_decimals`、时间用距午夜秒数（不做时区转换）。
+const ordersStore = useTdOrdersStore()
+
+/** 状态 → 文案 + tag 类 + 行类（沿用面板既有视觉词汇） */
+interface OrderStatusView {
+  icon: 'pending' | 'filled' | 'cancelled' | 'rejected'
+  tagText: string
+  tagClass: string
+  rowClass: string
+}
+
+function orderStatusView(status: TdOrderRow['status']): OrderStatusView {
+  switch (status) {
+    case 'AllTraded':
+      return { icon: 'filled', tagText: '全部成交', tagClass: 'ds-tag--success', rowClass: '' }
+    case 'PartTraded':
+      return { icon: 'pending', tagText: '部分成交', tagClass: 'ds-tag--alert', rowClass: '' }
+    case 'NotTraded':
+    case 'Submitting':
+      return { icon: 'pending', tagText: '未成交', tagClass: '', rowClass: '' }
+    case 'Cancelled':
+      return { icon: 'cancelled', tagText: '已撤单', tagClass: '', rowClass: 'order-row--cancelled' }
+    case 'Rejected':
+      return { icon: 'rejected', tagText: '废单', tagClass: 'ds-tag--danger', rowClass: 'order-row--rejected' }
+    default:
+      return { icon: 'pending', tagText: '未知', tagClass: '', rowClass: '' }
+  }
+}
+
+/**
+ * 面板行视图模型（把契约行转成表格需要的展示串）。
+ * 空字段一律显示占位 `—`，**不渲染假数据**。
+ */
+interface OrderPanelRow {
+  orderId: number
+  contract: string
+  icon: OrderStatusView['icon']
+  source: string
+  account: string
+  direction: 'buy' | 'sell' | 'none'
+  filled: string
+  price: string
+  avgPrice: string
+  time: string
+  tagText: string
+  tagClass: string
+  rowClass: string
+}
+
+const PLACEHOLDER = '—'
+
+const orderRows = computed<OrderPanelRow[]>(() =>
+  ordersStore.rows.slice(0, 200).map((row) => {
+    const view = orderStatusView(row.status)
+    const direction: OrderPanelRow['direction'] =
+      row.direction === 'Long' ? 'buy' : row.direction === 'Short' ? 'sell' : 'none'
+    return {
+      orderId: row.order_id,
+      contract: row.instrument_id || PLACEHOLDER,
+      icon: view.icon,
+      source: row.strategy_id || PLACEHOLDER,
+      account: row.account_id || PLACEHOLDER,
+      direction,
+      filled: `${row.volume_traded}/${row.volume}`,
+      price: formatTdPrice(row.price, row.price_decimals),
+      avgPrice: formatTdAvgPrice(row.avg_price, row.avg_price_decimals),
+      time: formatTdTime(row.time),
+      tagText: view.tagText,
+      tagClass: view.tagClass,
+      rowClass: view.rowClass,
+    }
+  }),
+)
+
+/** 仅挂单过滤（复选框接线）：未成交 / 部分成交视为挂单 */
+const onlyPending = ref(false)
+const visibleOrderRows = computed(() =>
+  onlyPending.value
+    ? orderRows.value.filter(r => r.icon === 'pending')
+    : orderRows.value,
+)
 
 const strategyList: StrategyRow[] = [
   { name: '长线', id: 'ocm_001', lang: 'C/C++', running: true },
@@ -357,7 +414,7 @@ function relativeTime(ts: number): string {
 // 历史版本硬编码 2/3、7/8、2/12、5/5 与展示行互相矛盾；此处改为派生，
 // 行数据变化时聚合数自动跟随，不可能再漂移。
 const ordersAggregate = computed(
-  () => `${orders.filter(o => o.icon === 'pending').length}/${orders.length} 笔`,
+  () => `${orderRows.value.filter(o => o.icon === 'pending').length}/${orderRows.value.length} 笔`,
 )
 const strategyAggregate = computed(
   () => `${strategyList.filter(s => s.running).length}/${strategyList.length}`,
@@ -497,13 +554,14 @@ function onHSplitterDown(e: MouseEvent): void {
 
 // === WebSocket lifecycle ===
 // WS 连接/断开由 App.vue 全局管理，DashboardView 不再负责。
-// 持仓与资金两个面板消费交易数据：挂载即拉各自 REST 基线，卸载即停降级重试
+// 持仓 / 资金 / 委托三个面板消费交易数据：挂载即拉各自 REST 基线，卸载即停降级重试
 // （store 是单例，无视图时不该产生流量）。
 // 账户注册表同样在挂载时重拉：它是展示名的来源之一（配置镜像只覆盖在线网关的账户，
 // 资金行含离线账户，名字只能从注册表取；契约 rest §2.9.9）。
 onMounted(() => {
   void positionsStore.init()
   void fundsStore.init()
+  void ordersStore.init()
   void tdAccountsStore.init()
 })
 
@@ -511,6 +569,7 @@ onUnmounted(() => {
   onSplitterMouseUp()
   positionsStore.dispose()
   fundsStore.dispose()
+  ordersStore.dispose()
   tdAccountsStore.dispose()
 })
 </script>
@@ -522,9 +581,10 @@ onUnmounted(() => {
     :style="{ '--dashboard-left-fr': `${leftFlex}fr`, '--dashboard-right-fr': `${rightFlex}fr` }"
     >
       <!-- 演示数据横幅（issue #200）：首屏永久可见，与是否滚动 / 展开无关。
-           委托 / 策略 / 消息三个面板的交易数据链路尚未建立（issue #6），横幅是读者
-           第一眼就应看到的事实声明，不得改为可关闭 banner 或仅靠图注。持仓面板已随 #249、
-           资金面板已随 #250 接入真实链路，已从本横幅（与逐面板 ds-tag）中移除。
+           只剩「策略」面板尚未接入真实链路（issue #6），横幅是读者第一眼就应看到的
+           事实声明，不得改为可关闭 banner 或仅靠图注。
+           已接入真实链路、因此不在横幅内的：行情、持仓（#249）、资金（#250）、
+           委托（#523）、消息（ADR 0060）。
            仪表盘锁一屏高度，故压成单行紧凑条。 -->
       <div
         class="ds-alert ds-alert--warning dashboard-demo-banner"
@@ -533,7 +593,7 @@ onUnmounted(() => {
       >
         <span class="ds-alert__icon"><Icon name="Tips" :size="16" /></span>
         <span class="dashboard-demo-banner__text">
-          <strong>演示数据</strong>：委托 / 策略面板尚未接入真实链路，内容均为虚构；「行情」「持仓」「资金」「消息」为实时数据。
+          <strong>演示数据</strong>：仅「策略」面板尚未接入真实链路，内容为虚构；「行情」「持仓」「资金」「委托」「消息」为实时数据。
         </span>
       </div>
 
@@ -819,11 +879,10 @@ onUnmounted(() => {
             <div class="dashboard-panel__hd">
               <span class="dashboard-panel__title">
                 <span class="dashboard-panel__title-text">委托</span>
-                <span class="ds-tag ds-tag--warning dashboard-panel__tag" data-test="dashboard-demo-tag">演示</span>
               </span>
               <div class="dashboard-panel__tools">
                 <label class="ds-check dashboard-panel__check">
-                  <input type="checkbox"><span class="ds-check__box"></span> 仅挂单
+                  <input v-model="onlyPending" type="checkbox"><span class="ds-check__box"></span> 仅挂单
                 </label>
                 <span data-test="orders-aggregate" class="dashboard-panel__aggregate dashboard-panel__aggregate--clickable" title="点击切换 笔数/手数">{{ ordersAggregate }}</span>
               </div>
@@ -844,21 +903,27 @@ onUnmounted(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(ord, idx) in orders" :key="idx" :class="ord.rowClass">
+                  <tr v-for="ord in visibleOrderRows" :key="ord.orderId" :class="ord.rowClass">
                     <td class="frozen frozen-last cell-text dashboard-panel__cell-strong">
                       <span class="order-status-icon" :class="`order-status-icon--${ord.icon}`">{{ ord.icon === 'filled' ? '✓' : ord.icon === 'cancelled' ? '✗' : ord.icon === 'rejected' ? '✗' : '◷' }}</span>
                       {{ ord.contract }}
                     </td>
                     <td class="cell-text cell-text--secondary">{{ ord.source }}</td>
                     <td class="cell-text cell-text--secondary">{{ ord.account }}</td>
-                    <td class="cell-text" :class="ord.direction === 'buy' ? 'trade-buy' : 'trade-sell'">{{ ord.direction === 'buy' ? '买入' : '卖出' }}</td>
+                    <td class="cell-text" :class="ord.direction === 'buy' ? 'trade-buy' : ord.direction === 'sell' ? 'trade-sell' : 'cell-muted'">{{ ord.direction === 'buy' ? '买入' : ord.direction === 'sell' ? '卖出' : '—' }}</td>
                     <td class="cell-num">{{ ord.filled }}</td>
                     <td class="cell-num">{{ ord.price }}</td>
-                    <td class="cell-num" :class="ord.avgPrice === '--' ? 'cell-muted' : 'cell-inherit'">{{ ord.avgPrice }}</td>
+                    <td class="cell-num" :class="ord.avgPrice === '—' ? 'cell-muted' : 'cell-inherit'">{{ ord.avgPrice }}</td>
                     <td class="cell-num">{{ ord.time }}</td>
                     <td class="cell-text">
                       <span v-if="ord.tagClass" class="ds-tag dashboard-panel__tag" :class="ord.tagClass">{{ ord.tagText }}</span>
                       <span v-else class="ds-tag dashboard-panel__tag dashboard-panel__tag--muted">{{ ord.tagText }}</span>
+                    </td>
+                  </tr>
+                  <!-- 空态：无委托时不显示假数据 -->
+                  <tr v-if="visibleOrderRows.length === 0">
+                    <td colspan="9" class="cell-muted cell-center" data-test="orders-empty">
+                      {{ onlyPending ? '无挂单' : '暂无委托' }}
                     </td>
                   </tr>
                 </tbody>
