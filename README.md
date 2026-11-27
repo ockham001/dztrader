@@ -69,9 +69,19 @@
 |---|---|
 | `build/<plat>/<arch>/Release/` | 中间产物。**不要直接运行**，会被下次构建重链 |
 | `install/<plat>/<arch>/Release/` | **唯一产物源**。运行、部署、打包都从这里取（约 66MB） |
+| `install/<plat>/<arch>/Release/BUILD_INFO` | 构建身份：`commit` / `dirty` / `built_at` / `version` / `config`（#515） |
 | `install/<plat>/<arch>/Release-debug-symbols/` | 调试符号（约 345MB），不进部署包，崩溃分析用 |
 
 `run-dev` 会自动 `build` → `install` → 从 `install/` 启动。
+
+`BUILD_INFO` 让「`install/` 里是哪一版」可验证：`run-dev` 启动前拿它和当前 HEAD 比对，
+不一致（或缺失）时打 warning 并给出重建命令，**不阻断启动**。
+
+```bash
+# 手工核对（也可用 --no-build 启动时看 run-dev 打印的那一行）
+python3 scripts/check_build_info.py check --info install/linux/x86_64/Release/BUILD_INFO
+cat install/linux/x86_64/Release/BUILD_INFO
+```
 
 ### 切换构建档
 
@@ -122,6 +132,8 @@ Windows 侧的 `.pdb` 不进部署包，由 tag 流水线单独归档。
 - `-Stop`：强杀 master + `dztraderd --cleanup-orphans` 清理僵尸子进程
 - `-NoBuild`：跳过 build/install 直接启动（快，但可能跑旧代码）
 - 启动前若检测到 master 在跑会先停栈（install 不能在运行中替换文件）
+- 启动前比对 `install/.../BUILD_INFO` 与当前 HEAD，不一致时打 warning（含两侧 commit 与
+  构建时间），**不阻断启动**；这一行也是「启动栈含新二进制」的取证（#515）
 - Debug 时打印 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`
 
 **clean** — `.\scripts\clean.ps1 [-IncludeNodeModules]`

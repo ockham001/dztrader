@@ -13,7 +13,9 @@
 #       （#480，push-ticket.sh 对 apps/ctp/md 改动的硬前置）/ 审查验证标记（#289，pre-push
 #       读取）/ 建 PR 守卫（#504，pr-create.sh 把标题/正文 auto-close 校验串进 gh pr create）/
 #       PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
-#       门禁分槽 + 票型放行判定（#316 AC2，scripts/gate_status.py，pre-push 共用）/ 前端五件套。
+#       门禁分槽 + 票型放行判定（#316 AC2，scripts/gate_status.py，pre-push 共用）/
+#       构建身份比对逻辑（#515，check_build_info.py 的 commit/HEAD 判定与 run-dev 接线）/
+#       前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
 #       conanfile.py 与内置 JSON 单头的版本漂移由 scripts/check_json_vendor_version.py 拦住。
@@ -308,6 +310,19 @@ check_push_ticket() {
     "$ROOT/scripts/push-ticket.sh" --selftest
 }
 
+check_build_info() {
+    # 构建身份校验器（#515 AC4「单测/自测覆盖比对逻辑」）：install 树原先没有任何 commit
+    # 标识（#508 关单时只能靠 mtime/sha256 手工推断，宿主栈跑着旧二进制而前端已刷新）。
+    # 判定逻辑 + run-dev 接线的用例在 scripts/tests/test_check_build_info.py（由下面的
+    # unittest discovery 跑），这里跑检查器自身的 selftest（临时 git 仓库，覆盖一致 /
+    # 旧提交 / 缺失 / 不可读 / unknown / dirty 提示 / 非 git 仓库 / 解析器）。
+    # 显式串联：`set -u -o pipefail` 没有 `-e`，自测失败会被后一条的 0 覆盖。
+    "$PYTHON" "$ROOT/scripts/check_build_info.py" --selftest || return $?
+    # 真实 install 树只作信息输出：CI 与本地都可能没有 install/（或它是旧产物），
+    # 这不是本步骤的失败条件——AC2 明确要求「不阻断」。用 `|| true` 而不是 `|| return`。
+    "$PYTHON" "$ROOT/scripts/check_build_info.py" check || true
+}
+
 check_md_lock_marker() {
     # `apps/ctp/md/` 生产锁定确认标记（#480）：AGENTS 硬门禁 1 原先只有 opencode 的
     # permission 机器化，DSH 等宿主没有——#471 的实现者把确认留到全部实现完之后，
@@ -427,6 +442,7 @@ run_step "orphan exports (#274)" check_orphan_exports
 run_step "ci scope fast path (#289)" check_ci_scope
 run_step "sysmon metric key set (#309)" check_sysmon_metric_keys
 run_step "push ticket discipline (#309)" check_push_ticket
+run_step "build identity (#515)" check_build_info
 run_step "md production lock marker (#480)" check_md_lock_marker
 run_step "review verification marker (#289)" check_review_marker
 run_step "pr create wrapper (#504)" check_pr_create

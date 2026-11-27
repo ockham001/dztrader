@@ -203,6 +203,72 @@ configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/libs/strategy_api/include/dztrader/version.h)
 
 # ============================================================
+# 构建身份 BUILD_INFO（#515）：install/<plat>/<arch>/<cfg>/BUILD_INFO
+# 记 commit / dirty / built_at / version / config，让「install 里是哪一版」可验证——
+# 此前产物没有任何 commit 标识，#508 关单时只能靠 mtime + sha256sum 手工推断，结论是
+# 宿主栈跑着旧二进制而前端静态文件已被刷新（新旧混用，现象难解释）。
+#
+# 写两处：
+#   1) build 树 BUILD_INFO：`dz_build_info` target（ALL，且每次构建都重跑——commit /
+#      dirty / 构建时间都是构建期事实，ninja 无法从输入推出它们是否过期）；
+#   2) install 树 BUILD_INFO：`install(CODE)` 在 install 期重写一次，让「直接
+#      `cmake --install`」的路径（README 的本机安装、release.yml 的 Windows job）也拿到
+#      当前 HEAD——只跑 build 不跑 install 的实现会让 install 树里的身份停在旧值，
+#      比没有更误导。
+#      注意这里**不用** `install(FILES)` 从 build 树拷贝：那要求先 build 再 install
+#      （直接 `cmake --install` 会因文件不存在而报错），而 install(CODE) 自己写文件，
+#      两种顺序都成立。
+#
+# 位置必须在 version 段之后：生成命令要注入 VERSION_FULL（含 pre-release）。
+# 生成脚本见 cmake/write_build_info.cmake；解析/比对在 scripts/check_build_info.py。
+# 变量命名：本文件里的配置变量用 `DZ_BUILD_INFO_*`；传给脚本的 -D 入参在脚本侧叫
+# `DZ_BI_*`（脚本是独立可执行的 cmake -P 程序，不看本文件的变量）。
+# ============================================================
+find_package(Git QUIET)
+if(Git_FOUND)
+    set(DZ_BUILD_INFO_GIT "${GIT_EXECUTABLE}")
+else()
+    # 没有 git 时也照常传路径：脚本会把身份记为 unknown，不阻断 configure
+    # （从 tarball / 无 git 环境构建是支持的）。
+    set(DZ_BUILD_INFO_GIT "git")
+endif()
+set(DZ_BUILD_INFO_FILE "${DZ_OUTPUT_DIR}/BUILD_INFO")
+set(DZ_BUILD_INFO_WRITER "${CMAKE_SOURCE_DIR}/cmake/write_build_info.cmake")
+
+add_custom_target(dz_build_info ALL
+    COMMAND ${CMAKE_COMMAND}
+        -D "DZ_BI_OUT=${DZ_BUILD_INFO_FILE}"
+        -D "DZ_BI_REPO=${CMAKE_SOURCE_DIR}"
+        -D "DZ_BI_GIT=${DZ_BUILD_INFO_GIT}"
+        -D "DZ_BI_VERSION=${VERSION_FULL}"
+        -D "DZ_BI_CONFIG=${DZ_BUILD_CONFIG_DIR}"
+        -P "${DZ_BUILD_INFO_WRITER}"
+    BYPRODUCTS "${DZ_BUILD_INFO_FILE}"
+    COMMENT "Writing build identity (BUILD_INFO)"
+    VERBATIM)
+
+# install 期重写 install 树那份。`DESTDIR` 一并带上：install(CODE) 里的
+# ${CMAKE_INSTALL_PREFIX} **不含** DESTDIR，只看它会把文件写到 staged 树之外
+# （install(TARGETS) 则自动加 DESTDIR）。当前仓库没有用 DESTDIR 的流程，这里补齐
+# 是为了让两类 install 规则的语义一致，不留一个只在打包场景才暴露的坑。
+install(CODE "
+    execute_process(
+        COMMAND \"${CMAKE_COMMAND}\"
+            -D \"DZ_BI_OUT=\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${DZ_INSTALL_DIR}/BUILD_INFO\"
+            -D \"DZ_BI_REPO=${CMAKE_SOURCE_DIR}\"
+            -D \"DZ_BI_GIT=${DZ_BUILD_INFO_GIT}\"
+            -D \"DZ_BI_VERSION=${VERSION_FULL}\"
+            -D \"DZ_BI_CONFIG=${DZ_BUILD_CONFIG_DIR}\"
+            -P \"${DZ_BUILD_INFO_WRITER}\"
+        RESULT_VARIABLE _dz_bi_rc)
+    # 失败要显式报错：execute_process 的结果码默认可被忽略，那样 install 会「成功」
+    # 却留下旧身份或没有身份——比报错更误导。非致命是因为 install 本身已完成。
+    if(NOT _dz_bi_rc EQUAL 0)
+        message(WARNING \"build info rewrite failed at install time | rc=\${_dz_bi_rc}\")
+    endif()
+")
+
+# ============================================================
 # strategy_api_headers: header-only 策略接口头文件
 # 零内部依赖，所有内部模块的头文件依赖此契约
 # ============================================================
