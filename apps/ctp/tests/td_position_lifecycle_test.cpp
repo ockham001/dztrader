@@ -1677,6 +1677,27 @@ TEST_F(TdPositionLifecycleTest, InstrumentQueryFlowControlStillArmsTheLoadWatchd
     EXPECT_TRUE(notifications_.front().popup);
 }
 
+TEST_F(TdPositionLifecycleTest, TradingAccountQueryFlowControlStillArmsTheQueryWatchdog) {
+    // #508: 资金查询的 -3 流控重试路径同样必须保证看门狗在场（此前只排 1.5s 重试、
+    // 不武装看门狗 → 持续流控永久停在 8/10）。与合约查询同型，但这条路径由持仓成功
+    // 之后在链上发起，需要发送钩子才能驱动。
+    // 判据用行为：0 秒看门狗到点后资金查询降级、收尾链走完转 Ready；若看门狗没武装，
+    // 1.5s 重试尚未到期、tick 无事可做，会话会停在 LoadingInstruments。
+    session_->set_trading_account_send_hook(
+        [](CThostFtdcQryTradingAccountField&, int) { return -3; });
+    session_->set_trading_account_query_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    ASSERT_EQ(session_->state(), TdState::LoadingInstruments)
+        << "flow control must not move the login chain";
+    ASSERT_FALSE(timer_queue_.empty()) << "the flow-control retry must be scheduled";
+
+    timer_queue_.tick();  // 0 秒看门狗到点（1.5s 重试尚未到期）
+
+    EXPECT_TRUE(session_->is_ready())
+        << "the account-query watchdog must end the degraded wait instead of hanging at 8/10";
+}
+
 TEST_F(TdPositionLifecycleTest, InstrumentQueryErrorResponseStopsAtFailedStageAndNotifies) {
     // on_rsp_error 的 Instrument 分支 (#488 / #496): 停在失败态 (8/10) + 写 last_error + 弹窗。
     // 这是 instruments_rejected 的第二种来源 = OnRspError 错误响应。

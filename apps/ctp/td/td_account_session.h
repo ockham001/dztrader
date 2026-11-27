@@ -267,6 +267,16 @@ public:
     /// 与 `set_settlement_confirm_timeout_for_test` 同用途：让「真 TimerQueue 回调」可测，
     /// 而不是只验「定时器排上了」（排上的 lambda 是空壳也会绿）。
     void set_instruments_load_timeout_for_test(std::chrono::seconds timeout);
+    /// 资金查询发送钩子（测试注入；空 = 走 `api_`）。返回 `ReqQryTradingAccount` 返回码。
+    ///
+    /// 与 `set_instrument_send_hook` 同形态：资金查询由持仓成功后在链上发起，
+    /// 没有钩子时测试夹具走不到「发送成功 / 流控重试」路径，只能验 `api_ == nullptr`
+    /// 那条失败出口——`-3` 流控重试与看门狗武装因此无法被证伪（#508）。
+    using TradingAccountSendFn = std::function<int(CThostFtdcQryTradingAccountField&, int)>;
+    void set_trading_account_send_hook(TradingAccountSendFn hook);
+    /// 测试夹具专用：缩短资金查询看门狗时长（默认 5 分钟）。
+    /// 与 `set_instruments_load_timeout_for_test` 同用途：让「真 TimerQueue 回调」可测。
+    void set_trading_account_query_timeout_for_test(std::chrono::seconds timeout);
 
     /// 手动刷新请求（契约 td-refresh）：Ready 时置脏一次并返回 true；
     /// 非 Ready / 已离开会话返回 false（调用方记 WARN，不改变账户状态）。
@@ -783,6 +793,7 @@ private:
     QueryClockFn query_clock_;
     SettlementSendFn settlement_send_hook_;
     InstrumentSendFn instrument_send_hook_;
+    TradingAccountSendFn trading_account_send_hook_;
     AuthSendFn auth_send_hook_;
     LoginSendFn login_send_hook_;
     /// 认证超时时长（生产 = 10s；测试可缩短）。
@@ -793,6 +804,8 @@ private:
     std::chrono::seconds settlement_confirm_timeout_ = kSettlementConfirmTimeout;
     /// 合约加载超时时长（生产 = 5 分钟；测试可缩短）。
     std::chrono::seconds instruments_load_timeout_ = std::chrono::minutes(5);
+    /// 资金查询看门狗时长（生产 = 5 分钟；测试可缩短）。
+    std::chrono::seconds trading_account_query_timeout_ = std::chrono::minutes(5);
     /// 结算单确认在途 request id（0 = 未在途）。响应侧校验它, 丢弃旧链接的迟到响应。
     int settlement_confirm_request_id_ = 0;
 

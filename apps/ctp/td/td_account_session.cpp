@@ -353,8 +353,16 @@ void AccountSession::set_instrument_send_hook(InstrumentSendFn hook) {
 
 void AccountSession::request_instrument_query_for_test() { req_qry_instrument(); }
 
+void AccountSession::set_trading_account_send_hook(TradingAccountSendFn hook) {
+    trading_account_send_hook_ = std::move(hook);
+}
+
 void AccountSession::set_instruments_load_timeout_for_test(std::chrono::seconds timeout) {
     instruments_load_timeout_ = timeout;
+}
+
+void AccountSession::set_trading_account_query_timeout_for_test(std::chrono::seconds timeout) {
+    trading_account_query_timeout_ = timeout;
 }
 
 void AccountSession::on_runtime_query_timeout(int request_id, QueryKind kind) {
@@ -1803,7 +1811,9 @@ void AccountSession::cancel_position_query_timeout_timer() {
 
 void AccountSession::req_qry_trading_account() {
     // Task 6 (spec §4.2 登录收尾): 持仓完成后发起资金查询 (CTP 流控串行).
-    if (api_ == nullptr) {
+    // 测试钩子优先（空 = 生产路径）：钩子非空时允许在没有真实 CTP API 的夹具里驱动
+    // 「发送成功 / 流控重试」两条路径（否则只有 api_ 非空的真机才能到）。
+    if (api_ == nullptr && !trading_account_send_hook_) {
         cancel_account_query_watchdog();
         finalizer_.on_account_failed();
         finalize_login();
@@ -1824,7 +1834,9 @@ void AccountSession::req_qry_trading_account() {
     query_gen_ = generation_;
     CThostFtdcQryTradingAccountField qry{};
     account_query_request_id_ = ++request_id_;
-    int ret = api_->ReqQryTradingAccount(&qry, account_query_request_id_);
+    int ret = trading_account_send_hook_
+                  ? trading_account_send_hook_(qry, account_query_request_id_)
+                  : api_->ReqQryTradingAccount(&qry, account_query_request_id_);
     if (ret != 0) {
         note_query_done();
         account_query_request_id_ = 0;
@@ -1865,10 +1877,12 @@ void AccountSession::arm_account_query_watchdog() {
     uint64_t gen = generation_;
     std::weak_ptr<void> weak = alive_token_;
     account_query_timer_id_ =
-        timer_queue_.schedule_after(std::chrono::minutes(5), [this, weak, gen]() {
-            // 先清 id：本回调已消费，无论后续是否收口都不能让 id 卡在非零状态
-            account_query_timer_id_ = 0;
+        timer_queue_.schedule_after(trading_account_query_timeout_, [this, weak, gen]() {
+            // 先查存活令牌：会话已销毁时 `this` 不可再解引用（写成员也是 UAF）。
+            // 会话析构/disconnect 会先 cancel，这里只是兜底。
             if (weak.expired()) return;
+            // 再清 id：本回调已消费，无论后续是否收口都不能让 id 卡在非零状态
+            account_query_timer_id_ = 0;
             if (gen != generation_) return;
             if (state_machine_.state() == TdState::LoadingInstruments &&
                 finalizer_.phase() == Phase::kQueryAccount) {
@@ -3004,6 +3018,7 @@ void AccountSession::on_rsp_error(const OnRspErrorTdField& f) {
             SPDLOG_ERROR("td qry account error response | account={} error_id={} error=\"{}\"",
                          account_id_, error_id, error_msg);
             note_query_done();
+            cancel_account_query_watchdog();
             account_query_request_id_ = 0;
             finalizer_.on_account_failed();
             finalize_login();
