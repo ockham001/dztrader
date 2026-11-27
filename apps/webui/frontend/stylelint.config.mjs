@@ -113,5 +113,17 @@ export default {
         'dz/no-ds-namespace': [true, { severity: 'error' }],
       },
     },
+    // retro 2026-11-28：拦「scoped 重定义全局已存在的 .ds-* 类」。
+    // 与上一条互补：no-ds-namespace 拦「在 domain 目录定义任何 .ds-*」（shared 豁免），
+    // 本规则拦「任何目录重定义全局同名 .ds-*」——shared 新增独有的 pattern 类仍放行。
+    // 实测成因：components.css 的 `.ds-toast { position:fixed; top:44px }` 与
+    // shared/ToastContainer.vue 的 scoped `.ds-toast { position:relative }` 合并，
+    // 使 toast 下移 44px 且长文本被裁。
+    {
+      files: ['**/*.vue'],
+      rules: {
+        'dz/no-global-ds-shadow': [true, { severity: 'error' }],
+      },
+    },
   ],
 }
