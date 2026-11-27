@@ -29,6 +29,7 @@
 - 搜法：逐个看新增断言是否可能为假——`not.toContain` / `toBeDefined` / `expect(fn).not.toThrow` / 只断言输入 flag 未断言最终状态；新字段是否真被断言。
 - 搜法补充（#161）：**对比测试的 oracle 不得与被测实现共享**——若 A 内部就调用 B，用 A 的输出当 B 的期望是恒真；期望值必须来自 spec / 手写表 / 独立实现。
 - **前端测试 oracle 不得依赖大小写敏感文件系统 / 路径分隔符**（CI Windows 会跑 vitest）——`existsSync` 一类大小写断言在 Linux 绿、NTFS 恒真（#207 blocking finding）。
+- **平台分支的断言要有实测依据**（#512 blocking finding）：`#ifdef` / `#else` 分支里的期望必须有该平台实测证据（issue / 日志 / 样本）；写「某平台直返 / 不转换 / 恒等」时先问「凭什么这个平台不转换」；只在单一平台成立的用例必须平台守卫，否则 Windows CI 红。交叉判据见 [unit-test-standard](../unit-test-standard.md) 3.8。
 - 本波实例：#122 折叠组"不得用 0 冒充"原用恒真的 `not.toContain`，改为值列精确断言（`bc3ee97`）；#123 给进入记录补了 `since_unix_sec` 却未断言、AC2"静默清除"原只断言输入 flag 未验状态真被清掉（`46879e8`、`281270b`）。
 
 ### 2.3 删除不彻底留孤儿

@@ -57,7 +57,7 @@
 | 3.5 | **临时资源唯一化**：优先 `pid`/`uid`/随机后缀，避免固定名；用完清理；不写 `DZTRADER_HOME` 与系统临时目录以外的路径。直接用 `libs/core/tests/test_temp_dir.h` 的 `dztrader::test::unique_temp_dir()` / `unique_temp_path()`（进程唯一，进程内恒等——`paths::home()` 等按进程缓存，需同一用例内多次取到同一路径）。`gtest_discover_tests` 下每个用例是独立进程，`ctest -j` 并发时固定名目录会互踩（#136 实测 `DbConfigTest` 偶发失败）；新增固定名会被 preflight 的 `check_test_portability.py` 拦下 | 固定名目录（`temp_directory_path()/dz_xxx`）跨运行残留或在 `ctest -j` 下互删；手写唯一化重复基建而不复用共享头 |
 | 3.6 | **日志断言合规**：断言日志文本时与 `scripts/check_log_format.py` 的规则一致（小写开头、无句号、`prose \| k=v`） | 断言了不合规的日志文本，等于把错误格式钉死 |
 | 3.7 | **前端专段**：`vi.mock` 不得掩盖真实交互（mock 的是边界而非被测对象）；store 断言看状态迁移与副作用；不测真实布局（jsdom 局限），不依赖时间/随机 | mock 掉被测对象本身，测试变成同义反复 |
-| 3.8 | **跨平台测试**：绝对路径用 `std::filesystem::temp_directory_path()` / `std::filesystem::absolute()` 构造，不写死 `/home/`、`/Users/`、`/root/`；定时器/调度测试的收集器必须过滤自身 guard timer id；时间断言用下界/条件等待，不依赖 Windows 计时粒度 | Linux 绿但 Windows 红；guard 帧被当作被测帧；绝对路径被解析到当前盘符 |
+| 3.8 | **跨平台测试**：绝对路径用 `std::filesystem::temp_directory_path()` / `std::filesystem::absolute()` 构造，不写死 `/home/`、`/Users/`、`/root/`；定时器/调度测试的收集器必须过滤自身 guard timer id；时间断言用下界/条件等待，不依赖 Windows 计时粒度；**平台分支的期望必须有该平台实测依据**——`#ifdef` 里断言某平台「直返 / 不转换 / 恒等」时先给证据（issue / 日志 / 样本），否则断言转换后的正面结果；只在单一平台成立的用例必须平台守卫（否则 MSVC CI 红） | Linux 绿但 Windows 红；guard 帧被当作被测帧；绝对路径被解析到当前盘符；把未实测的平台行为钉成期望（#512：断言「Linux CTP 已返回 UTF-8」→ 整帧序列化失败漏网） |
 
 ## 4. 成本
 

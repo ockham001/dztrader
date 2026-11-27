@@ -27,7 +27,7 @@
 测试/调试期间**所有** `DZTRADER_HOME` 必须指向项目内目录，禁止落到真实 home：
 
 - **测试**：`<项目根>/.cache/test_home`，由 `CMakePresets.json` 的 `test-base` 强制注入，无需手动设置；`test.sh` / `test.ps1` 每次运行前清空重建（避免上一轮残留 shm/DB 让无关测试失败）
-- **手动运行任何 `dz*` 可执行文件**（`dztraderd` / `dzweb` / `dzmd_*` / `dztd_*` / `stg_*`）前**必须显式设置** `DZTRADER_HOME=<项目根>/.dztrader_dev`
+- **手动运行任何 `dz*` 可执行文件**（`dztraderd` / `dzweb` / `dzmd_*` / `dztd_*` / `stg_*`）前**必须显式设置** `DZTRADER_HOME=<项目根>/.dztrader_dev`；**隔离验证栈**（多栈并行 / 不碰宿主会话）可用项目内 `<项目根>/.cache/verify_home`，recipe 见 [ticket-closeout](docs/agents/ticket-closeout.md) §8
 - **禁止依赖系统级环境变量**。漏设会在真实 home 目录里创建 `shm/`、`db/`、`configs/`、`flow/`、`cache/`（`.gitignore` 专门锚了这五条路径，正是因为它们一定会出现），且难以清理
 
 唯一豁免：在 `SetUp` 内自管临时目录的测试自行覆盖该变量，不受此限。
@@ -161,7 +161,7 @@
 
 ### 日常工作流（单人 + AI 协作）
 
-1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）
+1. **开工前必读**：本文 → [docs/README.md](docs/README.md)（文档地图与冲突裁决规则）→ 相关帧契约（先读 `general.md`）→ `.cache/handoff/` 里**含本票号的交接**（上一会话的环境事实与验证 recipe；其中的环境断言先复核再信，以 issue 为准）
 2. **每票 1–2 个提交**（实现 + 审查收敛）：冻结审查后只 push 不 amend；提交前门禁绿。提交信息**中文**，前缀 `fix:` / `feat:` / `refactor:` / `docs:` / `test:` / `chore:` / `perf:` / `style:` / `build:` / `ci:`，标题 **≤72 字符**（`scripts/check_commit_subject.py` 强制；#468 实测 91 字符被拒、改写后重提）。**票号必须写进作用域**（`fix(#246): ...`），不要写 `fix: #246 ...`——后者是 GitHub 的 closing keyword 形态，PR 合并即提前关掉 issue，使关闭评论被静默丢弃（同脚本 R3 强制，见 [ticket-closeout](docs/agents/ticket-closeout.md) §6）
 3. **push 前自检**：见 [docs/development-checklist.md](docs/development-checklist.md) 的 C 段（权威且更全 —— 含 `type-check` / `lint` / `lint:css` / 契约 Freshness 门禁）。同一波内 PR 开完即可继续下一票的只读准备，CI 结果在自然断点或波末统一收；**本票合并前、开新波前 CI 必须绿**；**CI 红先修红，不叠加新改动**
 4. **大改动先写文档**：spec 设计 + plan 实施计划（checkbox 制），我确认后再实现
@@ -177,7 +177,7 @@
 4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）；提交 review 前按 [review-checklist](docs/agents/review-checklist.md) §2 自搜高频 finding。
 5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性），**按宿主派**：opencode 用 `spawn_teammate`（那里 `subagent` 的 id 不可寻址、报告易整份丢失）；DSH 用 `subagent`，靠 `wait_agent` 阻塞或等 `subagent-settled` 通知，报告正常到达（#411–#416 六票实测）。冻结纪律与 verifier prompt 模板见 [ticket-closeout](docs/agents/ticket-closeout.md) §1.4–1.5。
 6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→**PR→合并→关 issue** 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
-7. **交接** —— `handoff` 文档写 `.cache/handoff/`（本沙箱 `/tmp` 每次 bash 调用隔离、不可跨会话，见 DSH 小节）。
+7. **交接** —— `handoff` 文档写 `.cache/handoff/`（本沙箱 `/tmp` 每次 bash 调用隔离、不可跨会话，见 DSH 小节）。环境断言（二进制新旧、端口、进程、配置位置）必须带取证（命令 / mtime / hash），下游会话据此前先复核
 
 上下文纪律：步骤 1–3 保持同一未打断窗口；每张票 `implement` 换新上下文；`retro` 在被复盘会话内、clear 之前跑。
 
@@ -216,6 +216,7 @@
 
 - **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；不要 `sleep` 轮询、不要前台空等。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）；**CI 红用 `./scripts/ci-log.sh <run-id>` 定位**（优先取 `last-test-log` artifact，秒级给出失败用例名；不要 `gh run view --log` / `gh api jobs/logs`——Windows 日志可达数十 MB，#494 实测连续超时 ~25 min）。实测代价与分段方法见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处，此处不重复）。
 - **`job_output(wait=true)` 有宿主侧等待上限**（上限值随宿主配置，以实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
+- **每个 bash 调用是独立 PID namespace**：跨调用 `ps`/`pgrep` 看不到宿主栈与兄弟调用的进程（为空 ≠ 没在跑）。验证栈用 `run_in_background` 作业持有生命周期、收尾 `job_kill`；杀本沙箱进程用 **`pgrep -x`**——`pgrep -f` 会命中自身命令行（#509 实测把沙箱内 PID 1 杀掉）。recipe 见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处）。
 - **仓内搜索用 `git grep`**（只扫版本控制内的文件，天然跳过 `build/`、`install/`、`.cache/`）：`grep -rn --include=*` 全仓跑会扫到编译产物与缓存（#253 实测单次 131.8s、`find .cache` 94.2s）。要搜运行产物再显式指定 `.cache/` 路径。
 - **门禁判绿看 `gate: OK` 行或分命令槽**，不要只看 shell 退出码（`wait-ci.sh` 例外：退出码即 CI 结论，别接管道）；管道与槽位口径见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
