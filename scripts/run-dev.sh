@@ -14,6 +14,10 @@
 #   ./scripts/run-dev.sh --no-build     # 跳过 build/install，直接启动
 #   ./scripts/run-dev.sh --stop         # 停止 master 及其子进程
 #
+# 启动前比对 install/<plat>/<arch>/<cfg>/BUILD_INFO 与当前 HEAD（#515）：不一致或缺失时
+# 打 warning（含两侧 commit 与 built_at）并提示重建，**不阻断启动**——旧产物仍可启动，
+# 但「跑的是哪一版」必须可见。校验逻辑在 scripts/check_build_info.py。
+#
 # 停止: ./scripts/run-dev.sh --stop（或 pkill dztraderd）
 
 set -euo pipefail
@@ -88,6 +92,34 @@ if [ ! -f "$exe" ]; then
     echo "请先运行: ./scripts/setup.sh release && ./scripts/build.sh" >&2
     exit 1
 fi
+
+# 构建身份校验（#515）：install 树里的二进制/前端是否对应当前 HEAD。
+# 背景（#508 关单时实测）：install/ 产物原先没有任何 commit 标识，只能靠 mtime/sha256
+# 手工推断，结论是宿主栈跑着旧二进制、前端静态文件却已被刷新——新旧混用难以解释。
+# 只 warning 不阻断（issue #515 AC2）：旧产物仍可启动，但「跑的是哪一版」必须可见。
+# --no-build 时尤其重要：build 树、install 树都可能停在旧提交。
+check_build_identity() {
+    local py=""
+    if command -v python3 >/dev/null 2>&1; then
+        py=python3
+    elif command -v python >/dev/null 2>&1; then
+        py=python
+    else
+        echo "warning: no python interpreter; build identity check skipped" >&2
+        return 0
+    fi
+    local rc=0
+    "$py" "$project_root/scripts/check_build_info.py" check \
+        --info "$install_dir/BUILD_INFO" --repo "$project_root" || rc=$?
+    # 结论行（ok/stale/missing/unknown）始终打出来：这份日志就是「启动栈含新二进制」的取证。
+    if [ "$rc" -ne 0 ]; then
+        echo "warning: install tree does not match HEAD; the running stack may be stale" >&2
+    fi
+    # 校验永不阻断启动（#515 AC2）：check_build_info 的退出码只用于日志分类。
+    return 0
+}
+
+check_build_identity
 
 echo "启动 master | home=$DZTRADER_HOME exe=$exe"
 exec "$exe"

@@ -10,6 +10,10 @@
 
   DZTRADER_HOME 默认 <repo>\.dztrader_dev；已设置则尊重调用方。
 
+  启动前比对 install\<plat>\<arch>\<cfg>\BUILD_INFO 与当前 HEAD（#515）：不一致或缺失
+  时打 warning（含两侧 commit 与 built_at）并提示重建，**不阻断启动**——旧产物仍可启动，
+  但「跑的是哪一版」必须可见。校验逻辑在 scripts\check_build_info.py（与 run-dev.sh 共用）。
+
 .PARAMETER Stop
   停止所有 dztrader 进程（不 build 不启动）
 .PARAMETER NoBuild
@@ -96,6 +100,35 @@ if (-not (Test-Path $master_exe)) {
     Write-Error "可执行文件不存在: $master_exe`n请先运行: .\scripts\setup.ps1 -Config $Config"
     exit 1
 }
+
+# 构建身份校验（#515）：install 树里的二进制/前端是否对应当前 HEAD。
+# 背景（#508 关单时实测）：产物原先没有任何 commit 标识，只能靠 mtime/hash 手工推断，
+# 结论是宿主栈跑着旧二进制、前端静态文件却已被刷新——新旧混用难以解释。
+# 只 warning 不阻断（#515 AC2）：旧产物仍可启动，但「跑的是哪一版」必须可见。
+# 与 run-dev.sh 同一份判定实现（scripts/check_build_info.py），行为跨平台一致。
+function Test-DzBuildIdentity {
+    $py = $null
+    foreach ($candidate in @('python3', 'python', 'py')) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) { $py = $cmd.Source; break }
+    }
+    if (-not $py) {
+        Write-Host "warning: no python interpreter; build identity check skipped" -ForegroundColor Yellow
+        return
+    }
+    $infoPath = Join-Path $install_dir "BUILD_INFO"
+    & $py (Join-Path $project_root "scripts\check_build_info.py") check `
+        --info $infoPath --repo $project_root
+    # 结论行（ok/stale/missing/unknown）与 warning 均直接落到控制台：
+    # 这份输出就是「启动栈含新二进制」的取证。
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "warning: install tree does not match HEAD; the running stack may be stale" -ForegroundColor Yellow
+    }
+    # 校验永不阻断启动（#515 AC2）：check_build_info 的退出码只用于日志分类。
+    $global:LASTEXITCODE = 0
+}
+
+Test-DzBuildIdentity
 
 if ($Config -eq 'Debug') {
     Write-Host ""

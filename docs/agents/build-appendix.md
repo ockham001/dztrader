@@ -382,6 +382,16 @@ Linux 默认 `DZ_WITH_MYSQL=ON`（根 `CMakeLists.txt`）；关掉它时 mysql �
 
 **调试符号分离**：Release 带 `-g`，`scripts/install-artifacts.sh` 用 `objcopy --only-keep-debug` + `--strip-debug` + `--add-gnu-debuglink` 把符号抽到 `install/<plat>/<arch>/<cfg>-debug-symbols/`（约 345MB，不进部署包）。部署包因此从 401MB 降到约 66MB。崩溃分析用 `addr2line -e <symbols>/<name>.debug`。Windows 的 `.pdb` 同样不进包，由 tag 流水线单独归档。
 
+### 构建身份 BUILD_INFO（#515）
+
+`install/<plat>/<arch>/<cfg>/BUILD_INFO` 是 k=v 纯文本，记 `commit` / `dirty` / `built_at`（ISO 8601 UTC）/ `version` / `config`，写入方是 `cmake/write_build_info.cmake`：
+
+- **build 树**：`dz_build_info` target（`ALL`，**每次构建都重跑**——这三个字段是构建期事实，ninja 无法从输入推出它们是否过期）。`install(FILES)` 把它拷进 install 树。
+- **install 树**：`install(CODE)` 在 install 期重写一次。这样「直接 `cmake --install`」（README 的本机安装、release.yml 的 Windows job）也不会把身份留在旧值——只跑 build 不跑 install 的实现会让这里比没有更误导。
+- **读方**：`scripts/check_build_info.py`（`run-dev.sh` / `run-dev.ps1` 启动前调用，只 warning 不阻断；`--selftest` 在 preflight）。比对的是 `BUILD_INFO.commit` 与本仓当前 HEAD，`dirty` 按 `git status --porcelain` 口径（含未跟踪、不含 gitignore）。
+
+为什么需要：此前产物没有任何 commit 标识，#508 关单时 handoff 写「启动栈已含新二进制」，实际二进制早于合并、`sha256sum` 与 `build/` 也不同，只能靠 mtime 手工推断——结论是宿主栈跑着旧二进制而前端静态文件已被刷新（新旧混用，现象难解释）。**`BUILD_INFO` 回答「这份产物是哪一版」，`built_at` 回答「什么时候建的」；两者都不代表「进程正在跑哪一版」**（进程启动时间要在运行侧看）。
+
 ---
 
 ## conan 依赖更新
