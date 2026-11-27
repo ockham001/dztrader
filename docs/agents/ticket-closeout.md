@@ -270,6 +270,11 @@ AGENTS §五「本机沙箱」的细节都放在这里（AGENTS 只留指针，�
 - **每个 bash 调用是独立 PID namespace（#509 实测）**：跨调用 `ps` / `pgrep` 看不到宿主栈与兄弟调用起的进程，「查不到」不等于「没在跑」；因此（a）验证栈必须用 `run_in_background` 作业持有生命周期、收尾 `job_kill`（作业 id 在会话里可寻址）；（b）杀本沙箱进程用 `pgrep -x <exe>`，`pgrep -f` 会命中自身命令行；`kill $(pgrep -f …)` 实测误杀沙箱内 PID 1（#509）；（c）宿主栈（如用户自己在跑的 8080）agent 既停不了也重启不了——需要它的二进制更新时，隔离验证栈自己从 `build/` 取，别指望 `run-dev --stop` 跨调用生效。
 - **隔离验证栈 recipe（宿主占着 `install/` 时，唯一可用的实机验证路径；#509）**：宿主 dev 栈运行时不要覆盖 `install/`（运行中的 ELF 不可替换、且会新旧混用）；改为从 `build/<plat>/<arch>/<cfg>/` 把 `dztraderd` / `dzweb` / `dztd_*` / `dzsysmon` 与 `web/` 暂存到 `.cache/verify_run/`（gitignore），用 `DZTRADER_HOME=<项目根>/.cache/verify_home`（项目内，硬门禁 2 允许的隔离 home）；configs 从 `.dztrader_dev/configs/` 复制后改三项：端口（如 8081）、`admin.password` 设为非默认值（留在默认口令 `88888888` 时 webui 启动会把该账户置 `must_change_password=1`，`apps/webui/main.cpp`，Playwright 登录会被强制改密弹窗拦住）、`auto_login.enabled=false`（删 section 会恢复默认自动登录），去掉不需要的子进程；再以 `DZTRADER_HOME=$PWD/.cache/verify_home .cache/verify_run/dztraderd` 启动（用 `run_in_background` 持有）；前端验证用 Playwright/curl 打独立端口，深浅色与失败态都实测；收尾 `rm -rf .cache/verify_run .cache/verify_home` 并确认端口不再监听。**注意 install/ 产物可能落后于 HEAD**——见 #515，先用 `sha256sum` 对比 build/install 再决定是否需重建。
 - **读写守卫**：宿主文件守卫按「读过才可改」判定，批量重写后直接改会报 stale；此时重新读取再改，不要反复重试同一改动。
+- **全量 ctest rc=8 的两种形态要分开看（#516）**：`Subprocess aborted` 既可能是**真失败**（断言失败），也可能是**退出期 abort**——用例 gtest 输出已是 `[ OK ]` / `[ PASSED ]`，进程却在退出阶段 `terminate called after throwing ... std::bad_alloc` 之类崩掉。二者同为 rc=8，处置完全不同：前者要修代码，后者是退出期 UB（曾经的一次实例是 `test_temp_dir.h` 的 `atexit` 回调跑在静态 vector 析构之后）。判据命令（看用例是否已 PASSED 再看退出期输出）：
+  ```bash
+  grep -nE 'Subprocess aborted|terminate called|std::bad_alloc' .cache/gate/test-*.log | tail
+  ```
+  ctest 默认不回显失败用例的输出（testPresets 未开 `outputOnFailure`），所以 `terminate`/`bad_alloc` 文本只在 `LastTest.log` 与 gate 日志里；`gate.sh` 现在会在失败摘录里单独标出 `Subprocess aborted` 命中（见脚本注释）。**注意不要把「退出期 abort」当成 known flake 直接重跑**——它可能是真 UB（#516 就是），重跑只是把假绿固化下来。
 
 ## 反模式（实际踩过）
 

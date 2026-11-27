@@ -80,7 +80,7 @@
 
 | 头 | 提供什么 |
 |---|---|
-| `libs/core/tests/test_temp_dir.h` | `dztrader::test::unique_temp_dir()` / `unique_temp_path()`：进程唯一临时路径，atexit 清理（3.5 的唯一实现） |
+| `libs/core/tests/test_temp_dir.h` | `dztrader::test::unique_temp_dir()` / `unique_temp_path()`：进程唯一临时路径，atexit 清理（3.5 的唯一实现）；`unique_temp_dir_tracked()` 登记 + 退出期统一清理；`ScopedTempDir`（作用域内自清理）；`run_self_probe()` + `kTrackedTempDirProbeFlag`：自派子进程跑探针（`main()` 分发），用于行为只在进程退出时/被进程级缓存锚定而进程内无从断言的场景（先例 `this_process_test` / `temp_dir_test`，#516） |
 | `libs/strategy_api/tests/bar_test_data.h` | 交易日内秒常量（`TSEC_09_00` 等）+ `day_session_table()` / `day_auction_session_table()`：交易小节与竞价窗口表的**唯一**定义 |
 | `libs/strategy_api/tests/bar_diff_streams.h` | 确定性 tick 流生成器（差分验收用） |
 | `libs/strategy_api/tests/bar_diff_compare.h` | `bar::Bar` 逐字段比较器（fast/slow 两档共用） |
