@@ -6,11 +6,13 @@ import { useProgressStore } from '@/stores/progress'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { useTdAccountsStore } from '@/stores/tdAccounts'
+import { useTdOrdersStore } from '@/stores/tdOrders'
 import { useProcessStore } from '@/stores/process'
 import { marketSourcesApi } from '@/api/marketSources'
 import { tdApi } from '@/api/td'
 import DashboardView from '../DashboardView.vue'
 import type { TdPositionRow, TdTradingAccountRow, TdTradingAccountsResponse } from '@/types/api'
+import type { TdOrderRow } from '@/types/generated'
 
 // Dashboard 引用真实 StatusIndicator 与真实持仓/资金 store；断言页面展示的内容，
 // 而不是测试自己刚写进 store 的值。
@@ -28,6 +30,8 @@ vi.mock('@/api/td', () => ({
     getPositions: vi.fn(),
     getTradingAccounts: vi.fn(),
     refreshTradingAccount: vi.fn(),
+    // #523：仪表盘委托面板接真实委托（与「交易数据」页同一个 store）
+    getOrders: vi.fn(),
     // 仪表盘挂载时重拉账户注册表（展示名来源之一，ADR 0056 决策 9）
     listAccounts: vi.fn(),
   },
@@ -122,6 +126,45 @@ function fundListResponse(items: TdTradingAccountRow[], overrides: Record<string
   }
 }
 
+/** 委托行（契约 rest §2.9.3）；只填断言用到的字段，其余给契约默认值 */
+function order(overrides: Partial<TdOrderRow> = {}): TdOrderRow {
+  return {
+    account_id: 'acc_a',
+    date: '20260808',
+    order_id: 1,
+    strategy_id: '/manual',
+    instrument_id: 'rb2601',
+    exchange_id: 'SHFE',
+    direction: 'Long',
+    position_effect: 'Open',
+    price_type: 'Limit',
+    status: 'NotTraded',
+    price: 3500,
+    volume: 10,
+    volume_traded: 0,
+    remark: '',
+    time: 36_000,
+    avg_price: null,
+    price_decimals: 1,
+    avg_price_decimals: 1,
+    seq: 1,
+    sort_key: '001',
+    ...overrides,
+  }
+}
+
+/** 委托可用信封（契约 rest §2.9.2） */
+function orderListResponse(items: TdOrderRow[], overrides: Record<string, unknown> = {}) {
+  return {
+    available: true as const,
+    trading_day: '20260808',
+    online_accounts: ['acc_a'],
+    items,
+    next_cursor: null,
+    ...overrides,
+  }
+}
+
 /** 挂载仪表盘并等待持仓/资金基线到达 */
 async function mountDashboard() {
   const wrapper = mount(DashboardView, { attachTo: document.body })
@@ -167,6 +210,7 @@ describe('DashboardView', () => {
     vi.mocked(marketSourcesApi.list).mockResolvedValue([])
     vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([]))
     vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([]))
     vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] })
     // #509 资金状态列读 tdAccounts 行镜像：网关进程按 Running 造镜像，账户才有「会话」
     // （进程没跑时状态列一律「未启动」，与真实页面一致）
@@ -177,6 +221,7 @@ describe('DashboardView', () => {
     // 持仓/资金/账户注册表 store 的降级退避定时器：用例结束时统一释放
     useTdPositionsStore().dispose()
     useTdTradingAccountsStore().dispose()
+    useTdOrdersStore().dispose()
     useTdAccountsStore().dispose()
   })
 
@@ -317,28 +362,25 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('持仓/消息面板不再标注「演示」，其余两个演示面板仍标注（演示标签 2 个）', async () => {
+  it('只剩「策略」一个演示面板（演示标签 1 个）', async () => {
     const w = await mountDashboard()
     const tags = w.findAll('[data-test="dashboard-demo-tag"]')
-    expect(tags).toHaveLength(2)
-    expect(tags.every(tag => tag.text() === '演示')).toBe(true)
+    // 持仓 #249 / 资金 #250 / 委托 #523 / 消息 ADR 0060 均已接真实链路，只剩策略
+    expect(tags).toHaveLength(1)
+    expect(tags[0].text()).toBe('演示')
     w.unmount()
   })
 
-  it('横幅点名仍为演示数据的面板，并说明已接真实链路的面板', async () => {
+  it('横幅只点名策略，已接真实链路的面板不在其中', async () => {
     const w = await mountDashboard()
     const banner = w.get('[data-test="dashboard-demo-banner"]')
     const text = banner.text()
     expect(text).toContain('演示数据')
-    for (const panel of ['委托', '策略']) {
-      expect(text).toContain(panel)
-    }
-    // 消息面板已随 ADR 0060 接入真实通知链路：不得再出现在「尚未接入」的列举里
-    expect(text).not.toContain('委托 / 策略 / 消息')
-    // 账户面板已改「资金」并接真实链路：不得再被列为演示面板
+    expect(text).toContain('「策略」')
+    // 委托 / 消息 / 持仓 / 资金 均已接入真实链路，不得出现在「尚未接入」的列举里
+    expect(text).not.toContain('委托 / 策略')
     expect(text).not.toContain('账户')
-    // 持仓（#249）/ 资金（#250）/ 消息（ADR 0060）已接入真实链路
-    expect(text).toContain('「行情」「持仓」「资金」「消息」为实时数据')
+    expect(text).toContain('「行情」「持仓」「资金」「委托」「消息」为实时数据')
     w.unmount()
   })
 
@@ -506,17 +548,104 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('聚合数与展示行自洽（委托/策略仍是演示行，持仓/资金来自真实基线）', async () => {
+  it('聚合数与展示行自洽（委托/持仓/资金来自真实基线，策略仍是演示行）', async () => {
     const w = await mountDashboard()
     // 持仓：空基线 → 0/0（不再是写死的演示行数）
     expect(w.get('[data-test="position-aggregate"]').text()).toBe('0/0')
     // 资金：空基线 → 在线 0 / 已登记 0
     expect(w.get('[data-test="fund-aggregate"]').text()).toBe('0/0')
-    // 委托：7 笔中 2 笔未成交（旧值 2/12 与 7 行矛盾）
-    expect(w.get('[data-test="orders-aggregate"]').text()).toBe('2/7 笔')
+    // 委托：空基线 → 0/0（#523 起接真实数据，不再是写死的 2/7）
+    expect(w.get('[data-test="orders-aggregate"]').text()).toBe('0/0 笔')
     // 策略：5 个策略中 4 个运行中（旧值 5/5 与「1 已停止」矛盾）
     expect(w.get('[data-test="strategy-aggregate"]').text()).toBe('4/5')
     expect(w.get('[data-test="strategy-footer"]').text()).toBe('总计: 5 已加载, 1 已停止')
+    w.unmount()
+  })
+
+  // ---- #523：委托面板接真实数据 ----
+
+  it('委托面板显示真实委托行，字段按契约格式化', async () => {
+    // store 按 sort_key 字符串**降序**插入（新行在前）：给两个不同的 sort_key
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
+      order({ order_id: 1, instrument_id: 'rb2601', direction: 'Long', status: 'AllTraded',
+        price: 3500, volume: 10, volume_traded: 10, avg_price: 3501.5, time: 36_000,
+        sort_key: '002' }),
+      order({ order_id: 2, instrument_id: 'ag2602', direction: 'Short', status: 'NotTraded',
+        price: 7850.5, volume: 5, volume_traded: 0, avg_price: null, time: 45_005,
+        sort_key: '001' }),
+    ]))
+    const w = await mountDashboard()
+    const rows = w.findAll('.dashboard-panel--orders tbody tr')
+    expect(rows).toHaveLength(2)
+
+    // sort_key 降序 → 002 在前
+    const first = rows[0].text()
+    expect(first).toContain('rb2601')
+    expect(first).toContain('买入')
+    expect(first).toContain('10/10')
+    expect(first).toContain('3500.0')      // price.toFixed(price_decimals=1)
+    expect(first).toContain('3501.5')      // avg_price.toFixed(avg_price_decimals=1)
+    expect(first).toContain('10:00:00')    // 36000 秒 → HH:MM:SS
+    expect(first).toContain('全部成交')
+
+    const second = rows[1].text()
+    expect(second).toContain('ag2602')
+    expect(second).toContain('卖出')
+    expect(second).toContain('0/5')
+    expect(second).toContain('7850.5')
+    expect(second).toContain('—')          // avg_price null → 占位，不显示 0
+    expect(second).toContain('12:30:05')
+    expect(second).toContain('未成交')
+    w.unmount()
+  })
+
+  it('委托状态 5 类映射到既有视觉词汇（成交/部分/未成交/撤单/废单）', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
+      order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '005' }),
+      order({ order_id: 2, status: 'PartTraded', volume_traded: 3, sort_key: '004' }),
+      order({ order_id: 3, status: 'NotTraded', sort_key: '003' }),
+      order({ order_id: 4, status: 'Cancelled', sort_key: '002' }),
+      order({ order_id: 5, status: 'Rejected', sort_key: '001' }),
+    ]))
+    const w = await mountDashboard()
+    // sort_key 降序 → 顺序与上表一致
+    const rows = w.findAll('.dashboard-panel--orders tbody tr')
+    expect(rows[0].text()).toContain('全部成交')
+    expect(rows[1].text()).toContain('部分成交')
+    expect(rows[2].text()).toContain('未成交')
+    expect(rows[3].text()).toContain('已撤单')
+    expect(rows[3].classes()).toContain('order-row--cancelled')
+    expect(rows[4].text()).toContain('废单')
+    expect(rows[4].classes()).toContain('order-row--rejected')
+    w.unmount()
+  })
+
+  it('委托面板空态显示「暂无委托」，不显示假数据', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([]))
+    const w = await mountDashboard()
+    expect(w.find('[data-test="orders-empty"]').exists()).toBe(true)
+    expect(w.find('[data-test="orders-empty"]').text()).toContain('暂无委托')
+    // 演示标签已移除（只剩策略那一个）
+    const orderPanel = w.get('.dashboard-panel--orders')
+    expect(orderPanel.find('[data-test="dashboard-demo-tag"]').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('「仅挂单」复选框过滤到未成交/部分成交', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
+      order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '003' }),
+      order({ order_id: 2, status: 'PartTraded', volume_traded: 3, sort_key: '002' }),
+      order({ order_id: 3, status: 'NotTraded', sort_key: '001' }),
+    ]))
+    const w = await mountDashboard()
+    expect(w.findAll('.dashboard-panel--orders tbody tr')).toHaveLength(3)
+
+    const checkbox = w.get('.dashboard-panel--orders input[type="checkbox"]')
+    await checkbox.setValue(true)
+    const rows = w.findAll('.dashboard-panel--orders tbody tr')
+    expect(rows).toHaveLength(2)  // PartTraded + NotTraded（sort_key 降序：002 在 001 前）
+    expect(rows[0].text()).toContain('部分成交')
+    expect(rows[1].text()).toContain('未成交')
     w.unmount()
   })
 
