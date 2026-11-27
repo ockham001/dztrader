@@ -107,24 +107,32 @@ if (-not (Test-Path $master_exe)) {
 # 只 warning 不阻断（#515 AC2）：旧产物仍可启动，但「跑的是哪一版」必须可见。
 # 与 run-dev.sh 同一份判定实现（scripts/check_build_info.py），行为跨平台一致。
 function Test-DzBuildIdentity {
+    # 探测顺序与 sh 侧相反（那里 python3 优先）：Windows 上 `python3` 常常命中的是
+    # Microsoft Store 的占位 stub（存在但一执行就报「未安装」），所以 py launcher /
+    # python 先试，python3 兜底。
     $py = $null
-    foreach ($candidate in @('python3', 'python', 'py')) {
+    foreach ($candidate in @('py', 'python', 'python3')) {
         $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
         if ($cmd) { $py = $cmd.Source; break }
     }
     if (-not $py) {
         Write-Host "warning: no python interpreter; build identity check skipped" -ForegroundColor Yellow
+        # 早退也必须复位退出码：函数体里任何一条 return 都不能把「跳过校验」变成
+        # 「上一条命令的失败码泄漏到后面」。
+        $global:LASTEXITCODE = 0
         return
     }
     $infoPath = Join-Path $install_dir "BUILD_INFO"
     & $py (Join-Path $project_root "scripts\check_build_info.py") check `
         --info $infoPath --repo $project_root
-    # 结论行（ok/stale/missing/unknown）与 warning 均直接落到控制台：
+    # 结论行（status=ok/stale/missing/...）与 warning 均直接落到控制台：
     # 这份输出就是「启动栈含新二进制」的取证。
     if ($LASTEXITCODE -ne 0) {
         Write-Host "warning: install tree does not match HEAD; the running stack may be stale" -ForegroundColor Yellow
     }
     # 校验永不阻断启动（#515 AC2）：check_build_info 的退出码只用于日志分类。
+    # 复位是必须的——否则 `$LASTEXITCODE` 会一直停在非 0，污染调用方/CI 的观感。
+    # 注意它不影响 `& $master_exe`：那条命令会自己写新的 $LASTEXITCODE。
     $global:LASTEXITCODE = 0
 }
 

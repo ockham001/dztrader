@@ -41,7 +41,21 @@ RUN_DEV_PS1 = REPO_ROOT / "scripts" / "run-dev.ps1"
 # 有意的：`--selftest` 被砍掉一半用例时本断言红，而不是静默少验证）。
 EXPECTED_SELFTEST_CASES = 22
 
-STATUS_LINE_RE = re.compile(r"^build-info: status=(ok|stale|missing|unknown)\b")
+# 覆盖语义锁（与 check_build_info.py 的 SELFTEST_COVERAGE_LABELS 对齐）：用例数相等
+# 挡不住成对删用例，这里要求每个状态/形态在 selftest 输出里被点名。
+EXPECTED_COVERAGE = (
+    "匹配 → ok",
+    "旧提交 → stale",
+    "文件缺失 → missing",
+    "字段不全 → unreadable",
+    "commit=unknown → unknown",
+    "HEAD 不可解析 → no-head",
+    "dirty 构建 → ok + note",
+    "解析器",
+    "缺省路径",
+)
+
+STATUS_LINE_RE = re.compile(r"^build-info: status=(ok|stale|missing|unreadable|unknown|no-head)\b")
 
 
 def _shell_function_body(text: str, name: str) -> str | None:
@@ -130,12 +144,17 @@ class BuildInfoCliTest(unittest.TestCase):
         self.assertIn("status=missing", result.stdout)
         self.assertIn("warning:", result.stderr)
 
-    def test_unreadable_info_is_not_reported_as_ok(self) -> None:
+    def test_unreadable_info_has_its_own_status(self) -> None:
+        """文件在但字段不全 → status=unreadable；不得混成 missing/stale。
+
+        混标签的后果：运维看到 `status=missing` 会去查「产物没装上」，而真实原因是
+        BUILD_INFO 格式坏了（旧版本产物 / 被截断），排查方向完全错。
+        """
         self.info.parent.mkdir(parents=True, exist_ok=True)
         self.info.write_text("version=0.1.0\n", encoding="utf-8")
         result = self.check()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertNotIn("status=ok", result.stdout)
+        self.assertIn("status=unreadable", result.stdout, result.stdout)
 
     def test_dirty_build_is_ok_with_note(self) -> None:
         self.write_info(commit=self.head, dirty="1")
@@ -151,7 +170,7 @@ class BuildInfoCliTest(unittest.TestCase):
         # 报错文案里必须带出它查找的路径，否则「为什么 missing」无从判断。
         self.assertRegex(result.stderr, r"install[/\\][^ ]*x86_64[/\\]Release[/\\]BUILD_INFO")
 
-    def test_selftest_passes_with_expected_case_count(self) -> None:
+    def test_selftest_passes_with_expected_coverage(self) -> None:
         result = run_checker("--selftest")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         match = re.search(r"selftest: (\d+) cases", result.stdout)
@@ -163,6 +182,14 @@ class BuildInfoCliTest(unittest.TestCase):
             "check_build_info.py --selftest 的用例数变了：确认是有意新增/删除后同步本常量"
             "（提前 return 会让 preflight 静默少验证）",
         )
+        # 计数相等挡不住「成对删用例」（#289 审查在 ci_scope 上实测过），所以另锁
+        # 覆盖语义：每个状态/形态都必须在输出里点名。
+        for label in EXPECTED_COVERAGE:
+            self.assertIn(
+                label,
+                result.stdout,
+                f"selftest 不再覆盖 {label!r}（删用例时必须显式改 EXPECTED_COVERAGE）",
+            )
 
     def test_unknown_command_is_a_usage_error(self) -> None:
         result = run_checker()
@@ -176,19 +203,57 @@ class BuildInfoCliTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
 
+def _code_lines(text: str, marker: str) -> list[str]:
+    """文件里提到 marker 的**代码行**（去掉整行注释）。
+
+    只认整行注释（sh 的 `#`、PS 的 `#`）不够严谨，但足够区分「函数体/调用」与
+    「头部用法说明里提到校验器」——后者正是本测试要排除的假绿来源。
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if marker in line:
+            out.append(line)
+    return out
+
+
+def _shell_top_level_calls(text: str, function: str) -> list[str]:
+    """函数体**之外**、行首（无缩进）对该函数的裸调用行。
+
+    静态断言必须能失败：只查「文件里提到 check_build_info.py」时，函数定义还在、
+    调用行被删掉，测试仍然绿（Standards 审查实测 11/11 全绿）。所以要断言调用点。
+    """
+    calls: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        if re.match(rf"^{re.escape(function)}\(\) \{{", line):
+            inside = True
+            continue
+        if inside:
+            if line.startswith("}"):
+                inside = False
+            continue
+        if line.strip() == function:
+            calls.append(line)
+    return calls
+
+
 class RunDevWiringTest(unittest.TestCase):
     """两个启动脚本都必须调用校验器，且都不能因校验失败中止启动（AC2）。"""
 
     def test_posix_run_dev_invokes_checker_and_tolerates_failure(self) -> None:
         text = RUN_DEV_SH.read_text(encoding="utf-8")
-        self.assertIn("check_build_info.py", text, "run-dev.sh 未接入构建身份校验")
         self.assertIn("BUILD_INFO", text, "run-dev.sh 未按 install 树定位 BUILD_INFO")
         # 不阻断（`set -euo pipefail` 下裸调用会让脚本在旧产物上直接退出——正是 AC2
         # 禁止的行为）。调用本身是续行的，所以按**所在函数体**断言，不按单行匹配。
         body = _shell_function_body(text, "check_build_identity")
         self.assertIsNotNone(body, "run-dev.sh 缺 check_build_identity 函数")
         assert body is not None
-        self.assertIn("check_build_info.py", body, body)
+        self.assertIn(
+            "check_build_info.py", body, f"check_build_identity 没有调用校验器:\n{body}"
+        )
         self.assertTrue(
             "|| rc=$?" in body or "|| true" in body,
             f"check_build_identity 的校验调用没有吞掉失败（set -e 会中止启动）:\n{body}",
@@ -196,14 +261,28 @@ class RunDevWiringTest(unittest.TestCase):
         self.assertRegex(
             body, r"return 0\s*$", "check_build_identity 必须以 0 返回（校验永不阻断启动）"
         )
+        # 调用点：函数定义得再对，没人调用等于没接入（删掉这一行必须让本测试红）。
+        self.assertEqual(
+            len(_shell_top_level_calls(text, "check_build_identity")),
+            1,
+            "run-dev.sh 没有在启动前调用 check_build_identity（只定义不调用 = 未接入）",
+        )
 
     def test_windows_run_dev_invokes_checker_and_restores_exit_code(self) -> None:
         text = RUN_DEV_PS1.read_text(encoding="utf-8")
-        self.assertIn("check_build_info.py", text, "run-dev.ps1 未接入构建身份校验")
         self.assertIn("BUILD_INFO", text, "run-dev.ps1 未按 install 树定位 BUILD_INFO")
+        code = "\n".join(_code_lines(text, "check_build_info.py"))
+        self.assertIn(
+            "check_build_info.py", code, "run-dev.ps1 只在注释里提到校验器（未真正调用）"
+        )
+        # 调用点：与 sh 侧同理——删掉 `Test-DzBuildIdentity` 那行必须让本测试红。
+        self.assertRegex(
+            text,
+            r"(?m)^Test-DzBuildIdentity\s*$",
+            "run-dev.ps1 没有在启动前调用 Test-DzBuildIdentity（只定义不调用 = 未接入）",
+        )
         # PowerShell 侧不阻断的形态：判定后把 $LASTEXITCODE 复位，避免旧的失败码
-        # 漏到后续 & $master_exe 之外的地方（$ErrorActionPreference='Stop' 下不必
-        # 额外 try/catch，但退出码必须显式清）。
+        # 漏到后续 `& $master_exe` 的上下文里。
         self.assertRegex(
             text,
             r"\$global:LASTEXITCODE\s*=\s*0",
