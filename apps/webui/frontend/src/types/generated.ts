@@ -60,8 +60,10 @@ export interface NotifyUiPayload {
     message: string
     /** Unix 秒级时间戳 */
     timestamp: number
-    /** 是否弹窗打断用户 */
+    /** 是否常驻呈现（不自动消失，不阻断操作） */
     popup: boolean
+    /** 同一事件被去重折叠的次数；1 表示未折叠（dzweb 填，契约 notify-ui） */
+    count?: number
 }
 
 export interface BrokerFrontend {

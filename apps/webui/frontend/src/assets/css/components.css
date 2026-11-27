@@ -813,53 +813,6 @@ pre {
         50% { width: 80%; }
     }
 
-/* ── Toast ──────────────────────────────────────────────── */
-/* ===== Toast — 悬浮顶部居中的瞬时操作反馈（参考 um-toast）
-   3 状态：success / error / info（pending 由组件自身 spinner 体现）
-   用法：<transition name="ds-toast-fade"><div v-if="toast.visible" class="ds-toast" :class="`ds-toast--${toast.type}`">{{ toast.message }}</div></transition>
-   行为：悬浮（不顶下去）、3 秒自动消失、淡入淡出 + 向下滑入
-*/
-    .ds-toast {
-        position: fixed;
-        top: 44px;
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: 2000;
-        padding: var(--spacer-8) var(--spacer-16);
-        border-radius: var(--radius-8);
-        font-size: var(--body-sm-font-size);
-        font-weight: var(--font-weight-medium);
-        box-shadow: 0 8px 24px color-mix(in srgb, var(--text-default) 16%, transparent);
-        background: var(--bg-base-secondary);
-        color: var(--text-default);
-        border: 1px solid var(--border-neutral-l1);
-        white-space: nowrap;
-    }
-    .ds-toast--success {
-        background: var(--status-success-surface-l1);
-        color: var(--status-success-default);
-        border-color: var(--status-success-surface-l2);
-    }
-    .ds-toast--error {
-        background: var(--status-error-surface-l1);
-        color: var(--status-error-default);
-        border-color: var(--status-error-surface-l2);
-    }
-    .ds-toast--info {
-        background: var(--status-primary-surface-l1);
-        color: var(--status-primary-default);
-        border-color: var(--status-primary-surface-l2);
-    }
-    .ds-toast-fade-enter-active,
-    .ds-toast-fade-leave-active {
-        transition: opacity 0.2s ease, transform 0.2s ease;
-    }
-    .ds-toast-fade-enter-from,
-    .ds-toast-fade-leave-to {
-        opacity: 0;
-        transform: translateX(-50%) translateY(-8px);
-    }
-
 /* ── Conn banner ─────────────────────────────────────────── */
 /* ===== Conn banner — 服务器连接状态横条（参考 conn-banner）
    2 状态：reconnecting / failed

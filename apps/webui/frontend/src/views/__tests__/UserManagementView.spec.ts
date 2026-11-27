@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useUserManagementStore } from '@/stores/userManagement'
+import { useToastStore } from '@/stores/toast'
 import type { UserView } from '@/stores/userManagement'
 import { usersApi } from '@/api/users'
 import UserManagementView from '../UserManagementView.vue'
@@ -217,7 +218,9 @@ describe('UserManagementView 删除用户二次确认（#204）', () => {
     expect(store.users.map(u => u.username)).not.toContain('bob')
     expect(w.text()).not.toContain('bob')
     expect(w.find('.modal-stub').exists()).toBe(false)
-    expect(w.find('.ds-toast').text()).toContain('用户已删除')
+    // 反馈走全局 toast store（与右侧 ToastContainer 同一实现，不再用页面局部 toast）
+    const toast = useToastStore()
+    expect(toast.items.some(t => t.message.includes('用户已删除'))).toBe(true)
   })
 
   it('删除失败保持 Modal 打开并提示真实错误', async () => {
@@ -233,7 +236,8 @@ describe('UserManagementView 删除用户二次确认（#204）', () => {
     expect(w.find('.modal-stub').exists()).toBe(true)  // 失败保留 Modal
     expect(store.users.map(u => u.username)).toContain('bob')  // 镜像保留
     // 与兜底文案区分：真实 store.error 含「未删除，请重试」
-    expect(w.find('.ds-toast').text()).toContain('未删除，请重试')
+    const toast = useToastStore()
+    expect(toast.items.some(t => t.message.includes('未删除，请重试'))).toBe(true)
   })
 
   it('删除请求进行中确认/取消按钮禁用并显示删除中', async () => {

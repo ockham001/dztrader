@@ -286,21 +286,27 @@ registerHandler('notify_ui', (payload) => {
   //   - 配置类 pending → md_rtn_config / auto_login
   //   - 进程类 pending → process_status 的 event 字段（契约 process）
   //   - 登录类 pending → progress 状态转移（契约 progress）
-  // data: { source?: string, message?: string, level?: string, popup?: boolean, timestamp?: number }
+  // data: { source, level, message, timestamp, popup, count? }
   // timestamp 为契约 notify-ui 的 Unix 秒级发送方时间戳，由 notify store 统一换算为毫秒存储
   //   level 为字符串：'info' | 'warning' | 'error'（与 log level 规范全称一致）
-  //   popup=true 且 error 级别: 契约 notify-ui 前端义务——必须打断用户展示
-  //   （NotifyStore 入 popup 队列, App.vue 渲染 modal 逐条确认）
+  //   popup=true: 必须**常驻**呈现（不自动消失、不遮挡、不阻断），见 ADR 0060 决策 3
+  //   count: dzweb 的去重折叠计数（ADR 0060 决策 4）；前端就地更新已有条目，不新增行
   // 双 toast 修复（设计 §5.4）：notify_ui → useNotifyStore → toast，不写 error.value
   //   （error.value 仅 HTTP 失败链路写入，两通道互斥）
-  // payload 已由 WsDataByType 类型化为 NotifyUiPayload（契约单源，字段全必填）
+  // payload 已由 WsDataByType 类型化为 NotifyUiPayload（契约单源）
   const data = payload
   // level 已为字符串, 未匹配/缺失时默认 error
   const rawLevel = data?.level
   const level: 'info' | 'warning' | 'error' =
     rawLevel === 'info' ? 'info' : rawLevel === 'warning' ? 'warning' : 'error'
-  useNotifyStore().push(data?.message ?? '', data?.source, level, data?.popup === true,
-    typeof data?.timestamp === 'number' ? data.timestamp : undefined)
+  useNotifyStore().push(
+    data?.message ?? '',
+    data?.source,
+    level,
+    data?.popup === true,
+    typeof data?.timestamp === 'number' ? data.timestamp : undefined,
+    typeof data?.count === 'number' ? data.count : undefined,
+  )
 })
 
 registerHandler('progress', (payload, instanceId) => {

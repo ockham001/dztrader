@@ -100,7 +100,7 @@ REST 是**请求入口与大数据查询**；状态推送一律走 WS（契约 w
 
 | 方法/路径 | 语义 |
 |---|---|
-| GET `/api/notifications` | 最近通知（读取 NotifyCache，契约 notify-ui） |
+| GET `/api/notifications` | 最近通知（读取 NotifyCache，契约 notify-ui）；返回 `{notifications: [...]}`，每条含 `source`/`level`/`message`/`timestamp`/`popup`/`count`。缓存内容**已按契约 notify-ui 的去重规则折叠**，与 WS 增量同形 |
 
 ### 2.7 系统设置
 

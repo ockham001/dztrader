@@ -74,7 +74,8 @@ struct PersistPolicy {
     std::vector<std::chrono::milliseconds> retry_delays{
         std::chrono::seconds(1), std::chrono::seconds(2), std::chrono::seconds(5),
         std::chrono::seconds(10), std::chrono::seconds(30)};
-    /// 持续失败 WARN 通知限频 (ADR 0042 §4: 每 5 分钟最多 1 次).
+    /// 持续失败通知限频 (每 5 分钟最多 1 次)。级别恒为 ERROR——同一事件不降级成 WARN
+    /// (ADR 0060 决策 5)，持续性由 dzweb 的去重折叠计数表达。
     std::chrono::milliseconds sustained_notify_interval{std::chrono::minutes(5)};
     /// 积压阈值告警 (队列不设上限, 仅达阈值时通知一次/积压期; ADR 0042 §1).
     std::size_t backlog_warn_threshold = 100000;

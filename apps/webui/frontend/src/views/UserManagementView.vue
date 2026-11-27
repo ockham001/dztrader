@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import Icon from '@/components/shared/Icon.vue'
 import Modal from '@/components/shared/Modal.vue'
 import Dropdown from '@/components/shared/Dropdown.vue'
@@ -8,10 +8,8 @@ import SyncSelect from '@/components/shared/SyncSelect.vue'
 import { sourceTypeText, sourceTypeClass } from '@/composables/useSourceType'
 import { useFieldId } from '@/composables/useFieldId'
 import { LOGIN_ERROR_TEXT, type LoginErrorCode } from '@/composables/loginErrors'
-import {
-  useUserManagementStore,
-  getAccessModeDescription,
-} from '@/stores/userManagement'
+import { useUserManagementStore, getAccessModeDescription } from '@/stores/userManagement'
+import { useToastStore } from '@/stores/toast'
 import type { DropdownItem } from '@/components/shared/Dropdown.vue'
 import type { SelectItem } from '@/components/shared/SyncSelect.vue'
 import type { UserView } from '@/stores/userManagement'
@@ -317,21 +315,17 @@ function avatarChar(name: string): string {
   return name.charAt(0)
 }
 
-// ===== Toast — 悬浮顶部居中的瞬时操作反馈（参考 um-toast）=====
-interface ToastState {
-  visible: boolean
-  message: string
-  type: 'success' | 'error' | 'info'
-}
-const toast = reactive<ToastState>({ visible: false, message: '', type: 'info' })
-let toastTimer: ReturnType<typeof setTimeout> | null = null
+// ===== 瞬时操作反馈 =====
+// 走全局 toast store（与右侧 ToastContainer 同一实现）：本页原有一套居中悬浮 toast
+// （局部 reactive + `.ds-toast` 全局样式），与全局 toast 形成两套并存（AGENTS 三·1），
+// 且旧 `.ds-toast` 的 `position:fixed; top:44px` 会污染全局 toast 卡片的定位。
+// 调用点保持不变（只换 showToast 内部实现）。
+const globalToast = useToastStore()
 
 function showToast(message: string, type: 'success' | 'error' | 'info' = 'success'): void {
-  toast.message = message
-  toast.type = type
-  toast.visible = true
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => { toast.visible = false }, 3000)
+  if (type === 'error') globalToast.error(message)
+  else if (type === 'info') globalToast.info(message)
+  else globalToast.success(message)
 }
 
 // 监听 store pending 变化（true→false 表示操作结束），触发 toast
@@ -387,21 +381,12 @@ onMounted(() => {
   store.loadAll()
 })
 onUnmounted(() => {
-  if (toastTimer) clearTimeout(toastTimer)
   if (loginHistoryObserver) loginHistoryObserver.disconnect()
 })
 </script>
 
 <template>
   <div class="um-page">
-    <!-- Toast — 悬浮顶部居中的瞬时操作反馈（参考 um-toast）-->
-    <transition name="ds-toast-fade">
-      <div
-        v-if="toast.visible"
-        class="ds-toast"
-        :class="`ds-toast--${toast.type}`"
-      >{{ toast.message }}</div>
-    </transition>
     <div class="um-content">
 
       <!-- ===== 1. Page Header ===== -->

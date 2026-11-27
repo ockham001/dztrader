@@ -6,16 +6,20 @@
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+#include <chrono>
 #include <string>
 
 namespace dztrader::webui {
 
-/// 通知领域服务：NOTIFY_UI 的缓存 + WS 广播 + 分级日志（契约 notify-ui）。
-/// 行为逐行对照原 WsController::handle_notify_ui：
-/// - NotifyCache::add(payload) 环形缓存（max_size=0 时为 no-op）；
-/// - 广播 payload 原样透传（instance_id 为空）；
-/// - level 为 "warning"/"error" 时记 WARN，否则 INFO（level 缺失或非字符串按 INFO）。
-/// 原实现无 try/catch，本服务按任务要求统一包裹 try/catch 记 WARN（正常路径行为不变）。
+/// 通知领域服务：NOTIFY_UI 的去重折叠 + 缓存 + WS 广播 + 日志（契约 notify-ui，ADR 0060）。
+///
+/// 处理顺序（**折叠先于缓存**，两者都在 `NotifyCache` 内，保证唯一漏斗）：
+/// 1. `NotifyCache::try_fold` 判是否命中已有条目：
+///    - 命中 → 就地 `count++` / 更新时间戳，广播**折叠后的 payload**（不新增条目）；
+///    - 未命中 → `NotifyCache::add`（补 `count=1`）后广播原 payload。
+/// 2. 转发日志用 DEBUG（ADR 0060 决策 5）：转发轨迹不是独立事件，
+///    不得以 WARN 形态再报一次（旧实现把 error 通知打成 WARN，导致同一事件日志里出现两个级别）。
+///
 /// 线程安全：依赖 dzweb
 /// 固定单线程事件循环（thread_num=1），所有访问均发生在主循环串行执行，不加锁。
 class NotifyDomainService {
@@ -26,23 +30,31 @@ public:
 
     void on_notify_ui(const nlohmann::json& payload) {
         try {
-            cache_.add(payload);
-            ws_.broadcast("notify_ui", "", payload);
-            std::string message = payload.value("message", "");
-            std::string source = payload.value("source", "");
-            bool is_warn = false;
-            if (payload.contains("level")) {
-                const auto& lvl = payload["level"];
-                if (lvl.is_string()) {
-                    const auto& s = lvl.get<std::string>();
-                    is_warn = (s == "warning" || s == "error");
-                }
+            // 折叠判据用 **payload 自带的时间戳**（契约 notify-ui 的 `timestamp`，
+            // Unix 秒 = 发送方产生该事件的时间），而不是 dzweb 收到的时间：
+            // - 转发有延迟/积压时，按收到时间判会把「同一事件跨窗口」误判成窗口内；
+            // - 也让本服务可被确定性测试（注入时间）。
+            // 缺失或非整数时回退当前时间。
+            const int64_t now_sec =
+                payload.contains("timestamp") && payload["timestamp"].is_number_integer()
+                    ? payload["timestamp"].get<int64_t>()
+                    : std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+            // 折叠命中：缓存条目已就地更新，只广播折叠结果。
+            if (auto folded = cache_.try_fold(payload, now_sec)) {
+                ws_.broadcast("notify_ui", "", *folded);
+                SPDLOG_DEBUG("notify_ui folded | source={} count={}", folded->value("source", ""),
+                             folded->value("count", 1));
+                return;
             }
-            if (is_warn) {
-                SPDLOG_WARN("notify_ui pushed | source={} message=\"{}\"", source, message);
-            } else {
-                SPDLOG_INFO("notify_ui pushed | source={} message=\"{}\"", source, message);
-            }
+            // 未命中折叠：写入缓存（add 会补 count=1），并广播**补齐后**的条目。
+            // 不能广播原始 payload —— 那样 WS 增量里没有 count，前端拿不到契约声明的字段
+            // （首条会缺字段，与 REST 基线不同形）。
+            const auto stored = cache_.add(payload);
+            ws_.broadcast("notify_ui", "", stored);
+            SPDLOG_DEBUG("notify_ui pushed | source={} message=\"{}\"", stored.value("source", ""),
+                         stored.value("message", ""));
         } catch (const std::exception& e) {
             SPDLOG_WARN("failed to process NOTIFY_UI | error=\"{}\"", e.what());
         }

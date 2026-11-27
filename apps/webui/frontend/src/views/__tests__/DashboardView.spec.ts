@@ -17,7 +17,8 @@ import type { TdPositionRow, TdTradingAccountRow, TdTradingAccountsResponse } fr
 //
 // #249：持仓面板已接**真实数据**（REST 基线 + WS 绝对态增量）；
 // #250：账户演示面板改为「资金」面板并接真实数据（REST 基线 + WS 绝对态增量）；
-// 委托 / 策略 / 消息三个面板仍是演示数据，必须继续永久可见地标注。
+// 委托 / 策略两个面板仍是演示数据，必须继续永久可见地标注。
+// 消息面板已随 ADR 0060 接入真实通知链路（REST 历史基线 + WS notify_ui 增量）。
 vi.mock('@/api/marketSources', () => ({
   marketSourcesApi: { list: vi.fn() },
 }))
@@ -316,26 +317,28 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
-  it('持仓面板不再标注「演示」，其余三个演示面板仍标注（演示标签 3 个）', async () => {
+  it('持仓/消息面板不再标注「演示」，其余两个演示面板仍标注（演示标签 2 个）', async () => {
     const w = await mountDashboard()
     const tags = w.findAll('[data-test="dashboard-demo-tag"]')
-    expect(tags).toHaveLength(3)
+    expect(tags).toHaveLength(2)
     expect(tags.every(tag => tag.text() === '演示')).toBe(true)
     w.unmount()
   })
 
-  it('横幅点名仍为演示数据的面板，并说明持仓/资金已接真实链路', async () => {
+  it('横幅点名仍为演示数据的面板，并说明已接真实链路的面板', async () => {
     const w = await mountDashboard()
     const banner = w.get('[data-test="dashboard-demo-banner"]')
     const text = banner.text()
     expect(text).toContain('演示数据')
-    for (const panel of ['委托', '策略', '消息']) {
+    for (const panel of ['委托', '策略']) {
       expect(text).toContain(panel)
     }
+    // 消息面板已随 ADR 0060 接入真实通知链路：不得再出现在「尚未接入」的列举里
+    expect(text).not.toContain('委托 / 策略 / 消息')
     // 账户面板已改「资金」并接真实链路：不得再被列为演示面板
     expect(text).not.toContain('账户')
-    // 持仓（#249）与资金（#250）已接入真实链路
-    expect(text).toContain('「行情」「持仓」「资金」为实时数据')
+    // 持仓（#249）/ 资金（#250）/ 消息（ADR 0060）已接入真实链路
+    expect(text).toContain('「行情」「持仓」「资金」「消息」为实时数据')
     w.unmount()
   })
 

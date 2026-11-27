@@ -679,6 +679,12 @@
   flex: 1;
 }
 .dashboard-panel__msg-text { color: var(--text-secondary); }
+/* 去重折叠计数（ADR 0060 决策 4）：同一事件被折叠的次数，弱化为三级文字 */
+.dashboard-panel__msg-count {
+  margin-left: var(--spacer-4);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
 .dashboard-panel__msg-meta {
   color: var(--text-tertiary);
   font-size: var(--font-size-10);
