@@ -58,6 +58,8 @@
 
 **`build/` 是中间产物，禁止直接运行。** 运行、部署、打包一律从 `install/<plat>/<arch>/Release/` 取（唯一产物源）。Debug 产物永不部署，`run-dev` 在 Debug 下会打印 `=== DEBUG BUILD - 仅本地调试，禁止部署生产 ===`。
 
+**唯一例外（#514）**：宿主 dev 栈占用 `install/` 时，可按 [ticket-closeout](docs/agents/ticket-closeout.md) §8 的隔离验证栈 recipe 把 `build/` 产物暂存到 `.cache/verify_run/` 运行——仅本地实机验证，不部署、不作为交付产物。
+
 ### 5. 禁止直接 `npm run build`
 
 改前端后必须走 `build` 脚本（底层 cmake target `dzweb_frontend`：`package-lock.json` 变化时才安装依赖（门控脚本 `scripts/npm-ci-if-needed.cmake`），随后 `vite build` → 复制到 `${DZ_OUTPUT_DIR}/web`）。
@@ -216,9 +218,9 @@
 
 - **等待一律后台作业**：门禁 / CI / 子代理 / 任何 >60s 命令用 `run_in_background` 启动，需要结果时 `job_output(wait=true)`；不要 `sleep` 轮询、不要前台空等。CI 单次快照用 `./scripts/wait-ci.sh --status`（0 绿 / 1 红 / 2 错误 / 3 仍在跑）；**CI 红用 `./scripts/ci-log.sh <run-id>` 定位**（优先取 `last-test-log` artifact，秒级给出失败用例名；不要 `gh run view --log` / `gh api jobs/logs`——Windows 日志可达数十 MB，#494 实测连续超时 ~25 min）。实测代价与分段方法见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处，此处不重复）。
 - **`job_output(wait=true)` 有宿主侧等待上限**（上限值随宿主配置，以实际返回文案为准）：等可能超过 10 分钟的作业按分段循环等，**分段方法与「为什么必须分段」只在 [ticket-closeout](docs/agents/ticket-closeout.md) §8**（唯一详述处，此处不重复）；判断是否还值得等用 `wait-ci.sh --status`。
-- **每个 bash 调用是独立 PID namespace**：跨调用 `ps`/`pgrep` 看不到宿主栈与兄弟调用的进程（为空 ≠ 没在跑）。验证栈用 `run_in_background` 作业持有生命周期、收尾 `job_kill`；杀本沙箱进程用 **`pgrep -x`**——`pgrep -f` 会命中自身命令行（#509 实测把沙箱内 PID 1 杀掉）。recipe 见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处）。
+- **每个 bash 调用是独立 PID namespace**：跨调用 `ps`/`pgrep` 看不到宿主栈与兄弟调用的进程（为空 ≠ 没在跑）。验证栈用 `run_in_background` 作业持有生命周期、收尾 `job_kill`；杀本沙箱进程用 **`pgrep -x`**（`pgrep -f` 会命中自身命令行）。细节与隔离栈 recipe 见 [ticket-closeout](docs/agents/ticket-closeout.md) §8（唯一详述处）。
 - **仓内搜索用 `git grep`**（只扫版本控制内的文件，天然跳过 `build/`、`install/`、`.cache/`）：`grep -rn --include=*` 全仓跑会扫到编译产物与缓存（#253 实测单次 131.8s、`find .cache` 94.2s）。要搜运行产物再显式指定 `.cache/` 路径。
-- **门禁判绿看 `gate: OK` 行或分命令槽**，不要只看 shell 退出码（`wait-ci.sh` 例外：退出码即 CI 结论，别接管道）；管道与槽位口径见 [ticket-closeout](docs/agents/ticket-closeout.md) §2（唯一详述处）。
+- **门禁判绿看 `gate: OK` 行或分命令槽**，不要只看 shell 退出码（`wait-ci.sh` 例外：退出码即 CI 结论，别接管道）；管道口径见 [ticket-closeout](docs/agents/ticket-closeout.md) §2、槽位读法见 §8（各自唯一详述处）。
 - 跨调用 `/tmp` 隔离、缓存回退、权限 preset、`.cache/handoff/` 约定见 [ticket-closeout](docs/agents/ticket-closeout.md) §2/§4/§8。
 
 ---
