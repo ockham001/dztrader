@@ -9,9 +9,18 @@
 #include <string_view>
 #include <vector>
 
+#include <boost/asio/io_context.hpp>
+#include <boost/process/v2/process.hpp>
+
 #include <dztrader/core/this_process.h>
 
 namespace dztrader::test {
+
+/// 自派子进程探针的子命令：登记一个 tracked 目录并把路径写进 marker，然后正常退出。
+///
+/// 定义在共享头而非任一 `.cpp`：探针的**发送方**（用例）与**接收方**（`main()` 分发）
+/// 必须看到同一个字面量，否则改一处就静默失配（#516 审查 §2.4）。
+inline constexpr std::string_view kTrackedTempDirProbeFlag = "--temp-dir-tracked-probe";
 
 /// 本进程登记过的唯一临时目录（atexit 统一清理，见 unique_temp_dir_tracked）。
 inline std::vector<std::filesystem::path>& tracked_dirs() {
@@ -53,10 +62,10 @@ inline const std::string& unique_suffix() {
 ///
 /// **注册顺序是正确性前提（#516）**：`atexit` 处理器按注册逆序执行，函数局部静态对象按
 /// 构造逆序析构，所以必须先构造 `tracked_dirs()` 的 vector、再注册回调，清理时 vector
-/// 才仍然存活。顺序写反的后果是回调遍历已释放的 vector 缓冲区，既删不掉目录（宿主
-/// commit 实测 200/200 残留），也可能在读垃圾 `path` 时抛 `std::bad_alloc` —— 那发生在
-/// 退出期、无人 catch，于是 `std::terminate` 把一个「用例全部 PASSED」的测试进程判成
-/// abort，全量 ctest 变成假红。
+/// 才仍然存活。顺序写反的后果是回调遍历已释放的 vector 缓冲区：目录删不掉（登记进
+/// vector 的路径成了垃圾，`remove_all` 无从命中），且读垃圾 `path` 时可能抛
+/// `std::bad_alloc` —— 那发生在退出期、无人 catch，于是 `std::terminate` 把一个
+/// 「用例全部 PASSED」的测试进程判成 abort，全量 ctest 变成假红。
 inline std::filesystem::path unique_temp_dir_tracked(std::string_view name) {
     const auto dir =
         std::filesystem::temp_directory_path() / (std::string(name) + "_" + unique_suffix());
@@ -89,6 +98,51 @@ inline std::filesystem::path unique_temp_path(std::string_view stem, std::string
         filename += ext;
     }
     return std::filesystem::temp_directory_path() / filename;
+}
+
+/// 普通临时目录 RAII：构造时建目录、析构时删掉，**不**登记 atexit。
+///
+/// 与 `unique_temp_dir_tracked()` 的分工：需要「进程退出后仍在」的观察窗口（如验证
+/// 退出期清理本身）时用本类，让清理边界落在作用域上、由用例自己掌握。
+class ScopedTempDir {
+public:
+    explicit ScopedTempDir(std::string_view name)
+        : path_(unique_temp_dir(name)) {
+        std::filesystem::create_directories(path_);
+    }
+
+    ~ScopedTempDir() {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    ScopedTempDir(const ScopedTempDir&) = delete;
+    ScopedTempDir& operator=(const ScopedTempDir&) = delete;
+
+    const std::filesystem::path& path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+/// 以「本测试二进制 + args」自派一个子进程并等它退出，返回退出码
+/// （-1 表示进程无法启动）。
+///
+/// 用途：行为只在本进程**退出时**可观察（如 atexit 清理）、或结果被进程级缓存锚定
+/// （如 this_process 的 app_root），进程内无从断言，只能另起一个进程跑一遍再在父进程
+/// 里看退出码 / 落盘产物。子命令由被测二进制的 `main()` 自行分发。
+///
+/// 不用 `std::system`：Windows 上 `cmd /c` 会剥掉命令首尾引号，路径含空格时解析失败；
+/// Boost.Process v2 直接 posix_spawn/CreateProcess，跨平台一致。无超时是既有取舍
+/// （卡死的探针会挂住门禁），调用方须保证分发侧不会无限等待。
+inline int run_self_probe(const std::vector<std::string>& args) {
+    try {
+        boost::asio::io_context ioc;
+        boost::process::v2::process proc(ioc, dztrader::this_process::exe_path().string(), args);
+        return proc.wait();
+    } catch (...) {
+        return -1;
+    }
 }
 
 }  // namespace dztrader::test

@@ -12,6 +12,13 @@
 
 namespace {
 
+/// 探针进程的退出码约定（沿用 `run_app_root_probe` 既有的小整数风格，不复用 sysexits）：
+/// 0 = 符合预期；非 0 = 具体哪种不符合预期；负数留给「进程根本起不来」。
+constexpr int kProbeOk = 0;
+constexpr int kProbeMissingArgument = 64;
+constexpr int kProbeCreateDirFailed = 65;
+constexpr int kProbeWriteMarkerFailed = 66;
+
 /// 子进程探针：在隔离的目录布局中验证 app_root() 的公开行为。
 ///
 /// 用法: <test_exe> --app-root-probe <expected-root|->
@@ -48,30 +55,31 @@ int run_tracked_temp_dir_probe(std::string_view marker) {
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     if (ec) {
-        return 65;
+        return kProbeCreateDirFailed;
     }
     std::ofstream output(std::filesystem::path(marker), std::ios::binary | std::ios::trunc);
     output << dir.string() << '\n';
     output.close();
     if (!output) {
-        return 66;
+        return kProbeWriteMarkerFailed;
     }
-    return 0;
+    return kProbeOk;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--app-root-probe") {
+        const std::string_view arg = argv[i];
+        if (arg == "--app-root-probe") {
             if (i + 1 >= argc) {
-                return 64;  // 缺少期望参数
+                return kProbeMissingArgument;
             }
             return run_app_root_probe(argv[i + 1]);
         }
-        if (std::string_view(argv[i]) == "--temp-dir-tracked-probe") {
+        if (arg == dztrader::test::kTrackedTempDirProbeFlag) {
             if (i + 1 >= argc) {
-                return 64;  // 缺少 marker 路径
+                return kProbeMissingArgument;
             }
             return run_tracked_temp_dir_probe(argv[i + 1]);
         }

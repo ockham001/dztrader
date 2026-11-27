@@ -301,6 +301,16 @@ run_and_report() {
         # 有意重复两次 FAILED：第一处紧随命令结束，供日志/输出前部检索；最后一处在摘录之后，
         # 供 `2>&1 | tail -N` 截尾时仍能看到真实结论（管道会吞掉退出码，见 #75/#81）。
         echo "gate: FAILED $cmd rc=$rc (log: .cache/gate/$(basename "$LOG"))" >&2
+        # 退出期 abort 的判据（#516）：ctest 把「用例已 PASSED、进程却在退出阶段 abort」
+        # 记成 `Subprocess aborted`，与真失败同为 rc=8，但二者处置完全不同（前者重跑，
+        # 后者要修）。默认 ctest 不回显失败用例的输出（testPresets 未开 outputOnFailure），
+        # 所以 `terminate called` / `std::bad_alloc` 只在日志里、不进摘录——排查者必须先
+        # 知道去哪里找，这正是 #516 说的「难以快速区分」。这里把两类形态分别标出来。
+        if grep -qE 'Subprocess aborted' "$LOG"; then
+            echo "gate: NOTE 检测到 Subprocess aborted（可能是「用例已 PASSED + 退出期 abort」的假红形态，非断言失败；判据见 #516）" >&2
+            grep -nE 'Subprocess aborted|terminate called|std::bad_alloc|what\(\):' "$LOG" |
+                head -n 10 >&2 || true
+        fi
         grep -nE '\[  FAILED  \]|error:|FAILED:|fatal error|ninja: build stopped|tests failed|Test Failed|ERROR:' "$LOG" |
             head -n 30 >&2 || true
         echo "--- last $fail_tail lines ---" >&2
