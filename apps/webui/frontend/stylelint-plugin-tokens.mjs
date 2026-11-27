@@ -185,4 +185,117 @@ const ruleNoInlineStyleLiteral = {
   },
 }
 
-export default [ruleTokenLiteral, ruleNoDsNamespace, ruleNoInlineStyleLiteral]
+/* ===== dz/no-global-ds-shadow =====
+   拦「组件 scoped 里重定义全局已存在的 .ds-* 类，且声明会实害」。
+
+   为什么需要它（retro 2026-11-28 实测）：`dz/no-ds-namespace` 只对 domain 目录开启
+   （marketSources / logs），`shared/` 与 `views/` 按设计豁免——因为 shared 是 pattern
+   的拥有者。但 shared 里**重新定义全局同名类**会产生真实的样式泄漏：
+   `components.css` 定义 `.ds-toast { position: fixed; top: 44px; left: 50%; ... }`，
+   `shared/ToastContainer.vue` 的 scoped 又写 `.ds-toast { position: relative; }`
+   → 全局的 top/left/transform/white-space 全部生效，每条 toast 下移 44px、长文本被
+   `overflow: hidden` 裁掉。同名全局类 + scoped 定义 = 声明合并，不是覆盖。
+
+   **为什么不能只判「同名」**：shared 组件是其 pattern 的合法拥有者，给全局类追加
+   颜色/字号等**非定位**声明是既有约定（实测 Dropdown / DatePicker 各 1–2 处，都是
+   `__trigger-icon` 追加 color/transition，无实害）。只判同名会误伤，把护栏变成存量噪音。
+
+   判据：本文件 `.vue` 的 `<style>` 块里，首选择器为 `.ds-X`，全局 CSS 也定义 `.ds-X`，
+   **且两侧声明了同一个属性**（属性交集非空）——只有交集才会发生"谁赢"的污染：
+   全局 `display: flex` + scoped `width/height` 是合法追加（实测 Dropdown / DatePicker
+   三处都是这种形态，无实害）；而全局 `position: fixed; top: 44px` + scoped
+   `position: relative` 交集是 `position`，全局的 top 就必然漏进来（本次 bug）。
+
+   只对**布局/定位一族**属性算交集：颜色/字号等幂等属性两侧同写不会产生实害
+   （后写者胜，语义清晰），把它们纳入只会制造存量噪音。
+
+   放行：后代消费（`.foo .ds-x`）、`:deep(.ds-*`)、全局无同名的新 `.ds-*`。
+
+   实现说明：全局**类名 → 属性集**的映射从 components.css **现读**（不硬编码副本，
+   避免漂移）；按进程缓存一次。读不到文件时整条规则静默放行（不让 lint 因 IO 失败误报）。 */
+let globalDsClassesCache = null
+
+/** 「合并会实害」的属性族：布局/定位/文本流。颜色/字号等幂等属性不在此列。 */
+const LEAKY_PROPS = /^(position|top|right|bottom|left|float|display|transform|white-space|overflow|overflow-x|overflow-y|z-index|width|height|min-width|min-height|max-width|max-height|margin|margin-top|margin-right|margin-bottom|margin-left|padding|padding-top|padding-right|padding-bottom|padding-left)$/
+
+function isLeakyProp(prop) {
+  return LEAKY_PROPS.test(prop.toLowerCase())
+}
+
+/** 解析全局 CSS：返回 Map<类名, Set<泄漏型属性>>。 */
+function globalDsClasses() {
+  if (globalDsClassesCache !== null) return globalDsClassesCache
+  const map = new Map()
+  try {
+    // plugin 在 frontend/ 根，全局 CSS 在 src/assets/css/
+    const cssPath = new URL('./src/assets/css/components.css', import.meta.url)
+    const css = readFileSync(cssPath, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    // 逐条规则解析：选择器块 { 声明块 }。够用即可——components.css 是扁平写法，
+    // 没有嵌套规则；@media 里的规则同样被这个正则捕获。
+    for (const ruleMatch of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selectors = ruleMatch[1]
+      const body = ruleMatch[2]
+      const props = new Set()
+      for (const decl of body.split(';')) {
+        const prop = decl.split(':')[0]?.trim().toLowerCase()
+        if (prop && isLeakyProp(prop)) props.add(prop)
+      }
+      if (props.size === 0) continue
+      for (const m of selectors.matchAll(/\.(ds-[a-z][a-z0-9-]*(?:__[a-z0-9-]+)?(?:--[a-z0-9-]+)?)/g)) {
+        const name = m[1]
+        const existing = map.get(name) ?? new Set()
+        for (const p of props) existing.add(p)
+        map.set(name, existing)
+      }
+    }
+    globalDsClassesCache = map
+  } catch {
+    globalDsClassesCache = new Map()
+  }
+  return globalDsClassesCache
+}
+
+const ruleNoGlobalDsShadow = {
+  ruleName: 'dz/no-global-ds-shadow',
+  rule: (primary) => {
+    return (root, result) => {
+      if (primary !== true) return
+      const file = result.opts?.from
+      if (!file || !file.endsWith('.vue')) return
+      const globals = globalDsClasses()
+      if (globals.size === 0) return
+
+      root.walkRules((rule) => {
+        // 本规则声明的「泄漏型属性」——没有则不可能是实害
+        const leaky = new Set()
+        rule.walkDecls((decl) => {
+          const prop = decl.prop.toLowerCase()
+          if (isLeakyProp(prop)) leaky.add(prop)
+        })
+        if (leaky.size === 0) return
+
+        for (const sel of rule.selectors ?? []) {
+          // 只判「首选择器就是 .ds-X」——后代消费（.foo .ds-x）不算重定义
+          const m = /^\s*\.(ds-[a-z][a-z0-9-]*(?:__[a-z0-9-]+)?(?:--[a-z0-9-]+)?)/.exec(sel)
+          if (!m) continue
+          const name = m[1]
+          const globalProps = globals.get(name)
+          if (!globalProps) continue
+          // 只有**属性交集非空**才会发生"谁赢"的污染；单纯追加是合法的
+          const overlap = [...leaky].filter((p) => globalProps.has(p))
+          if (overlap.length === 0) continue
+          utilsReport({
+            result,
+            ruleName: 'dz/no-global-ds-shadow',
+            message: `组件 scoped 样式与全局 .${name} 声明了同一批布局属性（${overlap.join(', ')}）—— 全局声明会与 scoped 声明**合并**（不是覆盖），全局的其余布局属性（如 position/top）会漏进来。请改用本地前缀类，或把该样式移入 assets/css/components.css`,
+            node: rule,
+            word: sel,
+          })
+          break
+        }
+      })
+    }
+  },
+}
+
+export default [ruleTokenLiteral, ruleNoDsNamespace, ruleNoInlineStyleLiteral, ruleNoGlobalDsShadow]

@@ -101,6 +101,7 @@
 ## 三、方案收敛（硬规则）
 
 1. **同一能力不允许两套实现并存超过一个提交周期。** 举棋不定时：写 ADR 选一个，另一个**立即删除** —— git 历史就是后悔药，不留尸体
+   - **例外：复用成本高时可新建，但必须当场登记收敛方向。** 判据：让旧实现可复用需要**触及 >2 个既有测试文件**或**改变既有对外行为**。此时允许新建实现，但必须在票正文里写明「两份实现的分工 + 收敛成一份的方向」，且**下一张动这块的票必须先收口**。不得只是"两份都留着"。实测例：#524 的 `TdAutoLoginPanel` 与 `marketSources/ScheduleManager`（后者绑死 `useMarketSourcesStore`，泛化会改行情侧 3 个测试文件）——收敛方向是把时段编辑器抽成无 store 依赖的纯展示组件（`props` + `emit`），两边各自接 store
 2. **接口/协议只有一个真相源**（帧契约目录、类型头文件）。新实现**先改契约再改代码**（`general.md` §11.3 变更 checklist）
 3. **删除旧方案前：全仓 grep 确认无引用。** 删除本身值得记录时，作为对应 ADR 的 Consequences
 4. **发现文档与代码漂移：以代码/契约为准，当场修文档，随同一次提交**，不留"以后再说"
@@ -175,7 +176,7 @@
 
 1. **设计定稿** —— `grill-with-docs`：问到无分歧；术语入 `GLOSSARY.md`、决策入 `docs/adr/`（当场）。大而模糊的探索用 `wayfinder` 建决策地图，收敛后并回 `to-spec`。
 2. **立 spec** —— `to-spec` 写 GitHub Issue。涉及帧契约的 spec 必须先列契约影响面（哪份契约、哪些帧号），先改契约再改代码；满足 ADR 触发条件的在 spec 注明。
-3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。
+3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。**拆完即停**：本会话到此为止，不要接着实现。逐票的实现各自开新会话跑 `implement`——理由见下面的「上下文纪律」。
 4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）；提交 review 前按 [review-checklist](docs/agents/review-checklist.md) §2 自搜高频 finding。
 5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性），**按宿主派**：opencode 用 `spawn_teammate`（那里 `subagent` 的 id 不可寻址、报告易整份丢失）；DSH 用 `subagent`，靠 `wait_agent` 阻塞或等 `subagent-settled` 通知，报告正常到达（#411–#416 六票实测）。冻结纪律与 verifier prompt 模板见 [ticket-closeout](docs/agents/ticket-closeout.md) §1.4–1.5。
 6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→**PR→合并→关 issue** 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
@@ -208,7 +209,8 @@
 - 多终端可在不同 worktree 并行；**禁止同一 worktree 同时操作**
 - 合并前确认共同祖先：`git merge-base main HEAD`，无则 cherry-pick
 - **本地 git hooks 由 `setup` 自动安装**（`core.hooksPath=.githooks`；安装前 `setup` 会确认 `.githooks` 存在）：pre-commit 由 staged 文件触发——clang-format 校验 index 内容，日志格式与 docs links 为工作区全仓扫描；pre-push 拦直推 main、非快进、非白名单分支名与 tag，并按分支票号跑 `check-push-scope`；**按票型**拒绝「当前 HEAD 上失败的门禁」（读分命令槽 `.cache/gate/last-status-<cmd>`：代码票要 `build`+`test`、纯文档/脚本票要 `preflight`，`ledger` 永不参与放行；HEAD 不符/缺失只警告，逃生口 `DZ_ALLOW_RED_GATE=1`，判定实现在 `scripts/gate_status.py`）。hooks 是快速护栏，**不能替代** `preflight` 与 CI。
-- **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = pre-push hook + GitHub main ruleset + `.opencode` 权限）：
+- **push 分级授权**（见 [ADR 0036](docs/adr/0036-push-authorization-tiered-with-guardrails.md)；机器守卫 = **`scripts/push-ticket.sh`** + pre-push hook + GitHub main ruleset + `.opencode` 权限）：
+  - **push 入口唯一**：`./scripts/push-ticket.sh <issue> [-u origin <branch>]`，不要裸 `git push`。它串行四步、任一步不过就不 push：`check-push-scope` → **`review_marker.py check --strict --expect-axis standards --expect-axis spec`（该票任一轴无标记 / 标记 sha 与 HEAD 不一致 → 拒绝，exit 3）** → `md_lock_marker.py check --strict` → `git push "$@"`。裸 `git push` 时 pre-push 只打 **warning-only** 的 "no review marker" 且**照样推上去**——那正是 #297 与本次复盘的违规成因（先 push 后审查；三张票 `.cache/review/` 全空）。逃生口 `DZ_ALLOW_UNREVIEWED_PUSH=1` / `DZ_ALLOW_MD_LOCK=1` 仅真故障时用。worktree / 多 ref 场合才退回裸 push，并手工跑前三步确认。
   - **免逐次确认**：把本票 commit push 到符合命名约定的 feature 分支、`-u` 建上游、创建/更新 PR、重跑 CI、合并后删除**本票**远端分支。前置：本票门禁绿（代码票 `gate build/test`；纯文档票 docs links / `preflight --c-only`）、`check-push-scope` 通过、一轮 review 的修复合并为一次 push。
   - **仍需确认**：合并 PR 到 main（最后一道）、删除非本票分支、打 tag（opencode 会话里 `gh pr merge` / tag 为 ask；DSH 等宿主靠本规则人工确认）。
   - **合并授权前置（#284 / #289 / #309）**：合并 PR 的授权必须**一次性、条件式**提出——「CI 绿 + 双轴审查通过即合并关单」，或按票/按波一次授权。**唯一默认形态是「开票/批准时预授权」**：用户在场时秒级答复，把条件式授权写进 issue 的「拍板记录」，implement 会话零提问（#289 即此形态）。**「PR 创建后提问」是兜底，仅用于开票时用户不在场**（提问窗口与 wait-ci 重叠，答案到达时 CI 还在跑，零关键路径代价）；「开工时问」只适用于**预计本票无 CI / 无并行工作可垫**的情形（#284 实测开工时提问阻塞 1418s = 26.5% 墙钟，其中 933s 纯 idle，队友早已交付）。**禁止留到 CI 绿之后才问**（#281 因此等 6177s，占会话 49.6%）；提问保留「**先不合并，我要自己看 PR**」选项，用户选定后 issue 保持 open、不阻塞其它票。**缺「拍板记录」由机器报出**：`scripts/check_ledger.py` 规则 R4 对 open 且带 `ready-for-agent` 的票报警（`--strict` 升 error），不再靠文档约束（#294–#298 五票全部无该段、退回「PR 后提问」，整波阻塞 403 min = 43% 墙钟）。细则与取证见 [ticket-closeout](docs/agents/ticket-closeout.md) §5。
