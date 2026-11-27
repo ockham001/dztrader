@@ -142,6 +142,24 @@ print_failed_jobs() {
         2>/dev/null || true
 }
 
+# CI 红之后的下一步提示（#504 / retro #492–#497）：定位失败原因用 ci-log.sh——它优先取
+# `last-test-log` artifact（秒级给出失败用例名），artifact 不存在才拉 job 日志。手工
+# `gh run view --log` / `gh api jobs/logs` 在 Windows job（数十 MB）上会连续超时：#494
+# 实测 ~25min 才拿到用例名。提示走 stderr，不影响 stdout 的状态行、不改变退出码。
+print_ci_log_hint() {
+    local run_id="${1:-}"
+    if [ -n "$run_id" ]; then
+        echo "hint: ./scripts/ci-log.sh $run_id  # 优先取 last-test-log artifact，秒级给出失败用例" >&2
+    else
+        echo "hint: ./scripts/ci-log.sh <run-id>  # 优先取 last-test-log artifact，秒级给出失败用例（run id 见上方链接）" >&2
+    fi
+}
+
+# 从 gh pr checks 的 link 列里取 run id（形如 .../runs/<id> 或 .../runs/<id>/job/<job-id>）；取不到输出空。
+run_id_from_links() {
+    sed -n 's#.*/runs/\([0-9][0-9]*\).*#\1#p' | head -1
+}
+
 # ---- 共享的低层查询（前台等待与 --status 同一实现，#192 审查发现两套会漂移） ----
 
 # 抓一次 PR checks 的表格行；结果放全局 PR_CHECKS_OUT，退出码放 PR_CHECKS_RC。
@@ -197,6 +215,7 @@ wait_pr() {
                 printf '%s\n' "$failed" | while IFS=$'\t' read -r name _bucket link; do
                     printf 'FAILED: %s | %s\n' "$name" "$link"
                 done
+                print_ci_log_hint "$(printf '%s\n' "$failed" | cut -f3 | run_id_from_links)"
                 exit 1
             fi
 
@@ -258,6 +277,7 @@ wait_run() {
                     cancelled)
                         if [ "$FAIL_ON_CANCEL" -eq 1 ]; then
                             print_failed_jobs "$run_id"
+                            print_ci_log_hint "$run_id"
                             echo "CI failed: run $run_id conclusion=cancelled (--fail-on-cancel)" >&2
                             exit 1
                         fi
@@ -268,6 +288,7 @@ wait_run() {
                         ;;
                     *)
                         print_failed_jobs "$run_id"
+                        print_ci_log_hint "$run_id"
                         echo "CI failed: run $run_id conclusion=$conclusion" >&2
                         exit 1
                         ;;
@@ -376,6 +397,7 @@ status_run() {
         # （wait_run 返回 2 并提示改用 --pr/--branch；--fail-on-cancel 才当失败）。
         if [ "$FAIL_ON_CANCEL" -eq 1 ]; then
             print_failed_jobs "$rid"
+            print_ci_log_hint "$rid"
             echo "wait-ci: run $rid conclusion=cancelled (--fail-on-cancel)"
             return 1
         fi
@@ -384,6 +406,7 @@ status_run() {
     fi
     echo "wait-ci: run $rid conclusion=$conclusion"
     print_failed_jobs "$rid"
+    print_ci_log_hint "$rid"
     return 1
 }
 
@@ -438,6 +461,7 @@ status_once() {
             if printf '%s\n' "$buckets" | grep -qx "fail"; then
                 echo "wait-ci: PR #$TARGET checks FAILED"
                 printf '%s\n' "$out" | awk -F'\t' '$2=="fail" {print "FAILED: "$1" | "$3}'
+                print_ci_log_hint "$(printf '%s\n' "$out" | awk -F'\t' '$2=="fail" {print $3}' | run_id_from_links)"
                 return 1
             fi
             # cancel = 同分支新 push 取代了旧 run（wait_pr 默认也继续等新 check），
@@ -446,6 +470,7 @@ status_once() {
             if [ "$FAIL_ON_CANCEL" -eq 1 ] && printf '%s\n' "$buckets" | grep -qx "cancel"; then
                 echo "wait-ci: PR #$TARGET checks FAILED (cancelled, --fail-on-cancel)"
                 printf '%s\n' "$out" | awk -F'\t' '$2=="cancel" {print "FAILED: "$1" | "$3}'
+                print_ci_log_hint "$(printf '%s\n' "$out" | awk -F'\t' '$2=="cancel" {print $3}' | run_id_from_links)"
                 return 1
             fi
             if printf '%s\n' "$buckets" | grep -qx "pending" ||

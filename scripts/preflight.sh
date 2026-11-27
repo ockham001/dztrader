@@ -11,7 +11,8 @@
 #       SYSMON 指标键集合（#309，4 处数据副本 + snapshot_builder 的 15 分支镜像）/ push 纪律
 #       （#309，push-ticket.sh 的 scope+验证标记+md 锁定+push 串联）/ md 生产锁定确认标记
 #       （#480，push-ticket.sh 对 apps/ctp/md 改动的硬前置）/ 审查验证标记（#289，pre-push
-#       读取）/ PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
+#       读取）/ 建 PR 守卫（#504，pr-create.sh 把标题/正文 auto-close 校验串进 gh pr create）/
+#       PR 正文 auto-close 守卫（#316 AC4，与提交标题共用 check_commit_subject.py）/
 #       门禁分槽 + 票型放行判定（#316 AC2，scripts/gate_status.py，pre-push 共用）/ 前端五件套。
 #       MSVC 侧失败（Windows 头顺序、C4101、公开 SDK 头里的弃用 CRT 调用等）
 #       Linux 编译器拦不到，由 scripts/check_msvc_hazards.py 做源码级 lint；
@@ -325,6 +326,15 @@ check_review_marker() {
     "$PYTHON" "$ROOT/scripts/review_marker.py" --selftest
 }
 
+check_pr_create() {
+    # 建 PR 的守卫入口（#504 / retro #492–#497）：#495 的 PR 正文写了 `Closes #495`，本地没人拦，
+    # CI 的 `PR body (no closing keywords)` job 红 → 改正文后整轮 CI 重跑（wait-ci 1,127s）。
+    # pr-create.sh 把标题/正文两道 check_commit_subject 守卫串进 gh pr create 的正常路径
+    # （与 push-ticket.sh 同构）；selftest 用假 gh 覆盖「合法建 PR / 正文或标题含 closing
+    # keyword 拒建且不调 gh / 缺参数」，不联网、不碰工作区。
+    "$ROOT/scripts/pr-create.sh" --selftest
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -419,6 +429,7 @@ run_step "sysmon metric key set (#309)" check_sysmon_metric_keys
 run_step "push ticket discipline (#309)" check_push_ticket
 run_step "md production lock marker (#480)" check_md_lock_marker
 run_step "review verification marker (#289)" check_review_marker
+run_step "pr create wrapper (#504)" check_pr_create
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi
