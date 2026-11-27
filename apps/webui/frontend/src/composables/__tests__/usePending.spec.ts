@@ -141,4 +141,73 @@ describe('usePending', () => {
     expect(b.pending['iso:op']).toBeUndefined()  // b 独立空间
     await pa
   })
+
+  // ===== touch：续命语义（#508）=====
+  // 兜底超时要回答「多久没动静」而不是「总共等了多久」——登录链这种慢但活着的过程靠它。
+
+  it('touch 把 deadline 推到此刻 + 原 timeout：不超时且 pending 保持', async () => {
+    const { pending, run, touch } = inst
+    const p = run('t:alive', () => new Promise(() => {}), { timeout: 1000, opLabel: '登录' })
+
+    await vi.advanceTimersByTimeAsync(800)
+    expect(pending['t:alive']).toBe(true)
+    touch('t:alive')  // 有进展
+    await vi.advanceTimersByTimeAsync(800)  // 距首次武装 1600ms，但距 touch 只有 800ms
+    expect(pending['t:alive']).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(300)  // 距 touch 1100ms > 1000ms
+    expect(pending['t:alive']).toBe(false)
+    await p
+  })
+
+  it('touch 可反复续命；停止推进后仍按原 timeout 到期（不累积漂移）', async () => {
+    const { pending, run, touch } = inst
+    const p = run('t:repeat', () => new Promise(() => {}), { timeout: 1000 })
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(900)
+      touch('t:repeat')
+    }
+    expect(pending['t:repeat']).toBe(true)  // 5 次续命后仍活着
+    await vi.advanceTimersByTimeAsync(1001)
+    expect(pending['t:repeat']).toBe(false)
+    await p
+  })
+
+  it('touch 不改 startTime 与 minPendingMs：resolve 的最短展示时长仍按首次 run 计算', async () => {
+    const { pending, run, touch, resolve } = inst
+    // fn 用可控 promise：手动 resolve 才能让 run 的 promise 正常 settle（否则只能等超时）
+    let release: (() => void) | undefined
+    const fnPromise = new Promise<void>((r) => { release = r })
+    const p = run('t:min', () => fnPromise, { timeout: 5000, minPendingMs: 500 })
+
+    await vi.advanceTimersByTimeAsync(200)
+    touch('t:min')
+    resolve('t:min')  // elapsed = 200 < 500 → 延迟到满 500ms 再清
+    await vi.advanceTimersByTimeAsync(0)
+    expect(pending['t:min']).toBe(true)
+    await vi.advanceTimersByTimeAsync(400)  // 距 resolve 400ms，总 600ms > 500ms
+    expect(pending['t:min']).toBe(false)
+    release?.()
+    await p
+  })
+
+  it('touch 对不存在的 key 无副作用（不创建垃圾条目、不排定时器）', async () => {
+    const { pending, touch } = inst
+    touch('never:run')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect('never:run' in pending).toBe(false)
+    expect(Object.keys(pending).length).toBe(0)
+  })
+
+  it('结束路径（resolve 后）touch 不复活 pending', async () => {
+    const { pending, run, touch, resolve } = inst
+    const p = run('t:done', () => Promise.resolve(), { timeout: 1000 })
+    await p
+    resolve('t:done')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(pending['t:done']).toBe(false)
+    touch('t:done')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(pending['t:done']).toBe(false)
+  })
 })

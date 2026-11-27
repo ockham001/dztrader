@@ -150,7 +150,24 @@ struct TdStatus {
 /// RTN_TD_STATUS 的 payload: 状态机快照 + `ext` 里的未知枚举计数 (契约 td-status §2.3)。
 /// 计数挂在 `ext` 下按种类分开 (issue #367 用户故事 8), 不覆盖状态机自身字段。
 /// 实现在 td_state.cpp: 与 TdStatus 同处一个不依赖 CTP 头的目标, 便于单测。
+///
+/// **不要用它直接写帧**：状态机不持有 `account_id`，直出的 payload 该字段恒为空串，
+/// 会被前端按「非法帧」整帧丢弃（#508）。写帧点必须用 {@link td_status_payload_for}。
+/// 本函数保留 public 供 payload 纯逻辑单测（ext / last_error 序列化契约）。
 nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts& counts);
+
+/// 填好 `account_id` 的 RTN_TD_STATUS payload（契约 td-status §3）。
+///
+/// `account_id` 必须与帧头 `instance_id` 逐字相等，且**不允许为空**——消费方按「空 = 非法帧」
+/// 整帧丢弃，这是挡住「把 A 账户状态挂到 B 账户上」的唯一位点（#508：此前恒为空，导致
+/// 交易日 / 登录时间 / 上次失败在 UI 上从不显示）。
+///
+/// 为什么 account_id 作为参数单独传入、而不是要求 `TdStatus` 自带：状态机刻意不持有该字段
+/// （一个 per-account 实例不该知道自己的全局标识，`TdStateMachine` 由 `AccountSession` 持有），
+/// 只有写帧点知道。实现取副本赋值，**不修改**调用方传入的 `TdStatus`。
+nlohmann::json td_status_payload_for(const TdStatus& status,
+                                     const std::string& account_id,
+                                     const UnknownEnumCounts& counts);
 
 /// 状态转移返回的通知信息。
 /// 与 mdctp MdNotification 模式一致, 调用方应通过 notify_ui 发送给前端。

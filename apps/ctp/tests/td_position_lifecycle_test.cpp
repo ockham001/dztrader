@@ -1652,6 +1652,52 @@ TEST_F(TdPositionLifecycleTest, InstrumentQueryFlowControlRetriesWithoutNotifica
     EXPECT_LE(timer_queue_.next_timeout(), std::chrono::milliseconds(1500));
 }
 
+TEST_F(TdPositionLifecycleTest, InstrumentQueryFlowControlStillArmsTheLoadWatchdog) {
+    // #508: 流控重试路径必须同时保证 5 分钟看门狗在场。此前只有 ret==0 之后才武装，
+    // 持续流控（或柜台长期拒绝发送）会让账户永久停在 8/10——既不失败也不就绪，
+    // 用户看到的是「加载合约…」且没有任何出口。
+    // 判据用**行为**而不是「队列非空」：队列里本来就有那条 1.5s 重试，只看非空会误绿。
+    session_->set_instrument_send_hook([](CThostFtdcQryInstrumentField&, int) { return -3; });
+    session_->set_instruments_load_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    session_->request_instrument_query_for_test();
+    ASSERT_EQ(session_->state(), TdState::LoadingInstruments);
+    ASSERT_TRUE(notifications_.empty()) << "arming the watchdog must not notify by itself";
+
+    timer_queue_.tick();  // 0 秒看门狗到点执行（1.5s 重试尚未到期）
+
+    EXPECT_EQ(session_->state(), TdState::InstrumentsLoadFailed)
+        << "sustained flow control must end in the failed stage instead of hanging at 8/10";
+    EXPECT_EQ(session_->state_machine().status().progress_current, 8);
+    const auto& last_error = session_->state_machine().status().last_error;
+    ASSERT_TRUE(last_error.has_value());
+    EXPECT_EQ(last_error->code, "instruments_timeout");
+    ASSERT_EQ(notifications_.size(), 1u) << "the watchdog timeout must reach the user";
+    EXPECT_EQ(notifications_.front().level, DZ_NOTIFY_ERROR);
+    EXPECT_TRUE(notifications_.front().popup);
+}
+
+TEST_F(TdPositionLifecycleTest, TradingAccountQueryFlowControlStillArmsTheQueryWatchdog) {
+    // #508: 资金查询的 -3 流控重试路径同样必须保证看门狗在场（此前只排 1.5s 重试、
+    // 不武装看门狗 → 持续流控永久停在 8/10）。与合约查询同型，但这条路径由持仓成功
+    // 之后在链上发起，需要发送钩子才能驱动。
+    // 判据用行为：0 秒看门狗到点后资金查询降级、收尾链走完转 Ready；若看门狗没武装，
+    // 1.5s 重试尚未到期、tick 无事可做，会话会停在 LoadingInstruments。
+    session_->set_trading_account_send_hook(
+        [](CThostFtdcQryTradingAccountField&, int) { return -3; });
+    session_->set_trading_account_query_timeout_for_test(std::chrono::seconds(0));
+    session_->advance_login_chain_for_test(TdState::LoadingInstruments);
+    feed_position_snapshot({position_row("IF2506", 2, 1, 2.0 * 300.0 * 3900.0, /*is_last=*/true)});
+    ASSERT_EQ(session_->state(), TdState::LoadingInstruments)
+        << "flow control must not move the login chain";
+    ASSERT_FALSE(timer_queue_.empty()) << "the flow-control retry must be scheduled";
+
+    timer_queue_.tick();  // 0 秒看门狗到点（1.5s 重试尚未到期）
+
+    EXPECT_TRUE(session_->is_ready())
+        << "the account-query watchdog must end the degraded wait instead of hanging at 8/10";
+}
+
 TEST_F(TdPositionLifecycleTest, InstrumentQueryErrorResponseStopsAtFailedStageAndNotifies) {
     // on_rsp_error 的 Instrument 分支 (#488 / #496): 停在失败态 (8/10) + 写 last_error + 弹窗。
     // 这是 instruments_rejected 的第二种来源 = OnRspError 错误响应。

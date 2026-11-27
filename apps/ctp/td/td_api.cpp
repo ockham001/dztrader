@@ -900,10 +900,14 @@ void TdApi::update_status(const std::string& account_id) {
     }
     try {
         const auto& status = session->state_machine().status();
-        // 未知枚举计数随状态帧带出 (契约 td-status §2.3), 拼接口径在 td_status_payload.
+        // 契约 td-status §3: payload 冗余携带 account_id 供消费方定位与自校验（硬要求，
+        // 空值会被前端整帧丢弃）。状态机刻意不持有 account_id（td_state.h 的设计说明:
+        // per-account 实例由 AccountSession 管理），因此在本函数——唯一写帧点——补上；
+        // 一次覆盖主循环 sweep / report_state / 快照三条路径（#508）。
+        // 未知枚举计数随状态帧带出 (契约 td-status §2.3), 拼接口径在 td_status_payload_for.
         platform::write_ext_inst_json_obj(
             event_writer_, DZ_FRAME_TD_RTN_STATUS, account_id,
-            td_status_payload(status, session->unknown_enum_counts()));
+            td_status_payload_for(status, account_id, session->unknown_enum_counts()));
 
         // 同步推送 RTN_PROGRESS（per-account, 与 RTN_TD_STATUS 的 progress 字段一致）
         nlohmann::json prog = {{"min", status.progress_min},

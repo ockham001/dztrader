@@ -34,6 +34,12 @@ interface PendingEntry {
   timer: ReturnType<typeof setTimeout>
   startTime: number
   minPendingMs: number
+  /**
+   * 重新武装超时定时器（`touch` 用）：用**原来那次 `run`** 的 timeout 与超时回调
+   * 重新计时，因此到期行为（清 pending + toast + resolve 原 Promise）与首次完全一致。
+   * `settle` 写入的「延迟清除」条目不提供它——那种条目已经在结束路径上，touch 不该复活。
+   */
+  rearm?: () => ReturnType<typeof setTimeout>
 }
 
 const DEFAULT_TIMEOUT = 10_000
@@ -44,6 +50,19 @@ export interface UsePending {
   run<T>(key: string, fn: () => Promise<T>, opts?: RunPendingOptions): Promise<T | undefined>
   resolve(key: string): void
   fail(key: string, message?: string): void
+  /**
+   * 续命：把该 key 的超时 deadline 推到「此刻 + 原 timeout」，表示「刚刚有进展」。
+   *
+   * 语义边界：
+   * - 只对 `run` 武装的条目生效（`settle` 的延迟清除条目无 rearm，调用即无操作）；
+   * - key 不存在 / 已结束 → 无操作，不创建垃圾条目；
+   * - **不改** `startTime` 与 `minPendingMs`——`touch` 不是一次新的 `run`，
+   *   不该影响「最短展示时长」与 `resolve` 用的起始时刻。
+   *
+   * 用途：让兜底超时回答「**多久没动静**」而不是「总共等了多久」。登录链这种
+   * 「慢但活着」的过程必须持续续命，否则正常的慢登录会被判超时（#508）。
+   */
+  touch(key: string): void
   /** M4(设计 §5.2): 按领域前缀批量清 pending + timer（实例方法，仅作用本实例） */
   clearByPrefix(prefix: string): void
   /** 测试专用: 重置本实例状态（pending + timers） */
@@ -110,13 +129,15 @@ export function usePending(): UsePending {
 
     return new Promise<T | undefined | typeof PENDING_TIMEOUT>((resolvePromise) => {
       // 超时 timer: 触发即清 pending + toast + timers.delete(key)
-      const t = setTimeout(() => {
+      // 抽成可重复执行的武装函数，供 touch 续命复用——到期行为必须与首次完全一致。
+      const armTimeout = (): ReturnType<typeof setTimeout> => setTimeout(() => {
         clearPending(key)
         timers.delete(key)
         useToastStore().error(opLabel ? `${opLabel}超时` : `${key} 操作超时`)
         resolvePromise(distinguishTimeout ? PENDING_TIMEOUT as unknown as T : undefined)
       }, timeout)
-      timers.set(key, { timer: t, startTime, minPendingMs })
+      const t = armTimeout()
+      timers.set(key, { timer: t, startTime, minPendingMs, rearm: armTimeout })
 
       // T2①: Promise.resolve().then(fn) 包裹——fn 同步 throw 转为 rejection,
       // 走下方 fail 分支(清 pending), 不 reject 调用方 promise
@@ -153,6 +174,17 @@ export function usePending(): UsePending {
     settle(key, entry?.startTime ?? Date.now(), entry?.minPendingMs ?? 0)
   }
 
+  // 续命: 把 deadline 推到「此刻 + 原 timeout」（不改 startTime / minPendingMs）
+  function touch(key: string): void {
+    const entry = timers.get(key)
+    if (entry === undefined) return
+    // settle 写入的延迟清除条目没有 rearm（已在下线路上），touch 不复活它
+    if (entry.rearm === undefined) return
+    if (pending[key] !== true) return
+    clearTimeout(entry.timer)
+    entry.timer = entry.rearm()
+  }
+
   function __resetForTests(): void {
     for (const entry of timers.values()) {
       clearTimeout(entry.timer)
@@ -163,5 +195,5 @@ export function usePending(): UsePending {
     }
   }
 
-  return { pending, run, resolve, fail, clearByPrefix, __resetForTests }
+  return { pending, run, resolve, fail, touch, clearByPrefix, __resetForTests }
 }
