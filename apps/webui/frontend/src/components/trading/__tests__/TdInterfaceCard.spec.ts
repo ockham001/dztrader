@@ -415,12 +415,11 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(row.text()).not.toContain('instruments_rejected')
   })
 
-  it('connect_timeout：徽章按 last_error 显示「失败」，原因说「连接超时」而不是「登录失败」', async () => {
+  it('connect_timeout：状态列仍「未登录」中性色，原因说「连接超时」而不是「登录失败」', async () => {
     // ADR 0059 决策 7 的决定性后果: 连接超时不进失败态, 状态字段与「从未发起过登录」相同;
-    // 唯一能看出区别的地方是 last_error。若前端把状态说成「登录失败」, 就把「从未连上」
-    // 误报成「登录被拒」, 用户会去查密码而真正的问题是网络。
-    // #509: 失败徽章来自 last_error（isFailed = lastError 非空或处于失败态）；它不是失败态，
-    // 所以不占阶段文案行——具体原因由「上次失败」行承载。
+    // 唯一能看出区别的地方是 last_error。若前端把状态说成「登录失败」/「失败」, 就把「从未连上」
+    // 误报成「登录被拒」, 用户会去查密码而真正的问题是网络。契约 td-status §2.2 的可观察后果
+    // 是「未启动 / 进度 0」+「上次失败：连接超时」。
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {
       account_id: 'account_001',
@@ -439,7 +438,8 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
 
     const row = wrapper.find('[data-test="td-account-row-account_001"]')
     const status = row.find('[data-test="td-account-state"]')
-    expect(status.classes()).toContain('ds-status--failed')
+    expect(status.classes()).toContain('ds-status--idle')
+    expect(status.classes()).not.toContain('ds-status--failed')
     expect(row.text()).not.toContain('登录失败')
     expect(row.find('[data-test="td-account-status-desc"]').exists()).toBe(false)
     const failed = row.find('[data-test="td-last-error-account_001"]')
@@ -565,6 +565,32 @@ describe('TdInterfaceCard · 接口非 Running（ADR 0053 / 契约 rest §4）',
     expect(statusCell.attributes('title')).toBe('交易接口进程未运行，无法登录')
     expect(statusCell.find('[data-test="td-account-state"]').classes()).toContain('ds-status--idle')
     expect(statusCell.find('.ds-status__text').text()).toBe('未启动')
+  })
+
+  it('网关非 Running 且上次登录失败：徽章仍是「未启动」，失败原因行保留但不挂阶段文案', async () => {
+    const store = await prepare({ running: false })
+    // 失败态/进度都是上一次会话的残留：进程停了，它们不构成当前会话结论
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'LoginFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '登录失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 5,
+      last_error: { code: 'login_rejected', message: 'CTP:用户密码错误', error_id: 3, timestamp: 1_700_000_000 },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 5 })
+    const { wrapper } = mountCard(store)
+
+    const statusCell = wrapper.find('[data-test="td-account-status"]')
+    expect(statusCell.attributes('title')).toBe('交易接口进程未运行，无法登录')
+    expect(statusCell.find('[data-test="td-account-state"]').classes()).toContain('ds-status--idle')
+    expect(statusCell.find('.ds-status__text').text()).toBe('未启动')
+    expect(wrapper.find('[data-test="td-account-status-desc"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="td-last-error-account_001"]').exists()).toBe(true)
   })
 })
 

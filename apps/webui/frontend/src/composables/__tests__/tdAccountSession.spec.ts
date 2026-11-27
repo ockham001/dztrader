@@ -5,8 +5,8 @@ import {
   tdSessionState,
   canLoginTd,
   canLogoutTd,
-  isTdAccountFailed,
   isTdFailureState,
+  tdAccountStatusView,
 } from '../tdAccountSession'
 import { sessionPendingClear } from '../sessionProgress'
 
@@ -102,7 +102,7 @@ describe('tdSessionState / canLoginTd / canLogoutTd（账户行）', () => {
   })
 })
 
-describe('isTdFailureState / isTdAccountFailed（#509 状态列失败结论）', () => {
+describe('isTdFailureState / tdAccountStatusView（#509 状态列）', () => {
   it('四个登录链失败态为 true；正常态/中间态/未知/缺失为 false', () => {
     for (const state of ['AuthFailed', 'LoginFailed', 'SettlementConfirmFailed',
       'InstrumentsLoadFailed'] as const) {
@@ -116,23 +116,54 @@ describe('isTdFailureState / isTdAccountFailed（#509 状态列失败结论）',
     expect(isTdFailureState(undefined)).toBe(false)
   })
 
-  it('last_error 非空即失败（connect_timeout 没有失败态，但它是一次真实失败）', () => {
-    expect(isTdAccountFailed({
-      lastError: { code: 'connect_timeout' },
-      status: { state: 'Idle' },
-    })).toBe(true)
+  const statusRow = (patch: {
+    progress?: { min: number; max: number; current: number; desc?: string } | null
+    state?: string | null
+    gatewayRunning?: boolean
+  }) => ({
+    progress: patch.progress ?? null,
+    status: patch.state === undefined || patch.state === null ? null : { state: patch.state },
+    gatewayRunning: patch.gatewayRunning ?? true,
+    isFailed: isTdFailureState(patch.state),
   })
 
-  it('无 last_error 时按细状态判失败（失败态停在中间值，数值映射看不出失败）', () => {
-    expect(isTdAccountFailed({
-      lastError: null,
-      status: { state: 'LoginFailed' },
-    })).toBe(true)
+  it('网关进程非 Running：一律「未启动」，残留进度/失败态都不许冒充会话状态', () => {
+    const stale = tdAccountStatusView(statusRow({
+      progress: { min: 0, max: 10, current: 10 },
+      state: 'LoginFailed',
+      gatewayRunning: false,
+    }))
+    expect(stale).toEqual({ current: 0, max: 1, min: 0, failed: false, idleText: '未启动' })
   })
 
-  it('无 last_error 且状态正常 → 不失败；状态镜像未到达也不算失败（不能把「没有数据」说成失败）', () => {
-    expect(isTdAccountFailed({ lastError: null, status: { state: 'Ready' } })).toBe(false)
-    expect(isTdAccountFailed({ lastError: null, status: null })).toBe(false)
+  it('从未收到进度镜像 = 「未启动」；有进度且停在端点 = 「未登录」', () => {
+    expect(tdAccountStatusView(statusRow({ state: null })).idleText).toBe('未启动')
+    const idle = tdAccountStatusView(statusRow({ progress: { min: 0, max: 10, current: 0 } }))
+    expect(idle.idleText).toBe('未登录')
+    expect(idle.failed).toBe(false)
+  })
+
+  it('desc 只在会话建立中传（端点态徽章要说「已登录/未登录」，不被「就绪」顶掉）', () => {
+    const forming = tdAccountStatusView(statusRow({
+      progress: { min: 0, max: 10, current: 5, desc: '用户登录...' },
+    }))
+    expect(forming.desc).toBe('用户登录...')
+    const ready = tdAccountStatusView(statusRow({
+      progress: { min: 0, max: 10, current: 10, desc: '就绪' },
+    }))
+    expect(ready.desc).toBeUndefined()
+  })
+
+  it('失败结论取行上的 isFailed（四个失败态）；connect_timeout 这类 last_error 不算失败', () => {
+    expect(tdAccountStatusView(statusRow({
+      progress: { min: 0, max: 10, current: 3, desc: '认证失败' },
+      state: 'AuthFailed',
+    })).failed).toBe(true)
+    // connect_timeout：state 回 Idle + last_error 保留 → 不是失败态（契约 td-status §2.2）
+    expect(tdAccountStatusView(statusRow({
+      progress: { min: 0, max: 10, current: 0, desc: '未启动' },
+      state: 'Idle',
+    })).failed).toBe(false)
   })
 })
 

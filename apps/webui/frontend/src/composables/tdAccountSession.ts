@@ -47,27 +47,63 @@ const TD_FAILED_STATES: readonly string[] = [
   'InstrumentsLoadFailed',
 ]
 
-/** 细状态是否属于四个登录链失败态（ADR 0059 决策 1；`null`/未到达/未知值都返回 false） */
+/**
+ * 细状态是否属于四个登录链失败态（ADR 0059 决策 1；`null`/未到达/未知值都返回 false）。
+ *
+ * 失败结论**只**从这里来，不看 `last_error`：`connect_timeout` 也写 `last_error`，但它没有
+ * 失败态、账户回 `Idle`（ADR 0059 决策 7 / 契约 td-status §2.2「可观察后果」：前端看到的是
+ * 「未启动 / 进度 0」+「上次失败：连接超时」）；登出后 `last_error` 也不清空（契约 §2.5），
+ * 用 `last_error` 当失败判据会把「未登录」永久说成「失败」。
+ */
 export function isTdFailureState(state: TdState | string | null | undefined): boolean {
   return state !== null && state !== undefined && TD_FAILED_STATES.includes(state)
 }
 
-/**
- * 是否处于「失败」态（#509 状态列）：`last_error` 非空 **或** 细状态是四个失败态之一。
- *
- * 为什么不从 `current/max` 推：失败态停在 3/5/7/8（ADR 0059 决策 1），数值映射只会说
- * 「进行中」；失败结论必须来自状态帧（`state`）与 `last_error`。判定放这里而不是组件里：
- * 交易账户页与仪表盘资金面板共用同一结论（与 canLoginTd / canLogoutTd 同处）。
- *
- * 覆盖 `connect_timeout`：它没有失败态（账户回到 `Idle`，ADR 0059 决策 7），但 `last_error`
- * 保留了这次失败——状态列显示「失败」+「上次失败：连接超时」，不说成「登录失败」。
- */
-export function isTdAccountFailed(row: {
-  lastError: object | null
+/** 状态列渲染数据（StatusIndicator 直连，#509） */
+export interface TdAccountStatusView {
+  current: number
+  max: number
+  min: number
+  /** 仅会话建立中传（阶段文案）；端点态由徽章说端点词 */
+  desc?: string
+  /** 失败结论 = 行上的 `isFailed`（store 里由 {@link isTdFailureState} 算一次） */
+  failed: boolean
+  /** idle 徽章文案：有进度 = 未登录；无进度 / 网关未跑 = 未启动 */
+  idleText: string
+}
+
+/** {@link tdAccountStatusView} 需要的行字段（结构类型，不绑定 store 具体类型） */
+export interface TdAccountStatusRow {
+  progress: ProgressView | null
   status: { state?: TdState | string } | null
-}): boolean {
-  if (row.lastError !== null && row.lastError !== undefined) return true
-  return isTdFailureState(row.status?.state)
+  /** 网关进程是否 Running（进程镜像；进程没跑就不可能有可用会话） */
+  gatewayRunning: boolean
+  isFailed: boolean
+}
+
+/**
+ * 状态列渲染数据：**交易账户页与仪表盘资金面板的唯一推导**（#509）。两边写各一份时，
+ * 「什么时候算失败」「desc 什么时候传」这类判定必然漂移，同一账户会在两处说两种话。
+ *
+ * 三条规则（契约 td-status / progress）：
+ * - 网关进程非 Running：一律「未启动」——进程没跑不可能有可用会话，残留的进度镜像
+ *   不许冒充「已登录」，失败徽章也无从谈起（失败是会话结论）；
+ * - 从未收到进度镜像：也是「未启动」（没有数据不等于「未登录」）；有进度但停在端点才是未登录；
+ * - `desc` 只在会话建立中传：端点态的徽章要说「已登录/未登录」，而 td 的端点 desc 是
+ *   「就绪」/「未启动」——组件里 desc 优先，传进去会把端点词顶掉。
+ */
+export function tdAccountStatusView(row: TdAccountStatusRow): TdAccountStatusView {
+  if (!row.gatewayRunning) {
+    return { current: 0, max: 1, min: 0, failed: false, idleText: '未启动' }
+  }
+  return {
+    current: row.progress?.current ?? 0,
+    max: row.progress?.max ?? 1,
+    min: row.progress?.min ?? 0,
+    desc: tdSessionState(row) === 'forming' ? row.progress?.desc : undefined,
+    failed: row.isFailed,
+    idleText: row.progress ? '未登录' : '未启动',
+  }
 }
 
 /** 登录按钮可用：仅完全未登录（这是「一个按钮只有一个意思」的落点） */

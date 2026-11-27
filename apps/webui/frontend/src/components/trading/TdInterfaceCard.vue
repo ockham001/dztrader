@@ -32,7 +32,7 @@ import {
   canLoginTd,
   canLogoutTd,
   isTdFailureState,
-  tdSessionState,
+  tdAccountStatusView,
 } from '@/composables/tdAccountSession'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
@@ -357,55 +357,32 @@ async function confirmRemoveInterface(): Promise<void> {
 // ===== 展示辅助（状态/交易日/登录时间；口径同 #251 页面）=====
 
 /**
- * 状态列 = `StatusIndicator`（#509）：登录中显进度条 + 阶段文案，未登录/已登录/失败显徽章，
- * 与仪表盘资金面板同组件同判定（ADR 0051 的 md/td 一致性要求）。
+ * 状态列 tooltip：只解释「为什么是未启动」；失败由徽章 + 「上次失败」行自解释。
  *
- * 两个覆盖（#509 2d）：网关进程非 Running 时一律「未启动」——进程没跑不可能有可用会话，
- * 即使 progress 镜像还留着上一次会话的旧值；从未收到状态帧（无 progress）也是「未启动」，
- * 而不是把「没有数据」说成「未登录」。
- *
- * `desc` 只在**建立中**传：端点态的徽章要说端点词（「已登录」/「未登录」），而 td 的进度
- * desc 在端点处是「就绪」/「未启动」——传进去会顶掉徽章文案（组件里 desc 优先），把
- * 「已登录」说成「就绪」。建立中的 desc 是真阶段文案（「用户登录...」「加载合约...」）。
+ * 网关未运行的判定必须排在最前：此时状态列一律「未启动」，即便上次会话留下了失败态/
+ * 残留进度——进程没跑，会话结论和进度都没有意义。
  */
-function statusIndicatorProps(row: TdAccountRow): {
-  current: number
-  max: number
-  min: number
-  desc?: string
-  failed: boolean
-  idleText: string
-} {
-  if (!row.gatewayRunning) {
-    return { current: 0, max: 1, min: 0, failed: row.isFailed, idleText: '未启动' }
-  }
-  return {
-    current: row.progress?.current ?? 0,
-    max: row.progress?.max ?? 1,
-    min: row.progress?.min ?? 0,
-    desc: tdSessionState(row) === 'forming' ? row.progress?.desc : undefined,
-    failed: row.isFailed,
-    idleText: row.progress ? '未登录' : '未启动',
-  }
-}
-
-/** 状态列 tooltip：只解释「为什么是未启动」；失败由徽章 + 「上次失败」行自解释 */
 function statusTitle(row: TdAccountRow): string | undefined {
-  if (row.isFailed) return undefined
   if (!row.gatewayRunning) return '交易接口进程未运行，无法登录'
-  return row.progress ? undefined : '尚未收到该账户的状态上报'
+  if (row.isFailed) return undefined
+  if (row.progress) return undefined
+  // 状态帧到了但进度镜像没到：说清缺的是哪一份，不要把它说成「没有状态上报」
+  return row.status ? '尚未收到该账户的进度上报' : '尚未收到该账户的状态上报'
 }
 
 /**
  * 状态列次级行（#509 2a）：失败态保留**阶段文案**——徽章只说「失败」，停在哪一段由这一行
  * 回答（`progress.desc` 优先，回落细状态中文文案）。
  *
- * 判据用细状态而不是 `row.isFailed`：`connect_timeout` 会留下 `last_error` 但账户回到
- * `Idle`（ADR 0059 决策 7），它不是失败态、没有「停在哪一段」可展示——原因由「上次失败」行承载。
+ * 两个不显示的情形：
+ * - 网关未运行：徽章是「未启动」，再挂一段「认证失败」会自相矛盾（失败原因仍由
+ *   「上次失败」行承载）；
+ * - `connect_timeout`：它留下 `last_error` 但账户回 `Idle`（ADR 0059 决策 7），没有
+ *   「停在哪一段」可展示——原因同样由「上次失败」行承载。
  * 建立中的 desc 由 StatusIndicator 自己的进度文案承载，不再重复一行。
  */
 function statusMetaText(row: TdAccountRow): string {
-  if (!isTdFailureState(row.status?.state)) return ''
+  if (!row.gatewayRunning || !isTdFailureState(row.status?.state)) return ''
   return row.progress?.desc || tdStateText(row.status?.state)
 }
 
@@ -601,7 +578,7 @@ function loginTimeText(row: TdAccountRow): string {
               <td class="td-card__col-status">
                 <div class="td-card__status" :title="statusTitle(row)" data-test="td-account-status">
                   <StatusIndicator
-                    v-bind="statusIndicatorProps(row)"
+                    v-bind="tdAccountStatusView(row)"
                     :mini="true"
                     loading-text="登录中"
                     done-text="已登录"

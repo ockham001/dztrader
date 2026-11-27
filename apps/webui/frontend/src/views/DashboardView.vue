@@ -17,7 +17,7 @@ import {
   formatTdMoney,
   isTdAccountOnline,
 } from '@/composables/tdFundView'
-import { isTdAccountFailed, tdSessionState } from '@/composables/tdAccountSession'
+import { tdAccountStatusView, type TdAccountStatusView } from '@/composables/tdAccountSession'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
@@ -228,34 +228,25 @@ const fundAggregate = computed<string>(() => (
 
 /**
  * 资金面板「状态」列 = 登录态（#509）：与交易账户页同一个 StatusIndicator、同一份
- * `tdAccounts` 行镜像（进度 + 失败结论），不再拿 `online_accounts` 投影成「在线/离线」——
+ * `tdAccounts` 行镜像与同一套推导（`tdAccountStatusView`：网关未跑/无进度都「未启动」，
+ * 失败结论取行上的 `isFailed`），不再拿 `online_accounts` 投影成「在线/离线」——
  * 那是同一件事的另一种说法，正是用户「md 和 td 能否统一」反馈的落点。
  *
  * 缺行回落「未登录」：资金行来自 REST 信封（含离线与无记录账户），`tdAccounts` 行镜像要等
- * 注册表重拉后才有对应行；那一瞬不能把自己的「还没有数据」说成「失败」或「在线」。
+ * 注册表重拉后才有对应行；那一瞬不能把自己的「还没有数据」说成「失败」或「已登录」。
  */
-interface FundStatusView {
-  current: number
-  max: number
-  min: number
-  desc?: string
-  failed: boolean
+const FUND_STATUS_IDLE: TdAccountStatusView = {
+  current: 0,
+  max: 1,
+  min: 0,
+  failed: false,
+  idleText: '未登录',
 }
 
-const FUND_STATUS_IDLE: FundStatusView = { current: 0, max: 1, min: 0, failed: false }
-
-const fundStatusById = computed<Map<string, FundStatusView>>(() => {
-  const byId = new Map<string, FundStatusView>()
+const fundStatusById = computed<Map<string, TdAccountStatusView>>(() => {
+  const byId = new Map<string, TdAccountStatusView>()
   for (const row of tdAccountsStore.rows) {
-    byId.set(row.account_id, {
-      current: row.progress?.current ?? 0,
-      max: row.progress?.max ?? 1,
-      min: row.progress?.min ?? 0,
-      // desc 只在建立中传：端点态徽章要说「已登录/未登录」，td 的端点 desc 是「就绪」/「未启动」
-      // （组件里 desc 优先），传进去会把端点词顶掉
-      desc: tdSessionState(row) === 'forming' ? row.progress?.desc : undefined,
-      failed: isTdAccountFailed(row),
-    })
+    byId.set(row.account_id, tdAccountStatusView(row))
   }
   return byId
 })
@@ -784,8 +775,8 @@ onUnmounted(() => {
                         :min="row.login.min"
                         :desc="row.login.desc"
                         :failed="row.login.failed"
+                        :idle-text="row.login.idleText"
                         :mini="true"
-                        idle-text="未登录"
                         loading-text="登录中"
                         done-text="已登录"
                         data-test="fund-status"

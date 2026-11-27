@@ -98,8 +98,8 @@ describe('failed 失败态', () => {
     expect(wrapper.classes()).not.toContain('ds-status--loading')
     // desc 是阶段文案，不能替代「失败」结论
     expect(wrapper.find('.ds-status__text').text()).toBe('失败')
-    // 失败态不渲染进度条（没有「还在推进」的暗示）
-    expect(wrapper.attributes('style') ?? '').not.toContain('--ds-status-fill')
+    // 失败态不注入填充比例（不渲染进度条，没有「还在推进」的暗示）：没有内联 style 才是正断言
+    expect(wrapper.attributes('style')).toBeUndefined()
   })
 
   it('failed 压过 done：current 到达 max 也不显示「已登录」', () => {

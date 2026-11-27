@@ -10,7 +10,7 @@ import {
 } from '@/api/tdGateways'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
 import { sessionPendingClear, sessionStateOfProgress } from '@/composables/sessionProgress'
-import { isTdAccountFailed } from '@/composables/tdAccountSession'
+import { isTdFailureState } from '@/composables/tdAccountSession'
 import {
   TD_ACCOUNT_ERROR_TEXT,
   TD_ACCOUNT_NETWORK_ERROR_TEXT,
@@ -298,8 +298,10 @@ export interface TdAccountRow {
   /** 进度（契约 progress；账户级 `instance_id` = 账户 ID）；未到达为 null */
   progress: ProgressView | null
   /**
-   * 是否处于失败态（#509 状态列的唯一结论）：`lastError` 非空或细状态是四个失败态之一。
-   * 判定实现见 `composables/tdAccountSession.isTdAccountFailed`（交易账户页与仪表盘共用）。
+   * 是否处于失败态（#509 状态列的唯一结论）：细状态是四个登录链失败态之一。
+   * 判定实现见 `composables/tdAccountSession.isTdFailureState`（交易账户页与仪表盘共用）。
+   * **不看 `last_error`**：`connect_timeout` 也写 `last_error` 但账户回 `Idle`（契约 td-status §2.2），
+   * 登出也不清 `last_error`——拿它当失败判据会把「未登录」永久说成「失败」。
    */
   isFailed: boolean
   /** 网关进程是否 Running（进程镜像）；镜像未到达为 false（页面据此提示先启动网关） */
@@ -541,8 +543,9 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       // 失败原因随状态帧全量到达（契约 td-status §2.5）：按 code 采纳、逐字段防御回落，
       // null = 无未清空失败。解析只在这一处，组件不接触后端字段形状。
       row.lastError = parseTdLastError(status.last_error)
-      // 状态列的失败结论（#509）：last_error 非空或细状态是四个失败态之一
-      row.isFailed = isTdAccountFailed(row)
+      // 状态列的失败结论（#509）：只有四个登录链失败态算失败（connect_timeout 不算，
+      // 它没有失败态、账户回 Idle，契约 td-status §2.2）
+      row.isFailed = isTdFailureState(status.state)
     }
     for (const [accountId, progress] of Object.entries(progressStore.progress)) {
       const row = merged.get(accountId)

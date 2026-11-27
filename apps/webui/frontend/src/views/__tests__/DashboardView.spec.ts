@@ -6,6 +6,7 @@ import { useProgressStore } from '@/stores/progress'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { useTdAccountsStore } from '@/stores/tdAccounts'
+import { useProcessStore } from '@/stores/process'
 import { marketSourcesApi } from '@/api/marketSources'
 import { tdApi } from '@/api/td'
 import DashboardView from '../DashboardView.vue'
@@ -166,6 +167,9 @@ describe('DashboardView', () => {
     vi.mocked(tdApi.getPositions).mockResolvedValue(positionListResponse([]))
     vi.mocked(tdApi.getTradingAccounts).mockResolvedValue(fundListResponse([]))
     vi.mocked(tdApi.listAccounts).mockResolvedValue({ available: true, accounts: [] })
+    // #509 资金状态列读 tdAccounts 行镜像：网关进程按 Running 造镜像，账户才有「会话」
+    // （进程没跑时状态列一律「未启动」，与真实页面一致）
+    useProcessStore().applyProcessStatus({ name: 'dztd_ctp', state: 'Running', pid: 1 })
   })
 
   afterEach(() => {
