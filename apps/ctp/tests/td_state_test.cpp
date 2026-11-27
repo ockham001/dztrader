@@ -828,6 +828,34 @@ TEST(TdStatusJsonTest, LastErrorIsSerializedWithStatus) {
     EXPECT_EQ(j["last_error"]["error_id"], 0);
 }
 
+TEST(TdStatusPayloadTest, PayloadForFillsAccountIdFromFrameInstance) {
+    using namespace dztrader::ctp;
+    // #508：状态机不持有 account_id（per-account 实例由 AccountSession 管理），
+    // 写帧点必须补上；空值会被前端当作「非法帧」整帧丢弃，导致交易日 / 登录时间 /
+    // 上次失败全部显示为占位符。契约 td-status §3 要求该字段与帧头 instance_id 逐字相等。
+    TdStatus from_state_machine;  // 状态机直出的快照：account_id 本来就是空串
+    ASSERT_TRUE(from_state_machine.account_id.empty());
+
+    const nlohmann::json j =
+        td_status_payload_for(from_state_machine, "116949", UnknownEnumCounts{});
+    EXPECT_EQ(j["account_id"], "116949");
+    EXPECT_FALSE(j["account_id"].get<std::string>().empty())
+        << "an empty account_id is not 'optional' — consumers drop the whole frame";
+    // 其余状态字段照常带出（补 account_id 不得吞掉状态快照）
+    EXPECT_EQ(j["state"], "Idle");
+    EXPECT_TRUE(j.contains("last_error"));
+    EXPECT_TRUE(j["last_error"].is_null());
+}
+
+TEST(TdStatusPayloadTest, PayloadForDoesNotMutateCallerStatus) {
+    using namespace dztrader::ctp;
+    // 取副本赋值：调用方（状态机）不该因为写帧而"记住"账户标识。
+    TdStatus origin;
+    origin.state = TdState::Ready;
+    (void)td_status_payload_for(origin, "116949", UnknownEnumCounts{});
+    EXPECT_TRUE(origin.account_id.empty()) << "filling the payload must not write back";
+}
+
 TEST(TdFailureCodeTest, CodeStringsMatchContract) {
     using namespace dztrader::ctp;
     // 线上码表（契约 td-status §2.5）：字符串即协议, 改名是破坏性变更。

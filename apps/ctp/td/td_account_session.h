@@ -448,6 +448,18 @@ private:
     void cancel_login_timer();
     /// 取消合约加载超时定时器 (I2)
     void cancel_instruments_load_timer();
+    /// 武装合约加载看门狗（幂等：已在计时则不动）。
+    ///
+    /// 看门狗计的是「**这一整段加载过程**的总时长」，不是单次请求——流控 `-3` 的 1.5s 重试
+    /// 属于这段过程内，不该无限续命。因此本函数只在**尚未武装**时排一次定时器，
+    /// 每条重试路径都调它不会把 deadline 往后推（#508：`-3` 分支此前完全不武装，
+    /// 持续流控会让账户永久停在 8/10）。
+    void arm_instruments_load_watchdog();
+    /// 武装资金查询看门狗（幂等，tag 去重）。
+    ///
+    /// 与 {@link arm_instruments_load_watchdog} 同型：量的是整段查询过程的 5 分钟上限，
+    /// 流控 `-3` 的 1.5s 重试不续命（#508）。
+    void arm_account_query_watchdog();
     /// 取消结算单确认看门狗定时器 (#488; 收到响应 / 断连 / 登出时清理).
     void cancel_settlement_confirm_timer();
     /// 取消基准持仓查询的重试定时器 (查询成功 / 重试耗尽 / 断连时清理, 不留残留定时器).

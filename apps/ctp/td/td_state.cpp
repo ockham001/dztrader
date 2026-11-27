@@ -435,4 +435,14 @@ nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts
     return payload;
 }
 
+nlohmann::json td_status_payload_for(const TdStatus& status,
+                                     const std::string& account_id,
+                                     const UnknownEnumCounts& counts) {
+    // 契约 td-status §3: account_id 必须与帧头 instance_id 逐字相等, 且不允许为空
+    // (消费方按「空 = 非法帧」整帧丢弃). 状态机不持有该字段, 故在写帧点补上.
+    TdStatus filled = status;
+    filled.account_id = account_id;
+    return td_status_payload(filled, counts);
+}
+
 }  // namespace dztrader::ctp

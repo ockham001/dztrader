@@ -1630,6 +1630,10 @@ void AccountSession::req_qry_instrument() {
         if (ret == -3) {
             // I3: 流控 (-3), 1.5s 后重试 (参考 mdctp 流控队列模式)
             SPDLOG_WARN("td qry instrument flow control, retry in 1.5s | account={}", account_id_);
+            // #508: 流控重试也属于「加载合约」这一段过程, 必须保证看门狗在场——
+            // 漏武装时持续流控会让账户永久停在 8/10（既不失败也不就绪）。
+            // 幂等: 已经在计时就不重置 deadline, 防止无限流控靠重试续命。
+            arm_instruments_load_watchdog();
             uint64_t gen = generation_;
             std::weak_ptr<void> weak = alive_token_;
             timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, weak, gen]() {
@@ -1652,22 +1656,7 @@ void AccountSession::req_qry_instrument() {
     }
     note_query_sent();
     // I2: 排定 5 分钟超时, 防止 CTP 长期不回 is_last 导致卡死 (设计 §2.4.1)
-    cancel_instruments_load_timer();
-    uint64_t gen = generation_;
-    instruments_load_timer_id_ =
-        timer_queue_.schedule_after(instruments_load_timeout_, [this, gen]() {
-            if (gen != generation_) return;
-            if (state_machine_.state() == TdState::LoadingInstruments) {
-                SPDLOG_ERROR("td instruments load timeout | account={} timeout_s={}", account_id_,
-                             instruments_load_timeout_.count());
-                note_query_done();
-                instrument_query_request_id_ = 0;
-                // #488: 原因改中文 —— 它会进用户弹窗。时长随实际配置, 与看门狗同源。
-                notify_instruments_load_failed(
-                    TdFailureCode::InstrumentsTimeout,
-                    std::format("查询 {} 秒未收到最后一批响应", instruments_load_timeout_.count()));
-            }
-        });
+    arm_instruments_load_watchdog();
 }
 
 void AccountSession::cancel_connect_timer() {
@@ -1838,6 +1827,9 @@ void AccountSession::req_qry_trading_account() {
         account_query_request_id_ = 0;
         if (ret == -3) {
             SPDLOG_WARN("td qry account flow control, retry in 1.5s | account={}", account_id_);
+            // #508: 与合约查询同型——流控重试路径也必须保证收尾看门狗在场,
+            // 否则持续流控会让账户永久停在 8/10（既不失败也不就绪）。
+            arm_account_query_watchdog();
             uint64_t gen = generation_;
             std::weak_ptr<void> weak = alive_token_;
             timer_queue_.schedule_after(std::chrono::milliseconds(1500), [this, weak, gen]() {
@@ -1856,20 +1848,26 @@ void AccountSession::req_qry_trading_account() {
     }
     note_query_sent();
     // 超时兜底: 登录阶段 5 分钟 (查询只在登录收尾链发起).
+    arm_account_query_watchdog();
+}
+
+void AccountSession::arm_account_query_watchdog() {
+    // 与合约查询看门狗同型: 计的是整段查询过程, 故带 tag 去重（已在计时则忽略）。
     uint64_t gen = generation_;
     std::weak_ptr<void> weak = alive_token_;
-    timer_queue_.schedule_after(std::chrono::minutes(5), [this, weak, gen]() {
-        if (weak.expired()) return;
-        if (gen != generation_) return;
-        if (state_machine_.state() == TdState::LoadingInstruments &&
-            finalizer_.phase() == Phase::kQueryAccount) {
-            SPDLOG_ERROR("td qry account timeout, degrade | account={}", account_id_);
-            note_query_done();
-            account_query_request_id_ = 0;
-            finalizer_.on_account_failed();
-            finalize_login();
-        }
-    });
+    timer_queue_.schedule_after_ignored(
+        "td_qry_account_timeout", std::chrono::minutes(5), [this, weak, gen]() {
+            if (weak.expired()) return;
+            if (gen != generation_) return;
+            if (state_machine_.state() == TdState::LoadingInstruments &&
+                finalizer_.phase() == Phase::kQueryAccount) {
+                SPDLOG_ERROR("td qry account timeout, degrade | account={}", account_id_);
+                note_query_done();
+                account_query_request_id_ = 0;
+                finalizer_.on_account_failed();
+                finalize_login();
+            }
+        });
 }
 
 void AccountSession::drive_finalizer() {
@@ -1940,6 +1938,29 @@ void AccountSession::cancel_instruments_load_timer() {
         timer_queue_.cancel(instruments_load_timer_id_);
         instruments_load_timer_id_ = 0;
     }
+}
+
+void AccountSession::arm_instruments_load_watchdog() {
+    // 幂等: 已在计时就不动 deadline —— 看门狗量的是整段加载过程, 不是单次请求。
+    // 每条重试路径都调它（首次发送 / 流控 -3 重发）不会把 5 分钟往后推。
+    if (instruments_load_timer_id_ != 0) {
+        return;
+    }
+    uint64_t gen = generation_;
+    instruments_load_timer_id_ =
+        timer_queue_.schedule_after(instruments_load_timeout_, [this, gen]() {
+            if (gen != generation_) return;
+            if (state_machine_.state() == TdState::LoadingInstruments) {
+                SPDLOG_ERROR("td instruments load timeout | account={} timeout_s={}", account_id_,
+                             instruments_load_timeout_.count());
+                note_query_done();
+                instrument_query_request_id_ = 0;
+                // #488: 原因改中文 —— 它会进用户弹窗。时长随实际配置, 与看门狗同源。
+                notify_instruments_load_failed(
+                    TdFailureCode::InstrumentsTimeout,
+                    std::format("查询 {} 秒未收到最后一批响应", instruments_load_timeout_.count()));
+            }
+        });
 }
 
 // ============================================================================

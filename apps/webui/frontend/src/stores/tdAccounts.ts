@@ -126,8 +126,16 @@ export type TdAccountOp = TdConfigOp | TdSessionOp
 /** 配置写操作全集（行级 spinner 判定只扫这一组，不扫会话 pending） */
 const CONFIG_OPS: readonly TdConfigOp[] = ['add', 'update', 'remove', 'toggle_enabled']
 
-/** 会话控制 pending 兜底超时（契约 td-connection 前端义务）：登录 45s（连接 30s + 登录 10s + 余量） */
-export const TD_SESSION_LOGIN_TIMEOUT_MS = 45_000
+/**
+ * 会话控制 pending 兜底超时（契约 td-connection 前端义务 2）：登录 = **无进展 60s**。
+ *
+ * 语义是「多久没动静」，不是「总共等了多久」——进度每前进一格就 `touch` 续命
+ * （见下方 progress watcher）。为什么不能用绝对时长：td 登录链最坏
+ * 30(连接)+10(认证)+10(登录)+60(结算)+300(合约) 秒，45s 绝对超时在实测中已经误报过
+ * 一次 110 秒的正常登录（#508）。60s 的含义 = 最长的那一段静默期（结算确认看门狗 60s）
+ * 再加余量之内仍无任何推进即判卡死。
+ */
+export const TD_SESSION_LOGIN_TIMEOUT_MS = 60_000
 /** 登出 pending 兜底超时：释放 API 属本地动作，10s 足够 */
 export const TD_SESSION_LOGOUT_TIMEOUT_MS = 10_000
 
@@ -637,11 +645,17 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   // 清除信号（唯一来源是进度端点/回退与 status.last_error 的新时间戳；NOTIFY_UI 是纯通知，
   // 永不清 pending，契约 notify-ui）：
   //   - 到 max → 清登录 pending（登录完成）；
-  //   - 到 min → 清登录 + 登出 pending（登出完成；或登录在途时被登出/中止，避免挂到 45s 超时）；
+  //   - 到 min → 清登录 + 登出 pending（登出完成；或登录在途时被登出/中止，避免挂到兜底超时）；
   //   - 中间态且 current 相对上次回退 → 清登录 pending（**主动中止**：登出 / 前置断线）；
   //   - `status.last_error.timestamp` 变化且非 null → 清登录 pending（**链内失败**，见下方
   //     watcher；ADR 0059 起链内失败停在失败阶段、current 不回退，回退不再是失败信号）；
-  //   - 兜底超时（登录 45s / 登出 10s，见 TD_SESSION_*_TIMEOUT_MS）。
+  //   - 兜底超时（登录「无进展 60s」/ 登出 10s，见 TD_SESSION_*_TIMEOUT_MS）。
+  //
+  // 为什么登录侧是「无进展」而不是「总时长」（#508）：td 登录链最坏可达
+  // 30(连接)+10(认证)+10(登录)+60(结算)+300(合约) 秒，绝对时长必然误报——实测一次正常登录
+  // 走了 110 秒（其中 100 秒在加载合约），45s 兜底到点时后端仍在正常推进，用户却已看到
+  // 「登录交易账户超时」。所以中间态只要 `current` 相对上次**前进**就 touch 续命；
+  // 停下来没动静满 TD_SESSION_LOGIN_TIMEOUT_MS 才判超时（真实卡死仍能被抓住）。
   watch(
     () => progressStore.progress,
     (progress) => {
@@ -661,6 +675,11 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
         } else if (clear === 'both') {
           clearSessionPending(gateway, instanceId, 'login')
           clearSessionPending(gateway, instanceId, 'logout')
+        } else if (previous === undefined ? state === 'forming' : p.current > previous) {
+          // 推进且未到端点：登录尝试仍在活着 → 续命（不改变任何清除条件）。
+          // `previous === undefined` 的首次观察：只要落在中间态就说明链已经在走，同样续期
+          // （否则「登录请求刚发、进度第一次到达」这一段不会续命，静默期被少算一格）。
+          tdAccountsPending.touch(opKey(gateway, instanceId, 'login'))
         }
       }
     },
@@ -669,7 +688,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
 
   // ===== 链内失败驱动 login pending 清理（契约 td-status §2.5 前端义务①②，ADR 0059）=====
   // `last_error.timestamp` 变化且非 null = 一次登录尝试已结束（失败停在失败阶段）→ 立即清该
-  // 账户的登录 pending，不等待 45s 兜底。失败态下 `current` 停在失败阶段、不回退，进度 watcher
+  // 账户的登录 pending，不等待兜底超时。失败态下 `current` 停在失败阶段、不回退，进度 watcher
   // 的「回退清登录」判据在失败路径上不再触发——没有本 watcher，pending 会一直挂到超时。
   //
   // 去重键 = `code@timestamp`，与后端重推键（td_status_publish.h 的
@@ -1008,7 +1027,8 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    *
    * 按钮可用性由页面按进度端点判定（登录仅完全未登录可发，见 `composables/tdAccountSession`）；
    * 这里不做状态裁决——最终由 dzweb 守卫与目标网关配置校验兜底。pending 以 `progress`
-   * 到 `max`、`current` 回退或 45s 超时清除（契约 td-connection 前端义务）。
+   * 到 `max`、`current` 回退、`last_error` 新身份或「无进展 60s」兜底超时清除
+   * （契约 td-connection 前端义务 2；停滞语义见 TD_SESSION_LOGIN_TIMEOUT_MS 注释）。
    */
   async function login(accountId: string): Promise<TdAccountSubmitResult> {
     const gateway = gatewayOf(accountId)
