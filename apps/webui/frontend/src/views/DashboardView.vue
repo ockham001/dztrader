@@ -15,9 +15,13 @@ import {
   formatDepositWithdraw,
   formatFundDateLabel,
   formatTdMoney,
-  fundStatusText,
   isTdAccountOnline,
 } from '@/composables/tdFundView'
+import {
+  TD_ACCOUNT_STATUS_NO_DATA,
+  tdAccountStatusView,
+  type TdAccountStatusView,
+} from '@/composables/tdAccountSession'
 import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
@@ -225,6 +229,29 @@ const fundAggregate = computed<string>(() => (
     ? '0/0'
     : `${fundsStore.onlineCount}/${fundsStore.totalAccounts}`
 ))
+
+/**
+ * 资金面板「状态」列 = 登录态（#509）：与交易账户页同一个 StatusIndicator、同一份
+ * `tdAccounts` 行镜像与同一套推导（`tdAccountStatusView`：网关未跑/无进度都「未启动」，
+ * 失败结论取行上的 `isFailed`），不再拿 `online_accounts` 投影成「在线/离线」——
+ * 那是同一件事的另一种说法，正是用户「md 和 td 能否统一」反馈的落点。
+ *
+ * 缺行（资金行来自 REST 信封，`tdAccounts` 行镜像要等注册表重拉/首拉返回）回落
+ * {@link TD_ACCOUNT_STATUS_NO_DATA}「未启动」：没有数据不等于未登录，更不等于失败。
+ */
+const fundStatusById = computed<Map<string, TdAccountStatusView>>(() => {
+  const byId = new Map<string, TdAccountStatusView>()
+  for (const row of tdAccountsStore.rows) {
+    byId.set(row.account_id, tdAccountStatusView(row))
+  }
+  return byId
+})
+
+/** 资金行 + 登录态：模板一处取全（`cells[1]` = StatusIndicator，刷新按钮仍走 online_accounts） */
+const fundRowsView = computed(() => fundsStore.rows.map(row => ({
+  ...row,
+  login: fundStatusById.value.get(row.account_id) ?? TD_ACCOUNT_STATUS_NO_DATA,
+})))
 
 // === 交易面板空态状态机（#358，契约 webui-ws §5 第 13 条）===
 // 评审实测（2026-11-18 仪表盘评审 P0-1）：`/api/td/accounts` 回 available:false 而
@@ -728,18 +755,28 @@ onUnmounted(() => {
                   <!-- 每个已登记账户一行（含离线与 has_data:false）；无记录行的金额/日期显示占位，
                        title 说明原因——不用 0 冒充「无资金记录」（契约 webui-ws §5 第 13 条）。 -->
                   <tr
-                    v-for="row in fundsStore.rows"
+                    v-for="row in fundRowsView"
                     :key="row.account_id"
                     data-test="fund-row"
                     :data-account-id="row.account_id"
                     :title="row.has_data ? undefined : '该账户无资金记录'"
                   >
                     <td class="frozen frozen-last cell-text dashboard-panel__cell-strong" :title="row.account_id">{{ tdAccountsStore.displayName(row.account_id) }}</td>
+                    <!-- 状态列 = 登录态（#509）：与交易账户页同一 StatusIndicator；
+                         「在线/离线」不再作为界面词出现（它是登录态的另一种说法） -->
                     <td class="cell-center">
-                      <span
-                        class="ds-tag dashboard-panel__tag"
-                        :class="isTdAccountOnline(row.account_id, fundsStore.onlineAccounts) ? 'ds-tag--success' : 'ds-tag--danger'"
-                      >{{ fundStatusText(row.account_id, fundsStore.onlineAccounts) }}</span>
+                      <StatusIndicator
+                        :current="row.login.current"
+                        :max="row.login.max"
+                        :min="row.login.min"
+                        :desc="row.login.desc"
+                        :failed="row.login.failed"
+                        :idle-text="row.login.idleText"
+                        :mini="true"
+                        loading-text="登录中"
+                        done-text="已登录"
+                        data-test="fund-status"
+                      />
                     </td>
                     <td class="cell-num">{{ formatTdMoney(row.balance) }}</td>
                     <td class="cell-num">{{ formatTdMoney(row.available) }}</td>

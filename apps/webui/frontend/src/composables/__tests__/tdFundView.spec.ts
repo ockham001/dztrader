@@ -3,7 +3,6 @@ import {
   formatDepositWithdraw,
   formatFundDateLabel,
   formatTdMoney,
-  fundStatusText,
   isTdAccountOnline,
 } from '../tdFundView'
 
@@ -75,23 +74,13 @@ describe('formatFundDateLabel（面板级数据日期标签）', () => {
   })
 })
 
-describe('fundStatusText / isTdAccountOnline（账户在线状态，唯一谓词）', () => {
+describe('isTdAccountOnline（在线谓词：只服务刷新按钮可点性，#509 后不再派生界面文案）', () => {
   it('在 online_accounts 中 = 在线，否则 = 离线', () => {
-    expect(fundStatusText('acc_a', ['acc_a', 'acc_b'])).toBe('在线')
-    expect(fundStatusText('acc_c', ['acc_a', 'acc_b'])).toBe('离线')
+    expect(isTdAccountOnline('acc_a', ['acc_a', 'acc_b'])).toBe(true)
+    expect(isTdAccountOnline('acc_c', ['acc_a', 'acc_b'])).toBe(false)
   })
 
   it('无在线账户时全部离线', () => {
-    expect(fundStatusText('acc_a', [])).toBe('离线')
-  })
-
-  it('在线谓词与状态文案同源：同一账户的判定与文案始终一致', () => {
-    const onlineAccounts = ['acc_a']
-    // 状态标签样式（DashboardView）消费谓词、文案消费 fundStatusText：两者必须给出同一结论，
-    // 否则会出现「文案=在线、样式=离线」这种自相矛盾的单元格。
-    expect(isTdAccountOnline('acc_a', onlineAccounts)).toBe(true)
-    expect(fundStatusText('acc_a', onlineAccounts)).toBe('在线')
-    expect(isTdAccountOnline('acc_b', onlineAccounts)).toBe(false)
-    expect(fundStatusText('acc_b', onlineAccounts)).toBe('离线')
+    expect(isTdAccountOnline('acc_a', [])).toBe(false)
   })
 })

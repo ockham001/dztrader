@@ -259,6 +259,11 @@ const CONTRAST_PAIRS: readonly ContrastPair[] = [
   // #354 AC3 视觉零变化；该缺陷的修法与 tertiary 族同源，归 #324 专项）。
   { id: 'tag-muted-on-card', usage: '中性委托标签文字（.ds-tag 无修饰）on 白叠底', fg: '--text-tertiary', bg: '--tag-muted-surface', base: '--bg-card', min: 4.5 },
 
+  // #509：状态指示器的 idle 徽章——「正常静止态」不是错误，配色改中性（次级文字 + overlay 底）。
+  // done / failed 复用上面 tag-success / tag-danger 的 -on-surface 配对（同组件同语义），
+  // 此处只登记新增的 idle 配对；loading 的进度条是填充色不承载文字，不在对比度口径内。
+  { id: 'status-idle', usage: '状态指示器 idle 徽章（.ds-status--idle：未登录/未启动）', fg: '--text-secondary', bg: '--bg-overlay-l1', base: '--bg-card', min: 4.5 },
+
   // 涨跌色（#349 收编进 token）：它们承载**表格里的数字**（11–12px 正文字号），按 4.5:1 要求。
   // 现状不达标（浅色 3.75 / 3.17、深色 rise 3.99）—— 达标必须重设涨跌色相，而本票 AC6
   // 要求「除既有 4 项外视觉零变化」、票面亦明确「不改涨跌色语义方向」，故先登记为已知项。
@@ -601,21 +606,12 @@ const KNOWN_DANGLING: Record<string, { files: string[]; ticket: number | null; w
     ticket: null,
     why: '#349 未覆盖（原登记号已失效，改派待定）：滚动条滑块色，靠 fallback rgba(128,128,128,.4)；icon 体系只到 tertiary',
   },
-  // 死代码形态：components.css 有一段 custom-color 覆盖块，但 StatusIndicator 从不注入
-  // 这两个属性、也不加 .ds-status--custom-color 类（注释声称 JS 会加，实际无人加）。
-  '--ds-color': {
-    files: ['assets/css/components.css'],
-    ticket: null,
-    why: 'components.css 的 ds-status--custom-color 覆盖块未接线（StatusIndicator 不注入），属死代码，不在本波范围',
-  },
-  '--ds-color-bg': {
-    files: ['assets/css/components.css'],
-    ticket: null,
-    why: '同上，custom-color 覆盖块的第二个变量',
-  },
   // #349 已修并删除的登记：`--border-default`（topbar 分隔线）—— 该 token 从未定义，
   // 实际一直落到 fallback 的**背景** token；#349 把它直接改成 `--border-neutral-l1`，
   // 悬空引用随之消失（基线只能收缩，不能腐化）。
+  // #509 已修并删除的登记：`--ds-color` / `--ds-color-bg` —— components.css 的
+  // `.ds-status--custom-color` 覆盖块从未接线（组件不注入这两个属性、也不加该类），
+  // 随 StatusIndicator 四态重定色一并删除，悬空引用消失。
 }
 
 /** 从一段文本里收集 var(--x)，累积到 out（value → 引用点列表） */

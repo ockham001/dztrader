@@ -707,24 +707,25 @@ pre {
     .ds-progress--brand .ds-progress__bar { background: var(--bg-brand); }
 
 /* ── Status (mini) ────────────────────────────────────────── */
-/* ===== Status — 3-state indicator with optional progress bar =====
+/* ===== Status — 4/5-state indicator with optional progress bar =====
    States:
-     ds-status--idle     未连接/未登录/未启动 (red badge, no bar)
+     ds-status--idle     未连接/未登录/未启动 (neutral badge, no bar)
      ds-status--loading  进行中 (progress bar + text, badge hidden)
-     ds-status--done     已完成/已登录/已连接 (green badge, no bar)
+     ds-status--done     已完成/已登录/已连接 (success badge, no bar)
+     ds-status--failed   失败 (error badge, no bar；语义由调用方给 failed prop)
      ds-status--indeterminate  loading 且无具体进度时的来回动画
-     ds-status--custom-color   启用自定义颜色覆盖
+
+   Colour pairing: idle = neutral, loading = primary fill, done / failed = the tag
+   component's `-on-surface` text on `-surface-l1` ground (contrast-tested pairs).
 
    Usage:
-     <div class="ds-status ds-status--mini" data-idle-text="未登录" data-loading-text="登录中" data-done-text="已登录">
+     <div class="ds-status ds-status--mini">
        <span class="ds-status__text">已登录</span>
        <div class="ds-status__progress">
          <span class="ds-status__progress-text">登录中</span>
          <span class="ds-status__bar"><span class="ds-status__bar-fill"></span></span>
        </div>
      </div>
-
-   JS: setStatus(el, { current: 5, max: 12, loadingText: "登录中" })
    ═══════════════════════════════════════════════════════════════ */
     .ds-status {
         display: inline-flex;
@@ -732,9 +733,18 @@ pre {
         font-size: var(--body-xs-font-size);
         flex-shrink: 0;
     }
-    .ds-status--mini { }
 
-    /* Badge (shown for idle / done, hidden for loading) */
+    /* Compact mode (dashboard panel rows / card headers, #509): no vertical padding,
+       one type step down, narrower bar. Still shows the label — compact ≠ colour-only. */
+    .ds-status--mini .ds-status__text {
+        padding: 0 var(--spacer-6);
+        font-size: var(--font-size-10);
+    }
+    .ds-status--mini .ds-status__bar {
+        width: 48px;
+    }
+
+    /* Badge (shown for idle / done / failed, hidden for loading) */
     .ds-status__text {
         font-size: var(--body-xs-font-size);
         white-space: nowrap;
@@ -742,13 +752,20 @@ pre {
         border-radius: var(--radius-8);
         line-height: 1.6;
     }
+    /* done / failed use the tag's paired -on-surface step (#349 lineage, #509): same-hue
+       text on a 12% surface ground is too light in light theme / too dim in dark theme. */
     .ds-status--done .ds-status__text {
-        color: var(--status-success-default);
+        color: var(--status-success-on-surface);
         background: var(--status-success-surface-l1);
     }
-    .ds-status--idle .ds-status__text {
-        color: var(--status-error-default);
+    .ds-status--failed .ds-status__text {
+        color: var(--status-error-on-surface);
         background: var(--status-error-surface-l1);
+    }
+    /* idle is a normal resting state, not an error: neutral ink, no status hue (#509). */
+    .ds-status--idle .ds-status__text {
+        color: var(--text-secondary);
+        background: var(--bg-overlay-l1);
     }
 
     /* Progress view (shown only for loading) */
@@ -775,7 +792,7 @@ pre {
         display: block;
         height: 100%;
         border-radius: var(--radius-2);
-        background: var(--status-warning-default, #e8890c);
+        background: var(--status-primary-default);
         transition: width 0.3s ease;
     }
 
@@ -794,19 +811,6 @@ pre {
     @keyframes ds-status-indeterminate {
         0%, 100% { width: 30%; }
         50% { width: 80%; }
-    }
-
-    /* Custom color overrides: JS adds .ds-status--custom-color when data-*-color is set */
-    .ds-status--custom-color.ds-status--done .ds-status__text {
-        color: var(--ds-color);
-        background: var(--ds-color-bg, color-mix(in srgb, var(--ds-color) 15%, transparent));
-    }
-    .ds-status--custom-color.ds-status--idle .ds-status__text {
-        color: var(--ds-color);
-        background: var(--ds-color-bg, color-mix(in srgb, var(--ds-color) 15%, transparent));
-    }
-    .ds-status--custom-color.ds-status--loading .ds-status__bar-fill {
-        background: var(--ds-color);
     }
 
 /* ── Toast ──────────────────────────────────────────────── */

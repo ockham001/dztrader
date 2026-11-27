@@ -147,7 +147,8 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(wrapper.find('[data-test="td-account-row-account_001"]').exists()).toBe(true)
 
     const headers = wrapper.findAll('th').map(th => th.text())
-    expect(headers).toEqual(['账户名称', '启用', '连接状态', '交易日', '登录时间', '进度', '操作'])
+    // #509：7 → 6 列，「连接状态」与「进度」合并为单一「状态」列（StatusIndicator）
+    expect(headers).toEqual(['账户名称', '启用', '状态', '交易日', '登录时间', '操作'])
     // 账户归属由卡片决定，表格不再有「交易网关」列
     expect(headers).not.toContain('交易网关')
   })
@@ -215,7 +216,7 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(wrapper.find('[data-test="td-interface-remove"]').attributes('disabled')).toBeUndefined()
   })
 
-  it('细状态/交易日/登录时间/进度来自 td_rtn_status 与 progress；未上报显示占位', async () => {
+  it('状态列 = StatusIndicator（已登录/未启动）；交易日与登录时间来自 td_rtn_status', async () => {
     const store = await prepare({ accounts: ['account_001', 'account_002'] })
     store.applyTdStatus('account_001', {
       account_id: 'account_001',
@@ -233,19 +234,28 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     const { wrapper } = mountCard(store)
 
     const ready = wrapper.find('[data-test="td-account-row-account_001"]')
-    expect(ready.find('[data-test="td-account-state"]').text()).toBe('就绪')
+    const readyStatus = ready.find('[data-test="td-account-state"]')
+    expect(readyStatus.classes()).toContain('ds-status--done')
+    expect(readyStatus.find('.ds-status__text').text()).toBe('已登录')
+    // 就绪态不额外占次级行（徽章的「已登录」已经说完了）
+    expect(ready.find('[data-test="td-account-status-desc"]').exists()).toBe(false)
     expect(ready.text()).toContain('2026-08-08')
     expect(ready.text()).toContain('2026-08-08 08:45:32')
-    expect(ready.text()).toContain('10/10')
 
+    // 从未收到状态帧：说「未启动」并说明原因（不用孤立破折号，也不说成「未登录」）
     const unknown = wrapper.find('[data-test="td-account-row-account_002"]')
-    expect(unknown.find('[data-test="td-account-state"]').text()).toBe('—')
+    const unknownStatus = unknown.find('[data-test="td-account-state"]')
+    expect(unknownStatus.classes()).toContain('ds-status--idle')
+    expect(unknownStatus.find('.ds-status__text').text()).toBe('未启动')
+    expect(unknown.find('[data-test="td-account-status"]').attributes('title'))
+      .toBe('尚未收到该账户的状态上报')
+    expect(unknown.find('[data-test="td-account-status-desc"]').exists()).toBe(false)
   })
 
   // ===== 上次失败：持久展示（契约 td-status §2.5 前端义务③）=====
   // 失败停在失败态后 state/progress 都不再变，这一行是用户事后回看的唯一入口。
 
-  it('进度停在 3/10 并显示「认证失败」；卡片展示「上次失败：原因（时间）」', async () => {
+  it('认证失败停在 3/10：徽章 ds-status--failed，次级行显示 progress.desc +「上次失败」', async () => {
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {
       account_id: 'account_001',
@@ -265,11 +275,12 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     const { wrapper } = mountCard(store)
 
     const row = wrapper.find('[data-test="td-account-row-account_001"]')
-    expect(row.find('[data-test="td-account-state"]').text()).toBe('认证失败')
-    // 进度停在失败阶段，不回退到 2/10
-    expect(row.text()).toContain('认证失败 · 3/10')
-    // 失败不回退：不得出现 2/10（Connected 那一格）
-    expect(row.text()).not.toContain('2/10')
+    // 失败结论由 isFailed 给出：徽章只说「失败」（数值停在 3/10 会被说成「进行中」），
+    // 停在哪一段由次级行的 desc 回答
+    const status = row.find('[data-test="td-account-state"]')
+    expect(status.classes()).toContain('ds-status--failed')
+    expect(status.find('.ds-status__text').text()).toBe('失败')
+    expect(row.find('[data-test="td-account-status-desc"]').text()).toBe('认证失败')
 
     const failed = row.find('[data-test="td-last-error-account_001"]')
     expect(failed.exists()).toBe(true)
@@ -306,9 +317,9 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(failed.attributes('title')).toBeUndefined()
   })
 
-  it('进度停在 5/10 并显示「登录失败」（与「登录中」区分）；原因行照常展示', async () => {
+  it('登录失败停在 5/10：次级行显示「登录失败」（与「登录中」区分）；原因行照常展示', async () => {
     // #495 / ADR 0059 决策 1: 登录失败停在 5/10, 与 LoggingIn 同格 —— 界面必须靠
-    // state 文案区分「正在登录」与「登录失败」, 不能让用户以为还在等。
+    // 失败徽章 + state 文案区分「正在登录」与「登录失败」, 不能让用户以为还在等。
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {
       account_id: 'account_001',
@@ -328,17 +339,17 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     const { wrapper } = mountCard(store)
 
     const row = wrapper.find('[data-test="td-account-row-account_001"]')
-    expect(row.find('[data-test="td-account-state"]').text()).toBe('登录失败')
-    // 进度停在失败阶段，不回退到 4/10（Authenticated 那一格）
-    expect(row.text()).toContain('登录失败 · 5/10')
-    expect(row.text()).not.toContain('4/10')
+    const status = row.find('[data-test="td-account-state"]')
+    expect(status.classes()).toContain('ds-status--failed')
+    expect(row.find('[data-test="td-account-status-desc"]').text()).toBe('登录失败')
+    expect(row.text()).not.toContain('登录中')
 
     const failed = row.find('[data-test="td-last-error-account_001"]')
     expect(failed.text()).toMatch(/^上次失败：CTP:用户密码错误（\d{2}:\d{2}:\d{2}）$/)
     expect(row.text()).not.toContain('login_rejected')
   })
 
-  it('进度停在 7/10 并显示「结算单确认失败」（不回退「已登录」）；原因行照常展示', async () => {
+  it('结算单确认失败停在 7/10：不显示「已登录」；次级行 + 原因行照常展示', async () => {
     // #496 / ADR 0059 决策 1: 结算确认失败停在 7/10, 不再回退 LoggedIn (6) 这个正常中间态
     // —— 此前用户看到「已登录」却下不了单, 分不清是初始化中还是已经失败。
     const store = await prepare({ accounts: ['account_001'] })
@@ -360,10 +371,9 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     const { wrapper } = mountCard(store)
 
     const row = wrapper.find('[data-test="td-account-row-account_001"]')
-    expect(row.find('[data-test="td-account-state"]').text()).toBe('结算单确认失败')
-    // 进度停在失败阶段，不回退到 6/10（LoggedIn 那一格）
-    expect(row.text()).toContain('结算单确认失败 · 7/10')
-    expect(row.text()).not.toContain('6/10')
+    const status = row.find('[data-test="td-account-state"]')
+    expect(status.classes()).toContain('ds-status--failed')
+    expect(row.find('[data-test="td-account-status-desc"]').text()).toBe('结算单确认失败')
     expect(row.text()).not.toContain('已登录')
 
     const failed = row.find('[data-test="td-last-error-account_001"]')
@@ -373,7 +383,7 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(row.text()).not.toContain('settlement_timeout')
   })
 
-  it('进度停在 8/10 并显示「合约加载失败」（不回退「已登录」）；原因行照常展示', async () => {
+  it('合约加载失败停在 8/10：不显示「已登录」；次级行 + 原因行照常展示', async () => {
     // #496: 合约加载失败停在 8/10, 同样不再回退 LoggedIn (6)。
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {
@@ -395,9 +405,9 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     const { wrapper } = mountCard(store)
 
     const row = wrapper.find('[data-test="td-account-row-account_001"]')
-    expect(row.find('[data-test="td-account-state"]').text()).toBe('合约加载失败')
-    expect(row.text()).toContain('合约加载失败 · 8/10')
-    expect(row.text()).not.toContain('6/10')
+    const status = row.find('[data-test="td-account-state"]')
+    expect(status.classes()).toContain('ds-status--failed')
+    expect(row.find('[data-test="td-account-status-desc"]').text()).toBe('合约加载失败')
 
     const failed = row.find('[data-test="td-last-error-account_001"]')
     expect(failed.exists()).toBe(true)
@@ -405,10 +415,11 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     expect(row.text()).not.toContain('instruments_rejected')
   })
 
-  it('connect_timeout 后状态是未登录（不是登录失败），原因行展示「连接超时」', async () => {
+  it('connect_timeout：状态列仍「未登录」中性色，原因说「连接超时」而不是「登录失败」', async () => {
     // ADR 0059 决策 7 的决定性后果: 连接超时不进失败态, 状态字段与「从未发起过登录」相同;
-    // 唯一能看出区别的地方是 last_error。若前端把状态说成「登录失败」, 就把「从未连上」
-    // 误报成「登录被拒」, 用户会去查密码而真正的问题是网络。
+    // 唯一能看出区别的地方是 last_error。若前端把状态说成「登录失败」/「失败」, 就把「从未连上」
+    // 误报成「登录被拒」, 用户会去查密码而真正的问题是网络。契约 td-status §2.2 的可观察后果
+    // 是「未启动 / 进度 0」+「上次失败：连接超时」。
     const store = await prepare({ accounts: ['account_001'] })
     store.applyTdStatus('account_001', {
       account_id: 'account_001',
@@ -426,8 +437,11 @@ describe('TdInterfaceCard · 渲染（ADR 0053 / 契约 rest §4）', () => {
     const { wrapper } = mountCard(store)
 
     const row = wrapper.find('[data-test="td-account-row-account_001"]')
-    expect(row.find('[data-test="td-account-state"]').text()).toBe('未启动')
+    const status = row.find('[data-test="td-account-state"]')
+    expect(status.classes()).toContain('ds-status--idle')
+    expect(status.classes()).not.toContain('ds-status--failed')
     expect(row.text()).not.toContain('登录失败')
+    expect(row.find('[data-test="td-account-status-desc"]').exists()).toBe(false)
     const failed = row.find('[data-test="td-last-error-account_001"]')
     expect(failed.exists()).toBe(true)
     expect(failed.text()).toMatch(/^上次失败：连接超时（30 秒内未连接上前置）（\d{2}:\d{2}:\d{2}）$/)
@@ -539,6 +553,44 @@ describe('TdInterfaceCard · 接口非 Running（ADR 0053 / 契约 rest §4）',
     const { wrapper } = mountCard(store)
 
     expect(wrapper.find('[data-test="td-interface-start"]').exists()).toBe(false)
+  })
+
+  it('网关非 Running：状态列显示「未启动」并说明原因，残留进度不得冒充「已登录」', async () => {
+    const store = await prepare({ running: false })
+    // 进程没跑就不可能有可用会话：上一次会话残留的进度镜像不能拿来渲染「已登录」
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
+    const { wrapper } = mountCard(store)
+
+    const statusCell = wrapper.find('[data-test="td-account-status"]')
+    expect(statusCell.attributes('title')).toBe('交易接口进程未运行，无法登录')
+    expect(statusCell.find('[data-test="td-account-state"]').classes()).toContain('ds-status--idle')
+    expect(statusCell.find('.ds-status__text').text()).toBe('未启动')
+  })
+
+  it('网关非 Running 且上次登录失败：徽章仍是「未启动」，失败原因行保留但不挂阶段文案', async () => {
+    const store = await prepare({ running: false })
+    // 失败态/进度都是上一次会话的残留：进程停了，它们不构成当前会话结论
+    store.applyTdStatus('account_001', {
+      account_id: 'account_001',
+      state: 'LoginFailed',
+      date: '',
+      login_time: '',
+      progress_desc: '登录失败',
+      progress_min: 0,
+      progress_max: 10,
+      progress_current: 5,
+      last_error: { code: 'login_rejected', message: 'CTP:用户密码错误', error_id: 3, timestamp: 1_700_000_000 },
+      ext: {},
+    })
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 5 })
+    const { wrapper } = mountCard(store)
+
+    const statusCell = wrapper.find('[data-test="td-account-status"]')
+    expect(statusCell.attributes('title')).toBe('交易接口进程未运行，无法登录')
+    expect(statusCell.find('[data-test="td-account-state"]').classes()).toContain('ds-status--idle')
+    expect(statusCell.find('.ds-status__text').text()).toBe('未启动')
+    expect(wrapper.find('[data-test="td-account-status-desc"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="td-last-error-account_001"]').exists()).toBe(true)
   })
 })
 
@@ -731,10 +783,12 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
       last_error: null,
       ext: {},
     })
+    // 状态列的进度/就绪态以契约 progress 镜像为唯一入口（td_rtn_status 的 progress_* 是历史兼容）
+    useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 10 })
     vi.mocked(tdApi.removeAccount).mockResolvedValue({ ok: true })
     const { wrapper } = mountCard(store)
 
-    expect(wrapper.find('[data-test="td-account-state"]').text()).toBe('就绪')
+    expect(wrapper.find('[data-test="td-account-state"] .ds-status__text').text()).toBe('已登录')
     expect(wrapper.find('.modal-stub').exists()).toBe(false)
 
     await wrapper.find('[data-test="td-remove-account_001"]').trigger('click')
@@ -780,6 +834,30 @@ describe('TdInterfaceCard · 账户操作（契约 rest §2.9.7/§2.9.10、ADR 0
     await readyLogout.trigger('click')
     await flushPromises()
     expect(tdApi.logoutAccount).toHaveBeenCalledWith('account_001')
+  })
+
+  it('会话与配置动作同处「操作」列：登录 → 登出 │ 编辑 → 启停 → 删除（#509）', async () => {
+    const store = await prepare()
+    const { wrapper } = mountCard(store)
+
+    const cells = wrapper.find('[data-test="td-account-row-account_001"]').findAll('td')
+    // 列序：账户名称 | 启用 | 状态 | 交易日 | 登录时间 | 操作
+    expect(cells[5].classes()).toContain('td-card__col-actions')
+    const buttons = cells[5].findAll('button')
+    expect(buttons.map(button => button.attributes('data-test'))).toEqual([
+      'td-login-account_001',
+      'td-logout-account_001',
+      'td-edit-account_001',
+      'td-toggle-account_001',
+      'td-remove-account_001',
+    ])
+    // 会话两键 = 文字按钮（与 md LoginPanel 同变体）；配置三键 = 图标按钮
+    expect(buttons[0].classes()).toEqual(expect.arrayContaining(['ds-btn--sm', 'ds-btn--primary']))
+    expect(buttons[1].classes()).toEqual(expect.arrayContaining(['ds-btn--sm', 'ds-btn--danger-subtle']))
+    for (const icon of buttons.slice(2)) expect(icon.classes()).toContain('ds-btn--icon')
+    // 两组之间的 1px 分隔存在；状态列只剩 StatusIndicator（不再放会话按钮，避免该列撑成多行）
+    expect(cells[5].find('.td-card__actions-divider').exists()).toBe(true)
+    expect(cells[2].findAll('button')).toHaveLength(0)
   })
 
   it('启停走 UpdateAccount 的 {enabled}（契约 rest §2.9.7 唯一写端点）并提示等待回报', async () => {

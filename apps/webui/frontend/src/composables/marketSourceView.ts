@@ -109,7 +109,7 @@ export function makeSource(
     apiVersion: '',
     sysVersion: '',
     loginTime: '',
-    date: '--',
+    date: '—',
     subscribeCount: 0,
     subscribeTotal: 0,
     lastLoginError: null,

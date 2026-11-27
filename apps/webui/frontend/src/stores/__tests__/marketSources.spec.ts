@@ -117,7 +117,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
       expect(s.schedules).toEqual([])
       expect(s.selectedBrokerId).toBeNull()
       expect(s.expanded).toBe(false)
-      expect(s.date).toBe('--')
+      expect(s.date).toBe('—')
       expect(s.subscribeCount).toBe(0)
       expect(s.subscribeTotal).toBe(0)
       // 契约 md-config 订阅参数：镜像未到达为 null
@@ -188,7 +188,7 @@ describe('useMarketSourcesStore (P4 Task 5 聚合)', () => {
         await loadDb()
         useMdConfigStore().applyMdStatus({ source: 'dzmd_ctp', status: { date: 123, subscribed_count: 'x' } })
         const s = useMarketSourcesStore().sources.find(x => x.source_name === 'dzmd_ctp')!
-        expect(s.date).toBe('--')
+        expect(s.date).toBe('—')
         expect(s.subscribeCount).toBe(0)
         expect(s.subscribeTotal).toBe(0)
       })

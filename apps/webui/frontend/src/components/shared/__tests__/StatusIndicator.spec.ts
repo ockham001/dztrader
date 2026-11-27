@@ -87,6 +87,57 @@ describe('StatusIndicator', () => {
   })
 })
 
+// 失败态（#509）：语义由调用方给——组件自己不能从 current/max 推失败
+// （md 没有失败态；td 的失败态停在 3/5/7/8，数值映射只会说「进行中」）
+describe('failed 失败态', () => {
+  it('failed 压过 loading：数值停在中间也渲染 ds-status--failed 徽章', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 3, min: 0, max: 10, desc: '认证失败', failed: true },
+    })
+    expect(wrapper.classes()).toContain('ds-status--failed')
+    expect(wrapper.classes()).not.toContain('ds-status--loading')
+    // desc 是阶段文案，不能替代「失败」结论
+    expect(wrapper.find('.ds-status__text').text()).toBe('失败')
+    // 失败态不注入填充比例（不渲染进度条，没有「还在推进」的暗示）：没有内联 style 才是正断言
+    expect(wrapper.attributes('style')).toBeUndefined()
+  })
+
+  it('failed 压过 done：current 到达 max 也不显示「已登录」', () => {
+    const wrapper = mount(StatusIndicator, {
+      props: { current: 10, min: 0, max: 10, failed: true },
+    })
+    expect(wrapper.classes()).toContain('ds-status--failed')
+    expect(wrapper.classes()).not.toContain('ds-status--done')
+    expect(wrapper.find('.ds-status__text').text()).toBe('失败')
+  })
+
+  it('failed 压过 indeterminate 与 idle', () => {
+    const indeterminate = mount(StatusIndicator, {
+      props: { current: 0, min: 0, max: 0, failed: true },
+    })
+    expect(indeterminate.classes()).toContain('ds-status--failed')
+    expect(indeterminate.classes()).not.toContain('ds-status--indeterminate')
+
+    const idle = mount(StatusIndicator, {
+      props: { current: 0, min: 0, max: 10, failed: true },
+    })
+    expect(idle.classes()).toContain('ds-status--failed')
+    expect(idle.classes()).not.toContain('ds-status--idle')
+  })
+
+  it('failedText 默认「失败」，可自定义', () => {
+    const fallback = mount(StatusIndicator, {
+      props: { current: 3, min: 0, max: 10, failed: true },
+    })
+    expect(fallback.find('.ds-status__text').text()).toBe('失败')
+
+    const custom = mount(StatusIndicator, {
+      props: { current: 3, min: 0, max: 10, failed: true, failedText: '认证失败' },
+    })
+    expect(custom.find('.ds-status__text').text()).toBe('认证失败')
+  })
+})
+
 // desc 文本（后端进度描述）
 describe('desc 文本（后端进度描述）', () => {
   it('desc 优先于三态固定文案（loading 态显示 desc）', () => {
