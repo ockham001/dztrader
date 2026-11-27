@@ -30,6 +30,9 @@ function syncWsConnection(): void {
     ws.connect()
   } else {
     ws.disconnect()
+    // 登出 / 会话失效即清空消息中心：否则下一个账号登录后会看到上一会话的通知
+    // （通知是进程级事件、不含账号维度，跨账号残留既是信息泄漏也是误导）。
+    notify.clear()
   }
 }
 

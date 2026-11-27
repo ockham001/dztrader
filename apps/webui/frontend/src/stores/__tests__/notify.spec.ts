@@ -153,6 +153,40 @@ describe('useNotifyStore', () => {
     expect(store.unreadCount).toBe(0)
   })
 
+  // 审查发现：时间戳水位会被折叠「复活」——折叠把旧条目的 timestamp 更新成
+  // 比列表末元素更新，水位式判定让老消息重新变未读、徽标卡死且清不掉。
+  // 改按 id 记已读后，折叠不影响已读状态。
+  it('已读按 id 记：折叠更新旧条目时间戳不会让它重新变未读', () => {
+    const store = useNotifyStore()
+    store.push('平今仓位不足', 'dztd_ctp', 'warning', false, 100, 1)
+    store.markAllRead()
+    expect(store.unreadCount).toBe(0)
+
+    // 后端折叠后第二轮：同指纹、timestamp 更新到更晚、count 累加
+    store.push('平今仓位不足', 'dztd_ctp', 'warning', false, 500, 2)
+    // 折叠只改已有条目的 count/timestamp，id 不变 → 仍是已读
+    expect(store.unreadCount).toBe(0)
+  })
+
+  it('折叠时 count 取较大值，不被冷却后的 count=1 覆盖回退', () => {
+    const store = useNotifyStore()
+    store.push('持久化失败', 'dztd_ctp', 'error', false, 100, 5)
+    expect(store.items[0].count).toBe(5)
+    // 冷却到点后后端以 count=1 重发同文案事件
+    store.push('持久化失败', 'dztd_ctp', 'error', false, 700, 1)
+    // 不覆盖成 1（否则已累计次数被抹掉、与 REST 基线不一致）
+    expect(store.items[0].count).toBe(5)
+  })
+
+  it('clear 清空列表与已读状态（登出时不残留上一会话通知）', () => {
+    const store = useNotifyStore()
+    store.push('消息 A', 'dztd_ctp', 'error')
+    store.markAllRead()
+    store.clear()
+    expect(store.items).toHaveLength(0)
+    expect(store.unreadCount).toBe(0)
+  })
+
   it('applyBaseline 重建列表并把历史视为已读', () => {
     const store = useNotifyStore()
     store.push('旧消息', undefined, 'info') // 制造脏状态

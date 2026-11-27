@@ -44,8 +44,8 @@
      elementFromPoint 命中 banner）。所以取 9500：**高于口令 banner、低于 toast**。
      不给更高（不给到 toast 之上）：toast 是常驻低干扰提示，skip link 是键盘导航入口，
      两者不该竞争，且 toast 贴在右下角、与左上 skip link 无重叠。
-     注意 components.css:779 的 z-index: 2000 是旧 `.ds-toast` 单体（非当前最高档），
-     以本注释这组实测值为准。
+     旧 `.ds-toast` 单体（顶部居中、z-index: 2000）已随 ADR 0060 删除，
+     全仓 toast 现在只有 ToastContainer 一处实现。
    - 不套 `.ds-btn`：那是 24/28/32px 定高控件，文字若换行会被裁；这里用行内 padding。 */
 .ds-skip-link {
   position: fixed;

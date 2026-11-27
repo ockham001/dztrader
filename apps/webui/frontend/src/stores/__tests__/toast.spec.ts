@@ -135,6 +135,34 @@ describe('useToastStore', () => {
       store.dismiss(id)
       expect(store.items).toHaveLength(0)
     })
+
+    // 审查发现：常驻若计入 3 条配额，3 条常驻就能把后续瞬态提示永久堵在队列里
+    it('常驻条目不占「同时最多 3 条」的配额', () => {
+      const store = useToastStore()
+      store.persistent('常驻 A', 'error')
+      store.persistent('常驻 B', 'error')
+      store.persistent('常驻 C', 'error')
+      expect(store.items).toHaveLength(3)
+      expect(store.queue).toHaveLength(0)
+
+      // 瞬态提示仍能显示（不因 3 条常驻被堵）
+      store.info('瞬态信息')
+      expect(store.items).toHaveLength(4)
+      expect(store.queue).toHaveLength(0)
+      expect(store.items[3].message).toBe('瞬态信息')
+    })
+
+    it('瞬态条目最多 3 条，与常驻数量无关', () => {
+      const store = useToastStore()
+      store.persistent('常驻', 'error')
+      store.info('a')
+      store.info('b')
+      store.info('c')
+      store.info('d') // 第 4 条瞬态 → 排队
+      expect(store.items).toHaveLength(4)  // 1 常驻 + 3 瞬态
+      expect(store.queue).toHaveLength(1)
+      expect(store.queue[0].message).toBe('d')
+    })
   })
 
   // === hover 暂停倒计时 ===

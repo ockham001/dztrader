@@ -43,11 +43,17 @@ function foldKey(item: { source?: string; level: NotifyLevel; message: string })
  */
 export const useNotifyStore = defineStore('notify', () => {
   const items = ref<NotifyItem[]>([])
-  /** 已读时间戳水位：timestamp <= readWatermark 视为已读 */
-  const readWatermark = ref(0)
+  /**
+   * 已读条目的 id 集合（纯前端内存，刷新后清零）。
+   *
+   * 为什么不用「时间戳水位」：折叠会把**旧条目**的 timestamp 更新成比列表末元素更新，
+   * 水位式判定会让这条老消息重新变成未读、徽标卡在 1 且「全部已读」清不掉（审查实测）。
+   * 按 id 记已读对折叠天然正确——折叠只改已有条目的 count/timestamp，不改 id。
+   */
+  const readIds = ref(new Set<string>())
 
   const unreadCount = computed(
-    () => items.value.filter(i => i.timestamp > readWatermark.value).length,
+    () => items.value.filter(i => !readIds.value.has(i.id)).length,
   )
 
   /** 面板显示用：最近 NOTIFY_PANEL_LIMIT 条，新的在前 */
@@ -83,7 +89,10 @@ export const useNotifyStore = defineStore('notify', () => {
     const key = foldKey({ source, level: lv, message })
     const existing = items.value.find(i => foldKey(i) === key)
     if (existing) {
-      existing.count = foldedCount
+      // count 取较大者：后端冷却到点后会以 count=1 重新发一条同文案的新事件，
+      // 若直接覆盖会把已累计的次数抹掉（审查实测：REST 基线刷新后同一批数据变两行、
+      // 前端却仍是一行 count=1，前后视图不一致）。取 max 保持单调。
+      existing.count = Math.max(existing.count, foldedCount)
       existing.timestamp = ts
       existing.popup = popup ?? existing.popup
       // 折叠命中不重复弹 toast：用户已经看过这条（ADR 0060：窗口内不重复提示）
@@ -130,19 +139,17 @@ export const useNotifyStore = defineStore('notify', () => {
       items.value.splice(0, items.value.length - MAX_ITEMS)
     }
     // 基线视为已读：用户刚打开页面，不把历史全算成未读
-    readWatermark.value = items.value.length > 0 ? items.value[items.value.length - 1].timestamp : 0
+    readIds.value = new Set(items.value.map(i => i.id))
   }
 
   /** 全部标为已读 */
   function markAllRead(): void {
-    if (items.value.length > 0) {
-      readWatermark.value = items.value[items.value.length - 1].timestamp
-    }
+    readIds.value = new Set(items.value.map(i => i.id))
   }
 
   function clear(): void {
     items.value = []
-    readWatermark.value = 0
+    readIds.value = new Set()
   }
 
   return { items, recent, unreadCount, push, applyBaseline, markAllRead, clear }

@@ -43,13 +43,18 @@ export const useToastStore = defineStore('toast', () => {
     item.timer = setTimeout(() => dismiss(item.id), item.remaining)
   }
 
-  /** 从等待队列补位到可见区（调用方保证有空位） */
+  /** 从等待队列补位到可见区（只统计**瞬态**条目，常驻条目不占配额） */
   function promoteFromQueue(): void {
-    while (items.value.length < TOAST_MAX_VISIBLE && queue.value.length > 0) {
+    while (transientCount() < TOAST_MAX_VISIBLE && queue.value.length > 0) {
       const next = queue.value.shift()!
       items.value.push(next)
       scheduleDismiss(next)
     }
+  }
+
+  /** 当前可见的瞬态（会自动消失的）条目数；常驻条目不占 3 条配额 */
+  function transientCount(): number {
+    return items.value.filter(t => t.duration > 0).length
   }
 
   function show(message: string, level: ToastLevel = 'success', duration?: number): number {
@@ -65,7 +70,10 @@ export const useToastStore = defineStore('toast', () => {
       startedAt: 0,
       paused: false,
     }
-    if (items.value.length < TOAST_MAX_VISIBLE) {
+    // 常驻条目（duration=0）永不自动消失，不占「同时最多 3 条」的配额——
+    // 否则 3 条常驻就能把后续所有瞬态提示永久堵在队列里（审查实测）。
+    const isPersistent = effectiveDuration <= 0
+    if (isPersistent || transientCount() < TOAST_MAX_VISIBLE) {
       items.value.push(item)
       scheduleDismiss(item)
     } else {

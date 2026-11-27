@@ -87,18 +87,21 @@ public:
 
     /// 新增一条通知。调用方已通过 try_fold 确认未命中。
     /// 自动补 `count=1`（若 payload 未带）；超上限时 pop_front。
-    void add(const nlohmann::json& payload) {
-        if (max_size_ == 0) {
-            return;
-        }
+    /// @return 实际写入缓存的条目（含补齐的 `count`）——调用方应广播**这个**值，
+    ///         而不是原始 payload，否则 WS 增量缺 `count` 字段（与 REST 基线不同形）。
+    nlohmann::json add(const nlohmann::json& payload) {
         nlohmann::json entry = payload;
         if (!entry.contains("count")) {
             entry["count"] = 1;
         }
+        if (max_size_ == 0) {
+            return entry;  // 缓存禁用：仍返回补齐后的条目供广播
+        }
         if (messages_.size() >= max_size_) {
             messages_.pop_front();
         }
-        messages_.push_back(std::move(entry));
+        messages_.push_back(entry);  // 拷一份进缓存，返回的 entry 独立
+        return entry;
     }
 
     std::vector<nlohmann::json> get_all() const { return {messages_.begin(), messages_.end()}; }

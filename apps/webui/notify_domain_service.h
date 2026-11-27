@@ -30,9 +30,17 @@ public:
 
     void on_notify_ui(const nlohmann::json& payload) {
         try {
-            const int64_t now_sec = std::chrono::duration_cast<std::chrono::seconds>(
-                                        std::chrono::system_clock::now().time_since_epoch())
-                                        .count();
+            // 折叠判据用 **payload 自带的时间戳**（契约 notify-ui 的 `timestamp`，
+            // Unix 秒 = 发送方产生该事件的时间），而不是 dzweb 收到的时间：
+            // - 转发有延迟/积压时，按收到时间判会把「同一事件跨窗口」误判成窗口内；
+            // - 也让本服务可被确定性测试（注入时间）。
+            // 缺失或非整数时回退当前时间。
+            const int64_t now_sec =
+                payload.contains("timestamp") && payload["timestamp"].is_number_integer()
+                    ? payload["timestamp"].get<int64_t>()
+                    : std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
             // 折叠命中：缓存条目已就地更新，只广播折叠结果。
             if (auto folded = cache_.try_fold(payload, now_sec)) {
                 ws_.broadcast("notify_ui", "", *folded);
@@ -40,10 +48,13 @@ public:
                              folded->value("count", 1));
                 return;
             }
-            cache_.add(payload);
-            ws_.broadcast("notify_ui", "", payload);
-            SPDLOG_DEBUG("notify_ui pushed | source={} message=\"{}\"", payload.value("source", ""),
-                         payload.value("message", ""));
+            // 未命中折叠：写入缓存（add 会补 count=1），并广播**补齐后**的条目。
+            // 不能广播原始 payload —— 那样 WS 增量里没有 count，前端拿不到契约声明的字段
+            // （首条会缺字段，与 REST 基线不同形）。
+            const auto stored = cache_.add(payload);
+            ws_.broadcast("notify_ui", "", stored);
+            SPDLOG_DEBUG("notify_ui pushed | source={} message=\"{}\"", stored.value("source", ""),
+                         stored.value("message", ""));
         } catch (const std::exception& e) {
             SPDLOG_WARN("failed to process NOTIFY_UI | error=\"{}\"", e.what());
         }
