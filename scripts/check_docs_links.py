@@ -100,6 +100,9 @@ SYMBOL_ALLOWLIST = {
     "team_task_list", "ask_user_question",
     # team_task_create 的参数名（#237 起 closeout §1.7 要求用它登记票内并行写作用域）
     "write_scopes", "blocked_by",
+    # DSH 宿主工具名（#509 复盘后 ticket-closeout §7/§8 引用停栈与隔离栈生命周期：
+    # 验证栈由 background 作业持有、收尾用 job_kill——不是本仓符号）
+    "job_kill",
     # 历史示例：review-checklist §2.3 用「已删除的 watch_path」说明漂移类 finding，
     # 该引用是有意保留的反例，不是当前符号
     "watch_path",
