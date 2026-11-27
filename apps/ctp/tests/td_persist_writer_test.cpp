@@ -716,14 +716,19 @@ TEST_F(TdPersistWriterTest, FailedBatchRetriedUntilRecovery) {
 
     // 首错: ERROR popup=true 且仅一次 (持续失败不重复弹 ERROR).
     ASSERT_TRUE(recorder_.wait_for_count(DZ_NOTIFY_ERROR, 1, std::chrono::seconds(5)));
-    ASSERT_EQ(recorder_.count(DZ_NOTIFY_ERROR), 1u);
     EXPECT_TRUE(recorder_.notifications_at(DZ_NOTIFY_ERROR).front().popup);
     // 失败批的 token 在重试期间保持 pending: 不得超时误报成功 (wait 只等 100ms, 批必失败).
     EXPECT_FALSE(writer.wait_flush(pending_token, std::chrono::milliseconds(100)));
-    // 持续失败 = WARN popup=true (fast_policy interval=50ms); ERROR 仍只有一次.
-    ASSERT_TRUE(recorder_.wait_for_count(DZ_NOTIFY_WARN, 1, std::chrono::seconds(5)));
-    EXPECT_TRUE(recorder_.notifications_at(DZ_NOTIFY_WARN).front().popup);
-    EXPECT_EQ(recorder_.count(DZ_NOTIFY_ERROR), 1u);
+    // ADR 0060 决策 2/5: 持续失败**不降级成 WARN** —— 级别恒为 ERROR（同一事件一个级别），
+    // 持续性由 dzweb 的 count 折叠表达。fast_policy interval=50ms，持续期会再发 ERROR。
+    // 关键断言: 通知级别里**不出现 WARN**（旧行为是持续期发 WARN，那正是「同一事件两个级别」）。
+    ASSERT_TRUE(recorder_.wait_for_count(DZ_NOTIFY_ERROR, 2, std::chrono::seconds(5)));
+    EXPECT_EQ(recorder_.count(DZ_NOTIFY_WARN), 0u) << "sustained failure must not degrade to WARN";
+    // 首报与持续期的 notify 正文必须**逐字相同**：否则 dzweb 的指纹不同，折叠失效。
+    const auto errors = recorder_.notifications_at(DZ_NOTIFY_ERROR);
+    ASSERT_GE(errors.size(), 2u);
+    EXPECT_EQ(errors[0].message, errors[1].message)
+        << "same event must be foldable (identical text)";
 
     // 自愈: ensure_trade_db 幂等补建缺失表 (真实数据库, 不 mock).
     ASSERT_NO_THROW(tdstore::ensure_trade_db(db_path_));
@@ -745,7 +750,11 @@ TEST_F(TdPersistWriterTest, FailedBatchRetriedUntilRecovery) {
     const std::vector<PersistNotification> infos = recorder_.notifications_at(DZ_NOTIFY_INFO);
     ASSERT_EQ(infos.size(), 1u);
     EXPECT_FALSE(infos.front().popup);
-    EXPECT_EQ(recorder_.count(DZ_NOTIFY_ERROR), 1u);
+    // ERROR 至少 1 次（首报 + 持续期，ADR 0060：持续期不降级，全部 ERROR）；
+    // 恢复后不再新增（failing_ 已复位，若再新增说明状态机有 bug）。
+    // 这些 ERROR 在 dzweb 侧会被折叠成一条 count=N —— 折叠的前提是正文逐字相同（上方已断言）。
+    const std::size_t errors_after_recovery = recorder_.count(DZ_NOTIFY_ERROR);
+    EXPECT_GE(errors_after_recovery, 1u);
     writer.stop();
 }
 

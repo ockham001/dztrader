@@ -651,25 +651,26 @@ void PersistWriter::handle_corruption(int primary_code) {
 
 void PersistWriter::note_failure(const std::string& message) {
     const auto now = std::chrono::steady_clock::now();
+    // ADR 0060 决策 2/5: 同一事件只有一个级别、一条可折叠的通知文案。
+    // 首报与持续期用**同一句** notify 文案，dzweb 才能按指纹把它折叠成一条并累计 count；
+    // 「首次 / 持续」这个区别靠日志（首次 ERROR、持续 ERROR 带 still failing）表达，
+    // 不进通知正文——正文一旦不同，指纹就不同，折叠必然失效。
+    const std::string notify_text =
+        std::format("trade db persist failed | path={} error=\"{}\"", db_path_, message);
     if (!failing_) {
         failing_ = true;
         last_notify_ = now;
         SPDLOG_ERROR("trade db persist failed | path={} error=\"{}\"", db_path_, message);
-        emit_notify(
-            DZ_NOTIFY_ERROR,
-            std::format("trade db persist failed | path={} error=\"{}\"", db_path_, message), true);
+        emit_notify(DZ_NOTIFY_ERROR, notify_text, true);
         return;
     }
     if (now - last_notify_ >= policy_.sustained_notify_interval) {
         last_notify_ = now;
-        SPDLOG_WARN("trade db persist still failing | path={} error=\"{}\"", db_path_, message);
-        emit_notify(
-            DZ_NOTIFY_WARN,
-            std::format("trade db persist still failing | path={} error=\"{}\"", db_path_, message),
-            true);
+        SPDLOG_ERROR("trade db persist still failing | path={} error=\"{}\"", db_path_, message);
+        emit_notify(DZ_NOTIFY_ERROR, notify_text, true);
         return;
     }
-    // 首次 ERROR / 每 5 分钟 WARN 之外不刷屏: 只留 DEBUG 轨迹.
+    // 首次 ERROR / 每 5 分钟 ERROR 之外不刷屏: 只留 DEBUG 轨迹.
     SPDLOG_DEBUG("trade db persist still failing (throttled) | path={} error=\"{}\"", db_path_,
                  message);
 }

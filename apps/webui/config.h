@@ -35,6 +35,10 @@ struct WebuiConfig {
     bool admin_password_is_default = false;
     /// NOTIFY_UI 缓存条数，0 = 不缓存
     size_t notify_cache_size = 100;
+    /// NOTIFY_UI 去重窗口（秒）：同一指纹在该窗口内合并计数、不重复广播（契约 notify-ui，ADR 0060）
+    int notify_dedup_window_sec = 60;
+    /// NOTIFY_UI 去重冷却（秒）：同一指纹经该时长后才允许作为新条目重新出现（ADR 0060）
+    int notify_dedup_cooldown_sec = 300;
 };
 
 /// 判断监听地址是否只对回环可达（#201：管理面无 TLS，非回环即在网络上明文可达）。

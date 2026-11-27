@@ -26,6 +26,7 @@ import { useMarketSourcesStore } from '@/stores/marketSources'
 import { useTdPositionsStore } from '@/stores/tdPositions'
 import { useTdTradingAccountsStore } from '@/stores/tdTradingAccounts'
 import { useTdAccountsStore } from '@/stores/tdAccounts'
+import { useNotifyStore } from '@/stores/notify'
 
 const marketSourcesStore = useMarketSourcesStore()
 const positionsStore = useTdPositionsStore()
@@ -71,13 +72,6 @@ interface StrategyRow {
   id: string
   lang: string
   running: boolean
-}
-
-interface MessageRow {
-  level: 'info' | 'warning' | 'error'
-  text: string
-  time: string
-  source: string
 }
 
 // === 持仓面板：真实数据（#249，契约 rest §2.9.4 / 契约 webui-ws §2.5/§5）===
@@ -342,17 +336,22 @@ const strategyList: StrategyRow[] = [
   { name: '多因子一号', id: 'ocm_101', lang: 'Python', running: true },
 ]
 
-const messages: MessageRow[] = [
-  { level: 'info', text: '多因子一号 zz2601 平仓信号触发', time: '1分钟前', source: '多因子一号' },
-  { level: 'info', text: '中线 xx2601 止损触发', time: '5分钟前', source: '中线' },
-  { level: 'info', text: '长线 yy2601 加仓执行完成，当前持仓 10 手，均价 38520', time: '18分钟前', source: '长线' },
-  { level: 'info', text: '短线2号 参数热更新完成', time: '32分钟前', source: '短线2号' },
-  { level: 'warning', text: '行情源 CTP 断线重连成功，已补发 12 笔行情快照', time: '1小时前', source: 'md_ctp' },
-  { level: 'error', text: '演示品种套利 zz2601 订单被拒：超出可开仓手数限制', time: '2小时前', source: '短线1号' },
-  { level: 'info', text: '账户权益更新', time: '3小时前', source: 'account_ctp' },
-  { level: 'warning', text: '期货备用登录超时，30秒后重试', time: '5小时前', source: 'account_ctp' },
-  { level: 'info', text: '短线1号 ww2605 开仓，方向：空，手数：5，委托价 1580', time: '6小时前', source: '短线1号' },
-]
+// === 消息面板：真实通知（契约 notify-ui / rest §2.6，ADR 0060）===
+// 数据源 = useNotifyStore()：REST 历史基线（App.vue 登录后拉一次）+ WS `notify_ui` 增量。
+// 已是 dzweb 折叠后的结果（ADR 0060 决策 4），`count > 1` 时行尾显示 ×N。
+const notifyStore = useNotifyStore()
+const notifyRows = computed(() => notifyStore.recent)
+
+/** 相对时间（「3 分钟前」）——面板空间有限，绝对时间留给「查看全部」抽屉 */
+function relativeTime(ts: number): string {
+  const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (diffSec < 60) return `${diffSec} 秒前`
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `${diffMin} 分钟前`
+  const diffHour = Math.floor(diffMin / 60)
+  if (diffHour < 24) return `${diffHour} 小时前`
+  return `${Math.floor(diffHour / 24)} 天前`
+}
 
 // === 面板聚合数：一律由行数据计算（issue #200）===
 // 历史版本硬编码 2/3、7/8、2/12、5/5 与展示行互相矛盾；此处改为派生，
@@ -534,7 +533,7 @@ onUnmounted(() => {
       >
         <span class="ds-alert__icon"><Icon name="Tips" :size="16" /></span>
         <span class="dashboard-demo-banner__text">
-          <strong>演示数据</strong>：委托 / 策略 / 消息面板尚未接入真实链路，内容均为虚构；「行情」「持仓」「资金」为实时数据。
+          <strong>演示数据</strong>：委托 / 策略面板尚未接入真实链路，内容均为虚构；「行情」「持仓」「资金」「消息」为实时数据。
         </span>
       </div>
 
@@ -942,21 +941,43 @@ onUnmounted(() => {
           <div class="dashboard-panel__hd">
             <span class="dashboard-panel__title">
               <span class="dashboard-panel__title-text">消息</span>
-              <span class="ds-tag ds-tag--warning dashboard-panel__tag" data-test="dashboard-demo-tag">演示</span>
+              <!-- 未读数（ADR 0060 决策 6）：有未读时显示，点击面板即视为已读 -->
+              <span
+                v-if="notifyStore.unreadCount > 0"
+                class="ds-tag ds-tag--danger dashboard-panel__tag"
+                data-test="dashboard-notify-unread"
+              >{{ notifyStore.unreadCount }} 条新</span>
             </span>
-            <button type="button" class="dashboard-panel__link-btn" title="切换时间显示">n分钟前</button>
+            <button
+              type="button"
+              class="dashboard-panel__link-btn"
+              title="全部标为已读"
+              data-test="dashboard-notify-read-all"
+              @click="notifyStore.markAllRead()"
+            >全部已读</button>
           </div>
           <div class="auto-scroll">
             <div
-              v-for="(msg, idx) in messages" :key="idx"
+              v-for="(msg, idx) in notifyRows" :key="msg.id"
               class="dashboard-panel__msg-row"
-              :class="{ 'dashboard-panel__row--divided-bottom': idx < messages.length - 1 }"
+              :class="{ 'dashboard-panel__row--divided-bottom': idx < notifyRows.length - 1 }"
             >
               <span class="msg-level-icon" :class="`msg-level-icon--${msg.level}`"></span>
               <div class="dashboard-panel__msg-body">
-                <div class="dashboard-panel__msg-text">{{ msg.text }}</div>
-                <div class="dashboard-panel__msg-meta">{{ msg.time }} · {{ msg.source }}</div>
+                <div class="dashboard-panel__msg-text">
+                  {{ msg.message }}
+                  <span v-if="msg.count > 1" class="dashboard-panel__msg-count">×{{ msg.count }}</span>
+                </div>
+                <div class="dashboard-panel__msg-meta">
+                  {{ relativeTime(msg.timestamp) }}<template v-if="msg.source"> · {{ msg.source }}</template>
+                </div>
               </div>
+            </div>
+            <!-- 空态：无通知时不显示假数据 -->
+            <div v-if="notifyRows.length === 0" class="dashboard-panel__msg-row" data-test="dashboard-notify-empty">
+              <span class="dashboard-panel__msg-body">
+                <div class="dashboard-panel__msg-text dashboard-panel__tag--muted">暂无消息</div>
+              </span>
             </div>
           </div>
         </div>

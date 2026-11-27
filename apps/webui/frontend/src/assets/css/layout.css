@@ -36,12 +36,14 @@
      不依赖某个魔数，也不给 token 体系塞一个「必须小于元素负高度」的假 token。
    - z-index 9500：skip link 聚焦时必须压在**任何**会在它上面落地的浮层之上。
      实测叠层（全仓 grep）：顶栏 90 / 抽屉 150 / 下拉 200–210 / 侧栏 300 /
-     **默认口令 banner 9000**（App.vue 的 .default-password-banner，fixed + top:16px）/
-     toast 9999 / 弹窗遮罩 10000（App.vue 的 .popup-overlay）。
+     业务 Modal 遮罩 1000 / **默认口令 banner 9000**（App.vue 的 .default-password-banner，
+     fixed + top:16px）/ toast 9998–9999（ToastContainer 的 error 容器 9998、
+     其余 9999；ADR 0060 删除了原 10000 的阻断式遮罩弹窗，toast 现为最高层）。
      9000 那一层是硬冲突：390 宽时 banner 的 min-width 360px 几乎横满视口、
      正好压住左上的 skip link —— 聚焦后读屏已宣读、键盘用户却看不见（#380 复核实测
-     elementFromPoint 命中 banner）。所以取 9500：**高于口令 banner、低于 toast 与弹窗遮罩**。
-     不给更高：弹窗打开时焦点被 focus trap 锁在框内，skip link 本就不该浮在遮罩之上。
+     elementFromPoint 命中 banner）。所以取 9500：**高于口令 banner、低于 toast**。
+     不给更高（不给到 toast 之上）：toast 是常驻低干扰提示，skip link 是键盘导航入口，
+     两者不该竞争，且 toast 贴在右下角、与左上 skip link 无重叠。
      注意 components.css:779 的 z-index: 2000 是旧 `.ds-toast` 单体（非当前最高档），
      以本注释这组实测值为准。
    - 不套 `.ds-btn`：那是 24/28/32px 定高控件，文字若换行会被裁；这里用行内 padding。 */

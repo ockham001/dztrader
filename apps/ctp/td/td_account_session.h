@@ -354,6 +354,16 @@ private:
                            const std::string& message,
                            std::string_view prose);
 
+    /// 柜台拒单统一出口（契约 notify-ui / ADR 0060 决策 1 白名单）：级别 WARN、不常驻。
+    ///
+    /// 覆盖四条路径：`OnRspOrderInsert`（同步拒单）、`OnErrRtnOrderInsert`（交易所拒单）、
+    /// `OnRspOrderAction` / `OnErrRtnOrderAction`（撤单被拒）。此前这些路径**只写日志**，
+    /// 拒单原因（如「CTP:平今仓位不足」）到不了 UI——用户看不到策略为什么没成交。
+    ///
+    /// 不常驻的理由：策略试探、跨期套利会高频触发同类拒单，常驻会堆满界面；去重折叠由
+    /// dzweb 统一做（ADR 0060 决策 4），本函数不限频。异常不逃逸（通知是辅助通道）。
+    void notify_order_rejected(const std::string& message);
+
     /// 认证失败统一出口 (#489 并入 #494): 状态机转 AuthFailed + 写 last_error + 上浮 UI 通知.
     ///
     /// 与 notify_login_failed 同一问题形态: 两个调用点 (OnRspAuthenticate 被拒 / 10 秒超时)

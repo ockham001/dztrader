@@ -71,7 +71,8 @@
         "level": { "type": "string", "enum": ["info", "warning", "error"], "description": "通知级别" },
         "message": { "type": "string", "description": "通知正文" },
         "timestamp": { "type": "integer", "description": "Unix 秒级时间戳" },
-        "popup": { "type": "boolean", "description": "是否弹窗打断用户" }
+        "popup": { "type": "boolean", "description": "是否常驻呈现（不自动消失，不阻断操作）" },
+        "count": { "type": "integer", "description": "同一事件被去重折叠的次数；1 表示未折叠（dzweb 填，契约 notify-ui）" }
       }
     },
     "BrokerFrontend": {

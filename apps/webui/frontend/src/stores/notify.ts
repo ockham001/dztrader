@@ -5,58 +5,145 @@ import { useToastStore } from '@/stores/toast'
 export type NotifyLevel = 'info' | 'warning' | 'error'
 
 export interface NotifyItem {
+  /** 稳定标识：用于折叠更新与已读判定（不上行，本地生成） */
+  id: string
   source?: string
   message: string
   level: NotifyLevel
+  /** 毫秒时间戳（契约 payload 是 Unix 秒，入 store 后统一换算） */
   timestamp: number
+  /** 是否常驻呈现（契约 notify-ui 的 popup；ADR 0060 决策 3 起语义为「常驻」不是「打断」） */
   popup?: boolean
+  /** 去重折叠次数，dzweb 填（契约 notify-ui）；1 = 未折叠 */
+  count: number
 }
 
-// 缓存上限（参照后端 NotifyCache 语义）：只保留最近 N 条；0 = 禁用缓存（仅弹 toast）
+/** 缓存上限（与后端 NotifyCache 默认一致；后端可配，前端不读配置） */
 const MAX_ITEMS = 100
 
-// notify_ui 统一分发（设计 §5.2/§5.4，双 toast 修复核心）：
-// push 只走 toast store，绝不写任何其他 store 的 error.value ——
-// error.value 仅 HTTP 失败链路（catch → error.value → View watch 弹 toast）写入，
-// 两通道互斥、职责分离。
-// 契约 notify-ui 前端义务：level=error 且 popup=true 必须打断用户展示——
-// 进入 popup 队列（App.vue 渲染 modal，逐条确认），其余级别仅 toast。
+/** 仪表盘面板显示条数 */
+export const NOTIFY_PANEL_LIMIT = 50
+
+/** 折叠指纹：source + level + 文本（与 dzweb 的指纹口径同构；前端只做「就地更新」不做窗口判定） */
+function foldKey(item: { source?: string; level: NotifyLevel; message: string }): string {
+  return `${item.source ?? ''}\x1f${item.level}\x1f${item.message}`
+}
+
+/**
+ * notify_ui 统一分发（契约 notify-ui / ADR 0060）。
+ *
+ * 职责分工（ADR 0060 决策 4/6）：
+ * - **去重折叠在 dzweb**：后端已按指纹窗口合并并填 `count`，前端收到的每一条
+ *   都已是折叠结果。前端的任务只是：若该指纹已在本地列表里（同一事件的新一轮），
+ *   **就地更新** `count`/`timestamp`，不新增一行；
+ * - **两个呈现面**：消息中心（本 store 的 `items`，留档）+ 即时提示（toast store）。
+ *   `popup=true` 的条目走常驻 toast（不自动消失、不遮挡）。
+ *
+ * 已读状态纯前端内存（刷新后清零）：已读不是运维刚需，不为它加后端字段。
+ */
 export const useNotifyStore = defineStore('notify', () => {
   const items = ref<NotifyItem[]>([])
-  const popupQueue = ref<NotifyItem[]>([])
-  const popupCurrent = computed<NotifyItem | null>(() => popupQueue.value[0] ?? null)
+  /** 已读时间戳水位：timestamp <= readWatermark 视为已读 */
+  const readWatermark = ref(0)
 
-  // timestamp 统一为毫秒：契约 notify-ui payload 为 Unix 秒级，转换后存储；
-  // 缺省回退 Date.now()（毫秒）。items[].timestamp 无下游消费，统一单位避免隐式混用。
-  function push(message: string, source?: string, level?: NotifyLevel, popup?: boolean, timestamp?: number): void {
-    if (!message) return // 空消息不弹 toast 不缓存（与 marketSources.setNotifyUi 行为一致）
-    const lv = level ?? 'error' // level 缺失时默认 error（与现有 handler 规范化一致）
+  const unreadCount = computed(
+    () => items.value.filter(i => i.timestamp > readWatermark.value).length,
+  )
+
+  /** 面板显示用：最近 NOTIFY_PANEL_LIMIT 条，新的在前 */
+  const recent = computed(() => items.value.slice(-NOTIFY_PANEL_LIMIT).reverse())
+
+  function nextId(): string {
+    return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  }
+
+  /**
+   * 收一条通知（WS 增量或历史基线）。
+   * @param message 正文
+   * @param source 来源
+   * @param level 级别（缺省 error，与既有 handler 规范化一致）
+   * @param popup 是否常驻（契约 notify-ui）
+   * @param timestamp 契约是 Unix 秒；缺省用当前时间
+   * @param count 后端折叠计数（缺省 1）
+   */
+  function push(
+    message: string,
+    source?: string,
+    level?: NotifyLevel,
+    popup?: boolean,
+    timestamp?: number,
+    count?: number,
+  ): void {
+    if (!message) return // 空消息不提示不缓存
+    const lv = level ?? 'error'
     const ts = timestamp === undefined ? Date.now() : timestamp * 1000
-    if (MAX_ITEMS > 0) {
-      items.value.push({ source, message, level: lv, timestamp: ts, popup })
-      if (items.value.length > MAX_ITEMS) {
-        items.value.splice(0, items.value.length - MAX_ITEMS)
-      }
+    const foldedCount = count && count > 0 ? count : 1
+
+    // 折叠：同一指纹已在列表里 → 就地更新，不新增行（后端已折叠，这里只对齐本地视图）
+    const key = foldKey({ source, level: lv, message })
+    const existing = items.value.find(i => foldKey(i) === key)
+    if (existing) {
+      existing.count = foldedCount
+      existing.timestamp = ts
+      existing.popup = popup ?? existing.popup
+      // 折叠命中不重复弹 toast：用户已经看过这条（ADR 0060：窗口内不重复提示）
+      return
     }
+
+    items.value.push({ id: nextId(), source, message, level: lv, timestamp: ts, popup, count: foldedCount })
+    if (items.value.length > MAX_ITEMS) {
+      items.value.splice(0, items.value.length - MAX_ITEMS)
+    }
+
+    // 即时提示：popup=true → 常驻（不自动消失、不遮挡）；否则按级别短暂显示
     const toast = useToastStore()
-    if (lv === 'error') toast.error(message)
-    else if (lv === 'warning') toast.warning(message)
-    else toast.info(message)
-    // 打断展示：仅 error + popup=true 入队（契约 notify-ui）
-    if (popup && lv === 'error') {
-      popupQueue.value.push({ source, message, level: lv, timestamp: ts, popup })
+    if (popup) {
+      toast.persistent(message, lv)
+    } else if (lv === 'error') {
+      toast.error(message)
+    } else if (lv === 'warning') {
+      toast.warning(message)
+    } else {
+      toast.info(message)
     }
   }
 
-  // 确认当前弹窗并出队（App.vue modal 按钮调用）
-  function ackPopup(): void {
-    popupQueue.value.shift()
+  /** 用 GET /api/notifications 的返回值重建列表（历史基线，刷新后仍有内容） */
+  function applyBaseline(payloads: Array<Record<string, unknown>>): void {
+    items.value = []
+    for (const p of payloads) {
+      const rawLevel = p.level
+      const level: NotifyLevel =
+        rawLevel === 'info' ? 'info' : rawLevel === 'warning' ? 'warning' : 'error'
+      const ts = typeof p.timestamp === 'number' ? p.timestamp * 1000 : Date.now()
+      items.value.push({
+        id: nextId(),
+        source: typeof p.source === 'string' ? p.source : undefined,
+        message: typeof p.message === 'string' ? p.message : '',
+        level,
+        timestamp: ts,
+        popup: p.popup === true,
+        count: typeof p.count === 'number' && p.count > 0 ? p.count : 1,
+      })
+    }
+    if (items.value.length > MAX_ITEMS) {
+      items.value.splice(0, items.value.length - MAX_ITEMS)
+    }
+    // 基线视为已读：用户刚打开页面，不把历史全算成未读
+    readWatermark.value = items.value.length > 0 ? items.value[items.value.length - 1].timestamp : 0
+  }
+
+  /** 全部标为已读 */
+  function markAllRead(): void {
+    if (items.value.length > 0) {
+      readWatermark.value = items.value[items.value.length - 1].timestamp
+    }
   }
 
   function clear(): void {
     items.value = []
-    popupQueue.value = []
+    readWatermark.value = 0
   }
 
-  return { items, popupQueue, popupCurrent, push, ackPopup, clear }
+  return { items, recent, unreadCount, push, applyBaseline, markAllRead, clear }
 })

@@ -308,9 +308,10 @@ int main(int argc, char* argv[]) {
         webui_cfg_holder);
     drogon::app().registerController(settings_ctrl);
 
-    // UI 通知缓存：NotifyDomainService 从 NOTIFY_UI 帧写入，
+    // UI 通知缓存：NotifyDomainService 从 NOTIFY_UI 帧写入（含去重折叠，契约 notify-ui/ADR 0060），
     // NotifyCtrl 的 GET /api/notifications 读取
-    auto notify_cache = std::make_shared<dztrader::webui::NotifyCache>(cfg.notify_cache_size);
+    auto notify_cache = std::make_shared<dztrader::webui::NotifyCache>(
+        cfg.notify_cache_size, cfg.notify_dedup_window_sec, cfg.notify_dedup_cooldown_sec);
     drogon::app().registerController(
         std::make_shared<dztrader::webui::NotifyCtrl>(repo, notify_cache));
 

@@ -1463,6 +1463,25 @@ void AccountSession::push_notification(const std::optional<TdNotification>& noti
     }
 }
 
+void AccountSession::notify_order_rejected(const std::string& message) {
+    // 拒单通知（ADR 0060 决策 1 白名单）：级别 WARN、**不常驻**（popup=false）。
+    // 与登录链失败的区别：单笔拒单不是系统故障，策略试探/套利会高频触发；常驻会把界面堆满。
+    // 去重折叠由 dzweb 统一做（ADR 0060 决策 4），这里不做限频。
+    // 通知是辅助通道：失败只记日志，不得让主循环抛出（与 notify_runtime_fund_failure 同口径）。
+    if (!notify_) {
+        return;  // 未注入（测试 / 无 UI）：仅少一条通知，不产生日志噪音
+    }
+    try {
+        notify_(DZ_NOTIFY_WARN, message, /*popup=*/false);
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("td order rejected notify failed | account={} error=\"{}\"", account_id_,
+                     e.what());
+    } catch (...) {
+        SPDLOG_ERROR("td order rejected notify failed | account={} error=unknown_exception",
+                     account_id_);
+    }
+}
+
 void AccountSession::notify_auth_failed(TdFailureCode code,
                                         const std::string& reason,
                                         int error_id) {
@@ -2726,6 +2745,13 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
             "td rsp order insert rejected | account={} order_id={} order_ref={} error_id={} "
             "error=\"{}\"",
             account_id_, *local, f.input_order->OrderRef, error_id, error_msg);
+        // 拒单是用户要能看到的业务结果（契约 notify-ui / ADR 0060 决策 1 白名单）:
+        // 进消息中心但**不常驻**(popup=false) —— 策略试探/套利会高频触发同类拒单,
+        // 常驻会把界面堆满; 去重折叠由 dzweb 统一做。级别 WARN: 单笔被拒不是系统故障,
+        // 用户可采取行动(查仓位/查权限)但不必立刻中断。
+        notify_order_rejected(std::format("下单被拒：{} {} 错误码 {}：{}",
+                                          f.input_order->InstrumentID, f.input_order->OrderRef,
+                                          error_id, error_msg));
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_rsp_order_insert failed | account={} error=\"{}\"", account_id_,
                      e.what());
@@ -2733,7 +2759,7 @@ void AccountSession::on_rsp_order_insert(const OnRspOrderInsertField& f) {
 }
 
 // === on_rsp_order_action: 报单操作响应 (撤单同步拒绝) ===
-// 撤单失败不影响订单状态 (CTP 会通过 OnRtnOrder 推 CANCELLED), 仅记 WARN
+// 撤单失败不影响订单状态 (CTP 会通过 OnRtnOrder 推 CANCELLED), 记 WARN + 消息中心
 void AccountSession::on_rsp_order_action(const OnRspOrderActionField& f) {
     try {
         if (f.rsp_info && f.rsp_info->ErrorID != 0) {
@@ -2742,6 +2768,11 @@ void AccountSession::on_rsp_order_action(const OnRspOrderActionField& f) {
                 "td rsp order action error | account={} error_id={} error=\"{}\" order_ref={}",
                 account_id_, f.rsp_info->ErrorID, error_msg,
                 f.input_order_action ? f.input_order_action->OrderRef : "");
+            // 撤单被拒与下单被拒对称入消息中心（ADR 0060 决策 1），不常驻。
+            notify_order_rejected(
+                std::format("撤单被拒：{} 错误码 {}：{}",
+                            f.input_order_action ? f.input_order_action->OrderRef : "",
+                            f.rsp_info->ErrorID, error_msg));
         }
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_rsp_order_action failed | account={} error=\"{}\"", account_id_,
@@ -2826,6 +2857,10 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
             "td err rtn order insert rejected | account={} order_id={} order_ref={} error_id={} "
             "error=\"{}\"",
             account_id_, *local, f.input_order->OrderRef, error_id, error_msg);
+        // 同 on_rsp_order_insert: 交易所拒单也要进消息中心（ADR 0060 决策 1）。
+        notify_order_rejected(std::format("下单被拒：{} {} 错误码 {}：{}",
+                                          f.input_order->InstrumentID, f.input_order->OrderRef,
+                                          error_id, error_msg));
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_err_rtn_order_insert failed | account={} error=\"{}\"", account_id_,
                      e.what());
@@ -2833,7 +2868,7 @@ void AccountSession::on_err_rtn_order_insert(const OnErrRtnOrderInsertField& f) 
 }
 
 // === on_err_rtn_order_action: 报单操作错误回报 (撤单被拒) ===
-// 同 on_rsp_order_action, 仅记 WARN (撤单被拒不影响订单状态)
+// 同 on_rsp_order_action, 记 WARN + 消息中心 (撤单被拒不影响订单状态)
 void AccountSession::on_err_rtn_order_action(const OnErrRtnOrderActionField& f) {
     try {
         if (f.rsp_info && f.rsp_info->ErrorID != 0) {
@@ -2842,6 +2877,10 @@ void AccountSession::on_err_rtn_order_action(const OnErrRtnOrderActionField& f) 
                 "td err rtn order action | account={} error_id={} error=\"{}\" order_ref={}",
                 account_id_, f.rsp_info->ErrorID, error_msg,
                 f.order_action ? f.order_action->OrderRef : "");
+            // 对称入消息中心（ADR 0060 决策 1），不常驻。
+            notify_order_rejected(std::format("撤单被拒：{} 错误码 {}：{}",
+                                              f.order_action ? f.order_action->OrderRef : "",
+                                              f.rsp_info->ErrorID, error_msg));
         }
     } catch (const std::exception& e) {
         SPDLOG_ERROR("td on_err_rtn_order_action failed | account={} error=\"{}\"", account_id_,

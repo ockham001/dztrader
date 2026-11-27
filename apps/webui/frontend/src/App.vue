@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import ToastContainer from '@/components/shared/ToastContainer.vue'
 import AppShell from '@/components/layout/AppShell.vue'
@@ -8,9 +8,8 @@ import { useSystemStore } from '@/stores/system'
 import { useNotifyStore } from '@/stores/notify'
 import { useWebSocket } from '@/composables/wsClient'
 import { useToastStore } from '@/stores/toast'
-import { useFocusTrap } from '@/composables/useFocusTrap'
-import { useScrollLock } from '@/composables/useScrollLock'
 import { authApi } from '@/api/auth'
+import { notificationsApi } from '@/api/notifications'
 import ChangePasswordModal from '@/components/shared/ChangePasswordModal.vue'
 import Icon from '@/components/shared/Icon.vue'
 
@@ -56,34 +55,28 @@ async function ackDefaultPassword() {
   }
 }
 
-// notify 弹窗与共享 Modal 统一焦点口径（#206 A）：打开时焦点移入、框内 Tab 循环、
-// 关闭后还原到打开前的元素。语义仍是 alertdialog（比 Modal 多一层"打断用户"要求，
-// 故不直接复用 Modal 组件——那会丢掉 alertdialog 角色与既有样式）。
-// 滚动锁同样走引用计数，与 Modal 共用一个计数器：两者同时打开时先关的那个不解后关的锁。
-const popupEl = ref<HTMLElement | null>(null)
-const popupOpen = computed(() => notify.popupCurrent !== null)
-const popupTrap = useFocusTrap({ active: popupOpen, container: popupEl })
-useScrollLock(popupOpen)
+// notify 的呈现（ADR 0060 决策 3）：popup=true 的条目走**常驻 toast**（不自动消失、
+// 不遮挡、不阻断操作），由 ToastContainer 渲染。旧的全屏遮罩居中弹窗（alertdialog +
+// 焦点陷阱 + 滚动锁）已删除——它阻挡行情/持仓/委托，与盯盘场景冲突。
+// 因此本文件不再持有任何 popup 焦点管理代码。
 
-// Esc 确认当前通知：它和 Modal 共用同一个焦点陷阱栈，必须同样提供 Esc 通道。
-// 否则本弹窗压栈期间，下层 Modal 的 Esc 会被 isTopmost 判为「不是最上层」而静默失效，
-// 形成「按 Esc 什么都不发生」的死窗口。
-// 语义依据：契约 notify-ui 「前端义务」只要求「level=error 且 popup=true 必须打断用户
-// 展示」，**没有**规定用按钮还是 Esc 确认；「逐条出队」是本组件 ackPopup 的实现事实，
-// 不是契约条款。Esc 与点「确认」都走 ackPopup，出队行为因此必然一致。
-function handlePopupKeydown(e: KeyboardEvent): void {
-  if (e.key !== 'Escape' || !popupOpen.value) return
-  if (!popupTrap.isTopmost()) return
-  e.preventDefault()
-  notify.ackPopup()
-}
-
-onMounted(() => {
-  document.addEventListener('keydown', handlePopupKeydown)
-})
+// 通知历史基线（契约 rest §2.6）：刷新后消息中心仍有内容。
+// WS 增量随连接建立后到达，REST 基线只拉一次；登录成功后才拉（未登录时接口 401）。
+watch(
+  () => auth.token,
+  async (token) => {
+    if (!token) return
+    try {
+      const payloads = await notificationsApi.list()
+      notify.applyBaseline(payloads)
+    } catch {
+      // 基线失败不打扰用户：WS 增量仍会填充消息中心
+    }
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
-  document.removeEventListener('keydown', handlePopupKeydown)
   ws.disconnect()
 })
 </script>
@@ -113,26 +106,8 @@ onUnmounted(() => {
   <!-- 契约 rest §1「强制改密」：被管理员重置口令的账户登录后必须改密才能用系统；
        后端同时拦接口（403 password_change_required），前端这一层只是让路径可走完 -->
   <ChangePasswordModal :open="auth.mustChangePassword" forced />
-  <!-- 契约 notify-ui 前端义务: NOTIFY_UI level=error 且 popup=true 必须打断用户展示
-       （遮罩 modal + 确认按钮，逐条出队）。
-       焦点管理与共享 Modal 同口径（#206 A）：打开移入、框内循环、关闭还原 -->
-  <div
-    v-if="notify.popupCurrent"
-    class="popup-overlay"
-    role="alertdialog"
-    aria-modal="true"
-    aria-labelledby="notify-popup-message"
-  >
-    <div ref="popupEl" class="popup-modal" tabindex="-1">
-      <span class="popup-modal__icon">
-        <Icon name="Tips" :size="16" />
-      </span>
-      <span id="notify-popup-message" class="popup-modal__msg">{{ notify.popupCurrent.message }}</span>
-      <button type="button" class="popup-modal__action" @click="notify.ackPopup()">
-        确认
-      </button>
-    </div>
-  </div>
+  <!-- 契约 notify-ui 前端义务（ADR 0060 决策 3）: popup=true 必须**常驻**呈现，
+       但不得以全屏遮罩等阻断操作的形态。由 ToastContainer 渲染为右下角常驻卡片。 -->
   <ToastContainer />
 </template>
 
@@ -187,60 +162,5 @@ onUnmounted(() => {
 .default-password-banner__action:hover {
   background: var(--status-warning-hover);
   border-color: var(--status-warning-hover);
-}
-
-.popup-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 10000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--overlay-scrim);
-}
-
-.popup-modal {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--spacer-12);
-  min-width: 320px;
-  max-width: 480px;
-  padding: var(--spacer-16);
-  border-radius: var(--radius-8);
-  border: 1px solid var(--status-error-default);
-  background: var(--status-error-surface-l1);
-  box-shadow: var(--shadow-xl);
-}
-
-.popup-modal__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--status-error-default);
-}
-
-.popup-modal__msg {
-  word-break: break-word;
-  text-align: center;
-  font-size: var(--body-md-font-size);
-  line-height: var(--body-md-line-height);
-  color: var(--text-default);
-}
-
-.popup-modal__action {
-  padding: var(--spacer-4) var(--spacer-16);
-  border: 1px solid var(--status-error-default);
-  background: var(--status-error-default);
-  color: var(--text-inverse);
-  border-radius: var(--radius-4);
-  font-size: var(--body-sm-font-size);
-  cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease;
-}
-
-.popup-modal__action:hover {
-  background: var(--status-error-hover);
-  border-color: var(--status-error-hover);
 }
 </style>
