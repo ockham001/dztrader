@@ -34,6 +34,36 @@ export interface TdGatewayWriteOk {
   ok: boolean
 }
 
+/** 排程时段（契约 auto-login：`"HH:MM"` 本地时间，`login_time == logout_time` 非法） */
+export interface TdAutoLoginSchedule {
+  login_time: string
+  logout_time: string
+}
+
+/**
+ * 交易接口自动登录/登出排程（`GET/PUT /api/td/gateways/{name}/auto-login`，
+ * 契约 rest §2.10 / 契约 auto-login）。
+ *
+ * **进程级**，不是账户级：登出会断开该网关全部 session。
+ */
+export interface TdAutoLoginView {
+  enabled: boolean
+  schedules: TdAutoLoginSchedule[]
+  /**
+   * 数据来源：
+   * - `mirror`：网关实时镜像（`RTN_AUTO_LOGIN` 已到）
+   * - `unavailable`：网关未运行 / 镜像尚无该域 —— 此时 `enabled` 与 `schedules` 是占位值，
+   *   **不代表真实生效值**，UI 必须如实呈现而不是假装已知
+   */
+  source: 'mirror' | 'unavailable'
+}
+
+/** `PUT .../auto-login` 请求体（契约 auto-login：RFC 7386 增量，UI 只发全量） */
+export interface TdAutoLoginBody {
+  enabled: boolean
+  schedules: TdAutoLoginSchedule[]
+}
+
 export const tdGatewaysApi = {
   /**
    * 可用交易接口列表（任意已认证用户）：扫描 App Root 的 `dztd_*` exe + 进程配置镜像。
@@ -52,6 +82,18 @@ export const tdGatewaysApi = {
   /** 移除交易接口（admin）：停止进程 + 删除进程配置条目；有账户时服务端 409 guard */
   remove: (name: string) =>
     api.del<TdGatewayWriteOk>(`/api/td/gateways/${encodeURIComponent(name)}`),
+  /**
+   * 读取自动登录/登出排程（任意已认证用户，契约 rest §2.10 / 契约 auto-login）。
+   * `source=unavailable` 表示网关未运行、镜像无该域——返回值不保证是真实生效配置。
+   */
+  getAutoLogin: (name: string) =>
+    api.get<TdAutoLoginView>(`/api/td/gateways/${encodeURIComponent(name)}/auto-login`),
+  /**
+   * 全量设置自动登录/登出排程（admin）。200 只表示**已写入事件通道**；
+   * 生效信号是 WS `auto_login` 推送（契约 auto-login），非乐观更新。
+   */
+  setAutoLogin: (name: string, body: TdAutoLoginBody) =>
+    api.put<TdGatewayWriteOk>(`/api/td/gateways/${encodeURIComponent(name)}/auto-login`, body),
 }
 
 /**
@@ -66,6 +108,9 @@ export type TdGatewayErrorCode =
   | 'invalid_gateway'
   | 'gateway_not_found'
   | 'gateway_has_accounts'
+  | 'invalid_auto_login'
+  | 'invalid_body'
+  | 'invalid_json'
 
 /** 机器码 → 中文文案（契约 rest §2.10；`invalid_gateway` 同时覆盖 start 的「扫描不到 exe」预检） */
 export const TD_GATEWAY_ERROR_TEXT: Record<TdGatewayErrorCode, string> = {
@@ -73,6 +118,9 @@ export const TD_GATEWAY_ERROR_TEXT: Record<TdGatewayErrorCode, string> = {
   invalid_gateway: '目标不是可用的交易接口（未注册且 App Root 下找不到对应程序）',
   gateway_not_found: '交易接口不存在（可能已被移除），请刷新后重试',
   gateway_has_accounts: '该交易接口下还有账户，请先删除全部账户再移除接口',
+  invalid_auto_login: '排程格式不合法（时间须为 HH:MM，且登录时间不能等于登出时间）',
+  invalid_body: '请求格式不合法',
+  invalid_json: '请求格式不合法',
 }
 
 /** 未知/无 code 的兜底文案（绝不回显英文 error 或 snake_case code） */

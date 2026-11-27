@@ -6,6 +6,9 @@ import {
   tdGatewayErrorText,
   tdGatewaysApi,
   tdGatewayServerErrorText,
+  type TdAutoLoginBody,
+  type TdAutoLoginSchedule,
+  type TdAutoLoginView,
   type TdGatewayAvailable,
 } from '@/api/tdGateways'
 import { usePending, PENDING_TIMEOUT } from '@/composables/usePending'
@@ -374,6 +377,14 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   const configs = ref<Record<string, TdConfigPayload>>({})
   /** 账户级细状态镜像（key = 账户 ID = 帧头 instance_id；契约 td-status §3 全量覆盖） */
   const statuses = ref<Record<string, TdStatusPayload>>({})
+  /**
+   * 自动登录/登出排程镜像（key = 网关进程名；契约 auto-login 全量覆盖）。
+   * 进程级，不是账户级——登出会断开该网关全部 session。
+   * 镜像由 `RTN_AUTO_LOGIN`（WS `auto_login`）填充；`GET .../auto-login` 用于首次拉取。
+   */
+  const autoLogins = ref<Record<string, TdAutoLoginView>>({})
+  /** 排程写操作在途（按网关名；非乐观，清 pending 只能等 `RTN_AUTO_LOGIN`） */
+  const autoLoginPending = ref<Set<string>>(new Set())
 
   // === 内部状态（非响应式）===
   /**
@@ -1099,6 +1110,57 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    * 缺 instance_id、payload 自校验不一致或字段非法的帧忽略；**不做字段清空推断**
    *（契约 td-status §2.4/§3：清空时机由发送方决定，前端以字段值变化为准）。
    */
+  /**
+   * 收 `RTN_AUTO_LOGIN` 排程镜像（契约 auto-login，全量覆盖）。
+   *
+   * - 只接受 `dztd_*` 网关：md 与 td 各有排程，帧头 instance_id 是唯一区分依据；
+   * - 到达即清该网关的写 pending（这是排程写操作的**唯一**生效信号，非乐观更新）；
+   * - 载荷非法（缺 enabled / schedules 非数组）时整条丢弃，不半覆盖已有镜像。
+   */
+  function applyAutoLogin(instanceId: string | undefined, payload: unknown): void {
+    if (!instanceId || !instanceId.startsWith('dztd_')) return
+    if (!payload || typeof payload !== 'object') return
+    const raw = payload as Record<string, unknown>
+    if (typeof raw.enabled !== 'boolean') return
+    if (!Array.isArray(raw.schedules)) return
+    // 元素形状交给 UI 侧按契约渲染；这里只做「是不是数组」的结构守卫，
+    // 避免把非数组当空数组（那会静默清空用户已配的排程）。
+    autoLogins.value[instanceId] = {
+      enabled: raw.enabled,
+      schedules: raw.schedules as TdAutoLoginSchedule[],
+      source: 'mirror',
+    }
+    autoLoginPending.value.delete(instanceId)
+  }
+
+  /** 从 `GET .../auto-login` 拉一次排程基线（网关未运行时 source=unavailable） */
+  async function loadAutoLogin(gateway: string): Promise<void> {
+    try {
+      const view = await tdGatewaysApi.getAutoLogin(gateway)
+      autoLogins.value[gateway] = view
+    } catch (e) {
+      // 读取失败不改镜像：保留上次已知值，由 UI 的降级展示承担
+      error.value = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  /**
+   * 全量提交排程（admin，契约 auto-login：非乐观）。
+   * @returns true = 已下发生效信号待 RTN；false = HTTP 失败（error.value 已写入）
+   */
+  async function setAutoLogin(gateway: string, body: TdAutoLoginBody): Promise<boolean> {
+    autoLoginPending.value.add(gateway)
+    try {
+      await tdGatewaysApi.setAutoLogin(gateway, body)
+      // 不预写镜像：等 RTN_AUTO_LOGIN 权威覆盖（与 md 侧同口径）
+      return true
+    } catch (e) {
+      autoLoginPending.value.delete(gateway)
+      error.value = e instanceof Error ? e.message : String(e)
+      return false
+    }
+  }
+
   function applyTdStatus(instanceId: string | undefined, payload: TdStatusPayload | undefined): void {
     if (!instanceId) return
     if (!payload || typeof payload !== 'object') return
@@ -1204,6 +1266,12 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
     logout,
     applyTdConfig,
     applyTdStatus,
+    // 自动登录/登出排程（契约 auto-login / rest §2.10，进程级）
+    autoLogins,
+    autoLoginPending,
+    applyAutoLogin,
+    loadAutoLogin,
+    setAutoLogin,
     loadRegistry,
     init,
     handleDataChanged,
