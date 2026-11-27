@@ -1,11 +1,14 @@
 #include <dztrader/core/this_process.h>
 
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
 
 #include <gtest/gtest.h>
+
+#include "test_temp_dir.h"
 
 namespace {
 
@@ -35,6 +38,27 @@ int run_app_root_probe(std::string_view expected) {
     }
 }
 
+/// 子进程探针：登记一个 tracked 临时目录，把路径写进 marker，然后正常 return。
+///
+/// 退出期清理只能在本进程退出时观察，进程内断言看不到，所以由 temp_dir_test 以子进程
+/// 方式运行本模式（#516）：父进程据此断言「正常退出」+「目录已被 atexit 删掉」。
+/// 退出期若因静态析构顺序读已释放内存而 abort，退出码非 0，同样会被父进程抓到。
+int run_tracked_temp_dir_probe(std::string_view marker) {
+    const auto dir = dztrader::test::unique_temp_dir_tracked("dz_temp_dir_probe");
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        return 65;
+    }
+    std::ofstream output(std::filesystem::path(marker), std::ios::binary | std::ios::trunc);
+    output << dir.string() << '\n';
+    output.close();
+    if (!output) {
+        return 66;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -44,6 +68,12 @@ int main(int argc, char** argv) {
                 return 64;  // 缺少期望参数
             }
             return run_app_root_probe(argv[i + 1]);
+        }
+        if (std::string_view(argv[i]) == "--temp-dir-tracked-probe") {
+            if (i + 1 >= argc) {
+                return 64;  // 缺少 marker 路径
+            }
+            return run_tracked_temp_dir_probe(argv[i + 1]);
         }
     }
 

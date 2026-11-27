@@ -50,9 +50,18 @@ inline const std::string& unique_suffix() {
 /// 唯一化把「一个复用目录」变成「每个测试进程一个新目录」，若调用方不删就会在系统临时
 /// 目录里无界堆积（#136 复审实测：`dz_test_logs_*` / `dz_shm_test_*` 从未被删）。
 /// 用 atexit 统一回收：与调用方是否写了 TearDown 无关，也不会掩盖断言失败。
+///
+/// **注册顺序是正确性前提（#516）**：`atexit` 处理器按注册逆序执行，函数局部静态对象按
+/// 构造逆序析构，所以必须先构造 `tracked_dirs()` 的 vector、再注册回调，清理时 vector
+/// 才仍然存活。顺序写反的后果是回调遍历已释放的 vector 缓冲区，既删不掉目录（宿主
+/// commit 实测 200/200 残留），也可能在读垃圾 `path` 时抛 `std::bad_alloc` —— 那发生在
+/// 退出期、无人 catch，于是 `std::terminate` 把一个「用例全部 PASSED」的测试进程判成
+/// abort，全量 ctest 变成假红。
 inline std::filesystem::path unique_temp_dir_tracked(std::string_view name) {
     const auto dir =
         std::filesystem::temp_directory_path() / (std::string(name) + "_" + unique_suffix());
+    // 先构造静态 vector，再注册回调 —— 顺序颠倒即触发上述 use-after-free。
+    auto& tracked = tracked_dirs();
     static const bool registered = [] {
         std::atexit([] {
             for (const auto& path : tracked_dirs()) {
@@ -63,7 +72,7 @@ inline std::filesystem::path unique_temp_dir_tracked(std::string_view name) {
         return true;
     }();
     (void)registered;
-    tracked_dirs().push_back(dir);
+    tracked.push_back(dir);
     return dir;
 }
 
