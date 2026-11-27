@@ -127,15 +127,19 @@ export type TdAccountOp = TdConfigOp | TdSessionOp
 const CONFIG_OPS: readonly TdConfigOp[] = ['add', 'update', 'remove', 'toggle_enabled']
 
 /**
- * 会话控制 pending 兜底超时（契约 td-connection 前端义务 2）：登录 = **无进展 60s**。
+ * 会话控制 pending 兜底超时（契约 td-connection 前端义务 2）：登录 = **无进展 330s**。
  *
  * 语义是「多久没动静」，不是「总共等了多久」——进度每前进一格就 `touch` 续命
- * （见下方 progress watcher）。为什么不能用绝对时长：td 登录链最坏
- * 30(连接)+10(认证)+10(登录)+60(结算)+300(合约) 秒，45s 绝对超时在实测中已经误报过
- * 一次 110 秒的正常登录（#508）。60s 的含义 = 最长的那一段静默期（结算确认看门狗 60s）
- * 再加余量之内仍无任何推进即判卡死。
+ * （见下方 progress watcher）。绝对时长必然误报：td 登录链上界
+ * 30(连接)+10(认证)+10(登录)+60(结算)+300(合约) 秒，实测一次正常登录走了 110 秒
+ * （其中 100 秒在等合约 `is_last`），旧的 45s 兜底当场误报（#508）。
+ *
+ * 为什么是 330s：**合约加载段没有进度帧**（状态停在 8/10，只在转 Ready 时才变成 10/10），
+ * 静默可以长达后端合约看门狗（300s）。兜底阈值必须在那之后，否则慢合约加载仍会被
+ * 判成卡死。它只兜「后端看门狗也失灵」的极端情况——正常失败由最后一段自己的
+ * 看门狗在 ≤300s 内转失败态、推 `last_error` 清 pending。
  */
-export const TD_SESSION_LOGIN_TIMEOUT_MS = 60_000
+export const TD_SESSION_LOGIN_TIMEOUT_MS = 330_000
 /** 登出 pending 兜底超时：释放 API 属本地动作，10s 足够 */
 export const TD_SESSION_LOGOUT_TIMEOUT_MS = 10_000
 
@@ -649,13 +653,13 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   //   - 中间态且 current 相对上次回退 → 清登录 pending（**主动中止**：登出 / 前置断线）；
   //   - `status.last_error.timestamp` 变化且非 null → 清登录 pending（**链内失败**，见下方
   //     watcher；ADR 0059 起链内失败停在失败阶段、current 不回退，回退不再是失败信号）；
-  //   - 兜底超时（登录「无进展 60s」/ 登出 10s，见 TD_SESSION_*_TIMEOUT_MS）。
+  //   - 兜底超时（登录「无进展 330s」/ 登出 10s，见 TD_SESSION_*_TIMEOUT_MS）。
   //
   // 为什么登录侧是「无进展」而不是「总时长」（#508）：td 登录链最坏可达
   // 30(连接)+10(认证)+10(登录)+60(结算)+300(合约) 秒，绝对时长必然误报——实测一次正常登录
   // 走了 110 秒（其中 100 秒在加载合约），45s 兜底到点时后端仍在正常推进，用户却已看到
   // 「登录交易账户超时」。所以中间态只要 `current` 相对上次**前进**就 touch 续命；
-  // 停下来没动静满 TD_SESSION_LOGIN_TIMEOUT_MS 才判超时（真实卡死仍能被抓住）。
+  // 停下来没动静满 TD_SESSION_LOGIN_TIMEOUT_MS（330s，见常量注释）才判超时。
   watch(
     () => progressStore.progress,
     (progress) => {
@@ -1027,7 +1031,7 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    *
    * 按钮可用性由页面按进度端点判定（登录仅完全未登录可发，见 `composables/tdAccountSession`）；
    * 这里不做状态裁决——最终由 dzweb 守卫与目标网关配置校验兜底。pending 以 `progress`
-   * 到 `max`、`current` 回退、`last_error` 新身份或「无进展 60s」兜底超时清除
+   * 到 `max`、`current` 回退、`last_error` 新身份或「无进展 330s」兜底超时清除
    * （契约 td-connection 前端义务 2；停滞语义见 TD_SESSION_LOGIN_TIMEOUT_MS 注释）。
    */
   async function login(accountId: string): Promise<TdAccountSubmitResult> {

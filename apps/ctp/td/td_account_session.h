@@ -455,11 +455,14 @@ private:
     /// 每条重试路径都调它不会把 deadline 往后推（#508：`-3` 分支此前完全不武装，
     /// 持续流控会让账户永久停在 8/10）。
     void arm_instruments_load_watchdog();
-    /// 武装资金查询看门狗（幂等，tag 去重）。
+    /// 武装资金查询看门狗（幂等：本次会话已在计时则不动）。
     ///
     /// 与 {@link arm_instruments_load_watchdog} 同型：量的是整段查询过程的 5 分钟上限，
-    /// 流控 `-3` 的 1.5s 重试不续命（#508）。
+    /// 流控 `-3` 的 1.5s 重试不续命（#508）。用**本会话独占的 timer id**（见成员注释），
+    /// 清理点与合约看门狗一致：断连 / 前置断开 / 查询收口 / 失败收口。
     void arm_account_query_watchdog();
+    /// 取消资金查询看门狗（查询收口、断连、登出时清理，不留残留定时器）
+    void cancel_account_query_watchdog();
     /// 取消结算单确认看门狗定时器 (#488; 收到响应 / 断连 / 登出时清理).
     void cancel_settlement_confirm_timer();
     /// 取消基准持仓查询的重试定时器 (查询成功 / 重试耗尽 / 断连时清理, 不留残留定时器).
@@ -738,6 +741,11 @@ private:
     dztrader::core::TimerQueue::TimerId settlement_confirm_timer_id_ = 0;
     /// I2: 合约加载超时定时器 id (5 分钟, 设计 §2.4.1 流控持续 -3 超时)
     dztrader::core::TimerQueue::TimerId instruments_load_timer_id_ = 0;
+    /// 资金查询超时定时器 id (5 分钟, 登录收尾链; 0 = 无挂起)。
+    ///
+    /// 必须是**本会话独占的 id**，不能用 `TimerQueue` 的 tag 去重：队列是进程级共享的
+    /// （一进程多账户），tag 全局唯一会让第二个账户的武装被静默忽略（#508 审查发现）。
+    dztrader::core::TimerQueue::TimerId account_query_timer_id_ = 0;
     /// 基准持仓查询重试定时器 id (失败后 3s 重试; 0 = 无挂起)
     dztrader::core::TimerQueue::TimerId position_query_retry_timer_id_ = 0;
     /// 基准持仓查询单次尝试的超时定时器 id (5 分钟; 响应/失败后取消)

@@ -955,7 +955,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await pending
   })
 
-  it('登录在途时点登出：progress 到 min 时登录/登出 pending 都清（不挂 45s）', async () => {
+  it('登录在途时点登出：progress 到 min 时登录/登出 pending 都清（不挂兜底超时）', async () => {
     const store = useTdAccountsStore()
     const login = store.login('account_001')
     const logout = store.logout('account_001')
@@ -1008,7 +1008,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
 
   // ===== 链内失败：pending 由 status.last_error.timestamp 清除（契约 td-status §2.5）=====
   // ADR 0059 起链内失败停在失败阶段、current 不回退 —— 进度 watcher 的回退判据在失败路径上
-  // 不再触发，本组用例钉住「失败仍能立即清 pending、不等 45s 兜底」。
+  // 不再触发，本组用例钉住「失败仍能立即清 pending、不等兜底超时」。
 
   function failedStatus(timestamp: number): TdStatusPayload {
     return statusPayload({
@@ -1031,7 +1031,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(true)
 
-    // status 帧带 last_error 到达 → 立即清，不等 45s
+    // status 帧带 last_error 到达 → 立即清，不等兜底超时
     store.applyTdStatus('account_001', failedStatus(1_700_000_000))
     await nextTick()
     expect(isPending(SESSION_KEY('login'))).toBe(false)
@@ -1129,13 +1129,13 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     await pending
   })
 
-  it('登录 pending 兜底超时清除（无进展 60s，不是总时长）', async () => {
+  it('登录 pending 兜底超时清除（无进展 330s，不是总时长）', async () => {
     vi.useFakeTimers()
     const store = useTdAccountsStore()
     // 永不 resolve：只能靠超时兜底
     vi.mocked(tdApi.loginAccount).mockImplementation(() => new Promise(() => {}))
     const pending = store.login('account_001')
-    expect(TD_SESSION_LOGIN_TIMEOUT_MS).toBe(60_000)
+    expect(TD_SESSION_LOGIN_TIMEOUT_MS).toBe(330_000)
 
     await vi.advanceTimersByTimeAsync(TD_SESSION_LOGIN_TIMEOUT_MS)
     expect(await pending).toEqual({ ok: false, kind: 'timeout' })
@@ -1169,7 +1169,7 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     expect(isPending(SESSION_KEY('login'))).toBe(false)
   })
 
-  it('进度停滞满 60s 才判超时（推进停下来的真实卡死能被抓住）', async () => {
+  it('进度停滞满 330s 才判超时（后端最长静默段 300s 之后才兜底）', async () => {
     vi.useFakeTimers()
     const toast = useToastStore()
     const errorSpy = vi.spyOn(toast, 'error')
@@ -1184,10 +1184,10 @@ describe('useTdAccountsStore · 会话控制（ADR 0051 / 契约 td-connection�
     useProgressStore().applyProgress('account_001', { min: 0, max: 10, current: 8 })
     await nextTick()
 
-    // 从最后一次推进起算：59s 内仍 pending
-    await vi.advanceTimersByTimeAsync(59_000)
+    // 从最后一次推进起算：329s 内仍 pending（合约加载段可静默到后端 300s 看门狗）
+    await vi.advanceTimersByTimeAsync(329_000)
     expect(isPending(SESSION_KEY('login'))).toBe(true)
-    // 超过 60s 无推进 → 兜底超时清 pending 并提示（真实卡死有出口）
+    // 超过 330s 无推进 → 兜底超时清 pending 并提示（后端看门狗也失灵时的最后一道信号）
     await vi.advanceTimersByTimeAsync(2_000)
     expect(isPending(SESSION_KEY('login'))).toBe(false)
     expect(errorSpy).toHaveBeenCalledWith('登录交易账户超时')

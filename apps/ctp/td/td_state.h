@@ -150,6 +150,10 @@ struct TdStatus {
 /// RTN_TD_STATUS 的 payload: 状态机快照 + `ext` 里的未知枚举计数 (契约 td-status §2.3)。
 /// 计数挂在 `ext` 下按种类分开 (issue #367 用户故事 8), 不覆盖状态机自身字段。
 /// 实现在 td_state.cpp: 与 TdStatus 同处一个不依赖 CTP 头的目标, 便于单测。
+///
+/// **不要用它直接写帧**：状态机不持有 `account_id`，直出的 payload 该字段恒为空串，
+/// 会被前端按「非法帧」整帧丢弃（#508）。写帧点必须用 {@link td_status_payload_for}。
+/// 本函数保留 public 供 payload 纯逻辑单测（ext / last_error 序列化契约）。
 nlohmann::json td_status_payload(const TdStatus& status, const UnknownEnumCounts& counts);
 
 /// 填好 `account_id` 的 RTN_TD_STATUS payload（契约 td-status §3）。
