@@ -267,7 +267,7 @@ Spacing is scale-free by design: the token names are pixel values (`--spacer-8` 
 
 Overwhelmingly flat. Panels are separated from the page by a 1px hairline and by a tonal step in the paper scale, not by shadow. A dashboard panel does carry one nearly-invisible shadow (`0 1px 3px` at 6% ink) that reads as a crisp edge more than as lift.
 
-Shadows appear only where something genuinely floats: menus, dropdowns, popovers, dialogs, drawers. The floating-layer shadows are built with `color-mix()` against the current text color rather than hardcoded black, so one definition produces a soft grey in light mode and a deep, correct shadow in dark mode without a second token. Note this is not uniform: the three `--shadow-sm/lg/xl` utility tokens in `design-tokens.css` are still hardcoded `rgb(0 0 0 / …)` and have eight call sites outside their own definition — new floating layers should follow the `color-mix()` form, not those.
+Shadows appear only where something genuinely floats: menus, dropdowns, popovers, dialogs, drawers, and toasts. Some of the floating-layer shadows are built with `color-mix()` against the current text color rather than hardcoded black. That reads correctly in light mode, where the ink is dark and the mix lands as a soft grey — but it does **not** produce a deep shadow in dark mode: there `--text-default` is light, so the same mix composites as a faint *glow*, not as darkening. Treat that mix as a lift hint, not as depth. Anything that has to keep a readable edge over dense, variable-brightness content (the toast) uses `--shadow-overlay` instead — a token whose light and dark values are specified separately (see Shadow Vocabulary). The three `--shadow-sm/lg/xl` utility tokens in `design-tokens.css` are still hardcoded `rgb(0 0 0 / …)` and have seven call sites outside their own definition; new floating layers should follow `--shadow-overlay` (or the `color-mix()` lift hint), not those.
 
 Backdrop blur is used twice, both defensibly: the topbar blurs content scrolling beneath it (with a gradient fade at its lower edge so text dissolves rather than clipping), and the modal overlay blurs the page behind it.
 
@@ -276,6 +276,7 @@ Backdrop blur is used twice, both defensibly: the topbar blurs content scrolling
 - **Edge** (`0 1px 3px` ink @6%): Dashboard panels. Barely a shadow; provides the panel boundary.
 - **Popover** (`0 12px 32px` ink @16%, `0 2px 8px` ink @8%): Dropdowns, menus, tooltips.
 - **Dialog** (`0 24px 64px` ink @14%, `0 4px 16px` ink @8%): Modals and drawers.
+- **Overlay** (`--shadow-overlay`; light `0 16px 40px` black @12% + `0 2px 8px` black @6%, dark 50% / 30%): Content that floats over dense, variable-brightness content and must keep a readable edge — today the toast. Two layers (a wide spread plus a tight contact shadow), because a single wide blur over a table reads as a smudge.
 
 ### Named Rules
 
@@ -331,6 +332,20 @@ The `1px → 2px` focus and the 8/12 pairing are the entire form language. There
 - **Structure:** header and footer are separated by spacing only — neither gets a `border-bottom`/`border-top`, which is why the dialog reads as one surface rather than three stacked bands.
 - **Scrim:** `.modal-overlay` is a `color-mix()` tint of the page ground at 60% plus `backdrop-filter: blur(4px)`, so the page dissolves rather than simply dimming.
 
+### Notifications (toasts)
+
+- **Nature:** A bottom-right stack that never blocks input — `z-index: 9999`, pointer events only on the cards themselves. Entries with `duration = 0` are *persistent* (no auto-dismiss) but are **visually identical** to transient ones: how long a card stays is not a visual property (ADR 0060 决策 3).
+- **Surface:** `--bg-elevated` (opaque; light `#FFFFFF`, dark `#2A2A2A` — a step above `--bg-base-secondary`), 1px `--border-neutral-l2`, `--shadow-overlay`, `--radius-12` (the container step of the 8-and-12 rule).
+- **Geometry:** `min(360px, calc(100vw - 2 * var(--spacer-20)))` wide at every level, so a stack reads as one object rather than a pile of differently sized fragments; 24px from the right and bottom edges; 10px between cards; 12px padding (14px on the icon edge); 16px icon; 20px close button.
+- **Severity is the icon, never the skin:** success `check`, info `info`, warning `warning_line`, error `Error`, tinted with the matching `--status-*-default`. Body, border, and text are identical at all four levels. A tinted variant per level would be four components pretending to be one, and a hue that carries meaning only as a ground disappears in greyscale — the icon's shape survives.
+- **No countdown bar:** a coloured edge that encodes both severity and remaining time does two jobs badly (The One Job Rule), and it was the only continuously moving element on the page. Auto-dismiss timing is conveyed by hover/focus pausing the timer, not by a shrinking line.
+- **Motion:** enter 200ms with `cubic-bezier(0.16, 1, 0.3, 1)`, leave 150ms with `cubic-bezier(0.4, 0, 1, 1)` (leaving is faster), 8px rise. Under `prefers-reduced-motion` the translation is dropped and the fade remains.
+- **Accessibility:** one `aria-live="polite"` region covers all entries; error entries carry their own `role="alert"`; the close control has an accessible name and is keyboard reachable.
+
+| Light theme | Dark theme |
+| --- | --- |
+| ![Toast in light theme](docs/images/toast-light.png) | ![Toast in dark theme](docs/images/toast-dark.png) |
+
 ### Inputs / Fields
 
 - **Style:** 32px min-height, 8px radius, overlay-l1 ground, hairline border. Placeholder in ink-tertiary.
@@ -364,6 +379,7 @@ Dense by default: 15px cells, 13px headers in ink-tertiary (uppercase outside th
 - **Do** separate with a hairline or a tonal step — pick one.
 - **Do** specify light and dark together; both are first-class and a token added to one must be added to all three theme blocks.
 - **Do** reference tokens (`var(--x)`) for every colour, spacing, and radius value.
+- **Do** give anything that floats over dense content its own ground and depth (`--bg-elevated` + `--shadow-overlay`) instead of borrowing the page colour it covers.
 
 ### Don't:
 - **Don't** use brand violet for ordinary buttons, switches, or tags — it is identity, not affordance.
@@ -375,3 +391,5 @@ Dense by default: 15px cells, 13px headers in ink-tertiary (uppercase outside th
 - **Don't** write literal hex, px, or radius values in component code; a lint rule fails the build.
 - **Don't** introduce a breakpoint outside the whitelisted five.
 - **Don't** use the generic disabled ink on an inverted or coloured ground — use the paired disabled token.
+- **Don't** fill a toast with a status `-surface` tint, or force its border to a status hue to mean "won't auto-dismiss" — severity lives in the icon, and duration is not a visual property.
+- **Don't** animate a countdown bar in a notification; sustained motion in the periphery is a cost, and one line must not encode two facts.
