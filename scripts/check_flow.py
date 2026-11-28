@@ -72,8 +72,19 @@ IMPL_SUFFIXES = {
 # 这些路径即便后缀命中也不要求 spec（工具链与流程文件）
 EXEMPT_PREFIXES = (
     "docs/", "scripts/", ".githooks/", ".github/", ".cache/", ".agents/",
+    # 工具/编辑器/设计器配置：改它们不改变运行时行为，要求 spec 过重。
+    ".vscode/", ".opencode/", ".impeccable/",
 )
 EXEMPT_FILES = {"AGENTS.md", "README.md", "CLAUDE.md", "GLOSSARY.md", "DESIGN.md", "PRODUCT.md"}
+
+# ADR 头部出现这些词即视为「决策未生效」，不作为「该票已有 ADR」的证据。
+# 依据：ADR 一经 Accepted 不修改，因此「未实施」只能写在 Status 段或紧随的注记里
+# （AGENTS §三 ADR 约束）。#534 的 ADR 0062 就是这种形态。
+#
+# 刻意**不含**「Superseded」「作废」这类词：本仓有 ADR 写 `Superseded-in-part`
+# （只有部分决策被新 ADR 取代，整体仍生效，如 0060 → 0061 只取代决策 4 的默认值）。
+# 把它们当「未生效」会误杀仍然有效的 ADR——2026-11-28 实测 0048 因此被误判。
+NOT_IN_EFFECT_WORDS = ("未实施", "未落地", "尚未发生", "未生效", "Withdrawn")
 
 BRANCH_RE = re.compile(r"^(?:feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-(\d+)-")
 
@@ -143,13 +154,17 @@ def ticket_from_branch(branch: str) -> int | None:
 def adr_references_ticket(root: Path, ticket: int) -> bool:
     """ADR 是否**为该票而写**。
 
-    判据比「文中出现 #N」严格：只看标题行与 Status 段。
-    2026-11-28 实测到两个漏洞：
-      1) 一篇与决策无关的 ADR 只要在正文里偶然写一句「历史背景见 #N（与本决策无关）」，
-         就能让守卫误放行（审查子代理当时就是以此验证绕过路径的）。
-         真实 ADR 的票号出现在标题（`# ADR 00NN: …(#N)`）或 Status 段
-         （`Accepted（…，#N / #NNN）`），正文提及不构成归属。
-      2) 纯子串匹配会让短票号命中长票号：`#53` 命中 `#535`。必须加数字边界。
+    三个来源任一命中即算归属（顺序即优先级）：
+      1. ADR 标题行 / Status 段（`# ADR 00NN: … (#N)`、`Accepted（…，#N）`）
+      2. 创建该 ADR 的 commit 标题（`git log --diff-filter=A`）——本仓多数 ADR 的
+         票号只写在创建 commit 里，Status 段只有日期（实测 19 篇中 7 篇如此）
+      3. 正文不算：2026-11-28 实测过，无关 ADR 写一句「历史背景见 #N（无关）」
+         就能让守卫误放行
+
+    两条实测过的收紧（都是绕过路径的回归）：
+      - 数字边界：`#53` 不得命中 `#535`。
+      - 未生效的 ADR 不算证据（Status 标「未实施/作废」），否则本票新增的 ADR
+        会让它自己要拦的原型案例通过。
     """
     adr_dir = root / "docs" / "adr"
     if not adr_dir.is_dir():
@@ -169,15 +184,37 @@ def adr_references_ticket(root: Path, ticket: int) -> bool:
             head.append(line)
             if len(head) > 1 and line.startswith("## ") and line.strip().lower() != "## status":
                 break
+        # 未生效的 ADR 不是证据（先判，避免「正文提到票号」被当成归属）
+        head_text = "\n".join(head[:20])
+        if any(w in head_text for w in NOT_IN_EFFECT_WORDS):
+            continue
         scope = "\n".join(head[:12])
         if ref_re.search(scope) or issue_re.search(scope):
+            return True
+        # 回落：创建该 ADR 的 commit 标题带票号（本仓主流形态）
+        if _adr_created_by_ticket(root, md, ref_re, issue_re):
             return True
     return False
 
 
+def _adr_created_by_ticket(root: Path, adr: Path, ref_re: re.Pattern[str],
+                           issue_re: re.Pattern[str]) -> bool:
+    """该 ADR 的创建 commit 标题里是否带票号。"""
+    try:
+        rel = adr.relative_to(root)
+    except ValueError:
+        return False
+    r = run(["git", "log", "--diff-filter=A", "--format=%s", "-1", "--", str(rel)], cwd=root)
+    if r.returncode != 0:
+        return False
+    subject = r.stdout.strip()
+    return bool(ref_re.search(subject) or issue_re.search(subject))
+
+
 def commit_messages(root: Path, branch: str) -> list[str]:
-    r = run(["git", "rev-parse", "--abbrev-ref", f"{branch}@{{u}}"], cwd=root)
-    base = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "origin/main"
+    base = base_ref(root, branch)
+    if base is None:
+        return []
     r = run(["git", "log", "--format=%B", f"{base}..HEAD"], cwd=root)
     if r.returncode != 0:
         return []
@@ -332,6 +369,35 @@ def selftest() -> int:
             print("  FAIL 票号边界：#535 的 ADR 不应让票 53 通过")
         else:
             print("  ok   票号边界：#535 不误命中票 53")
+
+    # ---- 绕过路径 E：未实施的 ADR 不得充当证据 ---------------------------
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        adr_dir = tmp / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "0001-pending.md").write_text(
+            "# ADR 0001: 某决策\n\n## Status\n\n**Accepted 但未实施**（#66）\n"
+        )
+        if adr_references_ticket(tmp, 66):
+            bad += 1
+            print("  FAIL 未实施的 ADR 不应算作该票证据")
+        else:
+            print("  ok   未实施的 ADR 不算证据")
+
+    # ---- 绕过路径 F：Superseded-in-part 不得被当成「未生效」 ---------------
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        adr_dir = tmp / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "0001-partial.md").write_text(
+            "# ADR 0001: 某决策\n\n## Status\n\nAccepted（2026-11-12，#77）\n\n"
+            "Superseded-in-part：ADR 0002 取代本 ADR 决策 4 的默认数值（其余继续有效）。\n"
+        )
+        if adr_references_ticket(tmp, 77):
+            print("  ok   Superseded-in-part 仍算生效证据")
+        else:
+            bad += 1
+            print("  FAIL Superseded-in-part 是部分取代，ADR 整体仍生效，不应被排除")
 
     # ---- 绕过路径 D：基准不可判定时不得 fail-open --------------------------
     with tempfile.TemporaryDirectory() as td:

@@ -145,7 +145,9 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
     # 逃生口 DZ_ALLOW_FLOW=1；脚本缺失时降级为 warning，不让护栏本身成为单点故障。
     if command -v python3 >/dev/null 2>&1; then
         if [ -f scripts/check_flow.py ]; then
-            if ! python3 scripts/check_flow.py </dev/null; then
+            # 传 $branch：hook 可能在一次 push 里处理多个 ref（`git push origin a b` / --all），
+            # 判当前 HEAD 会漏掉「HEAD 合规、另一个被推的 ref 违规」。
+            if ! python3 scripts/check_flow.py --branch "$branch" </dev/null; then
                 if [ "${DZ_ALLOW_FLOW:-0}" = "1" ]; then
                     warn "WARNING: dev flow order check failed, allowed by DZ_ALLOW_FLOW=1 (emergency only)"
                 else
