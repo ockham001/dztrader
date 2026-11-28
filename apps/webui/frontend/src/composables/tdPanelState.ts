@@ -1,14 +1,14 @@
 /**
- * 仪表盘交易面板（持仓 / 资金）的空态状态机（#358）。
+ * 仪表盘交易面板（持仓 / 资金 / 委托）的空态状态机（#358，委托于 #530 接入）。
  *
- * 为什么单独成模块：两个面板的空态判定必须**同源**——「无法确认数据」和「确实没有数据」
+ * 为什么单独成模块：各面板的空态判定必须**同源**——「无法确认数据」和「确实没有数据」
  * 在下游不可区分时会渲染成同一句「暂无」，而两者对盯盘读者的含义完全相反
- * （一个要排查网关，一个是正常的空仓）。把判定抽成纯函数后，两个面板只负责渲染，
+ * （一个要排查网关，一个是正常的空仓）。把判定抽成纯函数后，各面板只负责渲染，
  * 判定逻辑只有一份、可被 spec 逐态固定（契约 webui-ws §5 第 13 条）。
  */
 
 /** 面板种类：仅影响空态/提示条文案，不影响状态判定 */
-export type TdPanelKind = 'position' | 'fund'
+export type TdPanelKind = 'position' | 'fund' | 'order'
 
 /**
  * 面板空态状态（互斥）。
@@ -31,7 +31,8 @@ export interface TdPanelStateInput {
   initialized: boolean
   /** store.error：最近一次请求失败信息 */
   error: string | null
-  /** 账户全集是否非空（持仓 = accounts；资金 = rows；两者都含 envelope 的 online_accounts） */
+  /** 账户全集是否非空（持仓 = accounts；资金 = rows；委托 = rows ∪ 在线账户；
+   *  三者都含 envelope 的 `online_accounts` 兜底） */
   hasAccounts: boolean
 }
 
@@ -73,9 +74,9 @@ export function tdPanelEmptyText(state: TdPanelState, kind: TdPanelKind): string
     case 'error':
       return '加载失败'
     case 'no-accounts':
-      return kind === 'position' ? '持仓未知' : '资金未知'
+      return kind === 'position' ? '持仓未知' : kind === 'fund' ? '资金未知' : '委托未知'
     case 'empty':
-      return kind === 'position' ? '暂无持仓' : '暂无资金数据'
+      return kind === 'position' ? '暂无持仓' : kind === 'fund' ? '暂无资金数据' : '暂无委托'
   }
 }
 
@@ -88,7 +89,7 @@ export function tdPanelEmptyText(state: TdPanelState, kind: TdPanelKind): string
  * （#358 拍板记录）。
  */
 export function tdPanelUnknownBannerText(kind: TdPanelKind): string {
-  const subject = kind === 'position' ? '持仓' : '资金'
+  const subject = kind === 'position' ? '持仓' : kind === 'fund' ? '资金' : '委托'
   return `${subject}未知：交易账户未就绪（交易网关进程未运行或无已登记账户），无法确认当前${subject}；`
     + '请检查交易网关进程与账户配置'
 }

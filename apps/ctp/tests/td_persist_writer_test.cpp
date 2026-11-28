@@ -172,6 +172,16 @@ PersistPolicy fast_policy() {
     return policy;
 }
 
+/// 生产默认策略的跨模块不变量（#530 M1）：持续通知间隔 5 分钟（ADR 0042 决策 4 /
+/// 契约 td-data-sync §4）必须小于 dzweb 的去重冷却默认值（`apps/webui/config.h`
+/// 的 notify_dedup_cooldown_sec = 600s）。跨模块关系的另一半由 webui 侧
+/// `config_test.cpp` 的默认值断言锁定（两模块测试不能互相 include）。
+TEST(TdPersistPolicyDefaults, SustainedNotifyIntervalIsFiveMinutes) {
+    const PersistPolicy policy{};
+    EXPECT_EQ(policy.sustained_notify_interval, std::chrono::minutes(5))
+        << "ADR 0042 决策 4: sustained failure notification at most once per 5 minutes";
+}
+
 /// DzDate (距纪元天数) -> 日期文本的测试常量: 20696 = 20260831, 20697 = 20260901.
 constexpr int64_t kPrevTradingDay = 20696;
 constexpr int64_t kTradingDay = 20697;
@@ -730,6 +740,9 @@ TEST_F(TdPersistWriterTest, FailedBatchRetriedUntilRecovery) {
     EXPECT_EQ(errors[0].message, errors[1].message)
         << "same event must be foldable (identical text)";
 
+    // 首报 + 至少一次持续期重申（ADR 0060：持续期不降级，全部 ERROR）。
+    ASSERT_GE(recorder_.count(DZ_NOTIFY_ERROR), 2u);
+
     // 自愈: ensure_trade_db 幂等补建缺失表 (真实数据库, 不 mock).
     ASSERT_NO_THROW(tdstore::ensure_trade_db(db_path_));
 
@@ -750,11 +763,13 @@ TEST_F(TdPersistWriterTest, FailedBatchRetriedUntilRecovery) {
     const std::vector<PersistNotification> infos = recorder_.notifications_at(DZ_NOTIFY_INFO);
     ASSERT_EQ(infos.size(), 1u);
     EXPECT_FALSE(infos.front().popup);
-    // ERROR 至少 1 次（首报 + 持续期，ADR 0060：持续期不降级，全部 ERROR）；
-    // 恢复后不再新增（failing_ 已复位，若再新增说明状态机有 bug）。
-    // 这些 ERROR 在 dzweb 侧会被折叠成一条 count=N —— 折叠的前提是正文逐字相同（上方已断言）。
-    const std::size_t errors_after_recovery = recorder_.count(DZ_NOTIFY_ERROR);
-    EXPECT_GE(errors_after_recovery, 1u);
+    // 恢复后 ERROR 不再新增（failing_ 已复位；新增即状态机 bug）。
+    // 取 INFO 到达后的基线，再等超过一个通知节拍（fast_policy=50ms）确认不再增长——
+    // 避免「恢复与下一个 50ms 节拍竞争」造成的假红（#530 审查：unit-test §1.5）。
+    const std::size_t errors_at_recovery = recorder_.count(DZ_NOTIFY_ERROR);
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    EXPECT_EQ(recorder_.count(DZ_NOTIFY_ERROR), errors_at_recovery)
+        << "no new ERROR notification after recovery";
     writer.stop();
 }
 

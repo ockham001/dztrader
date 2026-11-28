@@ -66,12 +66,17 @@ function validate(): string | null {
   return null
 }
 
-async function submit(schedulesNext: TdAutoLoginSchedule[], enabledNext: boolean): Promise<void> {
+async function submit(
+  schedulesNext: TdAutoLoginSchedule[],
+  enabledNext: boolean,
+): Promise<boolean> {
   const ok = await store.setAutoLogin(props.gateway, {
     enabled: enabledNext,
     schedules: schedulesNext,
   })
-  if (!ok) toast.error(store.error ?? '排程保存失败')
+  // 超时由 usePending 统一 toast；HTTP 失败才由这里出文案，避免双 toast（与 md 侧同口径）
+  if (!ok && store.error) toast.error(store.error)
+  return ok
 }
 
 async function addSchedule(): Promise<void> {
@@ -92,7 +97,12 @@ async function removeSchedule(sch: TdAutoLoginSchedule): Promise<void> {
   const next = schedules.value.filter(
     (s) => !(s.login_time === sch.login_time && s.logout_time === sch.logout_time),
   )
-  await submit(next, enabled.value)
+  const ok = await submit(next, enabled.value)
+  // 契约 auto-login：`schedules: []` 的语义是**回落到网关内置默认排程**，不是清空。
+  // 删掉最后一条后列表会「自己长回来」——不给提示会被误认为保存失败（#530 M4）。
+  if (ok && next.length === 0) {
+    toast.info('已清空自定义时段：网关会回落到内置默认排程')
+  }
 }
 
 async function toggleEnabled(): Promise<void> {
@@ -148,7 +158,11 @@ async function toggleEnabled(): Promise<void> {
           </button>
         </div>
       </div>
-      <div v-else class="td-auto-login__hint">暂无时段（不会自动登录/登出）</div>
+      <!-- 契约 auto-login：空数组表示**回落到网关内置默认排程**，不是「没有排程」。
+           空态文案必须与契约同义，不能写成「不会自动登录/登出」（#530 M4）。 -->
+      <div v-else class="td-auto-login__hint" data-test="td-auto-login-empty">
+        无自定义时段（使用网关内置默认排程）
+      </div>
 
       <button
         type="button"

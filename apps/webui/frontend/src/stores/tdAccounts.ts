@@ -355,6 +355,20 @@ export const TD_GATEWAY_OP_TIMEOUT_MS = 30_000
  */
 export const tdGatewayPending = usePending()
 
+/**
+ * 排程写操作 pending 的 key 前缀（`tdal:{gateway}`）与兜底超时（10s，与 md 配置类操作同口径）。
+ * 契约 auto-login 的生效信号是 `RTN_AUTO_LOGIN`（非乐观）：HTTP 成功后 pending 保持，
+ * 直到 RTN 或超时清除（#530 M6）。
+ */
+export const TD_AUTO_LOGIN_PENDING_PREFIX = 'tdal:'
+export const AUTO_LOGIN_PENDING_TIMEOUT_MS = 10_000
+
+/**
+ * 排程写操作 pending 实例（独立 usePending：清除来源是 RTN_AUTO_LOGIN/超时，与账户/会话/
+ * 接口生命周期三类 pending 都不同，#530 M6 复用既有 pending 基建而非另写定时器 Map）。
+ */
+export const tdAutoLoginPending = usePending()
+
 /** 接口生命周期写操作结果（语义对齐 TdAccountSubmitResult，只少 conflict 态） */
 export type TdGatewaySubmitResult =
   | { ok: true }
@@ -383,8 +397,24 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    * 镜像由 `RTN_AUTO_LOGIN`（WS `auto_login`）填充；`GET .../auto-login` 用于首次拉取。
    */
   const autoLogins = ref<Record<string, TdAutoLoginView>>({})
-  /** 排程写操作在途（按网关名；非乐观，清 pending 只能等 `RTN_AUTO_LOGIN`） */
-  const autoLoginPending = ref<Set<string>>(new Set())
+  /**
+   * 排程写操作在途（按网关名，派生自共享 pending 实例；非乐观：HTTP 成功后保持，
+   * 直到 `RTN_AUTO_LOGIN` 或 usePending 的 10s 超时清除，#530 M6）。
+   */
+  const autoLoginPending = computed<Set<string>>(() => {
+    const set = new Set<string>()
+    for (const [key, active] of Object.entries(tdAutoLoginPending.pending)) {
+      if (active && key.startsWith(TD_AUTO_LOGIN_PENDING_PREFIX)) {
+        set.add(key.slice(TD_AUTO_LOGIN_PENDING_PREFIX.length))
+      }
+    }
+    return set
+  })
+
+  /** 排程写操作的 pending key（gateway → `tdal:{gateway}`） */
+  function autoLoginPendingKey(gateway: string): string {
+    return `${TD_AUTO_LOGIN_PENDING_PREFIX}${gateway}`
+  }
 
   // === 内部状态（非响应式）===
   /**
@@ -1105,12 +1135,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   }
 
   /**
-   * `td_rtn_status`（契约 td-status §3 / 契约 webui-ws §2.2）：按 `instance_id` = **账户 ID**
-   * 全量覆盖（ADR 0056 决策 7：账户级帧不再用 `网关名:账户ID` 复合键）。
-   * 缺 instance_id、payload 自校验不一致或字段非法的帧忽略；**不做字段清空推断**
-   *（契约 td-status §2.4/§3：清空时机由发送方决定，前端以字段值变化为准）。
-   */
-  /**
    * 收 `RTN_AUTO_LOGIN` 排程镜像（契约 auto-login，全量覆盖）。
    *
    * - 只接受 `dztd_*` 网关：md 与 td 各有排程，帧头 instance_id 是唯一区分依据；
@@ -1130,13 +1154,17 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       schedules: raw.schedules as TdAutoLoginSchedule[],
       source: 'mirror',
     }
-    autoLoginPending.value.delete(instanceId)
+    // RTN 是排程写操作的唯一权威生效信号：清 pending（usePending.resolve 一并清超时定时器）
+    tdAutoLoginPending.resolve(autoLoginPendingKey(instanceId))
   }
 
   /** 从 `GET .../auto-login` 拉一次排程基线（网关未运行时 source=unavailable） */
   async function loadAutoLogin(gateway: string): Promise<void> {
     try {
       const view = await tdGatewaysApi.getAutoLogin(gateway)
+      // 不让过期的 GET 覆盖更新的 WS 镜像：mirror 已有值时，只接受新的 mirror，
+      // 否则「未知」占位会把面板打回不可编辑并禁用（#530 M6 配套的并发守卫）。
+      if (view.source === 'unavailable' && autoLogins.value[gateway]?.source === 'mirror') return
       autoLogins.value[gateway] = view
     } catch (e) {
       // 读取失败不改镜像：保留上次已知值，由 UI 的降级展示承担
@@ -1146,21 +1174,39 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
 
   /**
    * 全量提交排程（admin，契约 auto-login：非乐观）。
-   * @returns true = 已下发生效信号待 RTN；false = HTTP 失败（error.value 已写入）
+   *
+   * pending 走共享 `usePending` 实例：HTTP 成功后保持，直到 `RTN_AUTO_LOGIN`（resolve）
+   * 或 10s 兜底超时清除；超时由 usePending 弹「排程保存超时」。避免帧丢失/网关停机时
+   * 开关与增删按钮永久禁用（#530 M6）。
+   * @returns true = 已下发、等待 RTN；false = HTTP 失败或超时（error/ toast 已给出）
    */
   async function setAutoLogin(gateway: string, body: TdAutoLoginBody): Promise<boolean> {
-    autoLoginPending.value.add(gateway)
-    try {
-      await tdGatewaysApi.setAutoLogin(gateway, body)
-      // 不预写镜像：等 RTN_AUTO_LOGIN 权威覆盖（与 md 侧同口径）
-      return true
-    } catch (e) {
-      autoLoginPending.value.delete(gateway)
-      error.value = e instanceof Error ? e.message : String(e)
-      return false
-    }
+    error.value = null // 操作级错误：本次提交开始前清掉上一次的失败文案
+    const result = await tdAutoLoginPending.run(
+      autoLoginPendingKey(gateway),
+      async () => {
+        try {
+          return await tdGatewaysApi.setAutoLogin(gateway, body)
+        } catch (e) {
+          error.value = e instanceof Error ? e.message : String(e)
+          throw e // 交给 usePending settle 清 pending；错误已写入 store
+        }
+      },
+      {
+        timeout: AUTO_LOGIN_PENDING_TIMEOUT_MS,
+        keepPendingOnSuccess: true, // 不预写镜像：等 RTN_AUTO_LOGIN 权威覆盖（与 md 侧同口径）
+        opLabel: '排程保存',
+      },
+    )
+    return result !== undefined
   }
 
+  /**
+   * `td_rtn_status`（契约 td-status §3 / 契约 webui-ws §2.2）：按 `instance_id` = **账户 ID**
+   * 全量覆盖（ADR 0056 决策 7：账户级帧不再用 `网关名:账户ID` 复合键）。
+   * 缺 instance_id、payload 自校验不一致或字段非法的帧忽略；**不做字段清空推断**
+   *（契约 td-status §2.4/§3：清空时机由发送方决定，前端以字段值变化为准）。
+   */
   function applyTdStatus(instanceId: string | undefined, payload: TdStatusPayload | undefined): void {
     if (!instanceId) return
     if (!payload || typeof payload !== 'object') return
@@ -1235,6 +1281,9 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   function dispose(): void {
     disposed = true
     clearRetry()
+    // 排程 pending 是模块级共享实例：视图卸载/登出时清掉本域的定时器与在途键，
+    // 避免 7×24 会话里残留（#530 M6）。
+    tdAutoLoginPending.clearByPrefix(TD_AUTO_LOGIN_PENDING_PREFIX)
   }
 
   return {

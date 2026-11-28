@@ -37,8 +37,10 @@ struct WebuiConfig {
     size_t notify_cache_size = 100;
     /// NOTIFY_UI 去重窗口（秒）：同一指纹在该窗口内合并计数、不重复广播（契约 notify-ui，ADR 0060）
     int notify_dedup_window_sec = 60;
-    /// NOTIFY_UI 去重冷却（秒）：同一指纹经该时长后才允许作为新条目重新出现（ADR 0060）
-    int notify_dedup_cooldown_sec = 300;
+    /// NOTIFY_UI 去重冷却（秒）：同一指纹经该时长后才允许作为新条目重新出现（ADR 0060）。
+    /// 默认必须**大于**进程侧持续故障通知间隔（td 持久化 5 分钟，契约 td-data-sync §4），
+    /// 否则持续故障每次通知都跨冷却成为新条目、`count` 无法折叠（ADR 0061 / #530 M1）。
+    int notify_dedup_cooldown_sec = 600;
 };
 
 /// 判断监听地址是否只对回环可达（#201：管理面无 TLS，非回环即在网络上明文可达）。

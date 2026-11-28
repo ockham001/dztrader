@@ -29,8 +29,10 @@ class NotifyCache {
 public:
     /// @param max_size 环形缓存上限，0 = 禁用写入
     /// @param dedup_window_sec 去重窗口（秒），<=0 表示关闭去重
-    /// @param dedup_cooldown_sec 冷却（秒），<=0 表示不设冷却（永不作为新条目重现）
-    explicit NotifyCache(size_t max_size, int dedup_window_sec = 60, int dedup_cooldown_sec = 300)
+    /// @param dedup_cooldown_sec 冷却（秒），<=0 表示不设冷却（永不作为新条目重现）。
+    ///        默认 600（ADR 0061）：必须大于产生侧持续故障通知间隔（td 持久化 5 分钟），
+    ///        否则持续故障每条通知都跨冷却成为新条目、`count` 无法累加。
+    explicit NotifyCache(size_t max_size, int dedup_window_sec = 60, int dedup_cooldown_sec = 600)
         : max_size_(max_size),
           dedup_window_sec_(dedup_window_sec),
           dedup_cooldown_sec_(dedup_cooldown_sec) {}

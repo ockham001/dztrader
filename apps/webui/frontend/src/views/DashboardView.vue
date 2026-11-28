@@ -239,12 +239,14 @@ const fundRowsView = computed(() => fundsStore.rows.map(row => ({
 // 评审实测（2026-11-18 仪表盘评审 P0-1）：`/api/td/accounts` 回 available:false 而
 // `/api/td/positions` 回 available:true + items:[] 时，屏幕渲染成「暂无持仓 + 绿 0/0」——
 // 「无法确认数据」被说成「空仓正常」。判定抽到 `composables/tdPanelState` 纯函数里，
-// 两个面板消费同一个状态机（五态互斥，优先级 degraded → loading → error → no-accounts → empty）。
+// 持仓/资金/委托三个面板消费同一个状态机（五态互斥，优先级 degraded → loading → error →
+// no-accounts → empty）；三个 store 的公共字段映射收敛在 panelStateOf（同一事实只有一处）。
 //
 // 「账户全集」的取法（各面板按其 store 的账户真相源）：
 // - 持仓：`accounts`（在线 ∪ 已返回行的 account_id，契约 webui-ws §5 第 11 条）；
-// - 资金：`rows`（一行 = 一个已登记账户，含离线与 has_data:false，契约 rest §2.9.4）。
-// 两者都并入 `onlineAccounts`：信封声明有在线账户时，即使行集为空也是「已知账户，无数据」。
+// - 资金：`rows`（一行 = 一个已登记账户，含离线与 has_data:false，契约 rest §2.9.4）；
+// - 委托：`rows`（有委托行即已知账户）/ `onlineAccounts`（无行但有在线账户 = 已知空数据）。
+// 三者都并入 `onlineAccounts`：信封声明有在线账户时，即使行集为空也是「已知账户，无数据」。
 // 这个兜底在稳态下是冗余的（store 保证账户全集 ⊇ 在线集合），保留是为了覆盖基线翻页的
 // 中间窗口——`loadBaseline` 逐页 await 期间先写 `onlineAccounts`、翻完才重建账户全集，
 // 那一瞬「在线集合非空而账户全集还是空的」确实成立。
@@ -259,23 +261,34 @@ const fundHasAccounts = computed<boolean>(
   () => fundsStore.rows.length > 0 || fundsStore.onlineAccounts.length > 0,
 )
 
+/** 三个列表 store 在「空态判定」上的公共字段（持仓/资金/委托同形） */
+interface TdPanelStateSource {
+  available: boolean
+  loading: boolean
+  initialized: boolean
+  error: string | null
+}
+
+/** store 字段 → 五态状态机的唯一映射（避免三份逐字同构的 computed） */
+function panelStateOf(source: TdPanelStateSource, hasAccounts: boolean): TdPanelState {
+  return tdPanelState({
+    available: source.available,
+    loading: source.loading,
+    initialized: source.initialized,
+    error: source.error,
+    hasAccounts,
+  })
+}
+
 /** 持仓面板空态状态（仅在无行可渲染时消费；有行时空态槽位不渲染） */
-const positionPanelState = computed<TdPanelState>(() => tdPanelState({
-  available: positionsStore.available,
-  loading: positionsStore.loading,
-  initialized: positionsStore.initialized,
-  error: positionsStore.error,
-  hasAccounts: positionHasAccounts.value,
-}))
+const positionPanelState = computed<TdPanelState>(
+  () => panelStateOf(positionsStore, positionHasAccounts.value),
+)
 
 /** 资金面板空态状态（同上） */
-const fundPanelState = computed<TdPanelState>(() => tdPanelState({
-  available: fundsStore.available,
-  loading: fundsStore.loading,
-  initialized: fundsStore.initialized,
-  error: fundsStore.error,
-  hasAccounts: fundHasAccounts.value,
-}))
+const fundPanelState = computed<TdPanelState>(
+  () => panelStateOf(fundsStore, fundHasAccounts.value),
+)
 
 /** 持仓空态槽位文案（降级 / 加载中 / 加载失败 / 持仓未知 / 暂无持仓 五选一） */
 const positionEmptyText = computed<string>(() => tdPanelEmptyText(positionPanelState.value, 'position'))
@@ -383,6 +396,30 @@ const visibleOrderRows = computed(() =>
   onlyPending.value
     ? orderRows.value.filter(r => r.icon === 'pending')
     : orderRows.value,
+)
+
+/** 委托面板是否已知账户（在线账户或已有委托行）——决定「委托未知」还是「暂无委托」 */
+const orderHasAccounts = computed<boolean>(
+  () => ordersStore.rows.length > 0 || ordersStore.onlineAccounts.length > 0,
+)
+
+/** 委托面板空态状态（与持仓/资金同一状态机：degraded → loading → error → no-accounts → empty） */
+const orderPanelState = computed<TdPanelState>(
+  () => panelStateOf(ordersStore, orderHasAccounts.value),
+)
+
+/** 委托空态槽位文案（降级 / 加载中 / 加载失败 / 委托未知 / 暂无委托 五选一） */
+const orderEmptyText = computed<string>(() => tdPanelEmptyText(orderPanelState.value, 'order'))
+
+/** 委托未知态提示条文案（no-accounts 时渲染，中性色，与持仓/资金同口径） */
+const orderUnknownBanner = computed<string>(() => tdPanelUnknownBannerText('order'))
+
+/** 空表槽位文案：只有「状态机确认 empty + 仅挂单过滤」时「无挂单」才是已知事实；
+ *  降级/加载/失败/未知时必须先说状态（不得把「无法确认」说成「无挂单」）。 */
+const orderEmptySlotText = computed<string>(() =>
+  onlyPending.value && orderRows.value.length > 0 && orderPanelState.value === 'empty'
+    ? '无挂单'
+    : orderEmptyText.value,
 )
 
 const strategyList: StrategyRow[] = [
@@ -887,6 +924,30 @@ onUnmounted(() => {
                 <span data-test="orders-aggregate" class="dashboard-panel__aggregate dashboard-panel__aggregate--clickable" title="点击切换 笔数/手数">{{ ordersAggregate }}</span>
               </div>
             </div>
+            <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据）。
+                 委托面板与持仓/资金面板共用 tdPanelState 状态机（#530 M2）：REST 降级/失败时
+                 不得把「无法确认」显示成「暂无委托」。 -->
+            <div
+              v-if="!ordersStore.available"
+              class="ds-alert ds-alert--warning dashboard-pos-degraded"
+              role="status"
+              data-test="orders-degraded-banner"
+            >
+              <span class="ds-alert__icon"><Icon name="Tips" :size="14" /></span>
+              <span>{{ ordersStore.degradedText }}</span>
+            </div>
+            <div
+              v-if="orderPanelState === 'no-accounts'"
+              class="dashboard-pos-unknown"
+              role="status"
+              data-test="orders-unknown-banner"
+            >
+              <span class="dashboard-pos-unknown__icon"><Icon name="Tips" :size="14" /></span>
+              <span>{{ orderUnknownBanner }}</span>
+            </div>
+            <div v-if="ordersStore.error" class="dashboard-pos-error" role="alert" data-test="orders-error">
+              {{ ordersStore.error }}
+            </div>
             <div class="auto-scroll">
               <table class="ds-table ds-table--dense dashboard-panel__table--stretch">
                 <thead class="dashboard-panel__thead">
@@ -920,10 +981,11 @@ onUnmounted(() => {
                       <span v-else class="ds-tag dashboard-panel__tag dashboard-panel__tag--muted">{{ ord.tagText }}</span>
                     </td>
                   </tr>
-                  <!-- 空态：无委托时不显示假数据 -->
+                  <!-- 空态：五态互斥（降级 / 加载中 / 加载失败 / 委托未知 / 暂无委托），
+                       与持仓/资金面板同一判定逻辑；不显示假数据（#530 M2）。 -->
                   <tr v-if="visibleOrderRows.length === 0">
                     <td colspan="9" class="cell-muted cell-center" data-test="orders-empty">
-                      {{ onlyPending ? '无挂单' : '暂无委托' }}
+                      {{ orderEmptySlotText }}
                     </td>
                   </tr>
                 </tbody>

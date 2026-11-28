@@ -1,7 +1,7 @@
 // NotifyDomainService 单测（契约 notify-ui / ADR 0060 决策 4/5）。
 //
 // 覆盖的是**服务层编排**（NotifyCache 自身的折叠算法由 notify_cache_test.cpp 覆盖）：
-// - 未命中折叠 → 写入缓存 + 广播原 payload
+// - 未命中折叠 → 写入缓存 + 广播**补齐 count** 后的条目（不是原 payload）
 // - 命中折叠 → 不新增缓存条目 + 广播**折叠后**的 payload（count 已累加）
 // - 转发日志降级为 DEBUG（ADR 0060 决策 5：转发不是独立事件，不得以 WARN 再报一次）
 #include "notify_cache.h"

@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import TdAutoLoginPanel from '../TdAutoLoginPanel.vue'
-import { useTdAccountsStore } from '@/stores/tdAccounts'
+import {
+  TD_AUTO_LOGIN_PENDING_PREFIX,
+  tdAutoLoginPending,
+  useTdAccountsStore,
+} from '@/stores/tdAccounts'
+import { useToastStore } from '@/stores/toast'
 import { tdGatewaysApi } from '@/api/tdGateways'
 
 vi.mock('@/api/td', () => ({ tdApi: {} }))
@@ -66,6 +71,9 @@ describe('TdAutoLoginPanel 交易接口排程', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.resetAllMocks()
+    // 排程 pending 是模块级 usePending 单例（跨 pinia 实例存活）：用例间必须重置，
+    // 否则上一个用例的非乐观 pending 会让下一个用例的按钮一直 disabled。
+    tdAutoLoginPending.__resetForTests()
   })
 
   it('显示已启用状态与时段列表', () => {
@@ -149,6 +157,34 @@ describe('TdAutoLoginPanel 交易接口排程', () => {
     })
   })
 
+  // #530 M4：契约 auto-login 的 `schedules: []` = 回落网关内置默认排程，不是「清空」。
+  // 删掉最后一条时段后列表会自己长回来，必须给出提示，否则用户会认为保存失败。
+  it('删光最后一个时段：提交空表 + 提示「回落到内置默认排程」', async () => {
+    seedAutoLogin({ schedules: [{ login_time: '08:45', logout_time: '15:45' }] })
+    vi.mocked(tdGatewaysApi.setAutoLogin).mockResolvedValue({ ok: true })
+    const toast = useToastStore()
+    const infoSpy = vi.spyOn(toast, 'info')
+    const w = mountPanel()
+
+    await w.get('.td-auto-login__remove').trigger('click')
+    await flushPromises()
+
+    expect(tdGatewaysApi.setAutoLogin).toHaveBeenCalledWith(GATEWAY, {
+      enabled: true,
+      schedules: [],
+    })
+    expect(infoSpy).toHaveBeenCalledTimes(1)
+    expect(String(infoSpy.mock.calls[0][0])).toContain('内置默认排程')
+  })
+
+  it('mirror 为空表时文案说明「使用内置默认排程」，不写「不会自动登录」', () => {
+    seedAutoLogin({ schedules: [] })
+    const w = mountPanel()
+    const empty = w.get('[data-test="td-auto-login-empty"]').text()
+    expect(empty).toContain('内置默认排程')
+    expect(empty).not.toContain('不会自动登录')
+  })
+
   it('添加时段：登录时间等于登出时间被前端挡住，不发请求', async () => {
     seedAutoLogin({ schedules: [] })
     const w = mountPanel()
@@ -185,6 +221,7 @@ describe('TdAutoLoginPanel 交易接口排程', () => {
 describe('tdAccounts.applyAutoLogin 分流与守卫', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    tdAutoLoginPending.__resetForTests()
   })
 
   it('只接受 dztd_* 网关（md 的排程不得写进 td 镜像）', () => {
@@ -202,9 +239,14 @@ describe('tdAccounts.applyAutoLogin 分流与守卫', () => {
     expect(store.autoLogins[GATEWAY]).toBe(before)
   })
 
-  it('RTN 到达清 pending', () => {
+  it('RTN 到达清 pending', async () => {
     const store = useTdAccountsStore()
-    store.autoLoginPending.add(GATEWAY)
+    await tdAutoLoginPending.run(
+      `${TD_AUTO_LOGIN_PENDING_PREFIX}${GATEWAY}`,
+      async () => ({ ok: true }),
+    )
+    expect(store.autoLoginPending.has(GATEWAY)).toBe(true)
+
     store.applyAutoLogin(GATEWAY, { enabled: false, schedules: [] })
     expect(store.autoLoginPending.has(GATEWAY)).toBe(false)
   })

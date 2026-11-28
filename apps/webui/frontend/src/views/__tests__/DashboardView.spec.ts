@@ -631,6 +631,59 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
+  // #530 M2：委托面板与持仓/资金共用 tdPanelState——降级/未知不得显示成「暂无委托」。
+  it('委托降级（available:false）显示降级提示，不把「无法确认」说成「暂无委托」', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue({ available: false, reason: 'not_found' })
+    const w = await mountDashboard()
+    expect(w.find('[data-test="orders-degraded-banner"]').exists()).toBe(true)
+    const empty = w.get('[data-test="orders-empty"]').text()
+    expect(empty).toContain('交易数据暂不可用')
+    expect(empty).not.toContain('暂无委托')
+    w.unmount()
+  })
+
+  it('委托基线可用但账户全集为空 → 「委托未知」+ 未知提示条（不得说暂无委托）', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([], { online_accounts: [] }))
+    const w = await mountDashboard()
+    expect(w.get('[data-test="orders-empty"]').text()).toContain('委托未知')
+    expect(w.find('[data-test="orders-unknown-banner"]').exists()).toBe(true)
+    w.unmount()
+  })
+
+  it('委托基线成功后再刷新失败 → 「加载失败」+ 错误行（不显示暂无委托）', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([]))
+    const w = await mountDashboard()
+    expect(w.find('[data-test="orders-error"]').exists()).toBe(false)
+
+    // initialized=true 后失败：error 态优先于 empty（五态互斥）
+    const store = useTdOrdersStore()
+    vi.mocked(tdApi.getOrders).mockRejectedValue(new Error('boom'))
+    await store.resetAndReload()
+    await flushPromises()
+
+    expect(w.find('[data-test="orders-error"]').exists()).toBe(true)
+    expect(w.get('[data-test="orders-empty"]').text()).toContain('加载失败')
+    expect(w.get('[data-test="orders-empty"]').text()).not.toContain('暂无委托')
+    w.unmount()
+  })
+
+  it('仅挂单过滤 + 委托降级 → 显示降级文案而不是「无挂单」', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
+      order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '001' }),
+    ]))
+    const w = await mountDashboard()
+    // 过滤后无挂单行，但数据面是「降级」而非「确实没有挂单」
+    await w.get('.dashboard-panel--orders input[type="checkbox"]').setValue(true)
+    vi.mocked(tdApi.getOrders).mockResolvedValue({ available: false, reason: 'not_found' })
+    await useTdOrdersStore().resetAndReload()
+    await flushPromises()
+
+    const empty = w.get('[data-test="orders-empty"]').text()
+    expect(empty).toContain('交易数据暂不可用')
+    expect(empty).not.toContain('无挂单')
+    w.unmount()
+  })
+
   it('「仅挂单」复选框过滤到未成交/部分成交', async () => {
     vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
       order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '003' }),

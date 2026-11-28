@@ -687,3 +687,30 @@ describe('Topbar banner 地标（#380）', () => {
     expect(wrapper.findAll('h1, h2, h3, h4, h5, h6')).toHaveLength(0)
   })
 })
+
+// #530 B1：消息中心抽屉内含 `position: fixed` 的 Modal 遮罩。topbar 是 sticky + z-index:90
+// 且 @supports 下有 backdrop-filter（fixed 后代的包含块），内联渲染会把遮罩压成 32px 条并
+// 困在 90 层（侧栏 300 会盖住）。这里锁定「抽屉被 Teleport 到 body、不在 topbar 内部」。
+describe('Topbar 消息中心抽屉的浮层层级（#530 B1）', () => {
+  it('打开抽屉后 modal-overlay 挂在 body 下，不被 topbar 的堆叠上下文/包含块困住', async () => {
+    vi.mocked(sysmonApi.getSnapshot).mockResolvedValue(makeSysmonSnapshot())
+    const wrapper = await mountTopbar()
+    await wrapper.get('[data-test="topbar-notify"]').trigger('click')
+    await flushPromises()
+
+    const overlay = document.body.querySelector('.modal-overlay')
+    expect(overlay).not.toBeNull()
+    // 关键断言：遮罩的祖先链里不能有 .topbar（sticky + z-index:90 + backdrop-filter）
+    expect(overlay!.closest('.topbar')).toBeNull()
+    expect(overlay!.parentElement).toBe(document.body)
+  })
+
+  it('源码护栏：NotifyDrawer 必须包在 <Teleport to="body"> 内（防止回归为内联渲染）', () => {
+    const teleportAt = TOPBAR_SOURCE.indexOf('<Teleport to="body">')
+    expect(teleportAt).toBeGreaterThan(-1)
+    const drawerAt = TOPBAR_SOURCE.indexOf('<NotifyDrawer', teleportAt)
+    expect(drawerAt).toBeGreaterThan(teleportAt)
+    // Teleport 必须覆盖 NotifyDrawer（结束标签在抽屉之后）
+    expect(TOPBAR_SOURCE.indexOf('</Teleport>', drawerAt)).toBeGreaterThan(drawerAt)
+  })
+})

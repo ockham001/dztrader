@@ -16,7 +16,8 @@ namespace dztrader::webui {
 /// 处理顺序（**折叠先于缓存**，两者都在 `NotifyCache` 内，保证唯一漏斗）：
 /// 1. `NotifyCache::try_fold` 判是否命中已有条目：
 ///    - 命中 → 就地 `count++` / 更新时间戳，广播**折叠后的 payload**（不新增条目）；
-///    - 未命中 → `NotifyCache::add`（补 `count=1`）后广播原 payload。
+///    - 未命中 → `NotifyCache::add`（补 `count=1`）后广播**补齐后的条目**（不是原 payload，
+///      否则 WS 增量缺 `count`，与 REST 基线不同形）。
 /// 2. 转发日志用 DEBUG（ADR 0060 决策 5）：转发轨迹不是独立事件，
 ///    不得以 WARN 形态再报一次（旧实现把 error 通知打成 WARN，导致同一事件日志里出现两个级别）。
 ///

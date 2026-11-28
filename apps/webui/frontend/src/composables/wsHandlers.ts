@@ -28,6 +28,19 @@ import type { ProcessStatusPayload, MdConfigPayload, TdConfigPayload, TdStatusPa
 const TAIL_REASON_SELF_LOGS = 'self_logs_cannot_be_tailed'
 const TAIL_REASON_SEND_FAILURES = 'send failures'
 
+/**
+ * 契约 auto-login：排程是**进程级**，md（`dzmd_*`）与 td（`dztd_*`）各有自己的镜像，
+ * 帧头 `instance_id` 前缀是唯一区分依据。快照与增量必须走**同一个分流函数**（#530 M5）：
+ * 之前 snapshot 分支无条件喂 `mdConfigStore`，重连后 td 镜像不恢复、悬挂 pending 也不清。
+ */
+function applyAutoLoginBySource(instanceId: string, payload: unknown): void {
+  if (instanceId.startsWith('dztd_')) {
+    useTdAccountsStore().applyAutoLogin(instanceId, payload)
+  } else {
+    useMdConfigStore().applyAutoLogin(instanceId, payload)
+  }
+}
+
 registerHandler('data_changed', (payload) => {
   // 多设备同步：后端数据变更时推送通知，前端按 scope 重新 REST 刷新
   const scope = (payload as { scope?: string } | undefined)?.scope
@@ -165,8 +178,9 @@ registerHandler('snapshot', (payload) => {
           mdConfigStore.applyMdStatus({ source: instanceId, status: value as Record<string, unknown> })
           break
         case 'auto_login':
-          // 契约 auto-login: snapshot 分发复用增量帧 apply（重连后恢复排程/自动登录镜像）
-          mdConfigStore.applyAutoLogin(instanceId, value)
+          // 契约 auto-login / 契约 webui-ws §6：重连后从快照恢复排程镜像并清悬挂 pending。
+          // 与增量帧共用分流函数：dztd_* → td store，其余 → md store（#530 M5）。
+          applyAutoLoginBySource(instanceId, value)
           break
         case 'md_shm_config':
           // 契约 shm: snapshot 分发复用增量帧 apply（展示镜像 + 清悬挂 pending）
@@ -274,15 +288,10 @@ registerHandler('md_rtn_config', (payload) => {
 
 registerHandler('auto_login', (payload, instanceId) => {
   // 契约 auto-login: RTN_AUTO_LOGIN → WS auto_login 消息 (data: {enabled, schedules}, 始终全量)
-  // P6 修复: 排程/自动登录单一真相源——前端镜像 + 全量提交 SET_AUTO_LOGIN
-  // 分流（契约 rest §2.10 起交易接口也有排程）：instance_id = 网关进程名，
-  // md 与 td 各有自己的排程镜像，靠前缀区分，互不覆盖。
+  // P6 修复: 排程/自动登录单一真相源——前端镜像 + 全量提交 SET_AUTO_LOGIN。
+  // 分流由 applyAutoLoginBySource 统一承担（快照与增量同源，#530 M5）。
   if (!instanceId) return
-  if (instanceId.startsWith('dztd_')) {
-    useTdAccountsStore().applyAutoLogin(instanceId, payload)
-  } else {
-    useMdConfigStore().applyAutoLogin(instanceId, payload)
-  }
+  applyAutoLoginBySource(instanceId, payload)
 })
 
 registerHandler('notify_ui', (payload) => {

@@ -331,11 +331,29 @@ void TdGatewayCtrl::set_auto_login(const drogon::HttpRequestPtr& req,
             merged = *current;
         }
     }
-    for (auto it = body.begin(); it != body.end(); ++it) {
-        if (it.value().is_null()) {
-            merged.erase(it.key());
-            continue;
+    // 契约 auto-login 显式规定：本帧**任何位置**出现 null 均为校验失败（不是 RFC 7386 的
+    // 删键语义；该条针对 null，优先于总则 §8 对**未知字段**的前向兼容——null 不是未知字段，
+    // 是显式非法值）。已知字段的 null 在 validate 阶段也会 400；这里提前统一收口，
+    // 避免把含 null 的 body 原样下发给网关（#530 M4）。递归检查后 400 invalid_auto_login。
+    bool has_null = false;
+    const std::function<void(const nlohmann::json&)> find_null = [&](const nlohmann::json& node) {
+        if (has_null) return;
+        if (node.is_null()) {
+            has_null = true;
+            return;
         }
+        if (node.is_object() || node.is_array()) {
+            for (const auto& child : node) find_null(child);
+        }
+    };
+    find_null(body);
+    if (has_null) {
+        SPDLOG_WARN("td auto-login set rejected | name={} reason=\"patch contains null\"", name);
+        callback(error_with_code(drogon::k400BadRequest, "null field is not allowed",
+                                 "invalid_auto_login"));
+        return;
+    }
+    for (auto it = body.begin(); it != body.end(); ++it) {
         merged[it.key()] = it.value();
     }
     if (auto err = platform::AutoLoginConfig::validate(merged); err.has_value()) {

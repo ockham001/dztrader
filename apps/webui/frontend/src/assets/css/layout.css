@@ -37,8 +37,8 @@
    - z-index 9500：skip link 聚焦时必须压在**任何**会在它上面落地的浮层之上。
      实测叠层（全仓 grep）：顶栏 90 / 抽屉 150 / 下拉 200–210 / 侧栏 300 /
      业务 Modal 遮罩 1000 / **默认口令 banner 9000**（App.vue 的 .default-password-banner，
-     fixed + top:16px）/ toast 9998–9999（ToastContainer 的 error 容器 9998、
-     其余 9999；ADR 0060 删除了原 10000 的阻断式遮罩弹窗，toast 现为最高层）。
+     fixed + top:16px）/ toast 9999（ToastContainer 单容器；ADR 0060 删除了原 10000 的
+     阻断式遮罩弹窗，toast 现为最高层）。
      9000 那一层是硬冲突：390 宽时 banner 的 min-width 360px 几乎横满视口、
      正好压住左上的 skip link —— 聚焦后读屏已宣读、键盘用户却看不见（#380 复核实测
      elementFromPoint 命中 banner）。所以取 9500：**高于口令 banner、低于 toast**。
