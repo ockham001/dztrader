@@ -76,7 +76,6 @@ EXEMPT_PREFIXES = (
 EXEMPT_FILES = {"AGENTS.md", "README.md", "CLAUDE.md", "GLOSSARY.md", "DESIGN.md", "PRODUCT.md"}
 
 BRANCH_RE = re.compile(r"^(?:feat|fix|docs|test|chore|ci|refactor|perf|style|build)/issue-(\d+)-")
-ADR_REF_RE = re.compile(r"#(\d+)\b")
 
 
 def fail(msg: str) -> None:
@@ -92,14 +91,6 @@ def repo_root() -> Path | None:
     if r.returncode != 0:
         return None
     return Path(r.stdout.strip())
-
-
-def current_branch(root: Path) -> str | None:
-    r = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=root)
-    if r.returncode != 0:
-        return None
-    name = r.stdout.strip()
-    return None if name == "HEAD" else name
 
 
 def base_ref(root: Path, branch: str) -> str | None:
@@ -118,14 +109,21 @@ def base_ref(root: Path, branch: str) -> str | None:
     return None
 
 
-def changed_files(root: Path, branch: str) -> list[str]:
-    """分支相对基准的改动文件。基准不可判定时返回空（由调用方决定是否放行）。"""
+def changed_files(root: Path, branch: str) -> list[str] | None:
+    """分支相对基准的改动文件。
+
+    基准不可判定时返回 **None**（环境错误），而不是空列表。
+    返回空列表会被上层判成「0 个实现文件 → 豁免 → 通过」，即 fail-open——
+    2026-11-28 实测过：无 upstream 且无 origin/main 的仓库里，改 libs/*.cpp 无 ADR
+    也照样 exit 0。此栏与 review_marker / md_lock_marker 的口径一致：
+    git 环境不可用属环境错误（退出码 2），不是放行理由。
+    """
     base = base_ref(root, branch)
     if base is None:
-        return []
+        return None
     r = run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=root)
     if r.returncode != 0:
-        return []
+        return None
     return [f for f in r.stdout.splitlines() if f.strip()]
 
 
@@ -146,21 +144,25 @@ def adr_references_ticket(root: Path, ticket: int) -> bool:
     """ADR 是否**为该票而写**。
 
     判据比「文中出现 #N」严格：只看标题行与 Status 段。
-    2026-11-28 实测到漏洞——一篇与决策无关的 ADR 只要在正文里偶然写一句
-    「历史背景见 #N（与本决策无关）」，就能让守卫误放行。审查子代理当时就是
-    用这个手法验证绕过路径的。真实 ADR 的票号出现在标题（`# ADR 00NN: …(#N)`）
-    或 Status 段（`Accepted（…，#N / #NNN）`），正文提及不构成归属。
+    2026-11-28 实测到两个漏洞：
+      1) 一篇与决策无关的 ADR 只要在正文里偶然写一句「历史背景见 #N（与本决策无关）」，
+         就能让守卫误放行（审查子代理当时就是以此验证绕过路径的）。
+         真实 ADR 的票号出现在标题（`# ADR 00NN: …(#N)`）或 Status 段
+         （`Accepted（…，#N / #NNN）`），正文提及不构成归属。
+      2) 纯子串匹配会让短票号命中长票号：`#53` 命中 `#535`。必须加数字边界。
     """
     adr_dir = root / "docs" / "adr"
     if not adr_dir.is_dir():
         return False
-    needle_issue = f"issue-{ticket}"
+    # 数字边界：前后都不能紧邻数字，避免 #53 命中 #535。
+    ref_re = re.compile(rf"(?<!\d)#{ticket}(?!\d)")
+    issue_re = re.compile(rf"(?<![\w-])issue-{ticket}(?!\d)")
     for md in adr_dir.glob("*.md"):
         try:
             text = md.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        # 头部区域：标题 + 首个二级标题之前的 Status 段
+        # 头部区域：标题 + 首个非 Status 的二级标题之前
         lines = text.splitlines()
         head: list[str] = []
         for line in lines:
@@ -168,7 +170,7 @@ def adr_references_ticket(root: Path, ticket: int) -> bool:
             if len(head) > 1 and line.startswith("## ") and line.strip().lower() != "## status":
                 break
         scope = "\n".join(head[:12])
-        if f"#{ticket}" in scope or needle_issue in scope:
+        if ref_re.search(scope) or issue_re.search(scope):
             return True
     return False
 
@@ -214,6 +216,10 @@ def evaluate(branch: str | None, files: list[str], adr_ok: bool, spec_ok: bool) 
 
 def explain(root: Path, branch: str | None) -> int:
     files = changed_files(root, branch) if branch else []
+    if files is None:
+        print(f"branch      : {branch}")
+        print("changed     : 无法确定比较基准（环境错误）")
+        return 2
     impl = [f for f in files if is_impl(f)]
     ticket = ticket_from_branch(branch) if branch else None
     adr_ok = adr_references_ticket(root, ticket) if ticket else False
@@ -306,6 +312,37 @@ def selftest() -> int:
         else:
             bad += 1
             print("  FAIL ADR 归属：Status 段声明应算")
+        # 数字边界：短票号不得被长票号命中
+        if adr_references_ticket(tmp, 8):
+            bad += 1
+            print("  FAIL 票号边界：#88 的 ADR 不应让票 8 通过")
+        else:
+            print("  ok   票号边界：#88 不误命中票 8")
+
+    # ---- 绕过路径 C：短票号被子串命中（#53 vs #535）----------------------
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        adr_dir = tmp / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        (adr_dir / "0001-long.md").write_text(
+            "# ADR 0001: 长票号\n\n## Status\n\nAccepted（2026-11-28，#535）\n"
+        )
+        if adr_references_ticket(tmp, 53):
+            bad += 1
+            print("  FAIL 票号边界：#535 的 ADR 不应让票 53 通过")
+        else:
+            print("  ok   票号边界：#535 不误命中票 53")
+
+    # ---- 绕过路径 D：基准不可判定时不得 fail-open --------------------------
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        # 空仓库：无提交、无分支、无 remote → base_ref 必然返回 None
+        run(["git", "init", "-q"], cwd=tmp)
+        if changed_files(tmp, "nobranch") is None:
+            print("  ok   基准不可判定 → 返回 None（不 fail-open）")
+        else:
+            bad += 1
+            print("  FAIL 基准不可判定时应返回 None 而非空列表")
 
     print(f"\nselftest: {'PASS' if bad == 0 else f'{bad} FAILED'}")
     return 0 if bad == 0 else 1
@@ -346,6 +383,9 @@ def main() -> int:
         return explain(root, branch)
 
     files = changed_files(root, branch)
+    if files is None:
+        fail("无法确定比较基准（无 upstream / origin/main / main / master 均不可用）")
+        return 2
     ticket = ticket_from_branch(branch)
     adr_ok = adr_references_ticket(root, ticket) if ticket else False
     spec_ok = spec_evidence(root, branch, ticket) if ticket else False

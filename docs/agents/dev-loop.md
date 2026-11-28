@@ -48,7 +48,7 @@
 `scripts/check_flow.py`，两处接入：
 
 - **`.githooks/pre-push`**（真实拦截，会把 `BLOCKED` 置 1）
-- **`preflight.sh` 第 24 步**（跑 `--selftest`，保证脚本本身没退化）
+- **`preflight.sh` 的 `dev flow order (#535)` 一步**（跑 `--selftest`，保证脚本本身没退化）
 
 判据（离线、不查 GitHub）：
 

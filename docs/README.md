@@ -33,6 +33,7 @@
 | [agents/ticket-closeout.md](agents/ticket-closeout.md) | 每票收尾流程：冻结审查 / 门禁 / push scope / PR 与合并 / CI 等待 / 关 issue / 清理与工作区交还 |
 | [agents/review-checklist.md](agents/review-checklist.md) | 审查清单：AC 逐条核对 + 高频 finding 分类（注释漂移 / 恒真弱断言 / 删除不彻底 / 同一事实两处定义 / 术语口径 / 诊断消息形态 / 共用 helper 改动），每类附本波实例 |
 | [agents/retro-evidence.md](agents/retro-evidence.md) | 复盘取证：本项目 DSH 会话日志位置、事件格式、按票号映射会话与提取命令 |
+| [agents/dev-loop.md](agents/dev-loop.md) | 标准开发循环：七步全序列（设计定稿 → 立 spec → 拆票 → 实现 → 审查 → 收尾 → 交接）、上下文纪律、`to-tickets` 停点与被跳过的根因、`check_flow.py` 守卫判据、备选入口、维护节奏 |
 
 与 [development-checklist.md](development-checklist.md) 的分工：checklist 是**门禁清单的权威来源**（前端/后台/提交前三段），AGENTS.md 是硬门禁与工作方式的权威来源。
 

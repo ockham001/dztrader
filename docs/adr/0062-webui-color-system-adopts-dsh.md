@@ -81,10 +81,12 @@ WebUI 的深浅色主题 token 全部对齐 DSH 的语义别名层，品牌身�
 - `admin` 徽章与"部分成交"标签从紫变灰白——**语义上更正确**：它们本来就该是中性标签，紫只是历史遗留；
 - 中性面整体带极轻的蓝偏移（DSH 冷灰）。
 
-**资产变更**：`DZ-Bolt.svg` 换填色，属于品牌资产变更，已获用户同意。
+**资产变更（随实现落地，尚未发生）**：`DZ-Bolt.svg` 需从紫渐变改为单色，属品牌资产变更；用户已同意改 logo 形态。本 ADR 只记录决策，资产改动随实现票执行。
 
 **范围外**：不动任何 `.vue` 的逻辑、布局、间距、圆角、字号；不动后端与交互。`--text-brand` 的**语义**保持不变（仍是"品牌标签/强调文字"），只换值。
 
-**文档同步**：`DESIGN.md` 前 metadata 与 Colors 章节重写（"Brand Violet" 一节作废，改为"Brand: neutral identity"）；`.impeccable/design.json` 的 brand 条目同步。
+**文档同步（随实现落地，尚未发生）**：实现时需重写 `DESIGN.md` 前 metadata 与 Colors 章节（"Brand Violet" 一节作废，改为"Brand: neutral identity"），并同步 `.impeccable/design.json` 的 brand 条目。本 ADR 不宣称这些改动已完成。
+
+> **实施状态（2026-11-28 更新）**：配色实现未落地。用户在该票实现过程中叫停了本次改造，理由是 agent 反复跳过标准开发循环（见 #535）。本 ADR 因此记录的是一个**已作出但未实施**的决策——保留它的价值在于：若将来重启配色改造，取舍论证与 DSH 源码取证不必重做；若最终放弃，应另写 ADR 标注本决策作废（ADR 一经 Accepted 不修改）。
 
 **未来若要回退**：本 ADR 记录的是"整套配色世界"的选择，不是单个色值；回退等于另写一份 ADR 并整体替换 `theme.css` 三段与 `design-tokens.css` 的状态/涨跌段。

@@ -24,6 +24,10 @@
 #     版本控制，机器分不清「验证没跑」与「跑了但忘了写」，拦截会误伤正常推送。理由
 #     = #253 的验证轮被宿主 turn 中止后「未验证即合并」（推送 12:18:35、合并 12:38:45，
 #     验证轮 12:29 才准备即中止），纯文档约束挡不住动作点跳过，需要把状态变成可见信号。
+#   - 开发循环顺序守卫（#535 / retro 2026-11-28）：分支改了实现类文件却找不到该票的
+#     ADR / spec 证据时**拒绝**（BLOCKED=1，逃生口 DZ_ALLOW_FLOW=1）。判据在
+#     scripts/check_flow.py；本 hook 跑它、preflight 跑它的 --selftest。
+#     位置在「取 issue 号」之前：无票号分支会在那里 continue 掉，放后面等于无守卫。
 #   - 删除远端分支（local ref 为 (delete)）放行
 #
 # 逃生口：DZ_SKIP_HOOKS=1 git push ...（或 git push --no-verify）

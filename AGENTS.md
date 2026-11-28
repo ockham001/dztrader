@@ -178,7 +178,7 @@
 
 **为什么这条要单独强调**：主循环里 `grill-with-docs` / `to-spec` / `to-tickets` / `implement` / `retro` 五个技能的 `SKILL.md` 都是 `disable-model-invocation: true`——**只有用户敲斜杠命令才会加载，agent 无法自行调用**。用户没敲时，agent 的合法动作是**停下来告诉用户该敲哪个命令**，不是照着 read 出来的 SKILL.md 手工硬做完整条链路。
 
-**机器守卫（#535）**：`scripts/check_flow.py` 在 pre-push 与 preflight 第 24 步运行——分支改了实现类文件却找不到该票的 ADR / spec 证据时**拒绝推送**。它挡的是可观测后果，挡不住"同一会话里没停"（那是会话级事实，git 看不见），所以上面的停点仍须 agent 自己守。
+**机器守卫（#535）**：`scripts/check_flow.py` 在 pre-push 与 preflight 的 `dev flow order (#535)` 一步运行——分支改了实现类文件却找不到该票的 ADR / spec 证据时**拒绝推送**。它挡的是可观测后果，挡不住"同一会话里没停"（那是会话级事实，git 看不见），所以上面的停点仍须 agent 自己守。
 
 ### 组合变更的特别提醒
 
@@ -243,7 +243,7 @@
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
 | [GLOSSARY.md](GLOSSARY.md) | 领域术语表（`domain-modeling` 随改随更） |
-| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、审查清单（review-checklist）、复盘取证（retro-evidence） |
+| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、**标准开发循环（dev-loop）**、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、审查清单（review-checklist）、复盘取证（retro-evidence） |
 | [third_party/ctp/VENDORED.md](third_party/ctp/VENDORED.md) | CTP 发布包 vendored 与升级流程（`scripts/vendor_ctp.py --sync/--check`）。**收到新的 CTP 发布包压缩包时，先读此文件并按「升级纪律」执行** |
 
 `docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内）且**已冻结** —— 新设计与计划走 GitHub Issues；与现状冲突时以帧契约与代码为准，**不修改**。
