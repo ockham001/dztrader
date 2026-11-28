@@ -102,10 +102,27 @@ def current_branch(root: Path) -> str | None:
     return None if name == "HEAD" else name
 
 
-def changed_files(root: Path, branch: str) -> list[str]:
-    """分支相对上游（或 origin/main）的改动文件。"""
+def base_ref(root: Path, branch: str) -> str | None:
+    """比较基准：优先分支上游，其次 origin/main、main、origin/master、master。
+
+    多道兜底是必须的：基准在无 remote 的仓库（临时仓库、CI 浅克隆）里可能叫 master
+    而不是 main。而 `git diff` 失败若被当成「没有改动」，守卫会静默放行最该拦的场合——
+    2026-11-28 自测踩到的正是这个：临时仓库初始分支是 master，无票号分支 + 改 CSS 直接 exit 0。
+    """
     r = run(["git", "rev-parse", "--abbrev-ref", f"{branch}@{{u}}"], cwd=root)
-    base = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "origin/main"
+    if r.returncode == 0 and r.stdout.strip() and r.stdout.strip() != branch:
+        return r.stdout.strip()
+    for cand in ("origin/main", "main", "origin/master", "master"):
+        if run(["git", "rev-parse", "--verify", "--quiet", cand], cwd=root).returncode == 0:
+            return cand
+    return None
+
+
+def changed_files(root: Path, branch: str) -> list[str]:
+    """分支相对基准的改动文件。基准不可判定时返回空（由调用方决定是否放行）。"""
+    base = base_ref(root, branch)
+    if base is None:
+        return []
     r = run(["git", "diff", "--name-only", f"{base}...HEAD"], cwd=root)
     if r.returncode != 0:
         return []
@@ -126,7 +143,14 @@ def ticket_from_branch(branch: str) -> int | None:
 
 
 def adr_references_ticket(root: Path, ticket: int) -> bool:
-    """ADR 目录里是否有文件引用该票号（`#N` 或 `issue-N`）。"""
+    """ADR 是否**为该票而写**。
+
+    判据比「文中出现 #N」严格：只看标题行与 Status 段。
+    2026-11-28 实测到漏洞——一篇与决策无关的 ADR 只要在正文里偶然写一句
+    「历史背景见 #N（与本决策无关）」，就能让守卫误放行。审查子代理当时就是
+    用这个手法验证绕过路径的。真实 ADR 的票号出现在标题（`# ADR 00NN: …(#N)`）
+    或 Status 段（`Accepted（…，#N / #NNN）`），正文提及不构成归属。
+    """
     adr_dir = root / "docs" / "adr"
     if not adr_dir.is_dir():
         return False
@@ -136,7 +160,15 @@ def adr_references_ticket(root: Path, ticket: int) -> bool:
             text = md.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if f"#{ticket}" in text or needle_issue in text:
+        # 头部区域：标题 + 首个二级标题之前的 Status 段
+        lines = text.splitlines()
+        head: list[str] = []
+        for line in lines:
+            head.append(line)
+            if len(head) > 1 and line.startswith("## ") and line.strip().lower() != "## status":
+                break
+        scope = "\n".join(head[:12])
+        if f"#{ticket}" in scope or needle_issue in scope:
             return True
     return False
 
@@ -201,7 +233,13 @@ def explain(root: Path, branch: str | None) -> int:
 
 
 def selftest() -> int:
-    """三态自测：不碰工作区，纯函数级。"""
+    """三态自测：不碰工作区，纯函数级。
+
+    除 `evaluate` 的三态外，另测两条 2026-11-28 实测到的**绕过路径**——
+    它们当时都能让守卫误放行，是这张票真正的价值所在：
+      A. 基准不可判定（临时仓库无 origin/main、初始分支叫 master）→ 曾静默 exit 0；
+      B. ADR 正文偶然提及票号 → 曾误判为「该票有 ADR」。
+    """
     cases = [
         # (branch, files, adr_ok, spec_ok, expect_ok, why)
         ("main", ["a.css"], False, False, True, "main 豁免"),
@@ -211,6 +249,8 @@ def selftest() -> int:
         ("style/issue-9-x", ["app.css"], False, False, False, "实现无证据 → 拦"),
         ("style/issue-9-x", ["scripts/a.py"], False, False, True, "scripts/ 豁免"),
         ("badname", ["app.css"], False, False, False, "分支缺票号 → 拦"),
+        ("style/issue-9-x", [], False, False, True, "无改动 → 放行"),
+        ("main", ["apps/x.cpp"], False, False, True, "main 上直接改实现也豁免"),
     ]
     bad = 0
     for branch, files, adr, spec, want, why in cases:
@@ -220,6 +260,53 @@ def selftest() -> int:
             print(f"  FAIL {why}: 期望 {want} 实得 {ok} findings={findings}")
         else:
             print(f"  ok   {why}")
+
+    # ---- 绕过路径 A：基准兜底（真实 git 仓库，不碰工作区）----------------
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        def g(*args: str) -> None:
+            run(["git", *args], cwd=tmp)
+        g("init", "-q")
+        g("config", "user.email", "t@t")
+        g("config", "user.name", "t")
+        (tmp / "README.md").write_text("base\n")
+        g("add", "-A"); g("commit", "-qm", "base")
+        # 模拟无 remote、初始分支为 master 的仓库
+        g("branch", "-m", "master")
+        g("switch", "-qc", "badname")
+        (tmp / "a.css").write_text("body{}\n")
+        g("add", "-A"); g("commit", "-qm", "改样式")
+        got = changed_files(tmp, "badname")
+        if got == ["a.css"]:
+            print("  ok   基准兜底：master-only 仓库也能算出改动")
+        else:
+            bad += 1
+            print(f"  FAIL 基准兜底：期望 ['a.css'] 实得 {got}")
+
+    # ---- 绕过路径 B：ADR 归属（正文提及 vs Status 声明）-------------------
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        adr_dir = tmp / "docs" / "adr"
+        adr_dir.mkdir(parents=True)
+        # 正文偶然提及 → 不算归属
+        (adr_dir / "0001-unrelated.md").write_text(
+            "# ADR 0001: 无关决策\n\n## Context\n\n历史背景见 #77 的讨论串（与本决策无关）。\n"
+        )
+        if adr_references_ticket(tmp, 77):
+            bad += 1
+            print("  FAIL ADR 归属：正文提及不应算作该票的 ADR")
+        else:
+            print("  ok   ADR 归属：正文偶然提及不算")
+        # 标题/Status 声明 → 算归属
+        (adr_dir / "0002-real.md").write_text(
+            "# ADR 0002: 某决策\n\n## Status\n\nAccepted（2026-11-28，#88）\n\n## Context\n\n…\n"
+        )
+        if adr_references_ticket(tmp, 88):
+            print("  ok   ADR 归属：Status 段声明算")
+        else:
+            bad += 1
+            print("  FAIL ADR 归属：Status 段声明应算")
+
     print(f"\nselftest: {'PASS' if bad == 0 else f'{bad} FAILED'}")
     return 0 if bad == 0 else 1
 

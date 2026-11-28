@@ -134,6 +134,26 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
         check_gate_status "$local_sha" || BLOCKED=1
     fi
 
+    # 开发循环顺序守卫（#535 / retro 2026-11-28）。**必须放在下面取 issue 的 `continue`
+    # 之前**：无票号分支会在那里 `continue` 掉，若把本检查放在其后，最该拦的
+    # 「分支名不规范 + 直接改实现」反而完全绕过守卫（check_flow.py 自身能处理无票号分支，
+    # 会以「分支名缺票号」拒绝）。与 warning-only 的 review marker 不同，本条置 BLOCKED。
+    # 逃生口 DZ_ALLOW_FLOW=1；脚本缺失时降级为 warning，不让护栏本身成为单点故障。
+    if command -v python3 >/dev/null 2>&1; then
+        if [ -f scripts/check_flow.py ]; then
+            if ! python3 scripts/check_flow.py </dev/null; then
+                if [ "${DZ_ALLOW_FLOW:-0}" = "1" ]; then
+                    warn "WARNING: dev flow order check failed, allowed by DZ_ALLOW_FLOW=1 (emergency only)"
+                else
+                    warn "dev flow order check failed on '$branch' (run: python3 scripts/check_flow.py --explain)"
+                    BLOCKED=1
+                fi
+            fi
+        else
+            warn "warning: scripts/check_flow.py missing; skipping dev flow order check"
+        fi
+    fi
+
     issue="$(printf '%s' "$branch" | sed -n 's#.*issue-\([0-9][0-9]*\).*#\1#p' | head -1)"
     if [ -z "$issue" ]; then
         warn "branch '$branch' has no issue-<n> in its name; rename per AGENTS branch convention to enable push-scope check"
@@ -178,25 +198,6 @@ while read -r local_ref local_sha remote_ref remote_sha || [ -n "${remote_ref:-}
     # 时静默跳过，不让护栏自身成为推送的单点故障。
     if [ -f scripts/review_marker.py ] && command -v python3 >/dev/null 2>&1; then
         python3 scripts/review_marker.py check "$issue" </dev/null || true
-    fi
-
-    # 开发循环顺序守卫（#535 / retro 2026-11-28）：**这一条改 BLOCKED**。
-    # 与上面 review marker（warning-only）不同——本检查挡的是「实现没有 spec/ADR 证据」，
-    # 那是可确定性判定的流程违规，2026-11-28 已发生两次（#528 补文字规则未拦住 #534）。
-    # 逃生口 DZ_ALLOW_FLOW=1；脚本缺失时降级为 warning，不让护栏本身成为单点故障。
-    if command -v python3 >/dev/null 2>&1; then
-        if [ -f scripts/check_flow.py ]; then
-            if ! python3 scripts/check_flow.py </dev/null; then
-                if [ "${DZ_ALLOW_FLOW:-0}" = "1" ]; then
-                    warn "WARNING: dev flow order check failed, allowed by DZ_ALLOW_FLOW=1 (emergency only)"
-                else
-                    warn "dev flow order check failed for #$issue (run: python3 scripts/check_flow.py --explain)"
-                    BLOCKED=1
-                fi
-            fi
-        else
-            warn "warning: scripts/check_flow.py missing; skipping dev flow order check"
-        fi
     fi
 done
 
