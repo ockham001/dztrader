@@ -350,6 +350,18 @@ check_pr_create() {
     "$ROOT/scripts/pr-create.sh" --selftest
 }
 
+check_flow_order() {
+    # 标准开发循环的顺序守卫（#535 / retro 2026-11-28）：AGENTS「标准开发循环」要求
+    # 设计定稿 → 立 spec → 拆票（拆完即停）→ 换会话实现。2026-11-28 两次会话都在这里失守：
+    # 第一次（#528）补了「拆完即停」的文字规则；第二次（#534 配色）文字没拦住，agent 在同一
+    # 会话里做完设计+spec 又直接改 theme.css。根因是这条链路没有任何机器判定——23 步
+    # preflight 没有一步看「实现是否挂在一张有 spec/ADR 的票下」。
+    # 判据（离线、不查 GitHub）：分支改了实现类文件时，必须能在 docs/adr/ 找到引用该票号的
+    # ADR，或 commit message 带 [spec]/spec #N；纯文档/脚本票豁免。
+    # 这里跑 selftest（纯函数三态，不碰工作区）；真实判定在 pre-push 里跑 --explain 形态。
+    "$PYTHON" "$ROOT/scripts/check_flow.py" --selftest
+}
+
 # ---- 前端 ----------------------------------------------------------------
 
 check_frontend() {
@@ -446,6 +458,7 @@ run_step "build identity (#515)" check_build_info
 run_step "md production lock marker (#480)" check_md_lock_marker
 run_step "review verification marker (#289)" check_review_marker
 run_step "pr create wrapper (#504)" check_pr_create
+run_step "dev flow order (#535)" check_flow_order
 if [ "$C_ONLY" -eq 0 ]; then
     run_step "frontend (type-check/lint/lint:css/test/gen:types)" check_frontend
 fi
