@@ -650,6 +650,23 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
+  it('委托基线成功后再刷新失败 → 「加载失败」+ 错误行（不显示暂无委托）', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([]))
+    const w = await mountDashboard()
+    expect(w.find('[data-test="orders-error"]').exists()).toBe(false)
+
+    // initialized=true 后失败：error 态优先于 empty（五态互斥）
+    const store = useTdOrdersStore()
+    vi.mocked(tdApi.getOrders).mockRejectedValue(new Error('boom'))
+    await store.resetAndReload()
+    await flushPromises()
+
+    expect(w.find('[data-test="orders-error"]').exists()).toBe(true)
+    expect(w.get('[data-test="orders-empty"]').text()).toContain('加载失败')
+    expect(w.get('[data-test="orders-empty"]').text()).not.toContain('暂无委托')
+    w.unmount()
+  })
+
   it('「仅挂单」复选框过滤到未成交/部分成交', async () => {
     vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
       order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '003' }),

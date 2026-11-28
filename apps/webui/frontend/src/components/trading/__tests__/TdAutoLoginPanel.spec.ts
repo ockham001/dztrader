@@ -10,7 +10,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import TdAutoLoginPanel from '../TdAutoLoginPanel.vue'
-import { useTdAccountsStore } from '@/stores/tdAccounts'
+import {
+  TD_AUTO_LOGIN_PENDING_PREFIX,
+  tdAutoLoginPending,
+  useTdAccountsStore,
+} from '@/stores/tdAccounts'
 import { useToastStore } from '@/stores/toast'
 import { tdGatewaysApi } from '@/api/tdGateways'
 
@@ -67,6 +71,9 @@ describe('TdAutoLoginPanel 交易接口排程', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.resetAllMocks()
+    // 排程 pending 是模块级 usePending 单例（跨 pinia 实例存活）：用例间必须重置，
+    // 否则上一个用例的非乐观 pending 会让下一个用例的按钮一直 disabled。
+    tdAutoLoginPending.__resetForTests()
   })
 
   it('显示已启用状态与时段列表', () => {
@@ -214,6 +221,7 @@ describe('TdAutoLoginPanel 交易接口排程', () => {
 describe('tdAccounts.applyAutoLogin 分流与守卫', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    tdAutoLoginPending.__resetForTests()
   })
 
   it('只接受 dztd_* 网关（md 的排程不得写进 td 镜像）', () => {
@@ -231,9 +239,14 @@ describe('tdAccounts.applyAutoLogin 分流与守卫', () => {
     expect(store.autoLogins[GATEWAY]).toBe(before)
   })
 
-  it('RTN 到达清 pending', () => {
+  it('RTN 到达清 pending', async () => {
     const store = useTdAccountsStore()
-    store.autoLoginPending.add(GATEWAY)
+    await tdAutoLoginPending.run(
+      `${TD_AUTO_LOGIN_PENDING_PREFIX}${GATEWAY}`,
+      async () => ({ ok: true }),
+    )
+    expect(store.autoLoginPending.has(GATEWAY)).toBe(true)
+
     store.applyAutoLogin(GATEWAY, { enabled: false, schedules: [] })
     expect(store.autoLoginPending.has(GATEWAY)).toBe(false)
   })

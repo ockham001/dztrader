@@ -89,7 +89,7 @@ export const tdGatewaysApi = {
   getAutoLogin: (name: string) =>
     api.get<TdAutoLoginView>(`/api/td/gateways/${encodeURIComponent(name)}/auto-login`),
   /**
-   * 全量设置自动登录/登出排程（admin）。200 只表示**已写入事件通道**；
+   * RFC 7386 增量设置排程（admin；UI 发全量）。200 只表示**已写入事件通道**；
    * 生效信号是 WS `auto_login` 推送（契约 auto-login），非乐观更新。
    */
   setAutoLogin: (name: string, body: TdAutoLoginBody) =>

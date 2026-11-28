@@ -13,6 +13,7 @@ import {
   TD_GATEWAY_OP_TIMEOUT_MS,
   TD_SESSION_LOGIN_TIMEOUT_MS,
   AUTO_LOGIN_PENDING_TIMEOUT_MS,
+  tdAutoLoginPending,
 } from '../tdAccounts'
 import { tdApi } from '@/api/td'
 import { tdGatewaysApi } from '@/api/tdGateways'
@@ -1622,9 +1623,11 @@ describe('useTdAccountsStore · 自动登录排程 pending 兜底（#530 M6）',
     setActivePinia(createPinia())
     vi.resetAllMocks()
     vi.useFakeTimers()
+    tdAutoLoginPending.__resetForTests()
   })
 
   afterEach(() => {
+    tdAutoLoginPending.__resetForTests()
     vi.useRealTimers()
     useTdAccountsStore().dispose()
   })
@@ -1639,19 +1642,36 @@ describe('useTdAccountsStore · 自动登录排程 pending 兜底（#530 M6）',
     await pending
     expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
 
+    // 定时器必须被真正 clearTimeout（而不只是回调里早退）：越过原超时点后不得再弹超时提示。
+    const toast = useToastStore()
+    const errSpy = vi.spyOn(toast, 'error')
     vi.advanceTimersByTime(AUTO_LOGIN_PENDING_TIMEOUT_MS + 1)
+    expect(errSpy).not.toHaveBeenCalled()
     expect(store.error).toBeNull()
   })
 
-  it('RTN 丢失：超时后清 pending 并给出可见错误（控件不会永久锁死）', async () => {
+  it('RTN 丢失：10s 超时后清 pending 并提示（控件不会永久锁死）', async () => {
     vi.mocked(tdGatewaysApi.setAutoLogin).mockResolvedValue({ ok: true })
     const store = useTdAccountsStore()
+    const toast = useToastStore()
+    const errSpy = vi.spyOn(toast, 'error')
     await store.setAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
     expect(store.autoLoginPending.has('dztd_ctp')).toBe(true)
 
     vi.advanceTimersByTime(AUTO_LOGIN_PENDING_TIMEOUT_MS)
     expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
-    expect(store.error).toContain('RTN_AUTO_LOGIN')
+    // usePending 统一出超时提示（与 md 侧同口径）
+    expect(errSpy).toHaveBeenCalledWith('排程保存超时')
+  })
+
+  it('dispose 清掉排程 pending 定时器（视图卸载不残留）', async () => {
+    vi.mocked(tdGatewaysApi.setAutoLogin).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+    await store.setAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(true)
+
+    store.dispose()
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
   })
 
   it('HTTP 失败：立即清 pending（不等到兜底超时）', async () => {

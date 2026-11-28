@@ -31,7 +31,8 @@ export interface TdPanelStateInput {
   initialized: boolean
   /** store.error：最近一次请求失败信息 */
   error: string | null
-  /** 账户全集是否非空（持仓 = accounts；资金 = rows；两者都含 envelope 的 online_accounts） */
+  /** 账户全集是否非空（持仓 = accounts；资金 = rows；委托 = rows ∪ 在线账户；
+   *  三者都含 envelope 的 `online_accounts` 兜底） */
   hasAccounts: boolean
 }
 

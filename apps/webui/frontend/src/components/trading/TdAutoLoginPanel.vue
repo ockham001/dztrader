@@ -74,7 +74,8 @@ async function submit(
     enabled: enabledNext,
     schedules: schedulesNext,
   })
-  if (!ok) toast.error(store.error ?? '排程保存失败')
+  // 超时由 usePending 统一 toast；HTTP 失败才由这里出文案，避免双 toast（与 md 侧同口径）
+  if (!ok && store.error) toast.error(store.error)
   return ok
 }
 

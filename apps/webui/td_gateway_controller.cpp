@@ -331,9 +331,10 @@ void TdGatewayCtrl::set_auto_login(const drogon::HttpRequestPtr& req,
             merged = *current;
         }
     }
-    // 契约 auto-login：`null` 在本帧**任何位置**都是校验失败（不是 RFC 7386 的删键语义）。
-    // 若把 null 抹掉再校验，校验的是 merged、下发的仍是含 null 的 body —— 网关必然拒绝，
-    // 而这里已返回 200（#530 M4）。递归检查后统一 400 invalid_auto_login。
+    // 契约 auto-login 显式规定：本帧**任何位置**出现 null 均为校验失败（不是 RFC 7386 的
+    // 删键语义；该条针对 null，优先于总则 §8 对**未知字段**的前向兼容——null 不是未知字段，
+    // 是显式非法值）。已知字段的 null 在 validate 阶段也会 400；这里提前统一收口，
+    // 避免把含 null 的 body 原样下发给网关（#530 M4）。递归检查后 400 invalid_auto_login。
     bool has_null = false;
     const std::function<void(const nlohmann::json&)> find_null = [&](const nlohmann::json& node) {
         if (has_null) return;

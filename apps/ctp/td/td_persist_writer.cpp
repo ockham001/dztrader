@@ -531,7 +531,6 @@ bool PersistWriter::try_open() {
             if (!failing_) {
                 failing_ = true;
                 last_notify_ = std::chrono::steady_clock::now();
-                last_log_ = last_notify_;
                 emit_notify(DZ_NOTIFY_ERROR,
                             std::format("trade db rebuilt | path={} reason={} backup={}", db_path_,
                                         report.rebuild_reason, report.backup_path),
@@ -661,31 +660,19 @@ void PersistWriter::note_failure(const std::string& message) {
     if (!failing_) {
         failing_ = true;
         last_notify_ = now;
-        last_log_ = now;
         SPDLOG_ERROR("trade db persist failed | path={} error=\"{}\"", db_path_, message);
         emit_notify(DZ_NOTIFY_ERROR, notify_text, true);
         return;
     }
-    // 日志与通知分开节流（#530 M1）：
-    // - 日志每 5 分钟最多 1 条 ERROR（ADR 0042 §4 的原始限频对象）；
-    // - 通知每 60 秒重申一次：dzweb 按指纹折叠成一条 ×N，但折叠有 300s 冷却，
-    //   通知间隔必须 < 冷却，否则每条都跨冷却成为新条目、count 永远不累加。
-    bool logged = false;
-    if (now - last_log_ >= policy_.sustained_log_interval) {
-        last_log_ = now;
-        SPDLOG_ERROR("trade db persist still failing | path={} error=\"{}\"", db_path_, message);
-        logged = true;
-    }
     if (now - last_notify_ >= policy_.sustained_notify_interval) {
         last_notify_ = now;
+        SPDLOG_ERROR("trade db persist still failing | path={} error=\"{}\"", db_path_, message);
         emit_notify(DZ_NOTIFY_ERROR, notify_text, true);
         return;
     }
-    // 未到日志/通知节流点: 只留 DEBUG 轨迹（本轮已记 ERROR 日志时不再重复）.
-    if (!logged) {
-        SPDLOG_DEBUG("trade db persist still failing (throttled) | path={} error=\"{}\"", db_path_,
-                     message);
-    }
+    // 首次 ERROR / 每 5 分钟 ERROR 之外不刷屏: 只留 DEBUG 轨迹.
+    SPDLOG_DEBUG("trade db persist still failing (throttled) | path={} error=\"{}\"", db_path_,
+                 message);
 }
 
 void PersistWriter::note_recovered() {

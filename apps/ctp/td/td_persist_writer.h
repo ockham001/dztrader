@@ -74,13 +74,12 @@ struct PersistPolicy {
     std::vector<std::chrono::milliseconds> retry_delays{
         std::chrono::seconds(1), std::chrono::seconds(2), std::chrono::seconds(5),
         std::chrono::seconds(10), std::chrono::seconds(30)};
-    /// 持续失败**日志**限频 (每 5 分钟最多 1 条 ERROR; ADR 0042 §4 的原始限频对象)。
-    std::chrono::milliseconds sustained_log_interval{std::chrono::minutes(5)};
-    /// 持续失败**通知**节奏。级别恒为 ERROR (ADR 0060 决策 5), 持续性由 dzweb 的
-    /// 去重折叠计数表达。因此该间隔**必须明显小于 dzweb 的去重冷却** (默认 300s):
-    /// 若等于/大于冷却, 每条通知都会跨冷却被判成新条目, `count` 永远累加不起来、
-    /// 缓存被同一故障刷满 (#530 M1 实测: 原 5min 间隔 == 300s 冷却)。
-    std::chrono::milliseconds sustained_notify_interval{std::chrono::seconds(60)};
+    /// 持续失败通知限频 (每 5 分钟最多 1 次; 节奏沿用 ADR 0042 决策 4)。级别恒为 ERROR
+    /// ——同一事件不降级成 WARN (ADR 0060 决策 5), 持续性由 dzweb 的去重折叠计数表达。
+    /// **折叠前提**: 该间隔必须小于 dzweb 的去重冷却 (webui.json 默认 600s), 否则每条
+    /// 通知都跨冷却被判成新条目、`count` 永远累加不起来 (#530 M1 实测: 旧默认 300s 冷却
+    /// 恰等于本间隔, 折叠从不触发)。
+    std::chrono::milliseconds sustained_notify_interval{std::chrono::minutes(5)};
     /// 积压阈值告警 (队列不设上限, 仅达阈值时通知一次/积压期; ADR 0042 §1).
     std::size_t backlog_warn_threshold = 100000;
 };
@@ -96,8 +95,9 @@ struct PersistPolicy {
 /// - 建连失败: 同一退避序列重连 (td 不因交易库不可用而停止交易);
 /// - 坏库 (CORRUPT/NOTADB/不可读): 关闭连接, 下次建连走 tdstore 建库门面
 ///   (旧库改名保留 + 新建), 记 ERROR; 不在同一坏文件上无限重试;
-/// - 通知分级: 首次失败 ERROR 弹窗 1 次 / 持续失败每 60 秒重申 1 次 (dzweb 按指纹折叠成
-///   一条 ×N, 不重复弹窗) / 恢复 INFO 1 次; 日志仍每 5 分钟最多 1 条 (ADR 0042 §4);
+/// - 通知分级: 首次失败 ERROR 弹窗 1 次 / 持续每 5 分钟最多 1 次 ERROR (节奏沿用
+///   ADR 0042 决策 4; 级别由 ADR 0060 决策 5 收敛为 ERROR; dzweb 按指纹折叠成一条 ×N,
+///   不重复弹窗) / 恢复 INFO 1 次;
 /// - 退出排空失败: 只记 ERROR 并退出 (未提交内存积压丢弃, 已知限制).
 ///
 /// 生命周期:
@@ -229,7 +229,6 @@ private:
     /// 两者不并发).
     bool failing_ = false;
     std::chrono::steady_clock::time_point last_notify_{};
-    std::chrono::steady_clock::time_point last_log_{};
 };
 
 }  // namespace dztrader::ctp

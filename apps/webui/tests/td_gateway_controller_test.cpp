@@ -192,6 +192,18 @@ protected:
         EXPECT_EQ(body.at("code").get<std::string>(), code);
     }
 
+    /// 同 expect_code，但只断言机器码（错误文案来自 `AutoLoginConfig::validate`，
+    /// 逐字断言会把校验文案锁死）。
+    static void expect_code(const drogon::HttpResponsePtr& resp,
+                            drogon::HttpStatusCode status,
+                            const std::string& code) {
+        ASSERT_NE(resp.get(), nullptr);
+        EXPECT_EQ(resp->getStatusCode(), status);
+        const auto body = parse_body(resp);
+        ASSERT_TRUE(body.contains("code")) << "precheck failures must carry a machine code";
+        EXPECT_EQ(body.at("code").get<std::string>(), code);
+    }
+
     /// 错误体断言：状态码 + `error` 消息，且**不带** `code`（基础设施失败，契约 rest §2.10）。
     static void expect_no_code(const drogon::HttpResponsePtr& resp,
                                drogon::HttpStatusCode status,
@@ -621,17 +633,6 @@ nlohmann::json day_schedules() {
     });
 }
 
-/// 只断言状态码 + 机器码（错误文案来自 AutoLoginConfig::validate，逐字断言会锁死校验文案）。
-void expect_status_code(const drogon::HttpResponsePtr& resp,
-                        drogon::HttpStatusCode status,
-                        const std::string& code) {
-    ASSERT_NE(resp.get(), nullptr);
-    EXPECT_EQ(resp->getStatusCode(), status);
-    const auto body = nlohmann::json::parse(resp->getBody());
-    ASSERT_TRUE(body.contains("code")) << "precheck failures must carry a machine code";
-    EXPECT_EQ(body.at("code").get<std::string>(), code);
-}
-
 }  // namespace
 
 TEST_F(TdGatewayControllerTest, AutoLoginGetReadableByNonAdminReturnsMirror) {
@@ -687,20 +688,33 @@ TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsInvalidJsonAndNonObjectBody) 
 }
 
 TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsNullAnywhere) {
-    // 契约 auto-login：任何位置出现 null 均为校验失败——不得 erase 后放行（#530 M4）。
+    // 契约 auto-login：任何位置出现 null 均为校验失败（#530 M4）。
+    // 顶层/嵌套用例在改造前也会因 merged 缺必填字段被 validate 拒；真正锁定「递归 null
+    // 拒绝」的是 unknown_field=null —— 改造前它被 erase 后放行并下发带 null 的 body。
     ReadyShmFixture shm;
     use_ready_shm(shm);
     prime_gateway("dztd_ctp");
 
     auto top_level = invoke(&TdGatewayCtrl::set_auto_login, admin_req(R"({"enabled":null})"),
                             std::string("dztd_ctp"));
-    expect_status_code(top_level, drogon::k400BadRequest, "invalid_auto_login");
+    expect_code(top_level, drogon::k400BadRequest, "invalid_auto_login");
 
     auto nested = invoke(&TdGatewayCtrl::set_auto_login,
                          admin_req(R"({"schedules":[{"login_time":"08:45","logout_time":null}]})"),
                          std::string("dztd_ctp"));
-    expect_status_code(nested, drogon::k400BadRequest, "invalid_auto_login");
+    expect_code(nested, drogon::k400BadRequest, "invalid_auto_login");
+
+    auto unknown_field = invoke(&TdGatewayCtrl::set_auto_login,
+                                admin_req(R"({"future_field":null})"), std::string("dztd_ctp"));
+    expect_code(unknown_field, drogon::k400BadRequest, "invalid_auto_login");
     EXPECT_FALSE(shm.has_any_frame()) << "invalid body must not be dispatched";
+}
+
+TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsInvalidGatewayName) {
+    // 预检 2：name 必须匹配 dztd_*（admin 已过）。
+    auto resp = invoke(&TdGatewayCtrl::set_auto_login, admin_req(R"({"enabled":false})"),
+                       std::string("not-a-gateway"));
+    expect_code(resp, drogon::k400BadRequest, "invalid gateway", "invalid_gateway");
 }
 
 TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsInvalidValues) {
@@ -709,11 +723,20 @@ TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsInvalidValues) {
     auto resp = invoke(&TdGatewayCtrl::set_auto_login,
                        admin_req(R"({"schedules":[{"login_time":"25:00","logout_time":"15:45"}]})"),
                        std::string("dztd_ctp"));
-    expect_status_code(resp, drogon::k400BadRequest, "invalid_auto_login");
+    expect_code(resp, drogon::k400BadRequest, "invalid_auto_login");
 }
 
-TEST_F(TdGatewayControllerTest, AutoLoginPutUnregisteredGatewayReturns404AfterValidation) {
-    // 校验先于注册检查；未注册 → 404（不是 503）。
+TEST_F(TdGatewayControllerTest, AutoLoginPutValidationPrecedesRegistrationLookup) {
+    // 预检顺序：校验(4) 先于注册检查(5)。非法 body + 未注册 → 400 invalid_auto_login
+    // （若顺序反了会先 404，本用例可区分；#530 M3）。
+    auto resp = invoke(&TdGatewayCtrl::set_auto_login,
+                       admin_req(R"({"schedules":[{"login_time":"25:00","logout_time":"15:45"}]})"),
+                       std::string("dztd_ghost"));
+    expect_code(resp, drogon::k400BadRequest, "invalid_auto_login");
+}
+
+TEST_F(TdGatewayControllerTest, AutoLoginPutUnregisteredGatewayReturns404) {
+    // 合法 body + 未注册 → 404 gateway_not_found（不是 503）。
     auto resp = invoke(&TdGatewayCtrl::set_auto_login, admin_req(R"({"enabled":false})"),
                        std::string("dztd_ghost"));
     expect_code(resp, drogon::k404NotFound, "gateway not found", "gateway_not_found");
@@ -742,19 +765,22 @@ TEST_F(TdGatewayControllerTest, AutoLoginPutDispatchesSetAutoLoginFrame) {
     EXPECT_EQ(cap.payload, nlohmann::json({{"enabled", false}}));
 }
 
-TEST_F(TdGatewayControllerTest, AutoLoginPutIncrementalBodyValidatedAgainstMirror) {
+TEST_F(TdGatewayControllerTest, AutoLoginPutValidatesMergedConfigAgainstMirror) {
     ReadyShmFixture shm;
     use_ready_shm(shm);
     prime_gateway("dztd_ctp");
-    // 镜像里已有合法排程：只发 {enabled:false} 时 merged 有 schedules → 校验通过、下发增量 body。
-    seed_auto_login(*mirror_store_, "dztd_ctp", true, day_schedules());
+    // 证明 dzweb 的校验基准是「镜像当前值 + 增量 patch」，不是 patch 本身：
+    // 在镜像里注入非法排程（真实 RTN 已经过 AutoLoginDomainService 全量校验，这里只为
+    // 构造可区分的行为），只发 {enabled:false} 时 merged 仍非法 → 400 且一帧不写。
+    mirror_store_->update(
+        "dztd_ctp", "auto_login",
+        nlohmann::json{{"enabled", true},
+                       {"schedules", nlohmann::json::array({nlohmann::json{
+                                         {"login_time", "bad"}, {"logout_time", "15:45"}}})}});
     auto resp = invoke(&TdGatewayCtrl::set_auto_login, admin_req(R"({"enabled":false})"),
                        std::string("dztd_ctp"));
-    ASSERT_NE(resp.get(), nullptr);
-    EXPECT_EQ(resp->getStatusCode(), drogon::k200OK);
-    auto cap = shm.capture_inst_frame(DZ_FRAME_SET_AUTO_LOGIN, "dztd_ctp");
-    ASSERT_TRUE(cap.found);
-    EXPECT_EQ(cap.payload, nlohmann::json({{"enabled", false}}));
+    expect_code(resp, drogon::k400BadRequest, "invalid_auto_login");
+    EXPECT_FALSE(shm.has_any_frame());
 }
 
 }  // namespace

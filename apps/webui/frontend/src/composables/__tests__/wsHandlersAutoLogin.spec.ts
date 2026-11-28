@@ -15,7 +15,11 @@ vi.mock('@/composables/wsClient', () => ({
 // 模块级副作用：import 即注册（与 main.ts 的真实加载路径一致）
 await import('@/composables/wsHandlers')
 import { useMdConfigStore } from '@/stores/mdConfig'
-import { useTdAccountsStore } from '@/stores/tdAccounts'
+import {
+  TD_AUTO_LOGIN_PENDING_PREFIX,
+  tdAutoLoginPending,
+  useTdAccountsStore,
+} from '@/stores/tdAccounts'
 import type { AutoLoginPayload } from '@/types/mirror'
 
 function dispatch(type: string, payload: unknown, instanceId?: string): void {
@@ -33,6 +37,7 @@ const MD_SCHED: AutoLoginPayload = { enabled: false, schedules: [] }
 describe('wsHandlers · auto_login 分流（快照与增量同源；#530 M5）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    tdAutoLoginPending.__resetForTests()
   })
 
   it('snapshot：dztd_* 进 td store、其余进 md store，互不覆盖', () => {
@@ -59,6 +64,19 @@ describe('wsHandlers · auto_login 分流（快照与增量同源；#530 M5）',
     expect(md.autoLogins.dzmd_ctp?.enabled).toBe(false)
     expect(td.autoLogins.dzmd_ctp).toBeUndefined()
     expect(md.autoLogins.dztd_ctp).toBeUndefined()
+  })
+
+  // #530 M5/M6：快照分发复用增量 apply，必须同时清掉断连期间悬挂的写 pending
+  //（契约 webui-ws §6：快照是权威状态；否则 RTN 丢失后控件永久禁用）。
+  it('snapshot 恢复 td 排程镜像时清掉悬挂 pending', async () => {
+    await tdAutoLoginPending.run(
+      `${TD_AUTO_LOGIN_PENDING_PREFIX}dztd_ctp`,
+      async () => ({ ok: true }),
+    )
+    expect(useTdAccountsStore().autoLoginPending.has('dztd_ctp')).toBe(true)
+
+    dispatch('snapshot', { dztd_ctp: { auto_login: TD_SCHED } })
+    expect(useTdAccountsStore().autoLoginPending.has('dztd_ctp')).toBe(false)
   })
 
   it('无 instance_id 的增量帧被忽略（不写任何镜像）', () => {

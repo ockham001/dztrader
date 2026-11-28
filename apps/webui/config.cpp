@@ -59,7 +59,7 @@ WebuiConfig load_webui_config(const std::filesystem::path& json_path) {
     if (data.contains("notify") && data["notify"].is_object()) {
         cfg.notify_cache_size = data["notify"].value("cache_size", 100u);
         cfg.notify_dedup_window_sec = data["notify"].value("dedup_window_sec", 60);
-        cfg.notify_dedup_cooldown_sec = data["notify"].value("dedup_cooldown_sec", 300);
+        cfg.notify_dedup_cooldown_sec = data["notify"].value("dedup_cooldown_sec", 600);
     }
 
     return cfg;
@@ -173,7 +173,7 @@ void generate_default_config(const std::filesystem::path& json_path) {
          {
              {"username", "admin"}  // password 缺省: 使用默认密码 88888888, 请修改
          }},
-        {"notify", {{"cache_size", 100}, {"dedup_window_sec", 60}, {"dedup_cooldown_sec", 300}}}};
+        {"notify", {{"cache_size", 100}, {"dedup_window_sec", 60}, {"dedup_cooldown_sec", 600}}}};
 
     std::ofstream ofs(json_path);
     if (!ofs) {

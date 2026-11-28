@@ -119,16 +119,17 @@ TEST(NotifyCacheFoldTest, BeyondWindowButWithinCooldownStillMerges) {
 }
 
 TEST(NotifyCacheFoldTest, SustainedFailureCadenceFoldsAndAccumulatesCount) {
-    // #530 M1 回归：td_persist_writer 的持续通知节奏（60s）必须小于冷却（300s）时，
-    // 同一故障折叠成一条并持续累加 count（每来一条 +1），不得每 5 分钟冒一条新条目。
-    NotifyCache cache(100, 60, 300);
+    // #530 M1 回归：生产配置 = 持续通知间隔 5 分钟（300s）、去重冷却 10 分钟（600s）。
+    // 每 5 分钟一条同文案必须折叠成一条并累加 count；旧默认配置 300/300 时 age>=300
+    // 每次都被判成新条目，count 永远为 1、缓存被同一故障刷满（这条测试锁住新关系）。
+    NotifyCache cache(100, 60, 600);
     const auto payload = [](int64_t ts) {
         return make_payload("dztd_ctp", "error",
                             "trade db persist failed | path=/x error=\"disk full\"", ts);
     };
     cache.add(payload(1000));
     for (int i = 1; i <= 5; ++i) {
-        const int64_t ts = 1000 + 60 * i;
+        const int64_t ts = 1000 + 300 * i;
         const auto folded = cache.try_fold(payload(ts), ts);
         ASSERT_TRUE(folded.has_value()) << "i=" << i;
         EXPECT_EQ(folded->value("count", 0), i + 1);
