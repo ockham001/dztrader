@@ -172,21 +172,13 @@
 
 ### 标准开发循环（mattpocock 技能链路）
 
-主循环（跑在既有硬门禁之上；按改动规模可裁剪）：
+**流程细节见 [docs/agents/dev-loop.md](docs/agents/dev-loop.md)**（7 步全序列、上下文纪律、备选入口、维护节奏）。本节只写 agent 必须当场判断的两件事。
 
-1. **设计定稿** —— `grill-with-docs`：问到无分歧；术语入 `GLOSSARY.md`、决策入 `docs/adr/`（当场）。大而模糊的探索用 `wayfinder` 建决策地图，收敛后并回 `to-spec`。
-2. **立 spec** —— `to-spec` 写 GitHub Issue。涉及帧契约的 spec 必须先列契约影响面（哪份契约、哪些帧号），先改契约再改代码；满足 ADR 触发条件的在 spec 注明。
-3. **拆票** —— `to-tickets`：tracer-bullet 子 issue + 原生阻塞边。**拆完即停**：本会话到此为止，不要接着实现。逐票的实现各自开新会话跑 `implement`——理由见下面的「上下文纪律」。
-4. **实现** —— `implement` 单票（默认）或 `implement-spec` 大特性（worktree 内先跑 `setup`）；提交 review 前按 [review-checklist](docs/agents/review-checklist.md) §2 自搜高频 finding。
-5. **审查** —— `code-review`：从固定点起，双轴（仓库规范 / spec 一致性），**按宿主派**：opencode 用 `spawn_teammate`（那里 `subagent` 的 id 不可寻址、报告易整份丢失）；DSH 用 `subagent`，靠 `wait_agent` 阻塞或等 `subagent-settled` 通知，报告正常到达（#411–#416 六票实测）。冻结纪律与 verifier prompt 模板见 [ticket-closeout](docs/agents/ticket-closeout.md) §1.4–1.5。
-6. **收尾** —— 动契约或有决策：契约、docs 地图、ADR 随同提交（`general.md` §11.3 checklist）；等 CI 绿；波末 `retro`。每票的冻结审查→门禁→push→**PR→合并→关 issue** 见 [docs/agents/ticket-closeout.md](docs/agents/ticket-closeout.md)。
-7. **交接** —— `handoff` 文档写 `.cache/handoff/`（本沙箱 `/tmp` 每次 bash 调用隔离、不可跨会话，见 DSH 小节）。环境断言（二进制新旧、端口、进程、配置位置）必须带取证（命令 / mtime / hash），下游会话据此前先复核
+**停点：`to-tickets` 拆完即停。** 本会话到此为止，实现各自开新会话跑 `implement`。理由见 dev-loop 的「上下文纪律」。
 
-上下文纪律：步骤 1–3 保持同一未打断窗口；每张票 `implement` 换新上下文；`retro` 在被复盘会话内、clear 之前跑。
+**为什么这条要单独强调**：主循环里 `grill-with-docs` / `to-spec` / `to-tickets` / `implement` / `retro` 五个技能的 `SKILL.md` 都是 `disable-model-invocation: true`——**只有用户敲斜杠命令才会加载，agent 无法自行调用**。用户没敲时，agent 的合法动作是**停下来告诉用户该敲哪个命令**，不是照着 read 出来的 SKILL.md 手工硬做完整条链路。
 
-备选入口：`diagnosing-bugs`（疑难 bug）｜`research`（后台调研成文）｜`prototype`（设计探查，经 `handoff` 双向桥接）｜`triage`（外部 issue 分诊）。
-
-维护节奏：技能用 `npx skills@latest update` 更新（新增技能需重跑 `add`）；opencode 版本对比 [changelog](https://opencode.ai/changelog)；`doctor` 子代理体检；clang-format / conan 为固定版本，本地与 CI 保持一致（升级时同一次提交改两边）。
+**曾经尝试过机器守卫，已撤回（#535）**：写过 `scripts/check_flow.py` 在 pre-push 上判定「改了实现类文件却没有该票的 spec/ADR 证据」，两轮审查实测**误拦 79% 的真实工单**（38 张实现票只放行 8 张）——因为本仓的 spec 在 GitHub issue 里，而 pre-push 是离线的，本地只剩 ADR（只覆盖有架构决策的票）和 `[spec]` commit 标记（本仓 0 次使用）。假告警会把 `DZ_ALLOW_FLOW=1` 逼成日常。**这条规则只能靠 agent 自律 + 本段的机制解释，没有机器兜底。**
 
 ### 组合变更的特别提醒
 
@@ -251,7 +243,7 @@
 | [docs/ui-trading.md](docs/ui-trading.md) | UI 系统与交易接口规划（蓝图级） |
 | [docs/adr/](docs/adr/) | 架构决策记录，按编号追溯 |
 | [GLOSSARY.md](GLOSSARY.md) | 领域术语表（`domain-modeling` 随改随更） |
-| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、审查清单（review-checklist）、复盘取证（retro-evidence） |
+| [docs/agents/](docs/agents/) | 技能配置（issue 载体 / 域文档规则 / 分诊标签）、**标准开发循环（dev-loop）**、构建外围细节（build-appendix）、每票收尾（ticket-closeout）、审查清单（review-checklist）、复盘取证（retro-evidence） |
 | [third_party/ctp/VENDORED.md](third_party/ctp/VENDORED.md) | CTP 发布包 vendored 与升级流程（`scripts/vendor_ctp.py --sync/--check`）。**收到新的 CTP 发布包压缩包时，先读此文件并按「升级纪律」执行** |
 
 `docs/specs/`、`docs/plans/`、`docs/superpowers/` 是**本地归档**（不在版本控制内）且**已冻结** —— 新设计与计划走 GitHub Issues；与现状冲突时以帧契约与代码为准，**不修改**。
