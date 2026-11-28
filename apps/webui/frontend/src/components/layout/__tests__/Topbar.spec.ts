@@ -704,4 +704,13 @@ describe('Topbar 消息中心抽屉的浮层层级（#530 B1）', () => {
     expect(overlay!.closest('.topbar')).toBeNull()
     expect(overlay!.parentElement).toBe(document.body)
   })
+
+  it('源码护栏：NotifyDrawer 必须包在 <Teleport to="body"> 内（防止回归为内联渲染）', () => {
+    const teleportAt = TOPBAR_SOURCE.indexOf('<Teleport to="body">')
+    expect(teleportAt).toBeGreaterThan(-1)
+    const drawerAt = TOPBAR_SOURCE.indexOf('<NotifyDrawer', teleportAt)
+    expect(drawerAt).toBeGreaterThan(teleportAt)
+    // Teleport 必须覆盖 NotifyDrawer（结束标签在抽屉之后）
+    expect(TOPBAR_SOURCE.indexOf('</Teleport>', drawerAt)).toBeGreaterThan(drawerAt)
+  })
 })

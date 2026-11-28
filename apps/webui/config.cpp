@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 #include <stdexcept>
 #include <cctype>
 #include <fstream>
@@ -60,6 +61,15 @@ WebuiConfig load_webui_config(const std::filesystem::path& json_path) {
         cfg.notify_cache_size = data["notify"].value("cache_size", 100u);
         cfg.notify_dedup_window_sec = data["notify"].value("dedup_window_sec", 60);
         cfg.notify_dedup_cooldown_sec = data["notify"].value("dedup_cooldown_sec", 600);
+    }
+
+    // 冷却必须大于产生侧持续故障通知间隔（td 持久化 5 分钟，ADR 0042 决策 4 / 契约
+    // td-data-sync §4）；显式配置把它调回 <=5 分钟会让持续故障无法折叠（ADR 0061 / #530 M1）。
+    if (cfg.notify_dedup_cooldown_sec > 0 && cfg.notify_dedup_cooldown_sec <= 300) {
+        spdlog::warn(
+            "notify dedup cooldown may disable sustained-failure folding | "
+            "cooldown_sec={} recommended_gt=300",
+            cfg.notify_dedup_cooldown_sec);
     }
 
     return cfg;

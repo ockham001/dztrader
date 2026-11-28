@@ -689,8 +689,9 @@ TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsInvalidJsonAndNonObjectBody) 
 
 TEST_F(TdGatewayControllerTest, AutoLoginPutRejectsNullAnywhere) {
     // 契约 auto-login：任何位置出现 null 均为校验失败（#530 M4）。
-    // 顶层/嵌套用例在改造前也会因 merged 缺必填字段被 validate 拒；真正锁定「递归 null
-    // 拒绝」的是 unknown_field=null —— 改造前它被 erase 后放行并下发带 null 的 body。
+    // 顶层 null 在改造前会因 erase 后 merged 缺必填字段被 validate 拒；嵌套 null 由
+    // validate_schedule 拒（非字符串）；真正锁定「递归 null 拒绝」的是 unknown_field=null
+    // ——改造前它被 erase 后放行并下发带 null 的 body。
     ReadyShmFixture shm;
     use_ready_shm(shm);
     prime_gateway("dztd_ctp");

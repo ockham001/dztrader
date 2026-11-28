@@ -1670,8 +1670,13 @@ describe('useTdAccountsStore · 自动登录排程 pending 兜底（#530 M6）',
     await store.setAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
     expect(store.autoLoginPending.has('dztd_ctp')).toBe(true)
 
+    const toast = useToastStore()
+    const errSpy = vi.spyOn(toast, 'error')
     store.dispose()
     expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
+    // dispose 必须真正 clearTimeout：越过原超时点不得再弹「排程保存超时」。
+    vi.advanceTimersByTime(AUTO_LOGIN_PENDING_TIMEOUT_MS + 1)
+    expect(errSpy).not.toHaveBeenCalled()
   })
 
   it('HTTP 失败：立即清 pending（不等到兜底超时）', async () => {

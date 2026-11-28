@@ -172,16 +172,14 @@ PersistPolicy fast_policy() {
     return policy;
 }
 
-/// 生产默认策略的跨模块不变量（#530 M1）：持续通知间隔 5 分钟（ADR 0042 §4 /
+/// 生产默认策略的跨模块不变量（#530 M1）：持续通知间隔 5 分钟（ADR 0042 决策 4 /
 /// 契约 td-data-sync §4）必须小于 dzweb 的去重冷却默认值（`apps/webui/config.h`
-/// 的 notify_dedup_cooldown_sec = 600s）。若相等/更大，每条通知都跨冷却成为新条目，
-/// `count` 永远不累加、缓存被同一故障刷满（旧默认 300s 恰好等于本间隔）。
-TEST(TdPersistPolicyDefaults, SustainedNotifyIntervalBelowDedupCooldown) {
+/// 的 notify_dedup_cooldown_sec = 600s）。跨模块关系的另一半由 webui 侧
+/// `config_test.cpp` 的默认值断言锁定（两模块测试不能互相 include）。
+TEST(TdPersistPolicyDefaults, SustainedNotifyIntervalIsFiveMinutes) {
     const PersistPolicy policy{};
     EXPECT_EQ(policy.sustained_notify_interval, std::chrono::minutes(5))
-        << "ADR 0042 §4: sustained failure notification at most once per 5 minutes";
-    EXPECT_LT(policy.sustained_notify_interval, std::chrono::minutes(10))
-        << "dzweb dedup cooldown default is 10 minutes (#530 M1)";
+        << "ADR 0042 决策 4: sustained failure notification at most once per 5 minutes";
 }
 
 /// DzDate (距纪元天数) -> 日期文本的测试常量: 20696 = 20260831, 20697 = 20260901.

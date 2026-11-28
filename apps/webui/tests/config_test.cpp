@@ -155,7 +155,7 @@ TEST_F(WebuiConfigTest, GeneratedConfigDocumentsListenExposure) {
 
 TEST_F(WebuiConfigTest, NotifyDedupCooldownDefaultExceedsSustainedNotifyInterval) {
     // #530 M1 / ADR 0061：去重冷却默认值必须大于 td 持久化持续故障通知间隔（5 分钟，
-    // ADR 0042 §4 / 契约 td-data-sync §4）；相等时每条通知都跨冷却成新条目、count 不折叠。
+    // ADR 0042 决策 4 / 契约 td-data-sync §4）；相等时每条通知都跨冷却成新条目、count 不折叠。
     const dztrader::webui::WebuiConfig cfg{};
     EXPECT_EQ(cfg.notify_dedup_window_sec, 60);
     EXPECT_GT(cfg.notify_dedup_cooldown_sec, 5 * 60);

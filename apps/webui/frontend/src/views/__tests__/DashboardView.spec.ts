@@ -667,6 +667,23 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
+  it('仅挂单过滤 + 委托降级 → 显示降级文案而不是「无挂单」', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
+      order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '001' }),
+    ]))
+    const w = await mountDashboard()
+    // 过滤后无挂单行，但数据面是「降级」而非「确实没有挂单」
+    await w.get('.dashboard-panel--orders input[type="checkbox"]').setValue(true)
+    vi.mocked(tdApi.getOrders).mockResolvedValue({ available: false, reason: 'not_found' })
+    await useTdOrdersStore().resetAndReload()
+    await flushPromises()
+
+    const empty = w.get('[data-test="orders-empty"]').text()
+    expect(empty).toContain('交易数据暂不可用')
+    expect(empty).not.toContain('无挂单')
+    w.unmount()
+  })
+
   it('「仅挂单」复选框过滤到未成交/部分成交', async () => {
     vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
       order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '003' }),
