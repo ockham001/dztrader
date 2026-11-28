@@ -224,6 +224,8 @@ const CONTRAST_PAIRS: readonly ContrastPair[] = [
   // 正文与次级文字
   { id: 'body-on-base', usage: '正文文字 on 页面底色', fg: '--text-default', bg: '--bg-base-default', base: '--bg-base-default', min: 4.5 },
   { id: 'body-on-card', usage: '正文文字 on 卡片', fg: '--text-default', bg: '--bg-card', base: '--bg-card', min: 4.5 },
+  // #532：新增会承载文字的浮层表面 token（toast 卡片的正文），必须有可读性护栏。
+  { id: 'body-on-elevated', usage: '正文文字 on 浮层表面（toast 卡片）', fg: '--text-default', bg: '--bg-elevated', base: '--bg-elevated', min: 4.5 },
   { id: 'secondary-on-base', usage: '次级文字 on 页面底色', fg: '--text-secondary', bg: '--bg-base-default', base: '--bg-base-default', min: 4.5 },
   { id: 'secondary-on-card', usage: '次级文字 on 卡片', fg: '--text-secondary', bg: '--bg-card', base: '--bg-card', min: 4.5 },
   { id: 'tertiary-on-base', usage: '三级文字 on 页面底色', fg: '--text-tertiary', bg: '--bg-base-default', base: '--bg-base-default', min: 4.5 },

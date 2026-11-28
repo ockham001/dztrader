@@ -4,7 +4,7 @@
    ═══ 主题（light / dark / system）三大载体 ═══
    1. design-tokens.css —— 非主题色 token（radius/spacer/font/status/brand/accent/viz/shadow
       等，恒定不随主题变化），只定义在 :root，@light-only。
-   2. theme.css 本文件  —— 主题色 token（bg- / text- / icon- / border- / color- 前缀及对照别名），
+   2. theme.css 本文件  —— 主题色 token（bg- / text- / icon- / border- / shadow- / color- 前缀及对照别名），
       分为三段：:root=浅色(默认)、.dark=深色、@media(prefers-color-scheme:dark){html:not(.light):not(.dark)}=跟随系统。
       注意：本注释内禁止出现"星号紧跟斜杠"的字符组合（通配符写法后直接接注释结尾）；
       那会提前闭合块注释，其余文字变成非法选择器，浏览器丢弃其后的整条规则
