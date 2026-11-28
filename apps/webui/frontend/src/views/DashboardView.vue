@@ -385,6 +385,31 @@ const visibleOrderRows = computed(() =>
     : orderRows.value,
 )
 
+/** 委托面板是否已知账户（在线账户或已有委托行）——决定「委托未知」还是「暂无委托」 */
+const orderHasAccounts = computed<boolean>(
+  () => ordersStore.rows.length > 0 || ordersStore.onlineAccounts.length > 0,
+)
+
+/** 委托面板空态状态（与持仓/资金同一状态机：degraded → loading → error → no-accounts → empty） */
+const orderPanelState = computed<TdPanelState>(() => tdPanelState({
+  available: ordersStore.available,
+  loading: ordersStore.loading,
+  initialized: ordersStore.initialized,
+  error: ordersStore.error,
+  hasAccounts: orderHasAccounts.value,
+}))
+
+/** 委托空态槽位文案（降级 / 加载中 / 加载失败 / 委托未知 / 暂无委托 五选一） */
+const orderEmptyText = computed<string>(() => tdPanelEmptyText(orderPanelState.value, 'order'))
+
+/** 委托未知态提示条文案（no-accounts 时渲染，中性色，与持仓/资金同口径） */
+const orderUnknownBanner = computed<string>(() => tdPanelUnknownBannerText('order'))
+
+/** 空表槽位文案：仅挂单过滤下「无挂单」是已知事实；其余交给状态机 */
+const orderEmptySlotText = computed<string>(() =>
+  onlyPending.value && orderRows.value.length > 0 ? '无挂单' : orderEmptyText.value,
+)
+
 const strategyList: StrategyRow[] = [
   { name: '长线', id: 'ocm_001', lang: 'C/C++', running: true },
   { name: '中线', id: 'ocm_015', lang: 'Python', running: true },
@@ -887,6 +912,30 @@ onUnmounted(() => {
                 <span data-test="orders-aggregate" class="dashboard-panel__aggregate dashboard-panel__aggregate--clickable" title="点击切换 笔数/手数">{{ ordersAggregate }}</span>
               </div>
             </div>
+            <!-- 降级提示条（契约 webui-ws §5 第 13 条：统一提示 + 自动退避重试，不用 0 冒充数据）。
+                 委托面板与持仓/资金面板共用 tdPanelState 状态机（#530 M2）：REST 降级/失败时
+                 不得把「无法确认」显示成「暂无委托」。 -->
+            <div
+              v-if="!ordersStore.available"
+              class="ds-alert ds-alert--warning dashboard-pos-degraded"
+              role="status"
+              data-test="orders-degraded-banner"
+            >
+              <span class="ds-alert__icon"><Icon name="Tips" :size="14" /></span>
+              <span>{{ ordersStore.degradedText }}</span>
+            </div>
+            <div
+              v-if="orderPanelState === 'no-accounts'"
+              class="dashboard-pos-unknown"
+              role="status"
+              data-test="orders-unknown-banner"
+            >
+              <span class="dashboard-pos-unknown__icon"><Icon name="Tips" :size="14" /></span>
+              <span>{{ orderUnknownBanner }}</span>
+            </div>
+            <div v-if="ordersStore.error" class="dashboard-pos-error" role="alert" data-test="orders-error">
+              {{ ordersStore.error }}
+            </div>
             <div class="auto-scroll">
               <table class="ds-table ds-table--dense dashboard-panel__table--stretch">
                 <thead class="dashboard-panel__thead">
@@ -920,10 +969,11 @@ onUnmounted(() => {
                       <span v-else class="ds-tag dashboard-panel__tag dashboard-panel__tag--muted">{{ ord.tagText }}</span>
                     </td>
                   </tr>
-                  <!-- 空态：无委托时不显示假数据 -->
+                  <!-- 空态：五态互斥（降级 / 加载中 / 加载失败 / 委托未知 / 暂无委托），
+                       与持仓/资金面板同一判定逻辑；不显示假数据（#530 M2）。 -->
                   <tr v-if="visibleOrderRows.length === 0">
                     <td colspan="9" class="cell-muted cell-center" data-test="orders-empty">
-                      {{ onlyPending ? '无挂单' : '暂无委托' }}
+                      {{ orderEmptySlotText }}
                     </td>
                   </tr>
                 </tbody>

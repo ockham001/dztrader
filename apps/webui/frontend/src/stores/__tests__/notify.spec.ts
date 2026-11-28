@@ -168,14 +168,46 @@ describe('useNotifyStore', () => {
     expect(store.unreadCount).toBe(0)
   })
 
-  it('折叠时 count 取较大值，不被冷却后的 count=1 覆盖回退', () => {
+  it('count>1 的同一轮折叠取较大值（防帧乱序回退）', () => {
     const store = useNotifyStore()
     store.push('持久化失败', 'dztd_ctp', 'error', false, 100, 5)
     expect(store.items[0].count).toBe(5)
-    // 冷却到点后后端以 count=1 重发同文案事件
-    store.push('持久化失败', 'dztd_ctp', 'error', false, 700, 1)
-    // 不覆盖成 1（否则已累计次数被抹掉、与 REST 基线不一致）
+    // 同一 epoch 内先到的 count=3 不把已见过的 5 覆盖回去
+    store.push('持久化失败', 'dztd_ctp', 'error', false, 130, 3)
+    expect(store.items).toHaveLength(1)
     expect(store.items[0].count).toBe(5)
+  })
+
+  // 审查 blocker B2 / #530：冷却后后端以 count=1 发的是**新条目**，前端不得按指纹
+  // 永久折叠，否则复发事件不弹提示、不计未读（ADR 0060 否决的「彻底静默」）。
+  it('count=1 的同文案事件是冷却后新条目：新增行、重新提示、计入未读', () => {
+    const store = useNotifyStore()
+    store.push('持久化失败', 'dztd_ctp', 'error', true, 100, 5)
+    store.markAllRead()
+    toastMocks.persistent.mockClear()
+    expect(store.items).toHaveLength(1)
+    expect(store.unreadCount).toBe(0)
+
+    // 冷却到点：后端新建条目并以 count=1 广播同文案
+    store.push('持久化失败', 'dztd_ctp', 'error', true, 700, 1)
+
+    expect(store.items).toHaveLength(2)                     // 新增行，不并进旧行
+    expect(store.items[1].count).toBe(1)                    // 新 epoch 的计数从 1 开始
+    expect(store.items[1].timestamp).toBe(700 * 1000)
+    expect(toastMocks.persistent).toHaveBeenCalledWith('持久化失败', 'error')
+    expect(store.unreadCount).toBe(1)
+  })
+
+  it('同文案跨 epoch 两行并存时，count>1 折叠更新的是最新一行', () => {
+    const store = useNotifyStore()
+    store.push('持久化失败', 'dztd_ctp', 'error', false, 100, 5)
+    store.push('持久化失败', 'dztd_ctp', 'error', false, 700, 1) // 冷却后新 epoch
+    expect(store.items).toHaveLength(2)
+
+    store.push('持久化失败', 'dztd_ctp', 'error', false, 730, 2) // 新 epoch 被折叠
+    expect(store.items[0].count).toBe(5) // 旧 epoch 不动
+    expect(store.items[1].count).toBe(2) // 最新 epoch 计数更新
+    expect(store.items).toHaveLength(2)
   })
 
   it('clear 清空列表与已读状态（登出时不残留上一会话通知）', () => {

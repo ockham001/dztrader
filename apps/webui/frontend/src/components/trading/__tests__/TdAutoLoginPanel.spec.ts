@@ -11,6 +11,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import TdAutoLoginPanel from '../TdAutoLoginPanel.vue'
 import { useTdAccountsStore } from '@/stores/tdAccounts'
+import { useToastStore } from '@/stores/toast'
 import { tdGatewaysApi } from '@/api/tdGateways'
 
 vi.mock('@/api/td', () => ({ tdApi: {} }))
@@ -147,6 +148,34 @@ describe('TdAutoLoginPanel 交易接口排程', () => {
       enabled: true,
       schedules: [{ login_time: '20:45', logout_time: '02:33' }],
     })
+  })
+
+  // #530 M4：契约 auto-login 的 `schedules: []` = 回落网关内置默认排程，不是「清空」。
+  // 删掉最后一条时段后列表会自己长回来，必须给出提示，否则用户会认为保存失败。
+  it('删光最后一个时段：提交空表 + 提示「回落到内置默认排程」', async () => {
+    seedAutoLogin({ schedules: [{ login_time: '08:45', logout_time: '15:45' }] })
+    vi.mocked(tdGatewaysApi.setAutoLogin).mockResolvedValue({ ok: true })
+    const toast = useToastStore()
+    const infoSpy = vi.spyOn(toast, 'info')
+    const w = mountPanel()
+
+    await w.get('.td-auto-login__remove').trigger('click')
+    await flushPromises()
+
+    expect(tdGatewaysApi.setAutoLogin).toHaveBeenCalledWith(GATEWAY, {
+      enabled: true,
+      schedules: [],
+    })
+    expect(infoSpy).toHaveBeenCalledTimes(1)
+    expect(String(infoSpy.mock.calls[0][0])).toContain('内置默认排程')
+  })
+
+  it('mirror 为空表时文案说明「使用内置默认排程」，不写「不会自动登录」', () => {
+    seedAutoLogin({ schedules: [] })
+    const w = mountPanel()
+    const empty = w.get('[data-test="td-auto-login-empty"]').text()
+    expect(empty).toContain('内置默认排程')
+    expect(empty).not.toContain('不会自动登录')
   })
 
   it('添加时段：登录时间等于登出时间被前端挡住，不发请求', async () => {

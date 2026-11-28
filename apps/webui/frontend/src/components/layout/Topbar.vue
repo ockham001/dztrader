@@ -330,7 +330,13 @@ const serviceBadges = computed<ServiceBadge[]>(() => SERVICE_DEFINITIONS.map(agg
       </span>
       <ThemeDropdown />
     </div>
-    <NotifyDrawer :open="notifyDrawerOpen" @close="notifyDrawerOpen = false" />
+    <!-- Teleport 到 body（#530 B1）：抽屉内含 Modal 的 `position: fixed` 遮罩，而 topbar 是
+         `position: sticky; z-index: 90` 且 `@supports` 下有 `backdrop-filter` —— 后者会让 topbar
+         成为 fixed 后代的包含块，内联渲染会把遮罩限制成 32px 高的顶栏条；z-index 也会被困在
+         90 层（侧栏 300 会盖住）。Teleport 后遮罩回到视口顶层坐标系，与业务 Modal 同级。 -->
+    <Teleport to="body">
+      <NotifyDrawer :open="notifyDrawerOpen" @close="notifyDrawerOpen = false" />
+    </Teleport>
   </header>
 </template>
 

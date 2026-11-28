@@ -24,7 +24,12 @@ const MAX_ITEMS = 100
 /** 仪表盘面板显示条数 */
 export const NOTIFY_PANEL_LIMIT = 50
 
-/** 折叠指纹：source + level + 文本（与 dzweb 的指纹口径同构；前端只做「就地更新」不做窗口判定） */
+/**
+ * 折叠指纹：source + level + **原始文本**。
+ *
+ * 它只用于把 dzweb 折叠后的 `count>1` 广播对齐到已有行；归一化指纹与窗口/冷却判定
+ * 只在 dzweb 做（ADR 0060 决策 4），前端不重算。`count===1` 一律视为新条目（#530 B2）。
+ */
 function foldKey(item: { source?: string; level: NotifyLevel; message: string }): string {
   return `${item.source ?? ''}\x1f${item.level}\x1f${item.message}`
 }
@@ -33,9 +38,9 @@ function foldKey(item: { source?: string; level: NotifyLevel; message: string })
  * notify_ui 统一分发（契约 notify-ui / ADR 0060）。
  *
  * 职责分工（ADR 0060 决策 4/6）：
- * - **去重折叠在 dzweb**：后端已按指纹窗口合并并填 `count`，前端收到的每一条
- *   都已是折叠结果。前端的任务只是：若该指纹已在本地列表里（同一事件的新一轮），
- *   **就地更新** `count`/`timestamp`，不新增一行；
+ * - **去重折叠在 dzweb**：后端已按指纹窗口合并并填 `count`。前端只在 `count>1`
+ *   时把折叠结果**就地更新**到已有行（不新增、不重复提示）；`count===1` 表示后端
+ *   把它当成新条目（冷却/淘汰后重现），必须新增行并重新提示——不得按指纹永久折叠；
  * - **两个呈现面**：消息中心（本 store 的 `items`，留档）+ 即时提示（toast store）。
  *   `popup=true` 的条目走常驻 toast（不自动消失、不遮挡）。
  *
@@ -85,18 +90,24 @@ export const useNotifyStore = defineStore('notify', () => {
     const ts = timestamp === undefined ? Date.now() : timestamp * 1000
     const foldedCount = count && count > 0 ? count : 1
 
-    // 折叠：同一指纹已在列表里 → 就地更新，不新增行（后端已折叠，这里只对齐本地视图）
-    const key = foldKey({ source, level: lv, message })
-    const existing = items.value.find(i => foldKey(i) === key)
-    if (existing) {
-      // count 取较大者：后端冷却到点后会以 count=1 重新发一条同文案的新事件，
-      // 若直接覆盖会把已累计的次数抹掉（审查实测：REST 基线刷新后同一批数据变两行、
-      // 前端却仍是一行 count=1，前后视图不一致）。取 max 保持单调。
-      existing.count = Math.max(existing.count, foldedCount)
-      existing.timestamp = ts
-      existing.popup = popup ?? existing.popup
-      // 折叠命中不重复弹 toast：用户已经看过这条（ADR 0060：窗口内不重复提示）
-      return
+    // 契约 notify-ui「前端义务」：只有 `count > 1`（dzweb 已折叠的结果）才就地更新；
+    // `count === 1` 是**新条目**（冷却到期 / 缓存淘汰后重新出现），必须新增行并重新提示。
+    // 若按指纹无条件折叠，复发事件会被永久静默（审查 blocker B2 / #530）——ADR 0060
+    // 明确否决过前端折叠。
+    if (foldedCount > 1) {
+      const key = foldKey({ source, level: lv, message })
+      // 从新到旧找：dzweb 折叠时合并的是**最新的**同指纹条目（缓存里可能同时存在冷却前后
+      // 两个 epoch 的同文案条目），前端必须更新同一条，否则会把旧 epoch 的计数当成新的。
+      for (let i = items.value.length - 1; i >= 0; i--) {
+        const existing = items.value[i]
+        if (foldKey(existing) !== key) continue
+        // 同一 epoch 内 count 单调递增；取 max 防帧乱序（count===1 走不到这里，不会跨 epoch 复用）
+        existing.count = Math.max(existing.count, foldedCount)
+        existing.timestamp = ts
+        existing.popup = popup ?? existing.popup
+        // 折叠命中不重复弹 toast：用户已经看过这条（ADR 0060：窗口内不重复提示）
+        return
+      }
     }
 
     items.value.push({ id: nextId(), source, message, level: lv, timestamp: ts, popup, count: foldedCount })

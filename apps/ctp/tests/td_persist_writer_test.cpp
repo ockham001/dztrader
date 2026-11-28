@@ -168,8 +168,21 @@ PersistPolicy fast_policy() {
     policy.retry_delays = {std::chrono::milliseconds(10), std::chrono::milliseconds(20),
                            std::chrono::milliseconds(50)};
     policy.sustained_notify_interval = std::chrono::milliseconds(50);
+    policy.sustained_log_interval = std::chrono::milliseconds(50);
     policy.backlog_warn_threshold = 8;
     return policy;
+}
+
+/// 生产默认策略的跨模块不变量（#530 M1）：持续通知间隔必须明显小于 dzweb 的去重冷却
+/// （`apps/webui/config.h` 的 notify_dedup_cooldown_sec 默认 300s）。若相等/更大，
+/// dzweb 每条通知都跨冷却新建条目，`count` 永远不累加、缓存被同一故障刷满。
+/// 日志节流仍保持 ADR 0042 §4 的「每 5 分钟最多 1 条」。
+TEST(TdPersistPolicyDefaults, SustainedNotifyFasterThanDedupCooldown) {
+    const PersistPolicy policy{};
+    EXPECT_LT(policy.sustained_notify_interval, std::chrono::seconds(300))
+        << "sustained notify interval must be below dzweb dedup cooldown (300s)";
+    EXPECT_GE(policy.sustained_log_interval, std::chrono::minutes(5))
+        << "log throttle must keep ADR 0042 §4 (at most one per 5 minutes)";
 }
 
 /// DzDate (距纪元天数) -> 日期文本的测试常量: 20696 = 20260831, 20697 = 20260901.
@@ -730,6 +743,10 @@ TEST_F(TdPersistWriterTest, FailedBatchRetriedUntilRecovery) {
     EXPECT_EQ(errors[0].message, errors[1].message)
         << "same event must be foldable (identical text)";
 
+    // 记录恢复前已发生的 ERROR 通知数，恢复后必须不再新增（failing_ 已复位）。
+    const std::size_t errors_before_recovery = recorder_.count(DZ_NOTIFY_ERROR);
+    ASSERT_GE(errors_before_recovery, 2u);  // 首报 + 至少一次持续期重申
+
     // 自愈: ensure_trade_db 幂等补建缺失表 (真实数据库, 不 mock).
     ASSERT_NO_THROW(tdstore::ensure_trade_db(db_path_));
 
@@ -750,11 +767,10 @@ TEST_F(TdPersistWriterTest, FailedBatchRetriedUntilRecovery) {
     const std::vector<PersistNotification> infos = recorder_.notifications_at(DZ_NOTIFY_INFO);
     ASSERT_EQ(infos.size(), 1u);
     EXPECT_FALSE(infos.front().popup);
-    // ERROR 至少 1 次（首报 + 持续期，ADR 0060：持续期不降级，全部 ERROR）；
-    // 恢复后不再新增（failing_ 已复位，若再新增说明状态机有 bug）。
-    // 这些 ERROR 在 dzweb 侧会被折叠成一条 count=N —— 折叠的前提是正文逐字相同（上方已断言）。
-    const std::size_t errors_after_recovery = recorder_.count(DZ_NOTIFY_ERROR);
-    EXPECT_GE(errors_after_recovery, 1u);
+    // 恢复后 ERROR 不再新增（failing_ 已复位；新增即状态机 bug）。
+    // 这些 ERROR 在 dzweb 侧会被折叠成一条 count=N —— 折叠前提是正文逐字相同（上方已断言）。
+    EXPECT_EQ(recorder_.count(DZ_NOTIFY_ERROR), errors_before_recovery)
+        << "no new ERROR notification after recovery";
     writer.stop();
 }
 

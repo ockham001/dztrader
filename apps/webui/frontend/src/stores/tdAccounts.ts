@@ -37,6 +37,12 @@ import type {
 import type { ProgressView } from '@/stores/progress'
 
 /**
+ * 排程写操作的兜底超时（ms）：RTN_AUTO_LOGIN 丢失 / 网关停机时，避免开关与增删按钮
+ * 永久禁用、变更静默丢失（#530 M6；md 侧同能力由 usePending 的 10s 超时兜底）。
+ */
+export const AUTO_LOGIN_PENDING_TIMEOUT_MS = 15_000
+
+/**
  * 交易账户配置 store（契约 rest §2.9.7/§2.9.9、契约 td-config §1/§2/§5、契约 td-status、契约 webui-ws §2.1/§2.2/§2.3）。
  *
  * 数据来源分工（三种，职责不重叠）：
@@ -383,8 +389,35 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    * 镜像由 `RTN_AUTO_LOGIN`（WS `auto_login`）填充；`GET .../auto-login` 用于首次拉取。
    */
   const autoLogins = ref<Record<string, TdAutoLoginView>>({})
-  /** 排程写操作在途（按网关名；非乐观，清 pending 只能等 `RTN_AUTO_LOGIN`） */
+  /** 排程写操作在途（按网关名；非乐观，清 pending 只能等 `RTN_AUTO_LOGIN` 或超时兜底） */
   const autoLoginPending = ref<Set<string>>(new Set())
+  /** 排程写操作兜底超时定时器（非响应式；每个网关至多一个） */
+  const autoLoginTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  /** 清某网关的排程 pending 与其兜底定时器（RTN 到达 / HTTP 失败 / 超时三路共用） */
+  function clearAutoLoginPending(gateway: string): void {
+    autoLoginPending.value.delete(gateway)
+    const timer = autoLoginTimers.get(gateway)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      autoLoginTimers.delete(gateway)
+    }
+  }
+
+  /**
+   * 给排程写操作挂兜底超时：到点仍未收到 RTN 就清 pending 并给可见错误，
+   * 避免「非乐观更新」在帧丢失时把控件永久锁死（#530 M6）。
+   */
+  function armAutoLoginPendingTimeout(gateway: string): void {
+    const previous = autoLoginTimers.get(gateway)
+    if (previous !== undefined) clearTimeout(previous)
+    autoLoginTimers.set(gateway, setTimeout(() => {
+      autoLoginTimers.delete(gateway)
+      if (!autoLoginPending.value.has(gateway)) return
+      autoLoginPending.value.delete(gateway)
+      error.value = '未收到排程生效确认（RTN_AUTO_LOGIN 超时），请刷新后重试'
+    }, AUTO_LOGIN_PENDING_TIMEOUT_MS))
+  }
 
   // === 内部状态（非响应式）===
   /**
@@ -1105,12 +1138,6 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
   }
 
   /**
-   * `td_rtn_status`（契约 td-status §3 / 契约 webui-ws §2.2）：按 `instance_id` = **账户 ID**
-   * 全量覆盖（ADR 0056 决策 7：账户级帧不再用 `网关名:账户ID` 复合键）。
-   * 缺 instance_id、payload 自校验不一致或字段非法的帧忽略；**不做字段清空推断**
-   *（契约 td-status §2.4/§3：清空时机由发送方决定，前端以字段值变化为准）。
-   */
-  /**
    * 收 `RTN_AUTO_LOGIN` 排程镜像（契约 auto-login，全量覆盖）。
    *
    * - 只接受 `dztd_*` 网关：md 与 td 各有排程，帧头 instance_id 是唯一区分依据；
@@ -1130,13 +1157,17 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
       schedules: raw.schedules as TdAutoLoginSchedule[],
       source: 'mirror',
     }
-    autoLoginPending.value.delete(instanceId)
+    // RTN 是排程写操作的唯一权威生效信号：清 pending + 兜底定时器
+    clearAutoLoginPending(instanceId)
   }
 
   /** 从 `GET .../auto-login` 拉一次排程基线（网关未运行时 source=unavailable） */
   async function loadAutoLogin(gateway: string): Promise<void> {
     try {
       const view = await tdGatewaysApi.getAutoLogin(gateway)
+      // 不让过期的 GET 覆盖更新的 WS 镜像：mirror 已有值时，只接受新的 mirror，
+      // 否则「未知」占位会把面板打回不可编辑并禁用（#530 M6 配套的并发守卫）。
+      if (view.source === 'unavailable' && autoLogins.value[gateway]?.source === 'mirror') return
       autoLogins.value[gateway] = view
     } catch (e) {
       // 读取失败不改镜像：保留上次已知值，由 UI 的降级展示承担
@@ -1150,16 +1181,25 @@ export const useTdAccountsStore = defineStore('tdAccounts', () => {
    */
   async function setAutoLogin(gateway: string, body: TdAutoLoginBody): Promise<boolean> {
     autoLoginPending.value.add(gateway)
+    armAutoLoginPendingTimeout(gateway)
     try {
       await tdGatewaysApi.setAutoLogin(gateway, body)
-      // 不预写镜像：等 RTN_AUTO_LOGIN 权威覆盖（与 md 侧同口径）
+      // 不预写镜像：等 RTN_AUTO_LOGIN 权威覆盖（与 md 侧同口径）；
+      // pending 由 RTN 或兜底超时清除，避免帧丢失时控件永久禁用（#530 M6）。
       return true
     } catch (e) {
-      autoLoginPending.value.delete(gateway)
+      clearAutoLoginPending(gateway)
       error.value = e instanceof Error ? e.message : String(e)
       return false
     }
   }
+
+  /**
+   * `td_rtn_status`（契约 td-status §3 / 契约 webui-ws §2.2）：按 `instance_id` = **账户 ID**
+   * 全量覆盖（ADR 0056 决策 7：账户级帧不再用 `网关名:账户ID` 复合键）。
+   * 缺 instance_id、payload 自校验不一致或字段非法的帧忽略；**不做字段清空推断**
+   *（契约 td-status §2.4/§3：清空时机由发送方决定，前端以字段值变化为准）。
+   */
 
   function applyTdStatus(instanceId: string | undefined, payload: TdStatusPayload | undefined): void {
     if (!instanceId) return

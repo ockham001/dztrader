@@ -12,6 +12,7 @@ import {
   TD_ACCOUNT_OP_TIMEOUT_MS,
   TD_GATEWAY_OP_TIMEOUT_MS,
   TD_SESSION_LOGIN_TIMEOUT_MS,
+  AUTO_LOGIN_PENDING_TIMEOUT_MS,
 } from '../tdAccounts'
 import { tdApi } from '@/api/td'
 import { tdGatewaysApi } from '@/api/tdGateways'
@@ -48,6 +49,9 @@ vi.mock('@/api/tdGateways', async (importOriginal) => {
       start: vi.fn(),
       stop: vi.fn(),
       remove: vi.fn(),
+      // #524 auto-login 端点（#530 M6 的 pending 兜底用例用）
+      getAutoLogin: vi.fn(),
+      setAutoLogin: vi.fn(),
     },
   }
 })
@@ -1608,5 +1612,70 @@ describe('useTdAccountsStore · 添加账户 pending 按网关隔离（#439 审�
     store.applyTdConfig('dztd_ctp', configPayload([]))
     expect(store.addPendingFor('dztd_ctp')).toBe(false)
     expect(store.addPendingFor('dztd_ctp_2')).toBe(true)
+  })
+})
+
+// #530 M6：排程写操作是非乐观的（pending 等 RTN），必须给兜底超时；
+// 否则 RTN 丢失 / 网关停机时开关与增删按钮永久禁用、变更静默丢失（md 侧同能力有超时）。
+describe('useTdAccountsStore · 自动登录排程 pending 兜底（#530 M6）', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.resetAllMocks()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    useTdAccountsStore().dispose()
+  })
+
+  it('RTN 到达：清 pending 与兜底定时器，超时不再误报错误', async () => {
+    vi.mocked(tdGatewaysApi.setAutoLogin).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+    const pending = store.setAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(true)
+
+    store.applyAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
+    await pending
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
+
+    vi.advanceTimersByTime(AUTO_LOGIN_PENDING_TIMEOUT_MS + 1)
+    expect(store.error).toBeNull()
+  })
+
+  it('RTN 丢失：超时后清 pending 并给出可见错误（控件不会永久锁死）', async () => {
+    vi.mocked(tdGatewaysApi.setAutoLogin).mockResolvedValue({ ok: true })
+    const store = useTdAccountsStore()
+    await store.setAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(true)
+
+    vi.advanceTimersByTime(AUTO_LOGIN_PENDING_TIMEOUT_MS)
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
+    expect(store.error).toContain('RTN_AUTO_LOGIN')
+  })
+
+  it('HTTP 失败：立即清 pending（不等到兜底超时）', async () => {
+    vi.mocked(tdGatewaysApi.setAutoLogin).mockRejectedValue(new Error('boom'))
+    const store = useTdAccountsStore()
+    const ok = await store.setAutoLogin('dztd_ctp', { enabled: false, schedules: [] })
+    expect(ok).toBe(false)
+    expect(store.autoLoginPending.has('dztd_ctp')).toBe(false)
+  })
+
+  it('过期 GET 的 unavailable 不覆盖已有 mirror 镜像（并发守卫）', async () => {
+    const store = useTdAccountsStore()
+    store.applyAutoLogin('dztd_ctp', {
+      enabled: true,
+      schedules: [{ login_time: '08:45', logout_time: '15:45' }],
+    })
+    vi.mocked(tdGatewaysApi.getAutoLogin).mockResolvedValue({
+      enabled: false,
+      schedules: [],
+      source: 'unavailable',
+    })
+
+    await store.loadAutoLogin('dztd_ctp')
+    expect(store.autoLogins.dztd_ctp?.source).toBe('mirror')
+    expect(store.autoLogins.dztd_ctp?.schedules).toHaveLength(1)
   })
 })

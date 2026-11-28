@@ -55,8 +55,8 @@ describe('tdPanelState（五态互斥，优先级固定）', () => {
 })
 
 describe('tdPanelEmptyText（空态槽位文案，按面板种类区分「未知」与「暂无」）', () => {
-  it('降级 / 加载 / 失败三态两个面板同文案（与降级横幅、错误行不冲突）', () => {
-    for (const kind of ['position', 'fund'] as const) {
+  it('降级 / 加载 / 失败三态三个面板同文案（与降级横幅、错误行不冲突）', () => {
+    for (const kind of ['position', 'fund', 'order'] as const) {
       expect(tdPanelEmptyText('degraded', kind)).toBe('交易数据暂不可用')
       expect(tdPanelEmptyText('loading', kind)).toBe('加载中...')
       expect(tdPanelEmptyText('error', kind)).toBe('加载失败')
@@ -66,11 +66,13 @@ describe('tdPanelEmptyText（空态槽位文案，按面板种类区分「未知
   it('no-accounts 明确说「未知」，绝不说「暂无」', () => {
     expect(tdPanelEmptyText('no-accounts', 'position')).toBe('持仓未知')
     expect(tdPanelEmptyText('no-accounts', 'fund')).toBe('资金未知')
+    expect(tdPanelEmptyText('no-accounts', 'order')).toBe('委托未知')
   })
 
   it('empty 才是正常的「暂无」（已知账户集合下的空数据）', () => {
     expect(tdPanelEmptyText('empty', 'position')).toBe('暂无持仓')
     expect(tdPanelEmptyText('empty', 'fund')).toBe('暂无资金数据')
+    expect(tdPanelEmptyText('empty', 'order')).toBe('暂无委托')
   })
 })
 
@@ -86,6 +88,14 @@ describe('tdPanelUnknownBannerText（面板级未知态提示条文案）', () =
   it('资金未知提示条：同样的原因与排查方向', () => {
     const text = tdPanelUnknownBannerText('fund')
     expect(text).toContain('资金未知')
+    expect(text).toContain('交易网关')
+    expect(text).toContain('账户')
+    expect(text).not.toContain('暂无')
+  })
+
+  it('委托未知提示条：同样的原因与排查方向', () => {
+    const text = tdPanelUnknownBannerText('order')
+    expect(text).toContain('委托未知')
     expect(text).toContain('交易网关')
     expect(text).toContain('账户')
     expect(text).not.toContain('暂无')

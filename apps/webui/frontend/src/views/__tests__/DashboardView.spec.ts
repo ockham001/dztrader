@@ -631,6 +631,25 @@ describe('DashboardView', () => {
     w.unmount()
   })
 
+  // #530 M2：委托面板与持仓/资金共用 tdPanelState——降级/未知不得显示成「暂无委托」。
+  it('委托降级（available:false）显示降级提示，不把「无法确认」说成「暂无委托」', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue({ available: false, reason: 'not_found' })
+    const w = await mountDashboard()
+    expect(w.find('[data-test="orders-degraded-banner"]').exists()).toBe(true)
+    const empty = w.get('[data-test="orders-empty"]').text()
+    expect(empty).toContain('交易数据暂不可用')
+    expect(empty).not.toContain('暂无委托')
+    w.unmount()
+  })
+
+  it('委托基线可用但账户全集为空 → 「委托未知」+ 未知提示条（不得说暂无委托）', async () => {
+    vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([], { online_accounts: [] }))
+    const w = await mountDashboard()
+    expect(w.get('[data-test="orders-empty"]').text()).toContain('委托未知')
+    expect(w.find('[data-test="orders-unknown-banner"]').exists()).toBe(true)
+    w.unmount()
+  })
+
   it('「仅挂单」复选框过滤到未成交/部分成交', async () => {
     vi.mocked(tdApi.getOrders).mockResolvedValue(orderListResponse([
       order({ order_id: 1, status: 'AllTraded', volume_traded: 10, sort_key: '003' }),
