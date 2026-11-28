@@ -18,7 +18,8 @@
 
    ═══ 新增一个主题色 token 的五步（必做，漏一步 = 主题残缺 bug）═══
    ① 在 :root 段按语义命名新增：背景/前景 → bg-* / text-* / icon-* / border-* 前缀 +
-      语义名（default/secondary/tertiary/disabled/brand/onbrand/…），overlay 用 -l1~l4 分级。
+      语义名（default/secondary/tertiary/disabled/brand/onbrand/…），overlay 用 -l1~l4 分级；
+      阴影随主题翻转时用 shadow-*（不随主题变化的阴影才进 design-tokens.css）。
    ② 在 .dark 段覆盖同 token（深色值；透明 overlay 建议用 #RRGGBBAA 8 位 hex，勿用 rgba()）。
    ③ 在下方 @media 段覆盖同 token（system 深色值与 .dark 一致时也须显式重复——三段各自独立）。
    ④ 组件侧一律 var(--新token) 引用，CI 的 dz/token-literal（error）保证组件内无裸色。
@@ -46,6 +47,9 @@
   --bg-menu: #FFFFFF;
   --bg-tooltip: #FFFFFF;
   --bg-card: #F5F5F5;
+  /* 浮层表面：压在任意内容之上、需要与底层区分开的表面（toast 等）。
+     浅色取最亮白（页面底色也是 #FFFFFF，靠描边 + 阴影分离）；深色高于 --bg-base-secondary。 */
+  --bg-elevated: #FFFFFF;
   --bg-invert: #262626;
   --bg-invert-hover: #404040;
   --bg-invert-active: #171717;
@@ -60,6 +64,11 @@
   --color-card: var(--bg-base-secondary);
   --color-tooltip: var(--bg-tooltip);
   --color-menu: var(--bg-menu);
+
+  /* 浮层阴影：随主题翻转（深色需要更重的黑才读得出深度），故不进 design-tokens.css。
+     深色下 --text-default 是浅色，`color-mix(text-default)` 只产出一层极弱光晕、
+     不产生深度，压在密集内容上的浮层用本 token。 */
+  --shadow-overlay: 0 16px 40px rgb(0 0 0 / 12%), 0 2px 8px rgb(0 0 0 / 6%);
 
   /* bg-brand */
   --bg-brand: #4B3FE3;
@@ -149,6 +158,7 @@
   --bg-menu: #1f1f1f;
   --bg-tooltip: #171717;
   --bg-card: #202020;
+  --bg-elevated: #2A2A2A;
   --bg-invert: #e5e5e5;
   --bg-invert-hover: #fafafa;
   --bg-invert-active: #fafafa;
@@ -158,6 +168,9 @@
   --bg-brand-active: #3f31c6;
   --bg-brand-disabled: rgba(75, 63, 227, 0.32);
   --bg-brand-popup: rgba(106, 111, 255, 0.18);
+
+  /* 浮层阴影（深色）：50% / 30% 黑，压在 #202020–#262626 面板上仍读得出边缘 */
+  --shadow-overlay: 0 16px 40px rgb(0 0 0 / 50%), 0 2px 8px rgb(0 0 0 / 30%);
 
   --text-default: #e5e5e5;
   --text-default-hover: #fafafa;
@@ -227,6 +240,7 @@
     --bg-menu: #1f1f1f;
     --bg-tooltip: #171717;
     --bg-card: #202020;
+    --bg-elevated: #2A2A2A;
     --bg-invert: #e5e5e5;
     --bg-invert-hover: #fafafa;
     --bg-invert-active: #fafafa;
@@ -236,6 +250,9 @@
     --bg-brand-active: #3f31c6;
     --bg-brand-disabled: rgba(75, 63, 227, 0.32);
     --bg-brand-popup: rgba(106, 111, 255, 0.18);
+
+    /* 浮层阴影（system 深色）：与 .dark 段同值，三段各自独立 */
+    --shadow-overlay: 0 16px 40px rgb(0 0 0 / 50%), 0 2px 8px rgb(0 0 0 / 30%);
 
     --text-default: #e5e5e5;
     --text-default-hover: #fafafa;
